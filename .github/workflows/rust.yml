@@ -1,0 +1,43 @@
+name: Rust
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: rustlang/rust:nightly
+    steps:
+    - uses: actions/checkout@v1
+    - name: Install dependencies
+      run: |
+        apt-get update -yqq
+        apt-get install -yqq --no-install-recommends \
+             build-essential \
+             pkg-config \
+             llvm-dev \
+             libclang-dev \
+             clang \
+             fuse3 \
+             libfuse3-dev \
+             udev \
+             libudev-dev
+    - name: Build
+      run: cargo build --all --verbose
+    - name: Run tests
+      run: cargo test --all --verbose
+    - name: Build API doc
+      run: |
+        cargo doc --all --verbose
+        echo '<meta http-equiv="refresh" content="0;url=tokio_fuse">' > ./target/doc/index.html
+    - name: Deply API doc
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      uses: peaceiris/actions-gh-pages@v2.3.1
+      env:
+        ACTIONS_DEPLOY_KEY: ${{ secrets.ACTIONS_DEPLOY_KEY }}
+        PUBLISH_BRANCH: gh-pages
+        PUBLISH_DIR: ./target/doc

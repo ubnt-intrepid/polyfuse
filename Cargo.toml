@@ -1,0 +1,25 @@
+[package]
+name = "tokio-fuse"
+version = "0.1.0"
+publish = false
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+build = "build.rs"
+
+[dependencies]
+async-trait = "0.1"
+futures-core-preview = "=0.3.0-alpha.18"
+libc = "0.2"
+log = "0.4"
+mio = "0.6"
+tokio-io = "0.2.0-alpha.1"
+tokio-net = "0.2.0-alpha.1"
+
+[build-dependencies]
+bindgen = "0.51"
+cc = "1"
+pkg-config = "0.3"
+
+[dev-dependencies]
+tokio = "0.2.0-alpha.1"
+pretty_env_logger = "0.3"
