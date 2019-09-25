@@ -1,6 +1,7 @@
 use crate::abi::fuse_opcode::*;
 use crate::abi::{
     fuse_flush_in,
+    fuse_forget_in,
     fuse_getattr_in, //
     fuse_in_header,
     fuse_init_in,
@@ -10,7 +11,12 @@ use crate::abi::{
     fuse_release_in,
 };
 use bitflags::bitflags;
-use std::{fmt, io, mem};
+use libc::c_char;
+use std::{
+    ffi::{CStr, OsStr},
+    fmt, io, mem,
+    os::unix::ffi::OsStrExt,
+};
 
 #[repr(transparent)]
 pub struct InHeader(fuse_in_header);
@@ -78,6 +84,47 @@ impl OpInit {
 bitflags! {
     pub struct CapFlags: u32 {
         const ASYNC_READ = crate::abi::FUSE_ASYNC_READ;
+        const POSIX_LOCKS = crate::abi::FUSE_POSIX_LOCKS;
+        const FILE_OPS = crate::abi::FUSE_FILE_OPS;
+        const ATOMIC_O_TRUNC = crate::abi::FUSE_ATOMIC_O_TRUNC;
+        const EXPORT_SUPPORT = crate::abi::FUSE_EXPORT_SUPPORT;
+        const BIG_WRITES = crate::abi::FUSE_BIG_WRITES;
+        const DONT_MASK = crate::abi::FUSE_DONT_MASK;
+        const SPLICE_WRITE = crate::abi::FUSE_SPLICE_WRITE;
+        const SPLICE_MOVE = crate::abi::FUSE_SPLICE_MOVE;
+        const SPLICE_READ = crate::abi::FUSE_SPLICE_READ;
+        const FLOCK_LOCKS = crate::abi::FUSE_FLOCK_LOCKS;
+        const HAS_IOCTL_DIR = crate::abi::FUSE_HAS_IOCTL_DIR;
+        const AUTO_INVAL_DATA = crate::abi::FUSE_AUTO_INVAL_DATA;
+        const DO_READDIRPLUS = crate::abi::FUSE_DO_READDIRPLUS;
+        const READDIRPLUS_AUTO = crate::abi::FUSE_READDIRPLUS_AUTO;
+        const ASYNC_DIO = crate::abi::FUSE_ASYNC_DIO;
+        const WRITEBACK_CACHE = crate::abi::FUSE_WRITEBACK_CACHE;
+        const NO_OPEN_SUPPORT = crate::abi::FUSE_NO_OPEN_SUPPORT;
+        const PARALLEL_DIROPS = crate::abi::FUSE_PARALLEL_DIROPS;
+        const HANDLE_KILLPRIV = crate::abi::FUSE_HANDLE_KILLPRIV;
+        const POSIX_ACL = crate::abi:: FUSE_POSIX_ACL;
+        const ABORT_ERROR = crate::abi::FUSE_ABORT_ERROR;
+        const MAX_PAGES = crate::abi::FUSE_MAX_PAGES;
+        const CACHE_SYMLINKS = crate::abi::FUSE_CACHE_SYMLINKS;
+        //const NO_OPENDIR_SUPPORT = crate::abi::FUSE_NO_OPENDIR_SUPPORT;
+    }
+}
+
+#[repr(transparent)]
+pub struct OpForget(fuse_forget_in);
+
+impl fmt::Debug for OpForget {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpForget")
+            .field("nlookup", &self.nlookup())
+            .finish()
+    }
+}
+
+impl OpForget {
+    pub fn nlookup(&self) -> u64 {
+        self.0.nlookup
     }
 }
 
@@ -220,6 +267,8 @@ impl OpRelease {
 pub enum Op<'a> {
     Init(&'a OpInit),
     Destroy,
+    Lookup { name: &'a OsStr },
+    Forget(&'a OpForget),
     Getattr(&'a OpGetattr),
     Open(&'a OpOpen),
     Read(&'a OpRead),
@@ -232,6 +281,13 @@ pub fn parse<'a>(data: &'a [u8]) -> io::Result<(&'a InHeader, Option<Op<'a>>)> {
     let op = match header.opcode() {
         FUSE_INIT => Some(Op::Init(fetch(data)?)),
         FUSE_DESTROY => Some(Op::Destroy),
+        FUSE_LOOKUP => {
+            let name = unsafe { CStr::from_ptr::<'a>(data.as_ptr() as *const c_char) };
+            Some(Op::Lookup {
+                name: OsStr::from_bytes(name.to_bytes()),
+            })
+        }
+        FUSE_FORGET => Some(Op::Forget(fetch(data)?)),
         FUSE_GETATTR => Some(Op::Getattr(fetch(data)?)),
         FUSE_OPEN => Some(Op::Open(fetch(data)?)),
         FUSE_READ => Some(Op::Read(fetch(data)?)),

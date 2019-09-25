@@ -1,8 +1,7 @@
 use crate::{
-    reply::Attr,
+    reply::{AttrOut, EntryOut, InitOut, OpenOut},
     request::{
-        CapFlags, //
-        OpFlush,
+        OpFlush, //
         OpGetattr,
         OpInit,
         OpOpen,
@@ -13,7 +12,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use libc::c_int;
-use std::borrow::Cow;
+use std::{borrow::Cow, ffi::OsStr};
 
 pub type OperationResult<T> = Result<T, c_int>;
 
@@ -25,17 +24,28 @@ pub trait Operations {
         &'a mut self,
         req: &'a Request<'a>,
         op: &'a OpInit,
-    ) -> OperationResult<CapFlags> {
-        Ok(CapFlags::all())
+        out: &'a mut InitOut,
+    ) -> OperationResult<()> {
+        Ok(())
     }
 
     async fn destroy<'a>(&'a mut self) {}
+
+    async fn lookup<'a>(
+        &'a mut self,
+        req: &'a Request<'a>,
+        name: &'a OsStr,
+    ) -> OperationResult<EntryOut> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn forget<'a>(&'a mut self, req: &'a Request<'a>, nlookup: u64) {}
 
     async fn getattr<'a>(
         &'a mut self,
         req: &'a Request<'a>,
         op: &'a OpGetattr,
-    ) -> OperationResult<(Attr, u64, u32)> {
+    ) -> OperationResult<AttrOut> {
         Err(libc::ENOSYS)
     }
 
@@ -43,7 +53,7 @@ pub trait Operations {
         &'a mut self,
         req: &'a Request<'a>,
         op: &'a OpOpen,
-    ) -> OperationResult<(u64, u32)> {
+    ) -> OperationResult<OpenOut> {
         Err(libc::ENOSYS)
     }
 

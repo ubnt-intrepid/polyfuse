@@ -1,18 +1,11 @@
 use crate::{
-    abi::{
-        fuse_attr_out, //
-        fuse_init_out,
-        fuse_open_out,
-        FUSE_KERNEL_MINOR_VERSION,
-        FUSE_KERNEL_VERSION,
-    },
     channel::Channel,
     op::Operations,
+    reply::InitOut,
     request::{Op, Request},
 };
 use std::{
     io::{self},
-    mem,
     path::PathBuf,
 };
 use tokio_io::AsyncReadExt;
@@ -101,9 +94,7 @@ impl Filesystem {
         log::debug!("Got an operation: {:?}", op);
         match op {
             Op::Init(op) => {
-                let mut init_out: fuse_init_out = unsafe { mem::zeroed() };
-                init_out.major = FUSE_KERNEL_VERSION;
-                init_out.minor = FUSE_KERNEL_MINOR_VERSION;
+                let mut init_out = InitOut::default();
 
                 if op.major() > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
@@ -125,20 +116,15 @@ impl Filesystem {
                 self.proto_major = op.major();
                 self.proto_minor = op.minor();
 
-                self.got_init = true;
-                let want = match ops.init(&req, &op).await {
-                    Ok(flags) => flags,
-                    Err(err) => {
-                        crate::reply::reply_err(&mut self.ch, in_header, err).await?;
-                        return Ok(());
-                    }
-                };
-
                 // TODO: max_background, congestion_threshold, time_gran, max_pages
-                init_out.flags = (op.flags() & want).bits();
-                init_out.max_readahead = op.max_readahead();
-                init_out.max_write = MAX_WRITE_SIZE as u32;
+                init_out.set_max_readahead(op.max_readahead());
+                init_out.set_max_write(MAX_WRITE_SIZE as u32);
 
+                self.got_init = true;
+                if let Err(err) = ops.init(&req, &op, &mut init_out).await {
+                    crate::reply::reply_err(&mut self.ch, in_header, err).await?;
+                    return Ok(());
+                };
                 crate::reply::reply_payload(
                     &mut self.ch, //
                     in_header,
@@ -170,13 +156,36 @@ impl Filesystem {
                 return Ok(());
             }
 
+            Op::Lookup { name } => {
+                match ops.lookup(&req, name).await {
+                    Ok(entry_out) => {
+                        crate::reply::reply_payload(
+                            &mut self.ch, //
+                            in_header,
+                            0,
+                            &entry_out,
+                        )
+                        .await?
+                    }
+                    Err(err) => {
+                        crate::reply::reply_err(
+                            &mut self.ch, //
+                            in_header,
+                            err,
+                        )
+                        .await?;
+                    }
+                }
+            }
+
+            Op::Forget(op) => {
+                ops.forget(&req, op.nlookup()).await;
+                // no reply
+            }
+
             Op::Getattr(op) => {
                 match ops.getattr(&req, &op).await {
-                    Ok((attr, valid, valid_nsec)) => {
-                        let mut attr_out: fuse_attr_out = unsafe { mem::zeroed() };
-                        attr_out.attr_valid = valid;
-                        attr_out.attr_valid_nsec = valid_nsec;
-                        attr_out.attr = attr.0;
+                    Ok(attr_out) => {
                         crate::reply::reply_payload(
                             &mut self.ch, //
                             in_header,
@@ -198,10 +207,7 @@ impl Filesystem {
 
             Op::Open(op) => {
                 match ops.open(&req, op).await {
-                    Ok((fh, open_flags)) => {
-                        let mut open_out: fuse_open_out = unsafe { mem::zeroed() };
-                        open_out.fh = fh;
-                        open_out.open_flags = open_flags;
+                    Ok(open_out) => {
                         crate::reply::reply_payload(
                             &mut self.ch, //
                             in_header,

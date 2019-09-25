@@ -5,7 +5,7 @@ use std::{borrow::Cow, env, io, path::PathBuf};
 use tokio_fuse::{
     fs::Filesystem,
     op::{OperationResult, Operations},
-    reply::Attr,
+    reply::{AttrOut, OpenOut},
     request::{OpGetattr, OpOpen, OpRead, OpRelease, Request},
 };
 
@@ -46,7 +46,7 @@ impl Operations for Null {
         &'a mut self,
         req: &'a Request<'a>,
         _: &'a OpGetattr,
-    ) -> OperationResult<(Attr, u64, u32)> {
+    ) -> OperationResult<AttrOut> {
         match req.nodeid() {
             1 => {
                 let mut attr: libc::stat = unsafe { std::mem::zeroed() };
@@ -54,7 +54,7 @@ impl Operations for Null {
                 attr.st_nlink = 1;
                 attr.st_uid = unsafe { libc::getuid() };
                 attr.st_gid = unsafe { libc::getgid() };
-                Ok((attr.into(), 0, 0))
+                Ok(attr.into())
             }
             _ => Err(libc::ENOENT),
         }
@@ -64,9 +64,9 @@ impl Operations for Null {
         &'a mut self,
         req: &'a Request<'a>,
         _: &'a OpOpen,
-    ) -> OperationResult<(u64, u32)> {
+    ) -> OperationResult<OpenOut> {
         match req.nodeid() {
-            1 => Ok((0, 0)),
+            1 => Ok(OpenOut::default()),
             _ => Err(libc::ENOENT),
         }
     }
