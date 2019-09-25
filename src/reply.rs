@@ -3,19 +3,23 @@ use crate::{
         fuse_attr, //
         fuse_attr_out,
         fuse_entry_out,
+        fuse_getxattr_out,
         fuse_init_out,
         fuse_open_out,
         fuse_out_header,
         FUSE_KERNEL_MINOR_VERSION,
         FUSE_KERNEL_VERSION,
     },
-    request::{CapFlags, InHeader},
+    request::CapFlags,
     util::{AsyncWriteVectored, AsyncWriteVectoredExt},
 };
 use bitflags::bitflags;
 use std::{
+    borrow::Cow,
+    ffi::OsStr,
     io::{self, IoSlice},
     mem,
+    os::unix::ffi::OsStrExt,
 };
 
 const OUT_HEADER_SIZE: usize = mem::size_of::<fuse_out_header>();
@@ -162,6 +166,26 @@ impl InitOut {
 }
 
 #[repr(transparent)]
+pub struct GetxattrOut(fuse_getxattr_out);
+
+impl Default for GetxattrOut {
+    fn default() -> Self {
+        unsafe { mem::zeroed() }
+    }
+}
+
+impl GetxattrOut {
+    pub fn set_size(&mut self, size: u32) {
+        self.0.size = size;
+    }
+}
+
+pub enum XattrOut<'a> {
+    Size(GetxattrOut),
+    Value(Cow<'a, [u8]>),
+}
+
+#[repr(transparent)]
 pub struct OpenOut(fuse_open_out);
 
 impl Default for OpenOut {
@@ -199,6 +223,12 @@ impl Payload for [u8] {
     }
 }
 
+impl Payload for Cow<'_, OsStr> {
+    unsafe fn to_io_slice(&self) -> IoSlice<'_> {
+        IoSlice::new((**self).as_bytes())
+    }
+}
+
 macro_rules! impl_payload_for_abi {
     ($($t:ty,)*) => {$(
         impl Payload for $t {
@@ -218,11 +248,21 @@ impl_payload_for_abi! {
     OpenOut,
     AttrOut,
     EntryOut,
+    GetxattrOut,
+}
+
+impl Payload for XattrOut<'_> {
+    unsafe fn to_io_slice(&self) -> IoSlice<'_> {
+        match self {
+            Self::Size(out) => out.to_io_slice(),
+            Self::Value(value) => IoSlice::new((**value).as_ref()),
+        }
+    }
 }
 
 pub async fn reply_payload<'a, W: ?Sized, T: ?Sized>(
     writer: &'a mut W,
-    in_header: &'a InHeader,
+    unique: u64,
     error: i32,
     data: &'a T,
 ) -> io::Result<()>
@@ -233,7 +273,7 @@ where
     let data = unsafe { data.to_io_slice() };
 
     let mut out_header: fuse_out_header = unsafe { mem::zeroed() };
-    out_header.unique = in_header.unique();
+    out_header.unique = unique;
     out_header.error = -error;
     out_header.len = (OUT_HEADER_SIZE + data.len()) as u32;
 
@@ -243,20 +283,16 @@ where
     Ok(())
 }
 
-pub async fn reply_none<'a, W: ?Sized>(writer: &'a mut W, in_header: &'a InHeader) -> io::Result<()>
+pub async fn reply_unit<'a, W: ?Sized>(writer: &'a mut W, unique: u64) -> io::Result<()>
 where
     W: AsyncWriteVectored + Unpin,
 {
-    reply_payload(writer, in_header, 0, &[] as &[u8]).await
+    reply_payload(writer, unique, 0, &[] as &[u8]).await
 }
 
-pub async fn reply_err<'a, W: ?Sized>(
-    writer: &'a mut W,
-    in_header: &'a InHeader,
-    error: i32,
-) -> io::Result<()>
+pub async fn reply_err<'a, W: ?Sized>(writer: &'a mut W, unique: u64, error: i32) -> io::Result<()>
 where
     W: AsyncWriteVectored + Unpin,
 {
-    reply_payload(writer, in_header, error, &[] as &[u8]).await
+    reply_payload(writer, unique, error, &[] as &[u8]).await
 }

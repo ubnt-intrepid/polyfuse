@@ -1,8 +1,8 @@
 use crate::{
-    channel::Channel,
+    channel::Channel, //
     op::Operations,
     reply::InitOut,
-    request::{Op, Request},
+    request::Op,
 };
 use std::{
     io::{self},
@@ -80,25 +80,41 @@ impl Filesystem {
             return Ok(());
         }
 
-        let (in_header, op) = crate::request::parse(&self.recv_buf[..])?;
-        let req = Request { in_header };
-        let op = match op {
-            Some(op) => op,
-            None => {
-                log::warn!("unsupported opcode: {:?}", in_header.opcode());
-                crate::reply::reply_err(&mut self.ch, in_header, libc::ENOSYS).await?;
-                return Ok(());
-            }
-        };
+        let (header, op) = crate::request::parse(&self.recv_buf[..])?;
+        log::debug!("Got a request: header={:?}, op={:?}", header, op);
 
-        log::debug!("Got an operation: {:?}", op);
+        macro_rules! reply_payload {
+            ($e:expr) => {
+                match ($e).await {
+                    Ok(out) => {
+                        crate::reply::reply_payload(&mut self.ch, header.unique(), 0, &out).await?
+                    }
+                    Err(err) => {
+                        crate::reply::reply_err(&mut self.ch, header.unique(), err).await?;
+                    }
+                }
+            };
+        }
+
+        macro_rules! reply_unit {
+            ($e:expr) => {
+                match ($e).await {
+                    Ok(()) => crate::reply::reply_unit(&mut self.ch, header.unique()).await?,
+                    Err(err) => {
+                        crate::reply::reply_err(&mut self.ch, header.unique(), err).await?;
+                    }
+                }
+            };
+        }
+
         match op {
             Op::Init(op) => {
                 let mut init_out = InitOut::default();
 
                 if op.major() > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
-                    crate::reply::reply_payload(&mut self.ch, in_header, 0, &init_out).await?;
+                    crate::reply::reply_payload(&mut self.ch, header.unique(), 0, &init_out)
+                        .await?;
                     return Ok(());
                 }
 
@@ -108,7 +124,7 @@ impl Filesystem {
                         op.major(),
                         op.minor()
                     );
-                    crate::reply::reply_err(&mut self.ch, in_header, libc::EPROTO).await?;
+                    crate::reply::reply_err(&mut self.ch, header.unique(), libc::EPROTO).await?;
                     return Ok(());
                 }
 
@@ -121,13 +137,13 @@ impl Filesystem {
                 init_out.set_max_write(MAX_WRITE_SIZE as u32);
 
                 self.got_init = true;
-                if let Err(err) = ops.init(&req, &op, &mut init_out).await {
-                    crate::reply::reply_err(&mut self.ch, in_header, err).await?;
+                if let Err(err) = ops.init(header, &op, &mut init_out).await {
+                    crate::reply::reply_err(&mut self.ch, header.unique(), err).await?;
                     return Ok(());
                 };
                 crate::reply::reply_payload(
                     &mut self.ch, //
-                    in_header,
+                    header.unique(),
                     0,
                     &init_out,
                 )
@@ -136,133 +152,64 @@ impl Filesystem {
             _ if !self.got_init => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
-                    in_header.opcode()
+                    header.opcode()
                 );
-                crate::reply::reply_err(&mut self.ch, in_header, libc::EIO).await?;
+                crate::reply::reply_err(&mut self.ch, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
 
             Op::Destroy => {
                 ops.destroy().await;
                 self.got_destroy = true;
-                crate::reply::reply_none(&mut self.ch, in_header).await?;
+                crate::reply::reply_unit(&mut self.ch, header.unique()).await?;
             }
             _ if self.got_destroy => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
-                    in_header.opcode()
+                    header.opcode()
                 );
-                crate::reply::reply_err(&mut self.ch, in_header, libc::EIO).await?;
+                crate::reply::reply_err(&mut self.ch, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
 
-            Op::Lookup { name } => {
-                match ops.lookup(&req, name).await {
-                    Ok(entry_out) => {
-                        crate::reply::reply_payload(
-                            &mut self.ch, //
-                            in_header,
-                            0,
-                            &entry_out,
-                        )
-                        .await?
-                    }
-                    Err(err) => {
-                        crate::reply::reply_err(
-                            &mut self.ch, //
-                            in_header,
-                            err,
-                        )
-                        .await?;
-                    }
-                }
-            }
-
+            Op::Lookup { name } => reply_payload!(ops.lookup(header, name)),
             Op::Forget(op) => {
-                ops.forget(&req, op.nlookup()).await;
+                ops.forget(header, op).await;
                 // no reply
             }
 
-            Op::Getattr(op) => {
-                match ops.getattr(&req, &op).await {
-                    Ok(attr_out) => {
-                        crate::reply::reply_payload(
-                            &mut self.ch, //
-                            in_header,
-                            0,
-                            &attr_out,
-                        )
-                        .await?
-                    }
-                    Err(err) => {
-                        crate::reply::reply_err(
-                            &mut self.ch, //
-                            in_header,
-                            err,
-                        )
-                        .await?
-                    }
-                }
-            }
+            Op::Getattr(op) => reply_payload!(ops.getattr(header, &op)),
+            Op::Setattr(op) => reply_payload!(ops.setattr(header, &op)),
+            Op::Readlink => reply_payload!(ops.readlink(header)),
+            Op::Symlink { name, link } => reply_payload!(ops.symlink(header, name, link)),
+            Op::Mknod { op, name } => reply_payload!(ops.mknod(header, op, name)),
+            Op::Mkdir { op, name } => reply_payload!(ops.mkdir(header, op, name)),
+            Op::Unlink { name } => reply_unit!(ops.unlink(header, name)),
+            Op::Rmdir { name } => reply_unit!(ops.unlink(header, name)),
+            Op::Rename { op, name, newname } => reply_unit!(ops.rename(header, op, name, newname)),
+            Op::Link { op, newname } => reply_payload!(ops.link(header, op, newname)),
 
-            Op::Setattr(op) => {
-                match ops.setattr(&req, &op).await {
-                    Ok(attr_out) => {
-                        crate::reply::reply_payload(
-                            &mut self.ch, //
-                            in_header,
-                            0,
-                            &attr_out,
-                        )
-                        .await?
-                    }
-                    Err(err) => {
-                        crate::reply::reply_err(
-                            &mut self.ch, //
-                            in_header,
-                            err,
-                        )
-                        .await?
-                    }
+            Op::Open(op) => reply_payload!(ops.open(header, op)),
+            Op::Read(op) => match ops.read(header, op).await {
+                Ok(data) => {
+                    crate::reply::reply_payload(&mut self.ch, header.unique(), 0, &*data).await?
                 }
-            }
-
-            Op::Open(op) => {
-                match ops.open(&req, op).await {
-                    Ok(open_out) => {
-                        crate::reply::reply_payload(
-                            &mut self.ch, //
-                            in_header,
-                            0,
-                            &open_out,
-                        )
-                        .await?
-                    }
-                    Err(err) => {
-                        crate::reply::reply_err(
-                            &mut self.ch, //
-                            in_header,
-                            err,
-                        )
-                        .await?
-                    }
-                }
-            }
-
-            Op::Read(op) => match ops.read(&req, op).await {
-                Ok(data) => crate::reply::reply_payload(&mut self.ch, in_header, 0, &*data).await?,
-                Err(err) => crate::reply::reply_err(&mut self.ch, in_header, err).await?,
+                Err(err) => crate::reply::reply_err(&mut self.ch, header.unique(), err).await?,
             },
 
-            Op::Flush(op) => match ops.flush(&req, op).await {
-                Ok(()) => crate::reply::reply_err(&mut self.ch, in_header, 0).await?,
-                Err(err) => crate::reply::reply_err(&mut self.ch, in_header, err).await?,
-            },
+            Op::Flush(op) => reply_unit!(ops.flush(header, op)),
+            Op::Release(op) => reply_unit!(ops.release(header, op)),
 
-            Op::Release(op) => match ops.release(&req, op).await {
-                Ok(()) => crate::reply::reply_err(&mut self.ch, in_header, 0).await?,
-                Err(err) => crate::reply::reply_err(&mut self.ch, in_header, err).await?,
-            },
+            Op::Setxattr { op, name, value } => reply_unit!(ops.setxattr(header, op, name, value)),
+            Op::Getxattr { op, name } => reply_payload!(ops.getxattr(header, op, name)),
+            Op::Listxattr { op } => reply_payload!(ops.listxattr(header, op)),
+            Op::Removexattr { name } => reply_unit!(ops.removexattr(header, name)),
+
+            Op::Unknown { opcode, .. } => {
+                log::warn!("unsupported opcode: {:?}", opcode);
+                crate::reply::reply_err(&mut self.ch, header.unique(), libc::ENOSYS).await?;
+                return Ok(());
+            }
         }
 
         Ok(())

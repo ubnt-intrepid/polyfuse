@@ -3,28 +3,29 @@ use crate::abi::{
     fuse_flush_in,
     fuse_forget_in,
     fuse_getattr_in, //
+    fuse_getxattr_in,
     fuse_in_header,
     fuse_init_in,
+    fuse_link_in,
+    fuse_mkdir_in,
+    fuse_mknod_in,
     fuse_opcode,
     fuse_open_in,
     fuse_read_in,
     fuse_release_in,
+    fuse_rename_in,
     fuse_setattr_in,
+    fuse_setxattr_in,
 };
 use bitflags::bitflags;
-use libc::c_char;
-use std::{
-    ffi::{CStr, OsStr},
-    fmt, io, mem,
-    os::unix::ffi::OsStrExt,
-};
+use std::{ffi::OsStr, fmt, io, mem, os::unix::ffi::OsStrExt};
 
 #[repr(transparent)]
-pub struct InHeader(fuse_in_header);
+pub struct Header(fuse_in_header);
 
-impl fmt::Debug for InHeader {
+impl fmt::Debug for Header {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("InHeader")
+        f.debug_struct("Header")
             .field("len", &self.len())
             .field("opcode", &self.opcode())
             .field("unique", &self.unique())
@@ -36,7 +37,7 @@ impl fmt::Debug for InHeader {
     }
 }
 
-impl InHeader {
+impl Header {
     pub fn len(&self) -> u32 {
         self.0.len
     }
@@ -256,6 +257,89 @@ bitflags! {
 }
 
 #[repr(transparent)]
+pub struct OpMknod(fuse_mknod_in);
+
+impl fmt::Debug for OpMknod {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpMknod")
+            .field("mode", &self.mode())
+            .field("rdev", &self.rdev())
+            .field("umask", &self.umask())
+            .finish()
+    }
+}
+
+impl OpMknod {
+    pub fn mode(&self) -> u32 {
+        self.0.mode
+    }
+
+    pub fn rdev(&self) -> u32 {
+        self.0.mode
+    }
+
+    pub fn umask(&self) -> u32 {
+        self.0.mode
+    }
+}
+
+#[repr(transparent)]
+pub struct OpMkdir(fuse_mkdir_in);
+
+impl fmt::Debug for OpMkdir {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpMkdir")
+            .field("mode", &self.mode())
+            .field("umask", &self.umask())
+            .finish()
+    }
+}
+
+impl OpMkdir {
+    pub fn mode(&self) -> u32 {
+        self.0.mode
+    }
+
+    pub fn umask(&self) -> u32 {
+        self.0.mode
+    }
+}
+
+#[repr(transparent)]
+pub struct OpRename(fuse_rename_in);
+
+impl fmt::Debug for OpRename {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpRename")
+            .field("newdir", &self.newdir())
+            .finish()
+    }
+}
+
+impl OpRename {
+    pub fn newdir(&self) -> u64 {
+        self.0.newdir
+    }
+}
+
+#[repr(transparent)]
+pub struct OpLink(fuse_link_in);
+
+impl fmt::Debug for OpLink {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpLink")
+            .field("oldnodeid", &self.oldnodeid())
+            .finish()
+    }
+}
+
+impl OpLink {
+    pub fn oldnodeid(&self) -> u64 {
+        self.0.oldnodeid
+    }
+}
+
+#[repr(transparent)]
 pub struct OpOpen(fuse_open_in);
 
 impl fmt::Debug for OpOpen {
@@ -381,82 +465,268 @@ bitflags! {
     }
 }
 
+#[repr(transparent)]
+pub struct OpGetxattr(fuse_getxattr_in);
+
+impl fmt::Debug for OpGetxattr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpGetxattr")
+            .field("size", &self.size())
+            .finish()
+    }
+}
+
+impl OpGetxattr {
+    pub fn size(&self) -> u32 {
+        self.0.size
+    }
+}
+
+#[repr(transparent)]
+pub struct OpSetxattr(fuse_setxattr_in);
+
+impl fmt::Debug for OpSetxattr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpSetxattr")
+            .field("size", &self.size())
+            .field("flags", &self.flags())
+            .finish()
+    }
+}
+
+impl OpSetxattr {
+    pub fn size(&self) -> u32 {
+        self.0.size
+    }
+
+    pub fn flags(&self) -> u32 {
+        self.0.flags
+    }
+}
+
 #[derive(Debug)]
 pub enum Op<'a> {
     Init(&'a OpInit),
     Destroy,
-    Lookup { name: &'a OsStr },
+    Lookup {
+        name: &'a OsStr,
+    },
     Forget(&'a OpForget),
     Getattr(&'a OpGetattr),
     Setattr(&'a OpSetattr),
+    Readlink,
+    Symlink {
+        name: &'a OsStr,
+        link: &'a OsStr,
+    },
+    Mknod {
+        op: &'a OpMknod,
+        name: &'a OsStr,
+    },
+    Mkdir {
+        op: &'a OpMkdir,
+        name: &'a OsStr,
+    },
+    Unlink {
+        name: &'a OsStr,
+    },
+    Rmdir {
+        name: &'a OsStr,
+    },
+    Rename {
+        op: &'a OpRename,
+        name: &'a OsStr,
+        newname: &'a OsStr,
+    },
+    Link {
+        op: &'a OpLink,
+        newname: &'a OsStr,
+    },
     Open(&'a OpOpen),
     Read(&'a OpRead),
     Flush(&'a OpFlush),
     Release(&'a OpRelease),
+    Setxattr {
+        op: &'a OpSetxattr,
+        name: &'a OsStr,
+        value: &'a [u8],
+    },
+    Getxattr {
+        op: &'a OpGetxattr,
+        name: &'a OsStr,
+    },
+    Listxattr {
+        op: &'a OpGetxattr,
+    },
+    Removexattr {
+        name: &'a OsStr,
+    },
+
+    Unknown {
+        opcode: fuse_opcode,
+        payload: &'a [u8],
+    },
 }
 
-pub fn parse<'a>(data: &'a [u8]) -> io::Result<(&'a InHeader, Option<Op<'a>>)> {
-    let (header, data) = parse_header(data)?;
+pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a Header, Op<'a>)> {
+    let (header, payload) = parse_header(buf)?;
+    if buf.len() < header.len() as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "received data is too short",
+        ));
+    }
+
     let op = match header.opcode() {
-        FUSE_INIT => Some(Op::Init(fetch(data)?)),
-        FUSE_DESTROY => Some(Op::Destroy),
-        FUSE_LOOKUP => {
-            let name = unsafe { CStr::from_ptr::<'a>(data.as_ptr() as *const c_char) };
-            Some(Op::Lookup {
-                name: OsStr::from_bytes(name.to_bytes()),
-            })
+        FUSE_INIT => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Init(op)
         }
-        FUSE_FORGET => Some(Op::Forget(fetch(data)?)),
-        FUSE_GETATTR => Some(Op::Getattr(fetch(data)?)),
-        FUSE_SETATTR => Some(Op::Setattr(fetch(data)?)),
-        FUSE_OPEN => Some(Op::Open(fetch(data)?)),
-        FUSE_READ => Some(Op::Read(fetch(data)?)),
-        FUSE_FLUSH => Some(Op::Flush(fetch(data)?)),
-        FUSE_RELEASE => Some(Op::Release(fetch(data)?)),
-        _opcode => None,
+        FUSE_DESTROY => {
+            debug_assert!(payload.is_empty());
+            Op::Destroy
+        }
+        FUSE_LOOKUP => {
+            let (name, remains) = fetch_str(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Lookup { name }
+        }
+        FUSE_FORGET => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Forget(op)
+        }
+        FUSE_GETATTR => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Getattr(op)
+        }
+        FUSE_SETATTR => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Setattr(op)
+        }
+        FUSE_READLINK => {
+            debug_assert!(payload.is_empty());
+            Op::Readlink
+        }
+        FUSE_SYMLINK => {
+            let (name, remains) = fetch_str(payload)?;
+            let (link, _remains) = fetch_str(remains)?;
+            debug_assert!(remains.is_empty());
+            Op::Symlink { name, link }
+        }
+        FUSE_MKNOD => {
+            let (op, remains) = fetch(payload)?;
+            let (name, remains) = fetch_str(remains)?;
+            debug_assert!(remains.is_empty());
+            Op::Mknod { op, name }
+        }
+        FUSE_MKDIR => {
+            let (op, remains) = fetch(payload)?;
+            let (name, remains) = fetch_str(remains)?;
+            debug_assert!(remains.is_empty());
+            Op::Mkdir { op, name }
+        }
+        FUSE_UNLINK => {
+            let (name, remains) = fetch_str(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Unlink { name }
+        }
+        FUSE_RMDIR => {
+            let (name, remains) = fetch_str(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Rmdir { name }
+        }
+        FUSE_RENAME => {
+            let (op, remains) = fetch(payload)?;
+            let (name, remains) = fetch_str(remains)?;
+            let (newname, _remains) = fetch_str(remains)?;
+            debug_assert!(remains.is_empty());
+            Op::Rename { op, name, newname }
+        }
+        FUSE_LINK => {
+            let (op, remains) = fetch(payload)?;
+            let (newname, _remains) = fetch_str(remains)?;
+            debug_assert!(remains.is_empty());
+            Op::Link { op, newname }
+        }
+        FUSE_OPEN => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Open(op)
+        }
+        FUSE_READ => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Read(op)
+        }
+        FUSE_FLUSH => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Flush(op)
+        }
+        FUSE_RELEASE => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Release(op)
+        }
+        FUSE_SETXATTR => {
+            let (op, remains) = fetch(payload)?;
+            let (name, value) = fetch_str(remains)?;
+            Op::Setxattr { op, name, value }
+        }
+        FUSE_GETXATTR => {
+            let (op, remains) = fetch(payload)?;
+            let (name, remains) = fetch_str(remains)?;
+            debug_assert!(remains.is_empty());
+            Op::Getxattr { op, name }
+        }
+        FUSE_LISTXATTR => {
+            let (op, remains) = fetch(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Listxattr { op }
+        }
+        FUSE_REMOVEXATTR => {
+            let (name, remains) = fetch_str(payload)?;
+            debug_assert!(remains.is_empty());
+            Op::Removexattr { name }
+        }
+        opcode => Op::Unknown { opcode, payload },
     };
     Ok((header, op))
 }
 
-fn parse_header<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, &'a [u8])> {
-    const IN_HEADER_SIZE: usize = mem::size_of::<fuse_in_header>();
+fn parse_header<'a>(buf: &'a [u8]) -> io::Result<(&'a Header, &'a [u8])> {
+    const IN_HEADER_SIZE: usize = mem::size_of::<Header>();
 
     if buf.len() < IN_HEADER_SIZE {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "in_header"));
     }
     let (header, remains) = buf.split_at(IN_HEADER_SIZE);
 
-    let header = unsafe { &*(header.as_ptr() as *const InHeader) };
+    let header = unsafe { &*(header.as_ptr() as *const Header) };
 
     Ok((header, remains))
 }
 
-fn fetch<'a, T>(buf: &'a [u8]) -> io::Result<&'a T> {
+fn fetch<'a, T>(buf: &'a [u8]) -> io::Result<(&'a T, &'a [u8])> {
     if buf.len() < mem::size_of::<T>() {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    Ok(unsafe { &*(buf.as_ptr() as *const T) })
+    let (data, remains) = buf.split_at(mem::size_of::<T>());
+    Ok((unsafe { &*(data.as_ptr() as *const T) }, remains))
 }
 
-#[derive(Debug)]
-pub struct Request<'a> {
-    pub(crate) in_header: &'a InHeader,
-}
-
-impl Request<'_> {
-    pub fn nodeid(&self) -> u64 {
-        self.in_header.0.nodeid
-    }
-
-    pub fn uid(&self) -> u32 {
-        self.in_header.0.uid
-    }
-
-    pub fn gid(&self) -> u32 {
-        self.in_header.0.gid
-    }
-
-    pub fn pid(&self) -> u32 {
-        self.in_header.0.pid
-    }
+fn fetch_str<'a>(buf: &'a [u8]) -> io::Result<(&'a OsStr, &'a [u8])> {
+    let pos = buf.iter().position(|&b| b == b'\0');
+    let (s, remains) = if let Some(pos) = pos {
+        let (s, remains) = buf.split_at(pos);
+        let remains = &remains[1..]; // skip '\0'
+        (s, remains)
+    } else {
+        (buf, &[] as &[u8])
+    };
+    Ok((OsStr::from_bytes(s), remains))
 }

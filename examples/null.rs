@@ -6,7 +6,7 @@ use tokio_fuse::{
     fs::Filesystem,
     op::{OperationResult, Operations},
     reply::{AttrOut, OpenOut},
-    request::{OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr, Request},
+    request::{Header, OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr},
 };
 
 #[tokio::main(single_thread)]
@@ -44,10 +44,10 @@ struct Null;
 impl Operations for Null {
     async fn getattr<'a>(
         &'a mut self,
-        req: &'a Request<'a>,
+        header: &'a Header,
         _: &'a OpGetattr,
     ) -> OperationResult<AttrOut> {
-        match req.nodeid() {
+        match header.nodeid() {
             1 => Ok(root_attr().into()),
             _ => Err(libc::ENOENT),
         }
@@ -55,21 +55,17 @@ impl Operations for Null {
 
     async fn setattr<'a>(
         &'a mut self,
-        req: &'a Request<'a>,
+        header: &'a Header,
         _: &'a OpSetattr,
     ) -> OperationResult<AttrOut> {
-        match req.nodeid() {
+        match header.nodeid() {
             1 => Ok(root_attr().into()),
             _ => Err(libc::ENOENT),
         }
     }
 
-    async fn open<'a>(
-        &'a mut self,
-        req: &'a Request<'a>,
-        _: &'a OpOpen,
-    ) -> OperationResult<OpenOut> {
-        match req.nodeid() {
+    async fn open<'a>(&'a mut self, header: &'a Header, _: &'a OpOpen) -> OperationResult<OpenOut> {
+        match header.nodeid() {
             1 => Ok(OpenOut::default()),
             _ => Err(libc::ENOENT),
         }
@@ -77,10 +73,10 @@ impl Operations for Null {
 
     async fn read<'a>(
         &'a mut self,
-        req: &'a Request<'a>,
+        header: &'a Header,
         _: &'a OpRead,
     ) -> OperationResult<Cow<'a, [u8]>> {
-        match req.nodeid() {
+        match header.nodeid() {
             1 => Ok(Cow::Borrowed(&[] as &[u8])),
             _ => Err(libc::ENOENT),
         }
@@ -88,10 +84,10 @@ impl Operations for Null {
 
     async fn release<'a>(
         &'a mut self,
-        req: &'a Request<'a>,
+        header: &'a Header,
         _: &'a OpRelease,
     ) -> OperationResult<()> {
-        match req.nodeid() {
+        match header.nodeid() {
             1 => Ok(()),
             _ => Err(libc::ENOENT),
         }
