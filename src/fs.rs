@@ -205,6 +205,28 @@ impl Filesystem {
                 }
             }
 
+            Op::Setattr(op) => {
+                match ops.setattr(&req, &op).await {
+                    Ok(attr_out) => {
+                        crate::reply::reply_payload(
+                            &mut self.ch, //
+                            in_header,
+                            0,
+                            &attr_out,
+                        )
+                        .await?
+                    }
+                    Err(err) => {
+                        crate::reply::reply_err(
+                            &mut self.ch, //
+                            in_header,
+                            err,
+                        )
+                        .await?
+                    }
+                }
+            }
+
             Op::Open(op) => {
                 match ops.open(&req, op).await {
                     Ok(open_out) => {
@@ -226,14 +248,17 @@ impl Filesystem {
                     }
                 }
             }
+
             Op::Read(op) => match ops.read(&req, op).await {
                 Ok(data) => crate::reply::reply_payload(&mut self.ch, in_header, 0, &*data).await?,
                 Err(err) => crate::reply::reply_err(&mut self.ch, in_header, err).await?,
             },
+
             Op::Flush(op) => match ops.flush(&req, op).await {
                 Ok(()) => crate::reply::reply_err(&mut self.ch, in_header, 0).await?,
                 Err(err) => crate::reply::reply_err(&mut self.ch, in_header, err).await?,
             },
+
             Op::Release(op) => match ops.release(&req, op).await {
                 Ok(()) => crate::reply::reply_err(&mut self.ch, in_header, 0).await?,
                 Err(err) => crate::reply::reply_err(&mut self.ch, in_header, err).await?,

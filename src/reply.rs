@@ -12,6 +12,7 @@ use crate::{
     request::{CapFlags, InHeader},
     util::{AsyncWriteVectored, AsyncWriteVectoredExt},
 };
+use bitflags::bitflags;
 use std::{
     io::{self, IoSlice},
     mem,
@@ -166,6 +167,25 @@ pub struct OpenOut(fuse_open_out);
 impl Default for OpenOut {
     fn default() -> Self {
         unsafe { mem::zeroed() }
+    }
+}
+
+impl OpenOut {
+    pub fn set_fh(&mut self, fh: u64) {
+        self.0.fh = fh;
+    }
+
+    pub fn set_flags(&mut self, flags: OpenFlags) {
+        self.0.open_flags = flags.bits();
+    }
+}
+
+bitflags! {
+    pub struct OpenFlags: u32 {
+        const DIRECT_IO = crate::abi::FOPEN_DIRECT_IO;
+        const KEEP_CACHE = crate::abi::FOPEN_KEEP_CACHE;
+        const NONSEEKABLE = crate::abi::FOPEN_NONSEEKABLE;
+        //const CACHE_DIR = crate::abi::FOPEN_CACHE_DIR;
     }
 }
 

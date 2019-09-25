@@ -6,7 +6,7 @@ use tokio_fuse::{
     fs::Filesystem,
     op::{OperationResult, Operations},
     reply::{AttrOut, OpenOut},
-    request::{OpGetattr, OpOpen, OpRead, OpRelease, Request},
+    request::{OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr, Request},
 };
 
 #[tokio::main(single_thread)]
@@ -48,14 +48,18 @@ impl Operations for Null {
         _: &'a OpGetattr,
     ) -> OperationResult<AttrOut> {
         match req.nodeid() {
-            1 => {
-                let mut attr: libc::stat = unsafe { std::mem::zeroed() };
-                attr.st_mode = libc::S_IFREG | 0o644;
-                attr.st_nlink = 1;
-                attr.st_uid = unsafe { libc::getuid() };
-                attr.st_gid = unsafe { libc::getgid() };
-                Ok(attr.into())
-            }
+            1 => Ok(root_attr().into()),
+            _ => Err(libc::ENOENT),
+        }
+    }
+
+    async fn setattr<'a>(
+        &'a mut self,
+        req: &'a Request<'a>,
+        _: &'a OpSetattr,
+    ) -> OperationResult<AttrOut> {
+        match req.nodeid() {
+            1 => Ok(root_attr().into()),
             _ => Err(libc::ENOENT),
         }
     }
@@ -92,4 +96,13 @@ impl Operations for Null {
             _ => Err(libc::ENOENT),
         }
     }
+}
+
+fn root_attr() -> libc::stat {
+    let mut attr: libc::stat = unsafe { std::mem::zeroed() };
+    attr.st_mode = libc::S_IFREG | 0o644;
+    attr.st_nlink = 1;
+    attr.st_uid = unsafe { libc::getuid() };
+    attr.st_gid = unsafe { libc::getgid() };
+    attr
 }

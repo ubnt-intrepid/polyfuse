@@ -7,6 +7,7 @@ use crate::{
         OpOpen,
         OpRead,
         OpRelease,
+        OpSetattr,
         Request,
     },
 };
@@ -45,6 +46,14 @@ pub trait Operations {
         &'a mut self,
         req: &'a Request<'a>,
         op: &'a OpGetattr,
+    ) -> OperationResult<AttrOut> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn setattr<'a>(
+        &'a mut self,
+        req: &'a Request<'a>,
+        op: &'a OpSetattr,
     ) -> OperationResult<AttrOut> {
         Err(libc::ENOSYS)
     }

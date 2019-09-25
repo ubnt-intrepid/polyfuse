@@ -9,6 +9,7 @@ use crate::abi::{
     fuse_open_in,
     fuse_read_in,
     fuse_release_in,
+    fuse_setattr_in,
 };
 use bitflags::bitflags;
 use libc::c_char;
@@ -21,31 +22,47 @@ use std::{
 #[repr(transparent)]
 pub struct InHeader(fuse_in_header);
 
+impl fmt::Debug for InHeader {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("InHeader")
+            .field("len", &self.len())
+            .field("opcode", &self.opcode())
+            .field("unique", &self.unique())
+            .field("nodeid", &self.nodeid())
+            .field("uid", &self.uid())
+            .field("gid", &self.gid())
+            .field("pid", &self.pid())
+            .finish()
+    }
+}
+
 impl InHeader {
     pub fn len(&self) -> u32 {
         self.0.len
+    }
+
+    pub fn opcode(&self) -> fuse_opcode {
+        unsafe { mem::transmute(self.0.opcode) }
     }
 
     pub fn unique(&self) -> u64 {
         self.0.unique
     }
 
-    pub fn opcode(&self) -> fuse_opcode {
-        unsafe { mem::transmute(self.0.opcode) }
+    pub fn nodeid(&self) -> u64 {
+        self.0.nodeid
     }
-}
 
-impl fmt::Debug for InHeader {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("InHeader")
-            .field("len", &self.0.len)
-            .field("opcode", &self.opcode())
-            .field("unique", &self.0.unique)
-            .field("nodeid", &self.0.nodeid)
-            .field("uid", &self.0.uid)
-            .field("gid", &self.0.gid)
-            .field("pid", &self.0.pid)
-            .finish()
+    pub fn uid(&self) -> u32 {
+        self.0.uid
+    }
+
+    pub fn gid(&self) -> u32 {
+        self.0.gid
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.0.pid
     }
 }
 
@@ -55,10 +72,10 @@ pub struct OpInit(fuse_init_in);
 impl fmt::Debug for OpInit {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("OpInit")
-            .field("major", &self.0.major)
-            .field("minor", &self.0.minor)
-            .field("max_readahead", &self.0.max_readahead)
-            .field("flags", &self.0.flags)
+            .field("major", &self.major())
+            .field("minor", &self.minor())
+            .field("max_readahead", &self.max_readahead())
+            .field("flags", &self.flags())
             .finish()
     }
 }
@@ -145,12 +162,96 @@ impl fmt::Debug for OpGetattr {
 }
 
 impl OpGetattr {
-    pub fn flags(&self) -> u32 {
-        self.0.getattr_flags
+    pub fn flags(&self) -> GetattrFlags {
+        GetattrFlags::from_bits_truncate(self.0.getattr_flags)
     }
 
     pub fn fh(&self) -> u64 {
         self.0.fh
+    }
+}
+
+bitflags! {
+    pub struct GetattrFlags: u32 {
+        const FH = crate::abi::FUSE_GETATTR_FH;
+    }
+}
+
+#[repr(transparent)]
+pub struct OpSetattr(fuse_setattr_in);
+
+impl fmt::Debug for OpSetattr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpSetattr")
+            .field("valid", &self.valid())
+            .field("fh", &self.fh())
+            .field("size", &self.size())
+            .field("lock_owner", &self.lock_owner())
+            .field("atime", &self.atime())
+            .field("mtime", &self.mtime())
+            .field("ctime", &self.ctime())
+            .field("mode", &self.mode())
+            .field("uid", &self.uid())
+            .field("gid", &self.gid())
+            .finish()
+    }
+}
+
+impl OpSetattr {
+    pub fn valid(&self) -> SetattrFlags {
+        SetattrFlags::from_bits_truncate(self.0.valid)
+    }
+
+    pub fn fh(&self) -> u64 {
+        self.0.fh
+    }
+
+    pub fn size(&self) -> u64 {
+        self.0.size
+    }
+
+    pub fn lock_owner(&self) -> u64 {
+        self.0.lock_owner
+    }
+
+    pub fn atime(&self) -> (u64, u32) {
+        (self.0.atime, self.0.atimensec)
+    }
+
+    pub fn mtime(&self) -> (u64, u32) {
+        (self.0.mtime, self.0.mtimensec)
+    }
+
+    pub fn ctime(&self) -> (u64, u32) {
+        (self.0.ctime, self.0.ctimensec)
+    }
+
+    pub fn mode(&self) -> u32 {
+        self.0.mode
+    }
+
+    pub fn uid(&self) -> u32 {
+        self.0.uid
+    }
+
+    pub fn gid(&self) -> u32 {
+        self.0.gid
+    }
+}
+
+bitflags! {
+    pub struct SetattrFlags: u32 {
+        const MODE = crate::abi::FATTR_MODE;
+        const UID = crate::abi::FATTR_UID;
+        const GID = crate::abi::FATTR_GID;
+        const SIZE = crate::abi::FATTR_SIZE;
+        const ATIME = crate::abi::FATTR_ATIME;
+        const MTIME = crate::abi::FATTR_MTIME;
+        const FH = crate::abi::FATTR_FH;
+        const ATIME_NOW = crate::abi::FATTR_ATIME_NOW;
+        const MTIME_NOW = crate::abi::FATTR_MTIME_NOW;
+        const LOCKOWNER = crate::abi::FATTR_LOCKOWNER;
+        const CTIME = crate::abi::FATTR_CTIME;
     }
 }
 
@@ -200,8 +301,8 @@ impl OpRead {
         self.0.size
     }
 
-    pub fn read_flags(&self) -> u32 {
-        self.0.read_flags
+    pub fn read_flags(&self) -> ReadFlags {
+        ReadFlags::from_bits_truncate(self.0.read_flags)
     }
 
     pub fn lock_owner(&self) -> u64 {
@@ -210,6 +311,12 @@ impl OpRead {
 
     pub fn flags(&self) -> u32 {
         self.0.flags
+    }
+}
+
+bitflags! {
+    pub struct ReadFlags: u32 {
+        const LOCKOWNER = crate::abi::FUSE_READ_LOCKOWNER;
     }
 }
 
@@ -258,12 +365,19 @@ impl OpRelease {
         self.0.flags
     }
 
-    pub fn release_flags(&self) -> u32 {
-        self.0.release_flags
+    pub fn release_flags(&self) -> ReleaseFlags {
+        ReleaseFlags::from_bits_truncate(self.0.release_flags)
     }
 
     pub fn lock_owner(&self) -> u64 {
         self.0.lock_owner
+    }
+}
+
+bitflags! {
+    pub struct ReleaseFlags: u32 {
+        const FLUSH = crate::abi::FUSE_RELEASE_FLUSH;
+        const FLOCK_UNLOCK = crate::abi::FUSE_RELEASE_FLOCK_UNLOCK;
     }
 }
 
@@ -274,6 +388,7 @@ pub enum Op<'a> {
     Lookup { name: &'a OsStr },
     Forget(&'a OpForget),
     Getattr(&'a OpGetattr),
+    Setattr(&'a OpSetattr),
     Open(&'a OpOpen),
     Read(&'a OpRead),
     Flush(&'a OpFlush),
@@ -293,6 +408,7 @@ pub fn parse<'a>(data: &'a [u8]) -> io::Result<(&'a InHeader, Option<Op<'a>>)> {
         }
         FUSE_FORGET => Some(Op::Forget(fetch(data)?)),
         FUSE_GETATTR => Some(Op::Getattr(fetch(data)?)),
+        FUSE_SETATTR => Some(Op::Setattr(fetch(data)?)),
         FUSE_OPEN => Some(Op::Open(fetch(data)?)),
         FUSE_READ => Some(Op::Read(fetch(data)?)),
         FUSE_FLUSH => Some(Op::Flush(fetch(data)?)),
