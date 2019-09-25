@@ -1,5 +1,11 @@
 use crate::{
-    abi::{fuse_attr_out, fuse_init_out, fuse_open_out}, //
+    abi::{
+        fuse_attr_out, //
+        fuse_init_out,
+        fuse_open_out,
+        FUSE_KERNEL_MINOR_VERSION,
+        FUSE_KERNEL_VERSION,
+    },
     channel::Channel,
     op::Operations,
     request::{Op, Request},
@@ -18,7 +24,10 @@ const RECV_BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
 pub struct Filesystem {
     ch: Channel,
     recv_buf: Vec<u8>,
-    exited: bool,
+    got_init: bool,
+    got_destroy: bool,
+    proto_major: u32,
+    proto_minor: u32,
 }
 
 impl Filesystem {
@@ -26,14 +35,17 @@ impl Filesystem {
         Ok(Self {
             ch: Channel::new(mountpoint)?,
             recv_buf: Vec::with_capacity(RECV_BUFFER_SIZE),
-            exited: false,
+            got_init: false,
+            got_destroy: false,
+            proto_major: 0,
+            proto_minor: 0,
         })
     }
 
     pub async fn receive(&mut self) -> io::Result<bool> {
         // TODO: splice
 
-        if self.exited {
+        if self.got_destroy {
             return Ok(true);
         }
 
@@ -45,15 +57,18 @@ impl Filesystem {
         loop {
             match self.ch.read(&mut self.recv_buf[..]).await {
                 Ok(count) => {
+                    log::debug!("read {} bytes", count);
                     unsafe { self.recv_buf.set_len(count) };
                     return Ok(false);
                 }
                 Err(err) => match err.raw_os_error() {
                     Some(libc::ENOENT) | Some(libc::EINTR) => continue,
                     Some(libc::ENODEV) => {
+                        log::debug!("connection to the kernel was closed");
                         unsafe {
                             self.recv_buf.set_len(old_len);
                         }
+                        self.got_destroy = true;
                         return Ok(true);
                     }
                     _ => {
@@ -68,32 +83,62 @@ impl Filesystem {
     }
 
     pub async fn process<'a, T: Operations>(&'a mut self, ops: &'a mut T) -> io::Result<()> {
-        if self.exited {
+        if self.got_destroy {
             return Ok(());
         }
 
         let (in_header, op) = crate::request::parse(&self.recv_buf[..])?;
         let req = Request { in_header };
         let op = match op {
-            Some(op) => {
-                log::debug!("opcode = {:?}", in_header.opcode());
-                op
-            }
+            Some(op) => op,
             None => {
-                log::debug!("unsupported opcode: {:?}", in_header.opcode());
+                log::warn!("unsupported opcode: {:?}", in_header.opcode());
                 crate::reply::reply_err(&mut self.ch, in_header, libc::ENOSYS).await?;
                 return Ok(());
             }
         };
 
+        log::debug!("Got an operation: {:?}", op);
         match op {
             Op::Init(op) => {
-                ops.init(&req, &op).await;
                 let mut init_out: fuse_init_out = unsafe { mem::zeroed() };
-                init_out.major = op.major();
-                init_out.minor = op.minor();
+                init_out.major = FUSE_KERNEL_VERSION;
+                init_out.minor = FUSE_KERNEL_MINOR_VERSION;
+
+                if op.major() > 7 {
+                    log::debug!("wait for a second INIT request with a 7.X version.");
+                    crate::reply::reply_payload(&mut self.ch, in_header, 0, &init_out).await?;
+                    return Ok(());
+                }
+
+                if op.major() < 7 || (op.major() == 7 && op.minor() < 6) {
+                    log::warn!(
+                        "unsupported protocol version: {}.{}",
+                        op.major(),
+                        op.minor()
+                    );
+                    crate::reply::reply_err(&mut self.ch, in_header, libc::EPROTO).await?;
+                    return Ok(());
+                }
+
+                // remember the protocol version
+                self.proto_major = op.major();
+                self.proto_minor = op.minor();
+
+                self.got_init = true;
+                let want = match ops.init(&req, &op).await {
+                    Ok(flags) => flags,
+                    Err(err) => {
+                        crate::reply::reply_err(&mut self.ch, in_header, err).await?;
+                        return Ok(());
+                    }
+                };
+
+                // TODO: max_background, congestion_threshold, time_gran, max_pages
+                init_out.flags = (op.flags() & want).bits();
                 init_out.max_readahead = op.max_readahead();
-                init_out.flags = op.flags();
+                init_out.max_write = MAX_WRITE_SIZE as u32;
+
                 crate::reply::reply_payload(
                     &mut self.ch, //
                     in_header,
@@ -102,56 +147,79 @@ impl Filesystem {
                 )
                 .await?;
             }
+            _ if !self.got_init => {
+                log::warn!(
+                    "ignoring an operation before init (opcode={:?})",
+                    in_header.opcode()
+                );
+                crate::reply::reply_err(&mut self.ch, in_header, libc::EIO).await?;
+                return Ok(());
+            }
+
             Op::Destroy => {
                 ops.destroy().await;
-                self.exited = true;
+                self.got_destroy = true;
                 crate::reply::reply_none(&mut self.ch, in_header).await?;
             }
-            Op::Getattr(op) => match ops.getattr(&req, &op).await {
-                Ok((attr, valid, valid_nsec)) => {
-                    let mut attr_out: fuse_attr_out = unsafe { mem::zeroed() };
-                    attr_out.attr_valid = valid;
-                    attr_out.attr_valid_nsec = valid_nsec;
-                    attr_out.attr = attr.0;
-                    crate::reply::reply_payload(
-                        &mut self.ch, //
-                        in_header,
-                        0,
-                        &attr_out,
-                    )
-                    .await?
+            _ if self.got_destroy => {
+                log::warn!(
+                    "ignoring an operation before init (opcode={:?})",
+                    in_header.opcode()
+                );
+                crate::reply::reply_err(&mut self.ch, in_header, libc::EIO).await?;
+                return Ok(());
+            }
+
+            Op::Getattr(op) => {
+                match ops.getattr(&req, &op).await {
+                    Ok((attr, valid, valid_nsec)) => {
+                        let mut attr_out: fuse_attr_out = unsafe { mem::zeroed() };
+                        attr_out.attr_valid = valid;
+                        attr_out.attr_valid_nsec = valid_nsec;
+                        attr_out.attr = attr.0;
+                        crate::reply::reply_payload(
+                            &mut self.ch, //
+                            in_header,
+                            0,
+                            &attr_out,
+                        )
+                        .await?
+                    }
+                    Err(err) => {
+                        crate::reply::reply_err(
+                            &mut self.ch, //
+                            in_header,
+                            err,
+                        )
+                        .await?
+                    }
                 }
-                Err(err) => {
-                    crate::reply::reply_err(
-                        &mut self.ch, //
-                        in_header,
-                        err,
-                    )
-                    .await?
+            }
+
+            Op::Open(op) => {
+                match ops.open(&req, op).await {
+                    Ok((fh, open_flags)) => {
+                        let mut open_out: fuse_open_out = unsafe { mem::zeroed() };
+                        open_out.fh = fh;
+                        open_out.open_flags = open_flags;
+                        crate::reply::reply_payload(
+                            &mut self.ch, //
+                            in_header,
+                            0,
+                            &open_out,
+                        )
+                        .await?
+                    }
+                    Err(err) => {
+                        crate::reply::reply_err(
+                            &mut self.ch, //
+                            in_header,
+                            err,
+                        )
+                        .await?
+                    }
                 }
-            },
-            Op::Open(op) => match ops.open(&req, op).await {
-                Ok((fh, open_flags)) => {
-                    let mut open_out: fuse_open_out = unsafe { mem::zeroed() };
-                    open_out.fh = fh;
-                    open_out.open_flags = open_flags;
-                    crate::reply::reply_payload(
-                        &mut self.ch, //
-                        in_header,
-                        0,
-                        &open_out,
-                    )
-                    .await?
-                }
-                Err(err) => {
-                    crate::reply::reply_err(
-                        &mut self.ch, //
-                        in_header,
-                        err,
-                    )
-                    .await?
-                }
-            },
+            }
             Op::Read(op) => match ops.read(&req, op).await {
                 Ok(data) => crate::reply::reply_payload(&mut self.ch, in_header, 0, &*data).await?,
                 Err(err) => crate::reply::reply_err(&mut self.ch, in_header, err).await?,

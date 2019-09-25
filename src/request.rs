@@ -9,6 +9,7 @@ use crate::abi::{
     fuse_read_in,
     fuse_release_in,
 };
+use bitflags::bitflags;
 use std::{fmt, io, mem};
 
 #[repr(transparent)]
@@ -69,8 +70,14 @@ impl OpInit {
         self.0.max_readahead
     }
 
-    pub fn flags(&self) -> u32 {
-        self.0.flags
+    pub fn flags(&self) -> CapFlags {
+        CapFlags::from_bits_truncate(self.0.flags)
+    }
+}
+
+bitflags! {
+    pub struct CapFlags: u32 {
+        const ASYNC_READ = crate::abi::FUSE_ASYNC_READ;
     }
 }
 

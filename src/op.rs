@@ -1,6 +1,15 @@
 use crate::{
     reply::Attr,
-    request::{OpFlush, OpGetattr, OpInit, OpOpen, OpRead, OpRelease, Request},
+    request::{
+        CapFlags, //
+        OpFlush,
+        OpGetattr,
+        OpInit,
+        OpOpen,
+        OpRead,
+        OpRelease,
+        Request,
+    },
 };
 use async_trait::async_trait;
 use libc::c_int;
@@ -12,7 +21,13 @@ pub type OperationResult<T> = Result<T, c_int>;
 #[allow(unused_variables)]
 pub trait Operations {
     #[allow(unused_variables)]
-    async fn init<'a>(&'a mut self, req: &'a Request<'a>, op: &'a OpInit) {}
+    async fn init<'a>(
+        &'a mut self,
+        req: &'a Request<'a>,
+        op: &'a OpInit,
+    ) -> OperationResult<CapFlags> {
+        Ok(CapFlags::all())
+    }
 
     async fn destroy<'a>(&'a mut self) {}
 
