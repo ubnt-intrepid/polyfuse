@@ -105,8 +105,12 @@ bitflags! {
         const HANDLE_KILLPRIV = crate::abi::FUSE_HANDLE_KILLPRIV;
         const POSIX_ACL = crate::abi:: FUSE_POSIX_ACL;
         const ABORT_ERROR = crate::abi::FUSE_ABORT_ERROR;
-        const MAX_PAGES = crate::abi::FUSE_MAX_PAGES;
-        const CACHE_SYMLINKS = crate::abi::FUSE_CACHE_SYMLINKS;
+
+        // 7.28
+        //const MAX_PAGES = crate::abi::FUSE_MAX_PAGES;
+        //const CACHE_SYMLINKS = crate::abi::FUSE_CACHE_SYMLINKS;
+
+        // 7.29
         //const NO_OPENDIR_SUPPORT = crate::abi::FUSE_NO_OPENDIR_SUPPORT;
     }
 }
