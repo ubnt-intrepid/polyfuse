@@ -1,27 +1,29 @@
-use crate::abi::{
-    fuse_access_in, //
-    fuse_bmap_in,
-    fuse_create_in,
-    fuse_file_lock,
-    fuse_flush_in,
-    fuse_forget_in,
-    fuse_fsync_in,
-    fuse_getattr_in,
-    fuse_getxattr_in,
-    fuse_in_header,
-    fuse_init_in,
-    fuse_link_in,
-    fuse_lk_in,
-    fuse_mkdir_in,
-    fuse_mknod_in,
-    fuse_opcode as OpCode,
-    fuse_open_in,
-    fuse_read_in,
-    fuse_release_in,
-    fuse_rename_in,
-    fuse_setattr_in,
-    fuse_setxattr_in,
-    fuse_write_in,
+use crate::{
+    abi::{
+        fuse_access_in, //
+        fuse_bmap_in,
+        fuse_create_in,
+        fuse_flush_in,
+        fuse_forget_in,
+        fuse_fsync_in,
+        fuse_getattr_in,
+        fuse_getxattr_in,
+        fuse_in_header,
+        fuse_init_in,
+        fuse_link_in,
+        fuse_lk_in,
+        fuse_mkdir_in,
+        fuse_mknod_in,
+        fuse_opcode as OpCode,
+        fuse_open_in,
+        fuse_read_in,
+        fuse_release_in,
+        fuse_rename_in,
+        fuse_setattr_in,
+        fuse_setxattr_in,
+        fuse_write_in,
+    },
+    common::{CapFlags, FileLock},
 };
 use bitflags::bitflags;
 use std::{ffi::OsStr, fmt, io, mem, os::unix::ffi::OsStrExt};
@@ -102,40 +104,6 @@ impl OpInit {
 
     pub fn flags(&self) -> CapFlags {
         CapFlags::from_bits_truncate(self.0.flags)
-    }
-}
-
-bitflags! {
-    pub struct CapFlags: u32 {
-        const ASYNC_READ = crate::abi::FUSE_ASYNC_READ;
-        const POSIX_LOCKS = crate::abi::FUSE_POSIX_LOCKS;
-        const FILE_OPS = crate::abi::FUSE_FILE_OPS;
-        const ATOMIC_O_TRUNC = crate::abi::FUSE_ATOMIC_O_TRUNC;
-        const EXPORT_SUPPORT = crate::abi::FUSE_EXPORT_SUPPORT;
-        const BIG_WRITES = crate::abi::FUSE_BIG_WRITES;
-        const DONT_MASK = crate::abi::FUSE_DONT_MASK;
-        const SPLICE_WRITE = crate::abi::FUSE_SPLICE_WRITE;
-        const SPLICE_MOVE = crate::abi::FUSE_SPLICE_MOVE;
-        const SPLICE_READ = crate::abi::FUSE_SPLICE_READ;
-        const FLOCK_LOCKS = crate::abi::FUSE_FLOCK_LOCKS;
-        const HAS_IOCTL_DIR = crate::abi::FUSE_HAS_IOCTL_DIR;
-        const AUTO_INVAL_DATA = crate::abi::FUSE_AUTO_INVAL_DATA;
-        const DO_READDIRPLUS = crate::abi::FUSE_DO_READDIRPLUS;
-        const READDIRPLUS_AUTO = crate::abi::FUSE_READDIRPLUS_AUTO;
-        const ASYNC_DIO = crate::abi::FUSE_ASYNC_DIO;
-        const WRITEBACK_CACHE = crate::abi::FUSE_WRITEBACK_CACHE;
-        const NO_OPEN_SUPPORT = crate::abi::FUSE_NO_OPEN_SUPPORT;
-        const PARALLEL_DIROPS = crate::abi::FUSE_PARALLEL_DIROPS;
-        const HANDLE_KILLPRIV = crate::abi::FUSE_HANDLE_KILLPRIV;
-        const POSIX_ACL = crate::abi:: FUSE_POSIX_ACL;
-        const ABORT_ERROR = crate::abi::FUSE_ABORT_ERROR;
-
-        // 7.28
-        //const MAX_PAGES = crate::abi::FUSE_MAX_PAGES;
-        //const CACHE_SYMLINKS = crate::abi::FUSE_CACHE_SYMLINKS;
-
-        // 7.29
-        //const NO_OPENDIR_SUPPORT = crate::abi::FUSE_NO_OPENDIR_SUPPORT;
     }
 }
 
@@ -578,65 +546,6 @@ impl OpSetxattr {
 
     pub fn flags(&self) -> u32 {
         self.0.flags
-    }
-}
-
-#[repr(transparent)]
-pub struct FileLock(pub(crate) fuse_file_lock);
-
-impl fmt::Debug for FileLock {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileLock")
-            .field("start", &self.start())
-            .field("end", &self.end())
-            .field("type", &self.type_())
-            .field("pid", &self.pid())
-            .finish()
-    }
-}
-
-impl Clone for FileLock {
-    fn clone(&self) -> Self {
-        Self(fuse_file_lock {
-            start: self.0.start,
-            end: self.0.end,
-            type_: self.0.type_,
-            pid: self.0.pid,
-        })
-    }
-}
-
-impl FileLock {
-    pub fn start(&self) -> u64 {
-        self.0.start
-    }
-
-    pub fn set_start(&mut self, start: u64) {
-        self.0.start = start;
-    }
-
-    pub fn end(&self) -> u64 {
-        self.0.end
-    }
-
-    pub fn set_end(&mut self, end: u64) {
-        self.0.end = end;
-    }
-
-    pub fn type_(&self) -> u32 {
-        self.0.type_
-    }
-
-    pub fn set_type(&mut self, type_: u32) {
-        self.0.type_ = type_;
-    }
-
-    pub fn pid(&self) -> u32 {
-        self.0.pid
-    }
-
-    pub fn set_pid(&mut self, pid: u32) {
-        self.0.pid = pid;
     }
 }
 

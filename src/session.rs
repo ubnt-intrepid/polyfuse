@@ -1,38 +1,61 @@
 use crate::{
     channel::Channel, //
+    error::Error,
+    io::{AsyncReadVectored, AsyncWriteVectored},
     op::Operations,
     reply::InitOut,
     request::Op,
 };
-use std::{
-    io::{self},
-    path::PathBuf,
-};
+use std::{ffi::OsStr, io, path::Path};
 use tokio_io::AsyncReadExt;
 
 const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
 const RECV_BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
 
 #[derive(Debug)]
-pub struct Filesystem {
-    ch: Channel,
+pub struct Session<I: AsyncReadVectored + AsyncWriteVectored = Channel> {
+    io: I,
     recv_buf: Vec<u8>,
-    got_init: bool,
-    got_destroy: bool,
     proto_major: u32,
     proto_minor: u32,
+    got_init: bool,
+    got_destroy: bool,
 }
 
-impl Filesystem {
-    pub fn new(mountpoint: impl Into<PathBuf>) -> io::Result<Self> {
-        Ok(Self {
-            ch: Channel::new(mountpoint)?,
+impl Session {
+    pub fn mount(
+        fsname: impl AsRef<OsStr>,
+        mountpoint: impl AsRef<Path>,
+        mountopts: &[&OsStr],
+    ) -> io::Result<Self> {
+        Ok(Self::new(Channel::new(fsname, mountpoint, mountopts)?))
+    }
+}
+
+impl<I> Session<I>
+where
+    I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+{
+    pub fn new(io: I) -> Self {
+        Session {
+            io,
             recv_buf: Vec::with_capacity(RECV_BUFFER_SIZE),
-            got_init: false,
-            got_destroy: false,
             proto_major: 0,
             proto_minor: 0,
-        })
+            got_init: false,
+            got_destroy: false,
+        }
+    }
+
+    pub async fn run<T: Operations>(&mut self, op: &mut T) -> io::Result<()> {
+        loop {
+            if self.receive().await? {
+                break;
+            }
+            self.process(op).await?;
+        }
+
+        Ok(())
     }
 
     pub async fn receive(&mut self) -> io::Result<bool> {
@@ -48,7 +71,7 @@ impl Filesystem {
         }
 
         loop {
-            match self.ch.read(&mut self.recv_buf[..]).await {
+            match self.io.read(&mut self.recv_buf[..]).await {
                 Ok(count) => {
                     log::debug!("read {} bytes", count);
                     unsafe { self.recv_buf.set_len(count) };
@@ -87,10 +110,10 @@ impl Filesystem {
             ($e:expr) => {
                 match ($e).await {
                     Ok(out) => {
-                        crate::reply::reply_payload(&mut self.ch, header.unique(), 0, &out).await?
+                        crate::reply::reply_payload(&mut self.io, header.unique(), 0, &out).await?
                     }
-                    Err(err) => {
-                        crate::reply::reply_err(&mut self.ch, header.unique(), err).await?;
+                    Err(Error(err)) => {
+                        crate::reply::reply_err(&mut self.io, header.unique(), err).await?;
                     }
                 }
             };
@@ -99,9 +122,9 @@ impl Filesystem {
         macro_rules! reply_unit {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(()) => crate::reply::reply_unit(&mut self.ch, header.unique()).await?,
-                    Err(err) => {
-                        crate::reply::reply_err(&mut self.ch, header.unique(), err).await?;
+                    Ok(()) => crate::reply::reply_unit(&mut self.io, header.unique()).await?,
+                    Err(Error(err)) => {
+                        crate::reply::reply_err(&mut self.io, header.unique(), err).await?;
                     }
                 }
             };
@@ -113,7 +136,7 @@ impl Filesystem {
 
                 if op.major() > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
-                    crate::reply::reply_payload(&mut self.ch, header.unique(), 0, &init_out)
+                    crate::reply::reply_payload(&mut self.io, header.unique(), 0, &init_out)
                         .await?;
                     return Ok(());
                 }
@@ -124,7 +147,7 @@ impl Filesystem {
                         op.major(),
                         op.minor()
                     );
-                    crate::reply::reply_err(&mut self.ch, header.unique(), libc::EPROTO).await?;
+                    crate::reply::reply_err(&mut self.io, header.unique(), libc::EPROTO).await?;
                     return Ok(());
                 }
 
@@ -137,12 +160,12 @@ impl Filesystem {
                 init_out.set_max_write(MAX_WRITE_SIZE as u32);
 
                 self.got_init = true;
-                if let Err(err) = ops.init(header, &op, &mut init_out).await {
-                    crate::reply::reply_err(&mut self.ch, header.unique(), err).await?;
+                if let Err(Error(err)) = ops.init(header, &op, &mut init_out).await {
+                    crate::reply::reply_err(&mut self.io, header.unique(), err).await?;
                     return Ok(());
                 };
                 crate::reply::reply_payload(
-                    &mut self.ch, //
+                    &mut self.io, //
                     header.unique(),
                     0,
                     &init_out,
@@ -154,20 +177,20 @@ impl Filesystem {
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode()
                 );
-                crate::reply::reply_err(&mut self.ch, header.unique(), libc::EIO).await?;
+                crate::reply::reply_err(&mut self.io, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
             Op::Destroy => {
                 ops.destroy().await;
                 self.got_destroy = true;
-                crate::reply::reply_unit(&mut self.ch, header.unique()).await?;
+                crate::reply::reply_unit(&mut self.io, header.unique()).await?;
             }
             _ if self.got_destroy => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode()
                 );
-                crate::reply::reply_err(&mut self.ch, header.unique(), libc::EIO).await?;
+                crate::reply::reply_err(&mut self.io, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
             Op::Lookup { name } => reply_payload!(ops.lookup(header, name)),
@@ -219,7 +242,7 @@ impl Filesystem {
             // CopyFileRange,
             Op::Unknown { opcode, .. } => {
                 log::warn!("unsupported opcode: {:?}", opcode);
-                crate::reply::reply_err(&mut self.ch, header.unique(), libc::ENOSYS).await?;
+                crate::reply::reply_err(&mut self.io, header.unique(), libc::ENOSYS).await?;
                 return Ok(());
             }
         }

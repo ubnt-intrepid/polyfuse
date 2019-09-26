@@ -1,12 +1,10 @@
 use crate::{
     abi::{
-        fuse_attr, //
-        fuse_attr_out,
+        fuse_attr_out, //
         fuse_bmap_out,
         fuse_entry_out,
         fuse_getxattr_out,
         fuse_init_out,
-        fuse_kstatfs,
         fuse_lk_out,
         fuse_open_out,
         fuse_out_header,
@@ -15,8 +13,8 @@ use crate::{
         FUSE_KERNEL_MINOR_VERSION,
         FUSE_KERNEL_VERSION,
     },
-    request::{CapFlags, FileLock},
-    util::{AsyncWriteVectored, AsyncWriteVectoredExt},
+    common::{Attr, CapFlags, FileLock, Statfs},
+    io::{AsyncWriteVectored, AsyncWriteVectoredExt},
 };
 use bitflags::bitflags;
 use std::{
@@ -38,38 +36,6 @@ impl Header {
             unique,
             error: -error,
             len: (OUT_HEADER_SIZE + data_len) as u32,
-        })
-    }
-}
-
-#[repr(transparent)]
-pub struct Attr(pub(crate) fuse_attr);
-
-impl Default for Attr {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl From<libc::stat> for Attr {
-    fn from(attr: libc::stat) -> Self {
-        Self(fuse_attr {
-            ino: attr.st_ino,
-            mode: attr.st_mode,
-            nlink: attr.st_nlink as u32,
-            uid: attr.st_uid,
-            gid: attr.st_gid,
-            rdev: attr.st_gid,
-            size: attr.st_size as u64,
-            blksize: attr.st_blksize as u32,
-            blocks: attr.st_blocks as u64,
-            atime: attr.st_atime as u64,
-            mtime: attr.st_mtime as u64,
-            ctime: attr.st_ctime as u64,
-            atimensec: attr.st_atime_nsec as u32,
-            mtimensec: attr.st_mtime_nsec as u32,
-            ctimensec: attr.st_ctime_nsec as u32,
-            padding: 0,
         })
     }
 }
@@ -243,26 +209,6 @@ impl Default for WriteOut {
 impl WriteOut {
     pub fn set_size(&mut self, size: u32) {
         self.0.size = size;
-    }
-}
-
-#[repr(transparent)]
-pub struct Statfs(fuse_kstatfs);
-
-impl From<libc::statvfs> for Statfs {
-    fn from(st: libc::statvfs) -> Self {
-        Self(fuse_kstatfs {
-            bsize: st.f_bsize as u32,
-            frsize: st.f_frsize as u32,
-            blocks: st.f_blocks,
-            bfree: st.f_bfree,
-            bavail: st.f_bavail,
-            files: st.f_files,
-            ffree: st.f_ffree,
-            namelen: st.f_namemax as u32,
-            padding: 0,
-            spare: [0u32; 6],
-        })
     }
 }
 

@@ -5,7 +5,7 @@
 use libc::{c_char, c_int, c_void, iovec};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
 use std::{
-    ffi::CString, //
+    ffi::{CString, OsStr}, //
     fmt,
     io::{self, IoSlice, IoSliceMut, Read, Write},
     os::unix::{ffi::OsStrExt, io::RawFd},
@@ -29,13 +29,13 @@ extern "C" {
     fn fuse_session_new_empty(argc: c_int, argv: *const *const c_char) -> *mut fuse_session;
 }
 
-pub(crate) struct Session {
+pub(crate) struct Connection {
     se: NonNull<fuse_session>,
     fd: OwnedEventedFd,
     mountpoint: PathBuf,
 }
 
-impl Drop for Session {
+impl Drop for Connection {
     fn drop(&mut self) {
         unsafe {
             fuse_session_unmount(self.se.as_ptr());
@@ -44,7 +44,7 @@ impl Drop for Session {
     }
 }
 
-impl fmt::Debug for Session {
+impl fmt::Debug for Connection {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Channel")
             .field("fd", &self.fd)
@@ -53,9 +53,9 @@ impl fmt::Debug for Session {
     }
 }
 
-impl Session {
-    pub fn new(mountpoint: PathBuf) -> io::Result<Self> {
-        let args = vec![CString::new("tokio-fuse")?];
+impl Connection {
+    pub fn new(fsname: &OsStr, mountpoint: &Path, _mountopts: &[&OsStr]) -> io::Result<Self> {
+        let args = vec![CString::new(fsname.as_bytes())?];
         let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
 
         let se =
@@ -87,10 +87,10 @@ impl Session {
             fd
         };
 
-        Ok(Self {
+        Ok(Connection {
             se,
             fd: OwnedEventedFd(raw_fd),
-            mountpoint,
+            mountpoint: mountpoint.to_path_buf(),
         })
     }
 

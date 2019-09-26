@@ -1,12 +1,13 @@
 use crate::{
-    sys::{OwnedEventedFd, Session},
-    util::{AsyncReadVectored, AsyncWriteVectored},
+    io::{AsyncReadVectored, AsyncWriteVectored},
+    sys::{Connection, OwnedEventedFd},
 };
 use futures_core::ready;
 use mio::{unix::UnixReady, Ready};
 use std::{
+    ffi::OsStr,
     io::{self, IoSlice, IoSliceMut, Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
     pin::Pin,
     task::{self, Poll},
 };
@@ -16,13 +17,17 @@ use tokio_net::util::PollEvented;
 /// Asynchronous I/O to communicate with the kernel.
 #[derive(Debug)]
 pub struct Channel {
-    session: Session,
+    session: Connection,
     fd: PollEvented<OwnedEventedFd>,
 }
 
 impl Channel {
-    pub fn new(mountpoint: impl Into<PathBuf>) -> io::Result<Self> {
-        let session = Session::new(mountpoint.into())?;
+    pub fn new(
+        fsname: impl AsRef<OsStr>,
+        mountpoint: impl AsRef<Path>,
+        mountopts: &[&OsStr],
+    ) -> io::Result<Self> {
+        let session = Connection::new(fsname.as_ref(), mountpoint.as_ref(), mountopts)?;
         let fd = PollEvented::new(session.raw_fd().clone());
         Ok(Self { session, fd })
     }
