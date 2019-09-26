@@ -2,7 +2,6 @@
 
 mod channel;
 mod common;
-mod conn;
 mod error;
 mod op;
 mod session;
