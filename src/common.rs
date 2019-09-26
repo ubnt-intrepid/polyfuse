@@ -37,15 +37,15 @@ bitflags! {
 }
 
 #[repr(transparent)]
-pub struct Attr(pub(crate) fuse_attr);
+pub struct FileAttr(pub(crate) fuse_attr);
 
-impl Default for Attr {
+impl Default for FileAttr {
     fn default() -> Self {
         unsafe { mem::zeroed() }
     }
 }
 
-impl From<libc::stat> for Attr {
+impl From<libc::stat> for FileAttr {
     fn from(attr: libc::stat) -> Self {
         Self(fuse_attr {
             ino: attr.st_ino,

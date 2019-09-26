@@ -13,7 +13,7 @@ pub mod reply;
 pub mod request;
 
 pub use crate::channel::Channel;
-pub use crate::common::{Attr, CapFlags, FileLock, Statfs};
+pub use crate::common::{CapFlags, FileAttr, FileLock, Statfs};
 pub use crate::error::{Error, Result};
 pub use crate::op::Operations;
 pub use crate::session::Session;

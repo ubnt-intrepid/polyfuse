@@ -13,7 +13,7 @@ use crate::{
         FUSE_KERNEL_MINOR_VERSION,
         FUSE_KERNEL_VERSION,
     },
-    common::{Attr, CapFlags, FileLock, Statfs},
+    common::{CapFlags, FileAttr, FileLock, Statfs},
     io::{AsyncWriteVectored, AsyncWriteVectoredExt},
 };
 use bitflags::bitflags;
@@ -49,8 +49,8 @@ impl Default for AttrOut {
     }
 }
 
-impl From<Attr> for AttrOut {
-    fn from(attr: Attr) -> Self {
+impl From<FileAttr> for AttrOut {
+    fn from(attr: FileAttr) -> Self {
         let mut attr_out = Self::default();
         attr_out.set_attr(attr);
         attr_out
@@ -59,12 +59,12 @@ impl From<Attr> for AttrOut {
 
 impl From<libc::stat> for AttrOut {
     fn from(attr: libc::stat) -> Self {
-        Self::from(Attr::from(attr))
+        Self::from(FileAttr::from(attr))
     }
 }
 
 impl AttrOut {
-    pub fn set_attr(&mut self, attr: impl Into<Attr>) {
+    pub fn set_attr(&mut self, attr: impl Into<FileAttr>) {
         self.0.attr = attr.into().0;
     }
 
@@ -79,15 +79,7 @@ pub struct EntryOut(pub(crate) fuse_entry_out);
 
 impl Default for EntryOut {
     fn default() -> Self {
-        Self(fuse_entry_out {
-            nodeid: 0,
-            generation: 0,
-            entry_valid: 0,
-            attr_valid: 0,
-            entry_valid_nsec: 0,
-            attr_valid_nsec: 0,
-            attr: Attr::default().0,
-        })
+        unsafe { mem::zeroed() }
     }
 }
 
@@ -110,7 +102,7 @@ impl EntryOut {
         self.0.attr_valid_nsec = nsec;
     }
 
-    pub fn set_attr(&mut self, attr: impl Into<Attr>) {
+    pub fn set_attr(&mut self, attr: impl Into<FileAttr>) {
         self.0.attr = attr.into().0;
     }
 }
