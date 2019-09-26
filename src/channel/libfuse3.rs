@@ -1,15 +1,15 @@
 //! libfuse3 bindings.
 
+#![cfg(feature = "libfuse3")]
 #![allow(nonstandard_style)]
 
-use super::OwnedEventedFd;
 use libc::{c_char, c_int};
 use std::{
     ffi::{CString, OsStr}, //
     fmt,
     io,
-    os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
+    os::unix::{ffi::OsStrExt, io::RawFd},
+    path::Path,
     ptr::NonNull,
 };
 
@@ -31,8 +31,7 @@ extern "C" {
 
 pub(crate) struct Connection {
     se: NonNull<fuse_session>,
-    fd: OwnedEventedFd,
-    mountpoint: PathBuf,
+    raw_fd: RawFd,
 }
 
 impl Drop for Connection {
@@ -47,8 +46,7 @@ impl Drop for Connection {
 impl fmt::Debug for Connection {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Channel")
-            .field("fd", &self.fd)
-            .field("mountpoint", &self.mountpoint)
+            .field("raw_fd", &self.raw_fd)
             .finish()
     }
 }
@@ -75,34 +73,12 @@ impl Connection {
             }
         }
 
-        let raw_fd = unsafe {
-            let fd = fuse_session_fd(se.as_ptr());
+        let raw_fd = unsafe { fuse_session_fd(se.as_ptr()) };
 
-            let flags = libc::fcntl(fd, libc::F_GETFL, 0);
-            if flags < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            let res = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            if res < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            fd
-        };
-
-        Ok(Connection {
-            se,
-            fd: OwnedEventedFd(raw_fd),
-            mountpoint: mountpoint.to_path_buf(),
-        })
+        Ok(Connection { se, raw_fd })
     }
 
-    pub fn mountpoint(&self) -> &Path {
-        &self.mountpoint
-    }
-
-    pub fn raw_fd(&self) -> &OwnedEventedFd {
-        &self.fd
+    pub fn raw_fd(&self) -> RawFd {
+        self.raw_fd
     }
 }

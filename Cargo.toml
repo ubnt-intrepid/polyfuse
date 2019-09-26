@@ -24,3 +24,8 @@ pkg-config = "0.3"
 [dev-dependencies]
 tokio = "0.2.0-alpha.1"
 pretty_env_logger = "0.3"
+
+[features]
+default = ["libfuse2"]
+libfuse2 = []
+libfuse3 = []

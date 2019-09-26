@@ -22,14 +22,16 @@ jobs:
              llvm-dev \
              libclang-dev \
              clang \
+             fuse \
+             libfuse-dev \
              fuse3 \
              libfuse3-dev \
              udev \
              libudev-dev
-    - name: Build
-      run: cargo build --all --verbose
-    - name: Run tests
-      run: cargo test --all --verbose
+    - name: Test (libfuse2)
+      run: cargo test --verbose
+    - name: Test (libfuse3)
+      run: cargo test --no-default-features --features libfuse3 --verbose
     - name: Build API doc
       run: |
         cargo doc --all --verbose
