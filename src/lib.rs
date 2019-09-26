@@ -2,10 +2,10 @@
 
 mod channel;
 mod common;
+mod conn;
 mod error;
 mod op;
 mod session;
-mod sys;
 
 pub mod abi;
 pub mod io;

@@ -1,6 +1,6 @@
 use crate::{
+    conn::{Connection, OwnedEventedFd},
     io::{AsyncReadVectored, AsyncWriteVectored},
-    sys::{Connection, OwnedEventedFd},
 };
 use futures::ready;
 use mio::{unix::UnixReady, Ready};
