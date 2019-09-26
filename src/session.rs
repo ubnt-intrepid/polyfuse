@@ -6,7 +6,12 @@ use crate::{
     reply::InitOut,
     request::Op,
 };
-use std::{ffi::OsStr, io, path::Path};
+use futures::{
+    future::{FusedFuture, FutureExt},
+    select,
+    stream::StreamExt,
+};
+use std::{ffi::OsStr, io, path::Path, pin::Pin};
 use tokio_io::AsyncReadExt;
 
 const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
@@ -47,15 +52,50 @@ where
         }
     }
 
-    pub async fn run<T: Operations>(&mut self, op: &mut T) -> io::Result<()> {
-        loop {
-            if self.receive().await? {
-                break;
-            }
-            self.process(op).await?;
-        }
-
+    pub async fn run<'a, T>(&'a mut self, op: &'a mut T) -> io::Result<()>
+    where
+        T: Operations,
+    {
+        self.run_until(op, default_shutdown_signal()?).await?;
         Ok(())
+    }
+
+    pub async fn run_until<'a, T, S>(
+        &'a mut self,
+        op: &'a mut T,
+        sig: S,
+    ) -> io::Result<Option<S::Output>>
+    where
+        T: Operations,
+        S: FusedFuture + Unpin,
+    {
+        let mut sig = sig;
+        loop {
+            let mut turn = self.turn(op);
+            let mut turn = unsafe { Pin::new_unchecked(&mut turn) }.fuse();
+
+            select! {
+                res = turn => {
+                    let destroyed = res?;
+                    log::debug!("Handle a request (destroyed = {})", destroyed);
+                    if destroyed {
+                        return Ok(None);
+                    }
+                },
+                res = sig => {
+                    log::debug!("Got shutdown signal");
+                    return Ok(Some(res))
+                },
+            };
+        }
+    }
+
+    async fn turn<T: Operations>(&mut self, op: &mut T) -> io::Result<bool> {
+        if self.receive().await? {
+            return Ok(true);
+        }
+        self.process(op).await?;
+        Ok(false)
     }
 
     pub async fn receive(&mut self) -> io::Result<bool> {
@@ -249,4 +289,9 @@ where
 
         Ok(())
     }
+}
+
+fn default_shutdown_signal() -> io::Result<impl FusedFuture<Output = ()> + Unpin> {
+    let ctrl_c = tokio_net::signal::ctrl_c()?;
+    Ok(ctrl_c.into_future().map(|_| ()))
 }

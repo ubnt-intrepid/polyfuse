@@ -2,7 +2,7 @@ use crate::{
     io::{AsyncReadVectored, AsyncWriteVectored},
     sys::{Connection, OwnedEventedFd},
 };
-use futures_core::ready;
+use futures::ready;
 use mio::{unix::UnixReady, Ready};
 use std::{
     ffi::OsStr,

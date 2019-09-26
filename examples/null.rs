@@ -24,9 +24,9 @@ async fn main() -> io::Result<()> {
         ));
     }
 
-    let mut fs = Session::mount("null", mountpoint, &[])?;
+    let mut session = Session::mount("null", mountpoint, &[])?;
     let mut op = Null;
-    fs.run(&mut op).await?;
+    session.run(&mut op).await?;
 
     Ok(())
 }
