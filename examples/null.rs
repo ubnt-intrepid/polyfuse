@@ -5,8 +5,8 @@ use std::{borrow::Cow, env, io, path::PathBuf};
 use tokio_fuse::{
     fs::Filesystem,
     op::{OperationResult, Operations},
-    reply::{AttrOut, OpenOut},
-    request::{Header, OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr},
+    reply::{AttrOut, OpenOut, WriteOut},
+    request::{Header, OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr, OpWrite},
 };
 
 #[tokio::main(single_thread)]
@@ -78,6 +78,22 @@ impl Operations for Null {
     ) -> OperationResult<Cow<'a, [u8]>> {
         match header.nodeid() {
             1 => Ok(Cow::Borrowed(&[] as &[u8])),
+            _ => Err(libc::ENOENT),
+        }
+    }
+
+    async fn write<'a>(
+        &'a mut self,
+        header: &'a Header,
+        _: &'a OpWrite,
+        buf: &'a [u8],
+    ) -> OperationResult<WriteOut> {
+        match header.nodeid() {
+            1 => {
+                let mut out = WriteOut::default();
+                out.set_size(buf.len() as u32);
+                Ok(out)
+            }
             _ => Err(libc::ENOENT),
         }
     }
