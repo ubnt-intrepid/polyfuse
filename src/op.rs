@@ -1,13 +1,29 @@
 use crate::{
-    reply::{AttrOut, EntryOut, InitOut, OpenOut, XattrOut},
+    reply::{
+        AttrOut, //
+        BmapOut,
+        CreateOut,
+        EntryOut,
+        InitOut,
+        LkOut,
+        OpenOut,
+        StatfsOut,
+        WriteOut,
+        XattrOut,
+    },
     request::{
         Header, //
+        OpAccess,
+        OpBmap,
+        OpCreate,
         OpFlush,
         OpForget,
+        OpFsync,
         OpGetattr,
         OpGetxattr,
         OpInit,
         OpLink,
+        OpLk,
         OpMkdir,
         OpMknod,
         OpOpen,
@@ -16,6 +32,7 @@ use crate::{
         OpRename,
         OpSetattr,
         OpSetxattr,
+        OpWrite,
     },
 };
 use async_trait::async_trait;
@@ -138,7 +155,12 @@ pub trait Operations {
         Err(libc::ENOSYS)
     }
 
-    async fn flush<'a>(&'a mut self, header: &'a Header, op: &'a OpFlush) -> OperationResult<()> {
+    async fn write<'a>(
+        &'a mut self,
+        header: &'a Header,
+        op: &'a OpWrite,
+        data: &'a [u8],
+    ) -> OperationResult<WriteOut> {
         Err(libc::ENOSYS)
     }
 
@@ -147,6 +169,14 @@ pub trait Operations {
         header: &'a Header,
         op: &'a OpRelease,
     ) -> OperationResult<()> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn statfs<'a>(&'a mut self, header: &'a Header) -> OperationResult<StatfsOut> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn fsync<'a>(&'a mut self, header: &'a Header, op: &'a OpFsync) -> OperationResult<()> {
         Err(libc::ENOSYS)
     }
 
@@ -184,4 +214,84 @@ pub trait Operations {
     ) -> OperationResult<()> {
         Err(libc::ENOSYS)
     }
+
+    async fn flush<'a>(&'a mut self, header: &'a Header, op: &'a OpFlush) -> OperationResult<()> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn opendir<'a>(
+        &'a mut self,
+        header: &'a Header,
+        op: &'a OpOpen,
+    ) -> OperationResult<OpenOut> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn readdir<'a>(
+        &'a mut self,
+        header: &'a Header,
+        op: &'a OpRead,
+    ) -> OperationResult<Cow<'a, [u8]>> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn releasedir<'a>(
+        &'a mut self,
+        header: &'a Header,
+        op: &'a OpRelease,
+    ) -> OperationResult<()> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn fsyncdir<'a>(
+        &'a mut self,
+        header: &'a Header,
+        op: &'a OpFsync,
+    ) -> OperationResult<()> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn getlk<'a>(&'a mut self, header: &'a Header, op: &'a OpLk) -> OperationResult<LkOut> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn setlk<'a>(
+        &'a mut self,
+        header: &'a Header,
+        op: &'a OpLk,
+        sleep: bool,
+    ) -> OperationResult<()> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn access<'a>(&'a mut self, header: &'a Header, op: &'a OpAccess) -> OperationResult<()> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn create<'a>(
+        &'a mut self,
+        header: &'a Header,
+        op: &'a OpCreate,
+    ) -> OperationResult<CreateOut> {
+        Err(libc::ENOSYS)
+    }
+
+    async fn bmap<'a>(
+        &'a mut self,
+        header: &'a Header,
+        op: &'a OpBmap,
+    ) -> OperationResult<BmapOut> {
+        Err(libc::ENOSYS)
+    }
+
+    // interrupt
+    // ioctl
+    // poll
+    // notify_reply
+    // batch_forget
+    // fallocate
+    // readdirplus
+    // rename2
+    // lseek
+    // copy_file_range
 }

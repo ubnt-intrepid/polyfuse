@@ -2,15 +2,20 @@ use crate::{
     abi::{
         fuse_attr, //
         fuse_attr_out,
+        fuse_bmap_out,
         fuse_entry_out,
         fuse_getxattr_out,
         fuse_init_out,
+        fuse_kstatfs,
+        fuse_lk_out,
         fuse_open_out,
         fuse_out_header,
+        fuse_statfs_out,
+        fuse_write_out,
         FUSE_KERNEL_MINOR_VERSION,
         FUSE_KERNEL_VERSION,
     },
-    request::CapFlags,
+    request::{CapFlags, FileLock},
     util::{AsyncWriteVectored, AsyncWriteVectoredExt},
 };
 use bitflags::bitflags;
@@ -23,6 +28,19 @@ use std::{
 };
 
 const OUT_HEADER_SIZE: usize = mem::size_of::<fuse_out_header>();
+
+#[repr(transparent)]
+struct Header(fuse_out_header);
+
+impl Header {
+    fn new(unique: u64, error: i32, data_len: usize) -> Self {
+        Self(fuse_out_header {
+            unique,
+            error: -error,
+            len: (OUT_HEADER_SIZE + data_len) as u32,
+        })
+    }
+}
 
 #[repr(transparent)]
 pub struct Attr(pub(crate) fuse_attr);
@@ -213,6 +231,94 @@ bitflags! {
     }
 }
 
+#[repr(transparent)]
+pub struct WriteOut(fuse_write_out);
+
+impl Default for WriteOut {
+    fn default() -> Self {
+        unsafe { mem::zeroed() }
+    }
+}
+
+impl WriteOut {
+    pub fn set_size(&mut self, size: u32) {
+        self.0.size = size;
+    }
+}
+
+#[repr(transparent)]
+pub struct Statfs(fuse_kstatfs);
+
+impl From<libc::statvfs> for Statfs {
+    fn from(st: libc::statvfs) -> Self {
+        Self(fuse_kstatfs {
+            bsize: st.f_bsize as u32,
+            frsize: st.f_frsize as u32,
+            blocks: st.f_blocks,
+            bfree: st.f_bfree,
+            bavail: st.f_bavail,
+            files: st.f_files,
+            ffree: st.f_ffree,
+            namelen: st.f_namemax as u32,
+            padding: 0,
+            spare: [0u32; 6],
+        })
+    }
+}
+
+#[repr(transparent)]
+pub struct StatfsOut(fuse_statfs_out);
+
+impl Default for StatfsOut {
+    fn default() -> Self {
+        unsafe { mem::zeroed() }
+    }
+}
+
+impl StatfsOut {
+    pub fn set_st(&mut self, st: impl Into<Statfs>) {
+        self.0.st = st.into().0;
+    }
+}
+
+#[repr(transparent)]
+pub struct LkOut(fuse_lk_out);
+
+impl Default for LkOut {
+    fn default() -> Self {
+        unsafe { mem::zeroed() }
+    }
+}
+
+impl LkOut {
+    pub fn set_lk(&mut self, lk: impl Into<FileLock>) {
+        self.0.lk = lk.into().0;
+    }
+}
+
+#[repr(C)]
+pub struct CreateOut {
+    pub entry: EntryOut,
+    pub open: OpenOut,
+}
+
+#[repr(transparent)]
+pub struct BmapOut(fuse_bmap_out);
+
+impl Default for BmapOut {
+    fn default() -> Self {
+        unsafe { mem::zeroed() }
+    }
+}
+
+impl BmapOut {
+    pub fn set_block(&mut self, block: u64) {
+        self.0.block = block;
+    }
+}
+
+// ==== Payload ====
+
 pub trait Payload {
     unsafe fn to_io_slice(&self) -> IoSlice<'_>;
 }
@@ -223,9 +329,24 @@ impl Payload for [u8] {
     }
 }
 
+impl Payload for Cow<'_, [u8]> {
+    unsafe fn to_io_slice(&self) -> IoSlice<'_> {
+        IoSlice::new(&**self)
+    }
+}
+
 impl Payload for Cow<'_, OsStr> {
     unsafe fn to_io_slice(&self) -> IoSlice<'_> {
         IoSlice::new((**self).as_bytes())
+    }
+}
+
+impl Payload for XattrOut<'_> {
+    unsafe fn to_io_slice(&self) -> IoSlice<'_> {
+        match self {
+            Self::Size(out) => out.to_io_slice(),
+            Self::Value(value) => IoSlice::new(&**value),
+        }
     }
 }
 
@@ -243,21 +364,17 @@ macro_rules! impl_payload_for_abi {
 }
 
 impl_payload_for_abi! {
-    fuse_out_header,
+    Header,
     InitOut,
     OpenOut,
     AttrOut,
     EntryOut,
     GetxattrOut,
-}
-
-impl Payload for XattrOut<'_> {
-    unsafe fn to_io_slice(&self) -> IoSlice<'_> {
-        match self {
-            Self::Size(out) => out.to_io_slice(),
-            Self::Value(value) => IoSlice::new((**value).as_ref()),
-        }
-    }
+    WriteOut,
+    StatfsOut,
+    LkOut,
+    CreateOut,
+    BmapOut,
 }
 
 pub async fn reply_payload<'a, W: ?Sized, T: ?Sized>(
@@ -271,13 +388,9 @@ where
     T: Payload,
 {
     let data = unsafe { data.to_io_slice() };
-
-    let mut out_header: fuse_out_header = unsafe { mem::zeroed() };
-    out_header.unique = unique;
-    out_header.error = -error;
-    out_header.len = (OUT_HEADER_SIZE + data.len()) as u32;
-
+    let out_header = Header::new(unique, error, data.len());
     let out_header = unsafe { out_header.to_io_slice() };
+
     (*writer).write_vectored(&[out_header, data]).await?;
 
     Ok(())

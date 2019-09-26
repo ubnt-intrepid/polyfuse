@@ -157,7 +157,6 @@ impl Filesystem {
                 crate::reply::reply_err(&mut self.ch, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
-
             Op::Destroy => {
                 ops.destroy().await;
                 self.got_destroy = true;
@@ -171,13 +170,11 @@ impl Filesystem {
                 crate::reply::reply_err(&mut self.ch, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
-
             Op::Lookup { name } => reply_payload!(ops.lookup(header, name)),
             Op::Forget(op) => {
                 ops.forget(header, op).await;
                 // no reply
             }
-
             Op::Getattr(op) => reply_payload!(ops.getattr(header, &op)),
             Op::Setattr(op) => reply_payload!(ops.setattr(header, &op)),
             Op::Readlink => reply_payload!(ops.readlink(header)),
@@ -188,23 +185,38 @@ impl Filesystem {
             Op::Rmdir { name } => reply_unit!(ops.unlink(header, name)),
             Op::Rename { op, name, newname } => reply_unit!(ops.rename(header, op, name, newname)),
             Op::Link { op, newname } => reply_payload!(ops.link(header, op, newname)),
-
             Op::Open(op) => reply_payload!(ops.open(header, op)),
-            Op::Read(op) => match ops.read(header, op).await {
-                Ok(data) => {
-                    crate::reply::reply_payload(&mut self.ch, header.unique(), 0, &*data).await?
-                }
-                Err(err) => crate::reply::reply_err(&mut self.ch, header.unique(), err).await?,
-            },
-
-            Op::Flush(op) => reply_unit!(ops.flush(header, op)),
+            Op::Read(op) => reply_payload!(ops.read(header, op)),
+            Op::Write { op, data } => reply_payload!(ops.write(header, op, data)),
             Op::Release(op) => reply_unit!(ops.release(header, op)),
-
+            Op::Statfs => reply_payload!(ops.statfs(header)),
+            Op::Fsync(op) => reply_unit!(ops.fsync(header, op)),
             Op::Setxattr { op, name, value } => reply_unit!(ops.setxattr(header, op, name, value)),
             Op::Getxattr { op, name } => reply_payload!(ops.getxattr(header, op, name)),
             Op::Listxattr { op } => reply_payload!(ops.listxattr(header, op)),
             Op::Removexattr { name } => reply_unit!(ops.removexattr(header, name)),
+            Op::Flush(op) => reply_unit!(ops.flush(header, op)),
+            Op::Opendir(op) => reply_payload!(ops.opendir(header, op)),
+            Op::Readdir(op) => reply_payload!(ops.readdir(header, op)),
+            Op::Releasedir(op) => reply_unit!(ops.releasedir(header, op)),
+            Op::Fsyncdir(op) => reply_unit!(ops.fsyncdir(header, op)),
+            Op::Getlk(op) => reply_payload!(ops.getlk(header, op)),
+            Op::Setlk(op) => reply_unit!(ops.setlk(header, op, false)),
+            Op::Setlkw(op) => reply_unit!(ops.setlk(header, op, true)),
+            Op::Access(op) => reply_unit!(ops.access(header, op)),
+            Op::Create(op) => reply_payload!(ops.create(header, op)),
+            Op::Bmap(op) => reply_payload!(ops.bmap(header, op)),
 
+            // Interrupt,
+            // Ioctl,
+            // Poll,
+            // NotifyReply,
+            // BatchForget,
+            // Fallocate,
+            // Readdirplus,
+            // Rename2,
+            // Lseek,
+            // CopyFileRange,
             Op::Unknown { opcode, .. } => {
                 log::warn!("unsupported opcode: {:?}", opcode);
                 crate::reply::reply_err(&mut self.ch, header.unique(), libc::ENOSYS).await?;
