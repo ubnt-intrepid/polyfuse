@@ -17,7 +17,7 @@ fn main() {
     // build helper C functions.
     let mut helpers = cc::Build::new();
     helpers.warnings_into_errors(true);
-    helpers.file("src/helpers.c");
+    helpers.file("src/conn/libfuse3_helper.c");
     helpers.define("FUSE_USE_VERSION", FUSE_USE_VERSION);
     for incpath in &libfuse.include_paths {
         helpers.include(incpath);
