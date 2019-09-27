@@ -1,187 +1,25 @@
 //! Replies to the kernel.
 
-use crate::{
-    abi::{
-        fuse_attr_out, //
-        fuse_bmap_out,
-        fuse_entry_out,
-        fuse_getxattr_out,
-        fuse_init_out,
-        fuse_lk_out,
-        fuse_open_out,
-        fuse_out_header,
-        fuse_statfs_out,
-        fuse_write_out,
-        FUSE_KERNEL_MINOR_VERSION,
-        FUSE_KERNEL_VERSION,
-    },
-    common::{CapFlags, FileAttr, FileLock, Statfs},
-    io::{AsyncWriteVectored, AsyncWriteVectoredExt},
-};
-use bitflags::bitflags;
 use std::{
     borrow::Cow,
     ffi::OsStr,
-    fmt,
     io::{self, IoSlice},
     mem,
     os::unix::ffi::OsStrExt,
 };
-
-const OUT_HEADER_SIZE: usize = mem::size_of::<fuse_out_header>();
-
-#[repr(transparent)]
-struct Header(fuse_out_header);
-
-impl Header {
-    fn new(unique: u64, error: i32, data_len: usize) -> Self {
-        Self(fuse_out_header {
-            unique,
-            error: -error,
-            len: (OUT_HEADER_SIZE + data_len) as u32,
-        })
-    }
-}
-
-#[repr(transparent)]
-pub struct AttrOut(fuse_attr_out);
-
-impl fmt::Debug for AttrOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("AttrOut").finish()
-    }
-}
-
-impl Default for AttrOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl From<FileAttr> for AttrOut {
-    fn from(attr: FileAttr) -> Self {
-        let mut attr_out = Self::default();
-        attr_out.set_attr(attr);
-        attr_out
-    }
-}
-
-impl From<libc::stat> for AttrOut {
-    fn from(attr: libc::stat) -> Self {
-        Self::from(FileAttr::from(attr))
-    }
-}
-
-impl AttrOut {
-    pub fn set_attr(&mut self, attr: impl Into<FileAttr>) {
-        self.0.attr = attr.into().0;
-    }
-
-    pub fn set_attr_valid(&mut self, sec: u64, nsec: u32) {
-        self.0.attr_valid = sec;
-        self.0.attr_valid_nsec = nsec;
-    }
-}
-
-#[repr(transparent)]
-pub struct EntryOut(pub(crate) fuse_entry_out);
-
-impl fmt::Debug for EntryOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("EntryOut").finish()
-    }
-}
-
-impl Default for EntryOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl EntryOut {
-    pub fn set_nodeid(&mut self, nodeid: u64) {
-        self.0.nodeid = nodeid;
-    }
-
-    pub fn set_generation(&mut self, generation: u64) {
-        self.0.generation = generation;
-    }
-
-    pub fn set_entry_valid(&mut self, sec: u64, nsec: u32) {
-        self.0.entry_valid = sec;
-        self.0.entry_valid_nsec = nsec;
-    }
-
-    pub fn set_attr_valid(&mut self, sec: u64, nsec: u32) {
-        self.0.attr_valid = sec;
-        self.0.attr_valid_nsec = nsec;
-    }
-
-    pub fn set_attr(&mut self, attr: impl Into<FileAttr>) {
-        self.0.attr = attr.into().0;
-    }
-}
-
-#[repr(transparent)]
-pub struct InitOut(fuse_init_out);
-
-impl fmt::Debug for InitOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("InitOut").finish()
-    }
-}
-
-impl Default for InitOut {
-    fn default() -> Self {
-        let mut init_out: fuse_init_out = unsafe { mem::zeroed() };
-        init_out.major = FUSE_KERNEL_VERSION;
-        init_out.minor = FUSE_KERNEL_MINOR_VERSION;
-        Self(init_out)
-    }
-}
-
-impl InitOut {
-    pub fn set_flags(&mut self, flags: CapFlags) {
-        self.0.flags = flags.bits();
-    }
-
-    pub fn max_readahead(&self) -> u32 {
-        self.0.max_readahead
-    }
-
-    pub fn set_max_readahead(&mut self, max_readahead: u32) {
-        self.0.max_readahead = max_readahead;
-    }
-
-    pub fn max_write(&self) -> u32 {
-        self.0.max_write
-    }
-
-    pub fn set_max_write(&mut self, max_write: u32) {
-        self.0.max_write = max_write;
-    }
-}
-
-#[repr(transparent)]
-pub struct GetxattrOut(fuse_getxattr_out);
-
-impl fmt::Debug for GetxattrOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("GetxattrOut").finish()
-    }
-}
-
-impl Default for GetxattrOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl GetxattrOut {
-    pub fn set_size(&mut self, size: u32) {
-        self.0.size = size;
-    }
-}
+use tokio_fuse_abi::{
+    AttrOut, //
+    BmapOut,
+    EntryOut,
+    GetxattrOut,
+    InitOut,
+    LkOut,
+    OpenOut,
+    OutHeader,
+    StatfsOut,
+    WriteOut,
+};
+use tokio_fuse_io::{AsyncWriteVectored, AsyncWriteVectoredExt};
 
 #[derive(Debug)]
 pub enum XattrOut<'a> {
@@ -189,129 +27,11 @@ pub enum XattrOut<'a> {
     Value(Cow<'a, [u8]>),
 }
 
-#[repr(transparent)]
-pub struct OpenOut(fuse_open_out);
-
-impl fmt::Debug for OpenOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpenOut").finish()
-    }
-}
-
-impl Default for OpenOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl OpenOut {
-    pub fn set_fh(&mut self, fh: u64) {
-        self.0.fh = fh;
-    }
-
-    pub fn set_flags(&mut self, flags: OpenFlags) {
-        self.0.open_flags = flags.bits();
-    }
-}
-
-bitflags! {
-    pub struct OpenFlags: u32 {
-        const DIRECT_IO = crate::abi::FOPEN_DIRECT_IO;
-        const KEEP_CACHE = crate::abi::FOPEN_KEEP_CACHE;
-        const NONSEEKABLE = crate::abi::FOPEN_NONSEEKABLE;
-        //const CACHE_DIR = crate::abi::FOPEN_CACHE_DIR;
-    }
-}
-
-#[repr(transparent)]
-pub struct WriteOut(fuse_write_out);
-
-impl fmt::Debug for WriteOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("WriteOut").finish()
-    }
-}
-
-impl Default for WriteOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl WriteOut {
-    pub fn set_size(&mut self, size: u32) {
-        self.0.size = size;
-    }
-}
-
-#[repr(transparent)]
-pub struct StatfsOut(fuse_statfs_out);
-
-impl fmt::Debug for StatfsOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("StatfsOut").finish()
-    }
-}
-
-impl Default for StatfsOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl StatfsOut {
-    pub fn set_st(&mut self, st: impl Into<Statfs>) {
-        self.0.st = st.into().0;
-    }
-}
-
-#[repr(transparent)]
-pub struct LkOut(fuse_lk_out);
-
-impl fmt::Debug for LkOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("LkOut").finish()
-    }
-}
-
-impl Default for LkOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl LkOut {
-    pub fn set_lk(&mut self, lk: impl Into<FileLock>) {
-        self.0.lk = lk.into().0;
-    }
-}
-
 #[repr(C)]
 #[derive(Debug)]
 pub struct CreateOut {
     pub entry: EntryOut,
     pub open: OpenOut,
-}
-
-#[repr(transparent)]
-pub struct BmapOut(fuse_bmap_out);
-
-impl fmt::Debug for BmapOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("BmapOut").finish()
-    }
-}
-
-impl Default for BmapOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl BmapOut {
-    pub fn set_block(&mut self, block: u64) {
-        self.0.block = block;
-    }
 }
 
 // ==== Payload ====
@@ -361,7 +81,7 @@ macro_rules! impl_payload_for_abi {
 }
 
 impl_payload_for_abi! {
-    Header,
+    OutHeader,
     InitOut,
     OpenOut,
     AttrOut,
@@ -385,7 +105,7 @@ where
     T: Payload,
 {
     let data = unsafe { data.to_io_slice() };
-    let out_header = Header::new(unique, error, data.len());
+    let out_header = OutHeader::new(unique, error, data.len());
     let out_header = unsafe { out_header.to_io_slice() };
 
     (*writer).write_vectored(&[out_header, data]).await?;

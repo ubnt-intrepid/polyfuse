@@ -10,7 +10,7 @@ use std::{
     pin::Pin,
     task::{self, Poll},
 };
-use tokio_fuse::io::{set_nonblocking, AsyncReadVectored, AsyncWriteVectored, OwnedEventedFd};
+use tokio_fuse_io::{set_nonblocking, AsyncReadVectored, AsyncWriteVectored, OwnedEventedFd};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_net::util::PollEvented;
 

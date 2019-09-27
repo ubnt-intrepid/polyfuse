@@ -1,50 +1,47 @@
 use crate::{
     error::{Error, Result},
-    reply::{
-        AttrOut, //
-        BmapOut,
-        CreateOut,
-        EntryOut,
-        InitOut,
-        LkOut,
-        OpenOut,
-        StatfsOut,
-        WriteOut,
-        XattrOut,
-    },
-    request::{
-        Header, //
-        OpAccess,
-        OpBmap,
-        OpCreate,
-        OpFlush,
-        OpForget,
-        OpFsync,
-        OpGetattr,
-        OpGetxattr,
-        OpInit,
-        OpLink,
-        OpLk,
-        OpMkdir,
-        OpMknod,
-        OpOpen,
-        OpRead,
-        OpRelease,
-        OpRename,
-        OpSetattr,
-        OpSetxattr,
-        OpWrite,
-    },
+    reply::{CreateOut, XattrOut},
 };
 use async_trait::async_trait;
 use std::{borrow::Cow, ffi::OsStr};
+use tokio_fuse_abi::{
+    AttrOut, //
+    BmapOut,
+    EntryOut,
+    InHeader,
+    InitOut,
+    LkOut,
+    OpAccess,
+    OpBmap,
+    OpCreate,
+    OpFlush,
+    OpForget,
+    OpFsync,
+    OpGetattr,
+    OpGetxattr,
+    OpInit,
+    OpLink,
+    OpLk,
+    OpMkdir,
+    OpMknod,
+    OpOpen,
+    OpRead,
+    OpRelease,
+    OpRename,
+    OpSetattr,
+    OpSetxattr,
+    OpWrite,
+    OpenOut,
+    StatfsOut,
+    WriteOut,
+};
 
 #[async_trait(?Send)]
 #[allow(unused_variables)]
 pub trait Operations {
     async fn init<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpInit,
         out: &'a mut InitOut,
     ) -> Result<()> {
@@ -53,27 +50,27 @@ pub trait Operations {
 
     async fn destroy<'a>(&'a mut self) {}
 
-    async fn lookup<'a>(&'a mut self, header: &'a Header, name: &'a OsStr) -> Result<EntryOut> {
+    async fn lookup<'a>(&'a mut self, header: &'a InHeader, name: &'a OsStr) -> Result<EntryOut> {
         Err(Error::NOSYS)
     }
 
-    async fn forget<'a>(&'a mut self, header: &'a Header, op: &'a OpForget) {}
+    async fn forget<'a>(&'a mut self, header: &'a InHeader, op: &'a OpForget) {}
 
-    async fn getattr<'a>(&'a mut self, header: &'a Header, op: &'a OpGetattr) -> Result<AttrOut> {
+    async fn getattr<'a>(&'a mut self, header: &'a InHeader, op: &'a OpGetattr) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn setattr<'a>(&'a mut self, header: &'a Header, op: &'a OpSetattr) -> Result<AttrOut> {
+    async fn setattr<'a>(&'a mut self, header: &'a InHeader, op: &'a OpSetattr) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn readlink<'a>(&'a mut self, header: &'a Header) -> Result<Cow<'a, OsStr>> {
+    async fn readlink<'a>(&'a mut self, header: &'a InHeader) -> Result<Cow<'a, OsStr>> {
         Err(Error::NOSYS)
     }
 
     async fn symlink<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         name: &'a OsStr,
         link: &'a OsStr,
     ) -> Result<AttrOut> {
@@ -82,7 +79,7 @@ pub trait Operations {
 
     async fn mknod<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpMknod,
         name: &'a OsStr,
     ) -> Result<AttrOut> {
@@ -91,24 +88,24 @@ pub trait Operations {
 
     async fn mkdir<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpMkdir,
         name: &'a OsStr,
     ) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn unlink<'a>(&'a mut self, header: &'a Header, name: &'a OsStr) -> Result<()> {
+    async fn unlink<'a>(&'a mut self, header: &'a InHeader, name: &'a OsStr) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn rmdir<'a>(&'a mut self, header: &'a Header, name: &'a OsStr) -> Result<()> {
+    async fn rmdir<'a>(&'a mut self, header: &'a InHeader, name: &'a OsStr) -> Result<()> {
         Err(Error::NOSYS)
     }
 
     async fn rename<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpRename,
         name: &'a OsStr,
         newname: &'a OsStr,
@@ -118,45 +115,45 @@ pub trait Operations {
 
     async fn link<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpLink,
         newname: &'a OsStr,
     ) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn open<'a>(&'a mut self, header: &'a Header, op: &'a OpOpen) -> Result<OpenOut> {
+    async fn open<'a>(&'a mut self, header: &'a InHeader, op: &'a OpOpen) -> Result<OpenOut> {
         Err(Error::NOSYS)
     }
 
-    async fn read<'a>(&'a mut self, header: &'a Header, op: &'a OpRead) -> Result<Cow<'a, [u8]>> {
+    async fn read<'a>(&'a mut self, header: &'a InHeader, op: &'a OpRead) -> Result<Cow<'a, [u8]>> {
         Err(Error::NOSYS)
     }
 
     async fn write<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpWrite,
         data: &'a [u8],
     ) -> Result<WriteOut> {
         Err(Error::NOSYS)
     }
 
-    async fn release<'a>(&'a mut self, header: &'a Header, op: &'a OpRelease) -> Result<()> {
+    async fn release<'a>(&'a mut self, header: &'a InHeader, op: &'a OpRelease) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn statfs<'a>(&'a mut self, header: &'a Header) -> Result<StatfsOut> {
+    async fn statfs<'a>(&'a mut self, header: &'a InHeader) -> Result<StatfsOut> {
         Err(Error::NOSYS)
     }
 
-    async fn fsync<'a>(&'a mut self, header: &'a Header, op: &'a OpFsync) -> Result<()> {
+    async fn fsync<'a>(&'a mut self, header: &'a InHeader, op: &'a OpFsync) -> Result<()> {
         Err(Error::NOSYS)
     }
 
     async fn setxattr<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpSetxattr,
         name: &'a OsStr,
         value: &'a [u8],
@@ -166,7 +163,7 @@ pub trait Operations {
 
     async fn getxattr<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpGetxattr,
         name: &'a OsStr,
     ) -> Result<XattrOut<'a>> {
@@ -175,57 +172,62 @@ pub trait Operations {
 
     async fn listxattr<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpGetxattr,
     ) -> Result<XattrOut<'a>> {
         Err(Error::NOSYS)
     }
 
-    async fn removexattr<'a>(&'a mut self, header: &'a Header, name: &'a OsStr) -> Result<()> {
+    async fn removexattr<'a>(&'a mut self, header: &'a InHeader, name: &'a OsStr) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn flush<'a>(&'a mut self, header: &'a Header, op: &'a OpFlush) -> Result<()> {
+    async fn flush<'a>(&'a mut self, header: &'a InHeader, op: &'a OpFlush) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn opendir<'a>(&'a mut self, header: &'a Header, op: &'a OpOpen) -> Result<OpenOut> {
+    async fn opendir<'a>(&'a mut self, header: &'a InHeader, op: &'a OpOpen) -> Result<OpenOut> {
         Err(Error::NOSYS)
     }
 
     async fn readdir<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         op: &'a OpRead,
     ) -> Result<Cow<'a, [u8]>> {
         Err(Error::NOSYS)
     }
 
-    async fn releasedir<'a>(&'a mut self, header: &'a Header, op: &'a OpRelease) -> Result<()> {
+    async fn releasedir<'a>(&'a mut self, header: &'a InHeader, op: &'a OpRelease) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn fsyncdir<'a>(&'a mut self, header: &'a Header, op: &'a OpFsync) -> Result<()> {
+    async fn fsyncdir<'a>(&'a mut self, header: &'a InHeader, op: &'a OpFsync) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn getlk<'a>(&'a mut self, header: &'a Header, op: &'a OpLk) -> Result<LkOut> {
+    async fn getlk<'a>(&'a mut self, header: &'a InHeader, op: &'a OpLk) -> Result<LkOut> {
         Err(Error::NOSYS)
     }
 
-    async fn setlk<'a>(&'a mut self, header: &'a Header, op: &'a OpLk, sleep: bool) -> Result<()> {
+    async fn setlk<'a>(
+        &'a mut self,
+        header: &'a InHeader,
+        op: &'a OpLk,
+        sleep: bool,
+    ) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn access<'a>(&'a mut self, header: &'a Header, op: &'a OpAccess) -> Result<()> {
+    async fn access<'a>(&'a mut self, header: &'a InHeader, op: &'a OpAccess) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn create<'a>(&'a mut self, header: &'a Header, op: &'a OpCreate) -> Result<CreateOut> {
+    async fn create<'a>(&'a mut self, header: &'a InHeader, op: &'a OpCreate) -> Result<CreateOut> {
         Err(Error::NOSYS)
     }
 
-    async fn bmap<'a>(&'a mut self, header: &'a Header, op: &'a OpBmap) -> Result<BmapOut> {
+    async fn bmap<'a>(&'a mut self, header: &'a InHeader, op: &'a OpBmap) -> Result<BmapOut> {
         Err(Error::NOSYS)
     }
 

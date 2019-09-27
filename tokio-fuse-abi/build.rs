@@ -9,7 +9,10 @@ fn main() {
     let out_dir = env::var("OUT_DIR").map(PathBuf::from).unwrap();
 
     // generage kernel interface.
-    generate_abi_bindings(manifest_dir.join("src/abi.h"), out_dir.join("bindings.rs"));
+    generate_abi_bindings(
+        manifest_dir.join("src/wrapper.h"),
+        out_dir.join("bindings.rs"),
+    );
 }
 
 fn generate_abi_bindings(src_path: impl AsRef<Path>, out_path: impl AsRef<Path>) {

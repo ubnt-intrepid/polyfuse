@@ -1,0 +1,11 @@
+[package]
+name = "tokio-fuse-io"
+version = "0.1.0"
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+publish = false
+
+[dependencies]
+libc = "0.2"
+mio = "0.6"
+tokio-io = "0.2.0-alpha.1"

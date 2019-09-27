@@ -4,24 +4,24 @@ version = "0.1.0"
 publish = false
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
-build = "build.rs"
 
 [dependencies]
-bitflags = "1.2"
+tokio-fuse-abi = { version = "0.1.0", path = "tokio-fuse-abi" }
+tokio-fuse-io = { version = "0.1.0", path = "tokio-fuse-io" }
+
 async-trait = "0.1"
 futures-preview = { version = "0.3.0-alpha.18", features = ["nightly", "async-await"] }
 libc = "0.2"
 log = "0.4"
-mio = "0.6"
 tokio-io = { version = "0.2.0-alpha.1", features = ["util"] }
 tokio-net = { version = "0.2.0-alpha.1", features = ["signal"] }
-
-[build-dependencies]
-bindgen = "0.51"
 
 [workspace]
 members = [
   ".",
+  "tokio-fuse-abi",
   "tokio-fuse-channel",
+  "tokio-fuse-io",
+
   "examples/null",
 ]

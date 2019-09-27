@@ -2,10 +2,9 @@
 
 use async_trait::async_trait;
 use std::{borrow::Cow, env, io, path::PathBuf};
-use tokio_fuse::{
-    reply::{AttrOut, OpenOut, WriteOut},
-    request::{Header, OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr, OpWrite},
-    Error, Operations, Session,
+use tokio_fuse::{Error, Operations, Session};
+use tokio_fuse_abi::{
+    AttrOut, InHeader, OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr, OpWrite, OpenOut, WriteOut,
 };
 use tokio_fuse_channel::Channel;
 
@@ -42,7 +41,7 @@ struct Null;
 impl Operations for Null {
     async fn getattr<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         _: &'a OpGetattr,
     ) -> tokio_fuse::Result<AttrOut> {
         match header.nodeid() {
@@ -53,7 +52,7 @@ impl Operations for Null {
 
     async fn setattr<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         _: &'a OpSetattr,
     ) -> tokio_fuse::Result<AttrOut> {
         match header.nodeid() {
@@ -64,7 +63,7 @@ impl Operations for Null {
 
     async fn open<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         _: &'a OpOpen,
     ) -> tokio_fuse::Result<OpenOut> {
         match header.nodeid() {
@@ -75,7 +74,7 @@ impl Operations for Null {
 
     async fn read<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         _: &'a OpRead,
     ) -> tokio_fuse::Result<Cow<'a, [u8]>> {
         match header.nodeid() {
@@ -86,7 +85,7 @@ impl Operations for Null {
 
     async fn write<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         _: &'a OpWrite,
         buf: &'a [u8],
     ) -> tokio_fuse::Result<WriteOut> {
@@ -102,7 +101,7 @@ impl Operations for Null {
 
     async fn release<'a>(
         &'a mut self,
-        header: &'a Header,
+        header: &'a InHeader,
         _: &'a OpRelease,
     ) -> tokio_fuse::Result<()> {
         match header.nodeid() {

@@ -1,8 +1,6 @@
 use crate::{
     error::Error, //
-    io::{AsyncReadVectored, AsyncWriteVectored},
     op::Operations,
-    reply::InitOut,
     request::Op,
     MAX_WRITE_SIZE,
 };
@@ -12,6 +10,8 @@ use futures::{
     stream::StreamExt,
 };
 use std::{io, pin::Pin};
+use tokio_fuse_abi::InitOut;
+use tokio_fuse_io::{AsyncReadVectored, AsyncWriteVectored};
 use tokio_io::AsyncReadExt;
 
 #[derive(Debug)]
