@@ -9,7 +9,6 @@ use futures::{
     future::{FusedFuture, FutureExt},
     io::{AsyncRead, AsyncReadExt, AsyncWrite},
     select,
-    stream::StreamExt,
 };
 use std::{io, pin::Pin};
 
@@ -42,22 +41,6 @@ impl Session {
         self.proto_minor
     }
 
-    /// Run a session with the kernel.
-    pub async fn run<'a, I, T>(
-        &'a mut self,
-        io: &'a mut I,
-        buf: &'a mut Vec<u8>,
-        op: &'a mut T,
-    ) -> io::Result<()>
-    where
-        I: AsyncRead + AsyncWrite + Unpin,
-        T: Operations,
-    {
-        self.run_until(io, buf, op, default_shutdown_signal()?)
-            .await?;
-        Ok(())
-    }
-
     /// Run a session with the kernel until the provided shutdown signal is received.
     pub async fn run_until<'a, I, T, S>(
         &'a mut self,
@@ -68,7 +51,7 @@ impl Session {
     ) -> io::Result<Option<S::Output>>
     where
         I: AsyncRead + AsyncWrite + Unpin,
-        T: Operations,
+        T: Operations + Send,
         S: FusedFuture + Unpin,
     {
         let mut sig = sig;
@@ -101,7 +84,7 @@ impl Session {
     ) -> io::Result<bool>
     where
         I: AsyncRead + AsyncWrite + Unpin,
-        T: Operations,
+        T: Operations + Send,
     {
         if self.receive(io, buf).await? {
             return Ok(true);
@@ -159,7 +142,7 @@ impl Session {
     ) -> io::Result<()>
     where
         I: AsyncRead + AsyncWrite + Unpin,
-        T: Operations,
+        T: Operations + Send,
     {
         if self.got_destroy {
             return Ok(());
@@ -302,9 +285,4 @@ impl Session {
 
         Ok(())
     }
-}
-
-fn default_shutdown_signal() -> io::Result<impl FusedFuture<Output = ()> + Unpin> {
-    let ctrl_c = tokio_net::signal::ctrl_c()?;
-    Ok(ctrl_c.into_future().map(|_| ()))
 }

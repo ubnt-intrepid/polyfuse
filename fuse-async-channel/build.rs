@@ -12,7 +12,7 @@ fn main() {
     // build helper C functions.
     let mut helpers = cc::Build::new();
     helpers.warnings_into_errors(true);
-    helpers.file(manifest_dir.join("src/libfuse3_helper.c"));
+    helpers.file(manifest_dir.join("src/backend.c"));
     helpers.define("FUSE_USE_VERSION", FUSE_USE_VERSION);
     for incpath in &libfuse.include_paths {
         helpers.include(incpath);

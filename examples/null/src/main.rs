@@ -16,12 +16,18 @@ use fuse_async::{
     },
     Error, Operations, Session,
 };
-use fuse_async_channel::Channel;
+use fuse_async_channel::tokio::Channel;
+use futures::{future::FusedFuture, prelude::*};
 use std::{borrow::Cow, env, io, path::PathBuf};
+use tokio::net::signal::ctrl_c;
 
 const BUFFER_SIZE: usize = fuse_async::MAX_WRITE_SIZE + 4096;
 
-#[tokio::main(single_thread)]
+fn shutdown_signal() -> io::Result<impl FusedFuture<Output = ()> + Unpin> {
+    Ok(ctrl_c()?.into_future().map(|_| ()))
+}
+
+#[tokio::main]
 async fn main() -> io::Result<()> {
     std::env::set_var("RUST_LOG", "fuse_async=debug");
     pretty_env_logger::init();
@@ -37,18 +43,20 @@ async fn main() -> io::Result<()> {
         ));
     }
 
-    let mut ch = Channel::new("null", mountpoint, &[])?;
+    let mut ch = Channel::builder("null").mount(mountpoint)?;
+
     let mut buf = Vec::with_capacity(BUFFER_SIZE);
     let mut session = Session::new();
     let mut op = Null;
-    session.run(&mut ch, &mut buf, &mut op).await?;
+    let sig = shutdown_signal()?;
+    session.run_until(&mut ch, &mut buf, &mut op, sig).await?;
 
     Ok(())
 }
 
 struct Null;
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Operations for Null {
     async fn getattr<'a>(
         &'a mut self,

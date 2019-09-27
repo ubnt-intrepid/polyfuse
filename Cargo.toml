@@ -13,8 +13,6 @@ async-trait = "0.1"
 futures-preview = { version = "0.3.0-alpha.18", features = ["nightly", "async-await"] }
 libc = "0.2"
 log = "0.4"
-tokio-io = { version = "0.2.0-alpha.1", features = ["util"] }
-tokio-net = { version = "0.2.0-alpha.1", features = ["signal"] }
 
 [workspace]
 members = [

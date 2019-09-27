@@ -7,7 +7,10 @@ use std::{
     ffi::{CString, OsStr}, //
     fmt,
     io,
-    os::unix::{ffi::OsStrExt, io::RawFd},
+    os::unix::{
+        ffi::OsStrExt,
+        io::{AsRawFd, RawFd},
+    },
     path::Path,
     ptr::NonNull,
 };
@@ -51,11 +54,17 @@ impl fmt::Debug for Connection {
 }
 
 impl Connection {
-    pub fn new(fsname: &OsStr, mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<Self> {
-        let mut args = Vec::with_capacity(mountopts.len() + 1);
-        args.push(CString::new(fsname.as_bytes())?);
+    pub fn new(
+        fsname: impl AsRef<OsStr>,
+        mountpoint: impl AsRef<Path>,
+        mountopts: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    ) -> io::Result<Self> {
+        let fsname = fsname.as_ref();
+        let mountpoint = mountpoint.as_ref();
+
+        let mut args = vec![CString::new(fsname.as_bytes())?];
         for opt in mountopts {
-            args.push(CString::new(opt.as_bytes())?);
+            args.push(CString::new(opt.as_ref().as_bytes())?);
         }
         let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
 
@@ -76,8 +85,10 @@ impl Connection {
 
         Ok(Connection { se, raw_fd })
     }
+}
 
-    pub fn raw_fd(&self) -> RawFd {
+impl AsRawFd for Connection {
+    fn as_raw_fd(&self) -> RawFd {
         self.raw_fd
     }
 }

@@ -36,7 +36,7 @@ use fuse_async_abi::{
 };
 use std::{borrow::Cow, ffi::OsStr};
 
-#[async_trait(?Send)]
+#[async_trait]
 #[allow(unused_variables)]
 pub trait Operations {
     async fn init<'a>(
