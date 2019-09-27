@@ -1,84 +1,87 @@
 use crate::{
-    channel::Channel, //
-    error::Error,
+    error::Error, //
     io::{AsyncReadVectored, AsyncWriteVectored},
     op::Operations,
     reply::InitOut,
     request::Op,
+    MAX_WRITE_SIZE,
 };
 use futures::{
     future::{FusedFuture, FutureExt},
     select,
     stream::StreamExt,
 };
-use std::{ffi::OsStr, io, path::Path, pin::Pin};
+use std::{io, pin::Pin};
 use tokio_io::AsyncReadExt;
 
-const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
-const RECV_BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
-
 #[derive(Debug)]
-pub struct Session<I: AsyncReadVectored + AsyncWriteVectored = Channel> {
-    io: I,
-    recv_buf: Vec<u8>,
-    proto_major: u32,
-    proto_minor: u32,
+pub struct Session {
+    proto_major: Option<u32>,
+    proto_minor: Option<u32>,
     got_init: bool,
     got_destroy: bool,
 }
 
 impl Session {
-    pub fn mount(
-        fsname: impl AsRef<OsStr>,
-        mountpoint: impl AsRef<Path>,
-        mountopts: &[&OsStr],
-    ) -> io::Result<Self> {
-        Ok(Self::new(Channel::new(fsname, mountpoint, mountopts)?))
-    }
-}
-
-impl<I> Session<I>
-where
-    I: AsyncReadVectored + AsyncWriteVectored + Unpin,
-{
-    pub fn new(io: I) -> Self {
-        Session {
-            io,
-            recv_buf: Vec::with_capacity(RECV_BUFFER_SIZE),
-            proto_major: 0,
-            proto_minor: 0,
+    /// Create a new `Session`.
+    pub fn new() -> Self {
+        Self {
+            proto_major: None,
+            proto_minor: None,
             got_init: false,
             got_destroy: false,
         }
     }
 
-    pub async fn run<'a, T>(&'a mut self, op: &'a mut T) -> io::Result<()>
+    /// Returns the major protocol version negotiated with the kernel.
+    pub fn proto_major(&self) -> Option<u32> {
+        self.proto_major
+    }
+
+    /// Returns the minor protocol version negotiated with the kernel.
+    pub fn proto_minor(&self) -> Option<u32> {
+        self.proto_minor
+    }
+
+    /// Run a session with the kernel.
+    pub async fn run<'a, I, T>(
+        &'a mut self,
+        io: &'a mut I,
+        buf: &'a mut Vec<u8>,
+        op: &'a mut T,
+    ) -> io::Result<()>
     where
+        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
         T: Operations,
     {
-        self.run_until(op, default_shutdown_signal()?).await?;
+        self.run_until(io, buf, op, default_shutdown_signal()?)
+            .await?;
         Ok(())
     }
 
-    pub async fn run_until<'a, T, S>(
+    /// Run a session with the kernel until the provided shutdown signal is received.
+    pub async fn run_until<'a, I, T, S>(
         &'a mut self,
+        io: &'a mut I,
+        buf: &'a mut Vec<u8>,
         op: &'a mut T,
         sig: S,
     ) -> io::Result<Option<S::Output>>
     where
+        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
         T: Operations,
         S: FusedFuture + Unpin,
     {
         let mut sig = sig;
         loop {
-            let mut turn = self.turn(op);
+            let mut turn = self.turn(io, buf, op);
             let mut turn = unsafe { Pin::new_unchecked(&mut turn) }.fuse();
 
             select! {
                 res = turn => {
                     let destroyed = res?;
-                    log::debug!("Handle a request (destroyed = {})", destroyed);
                     if destroyed {
+                        log::debug!("The session is closed successfully");
                         return Ok(None);
                     }
                 },
@@ -90,31 +93,42 @@ where
         }
     }
 
-    async fn turn<T: Operations>(&mut self, op: &mut T) -> io::Result<bool> {
-        if self.receive().await? {
+    /// Receives one request from the channel, and returns its processing result.
+    pub async fn turn<'a, I, T>(
+        &'a mut self,
+        io: &'a mut I,
+        buf: &'a mut Vec<u8>,
+        op: &'a mut T,
+    ) -> io::Result<bool>
+    where
+        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+        T: Operations,
+    {
+        if self.receive(io, buf).await? {
             return Ok(true);
         }
-        self.process(op).await?;
+        self.process(io, buf, op).await?;
         Ok(false)
     }
 
-    pub async fn receive(&mut self) -> io::Result<bool> {
-        // TODO: splice
-
+    async fn receive<'a, I>(&'a mut self, io: &'a mut I, buf: &'a mut Vec<u8>) -> io::Result<bool>
+    where
+        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+    {
         if self.got_destroy {
             return Ok(true);
         }
 
-        let old_len = self.recv_buf.len();
+        let old_len = buf.len();
         unsafe {
-            self.recv_buf.set_len(self.recv_buf.capacity());
+            buf.set_len(buf.capacity());
         }
 
         loop {
-            match self.io.read(&mut self.recv_buf[..]).await {
+            match io.read(&mut buf[..]).await {
                 Ok(count) => {
                     log::debug!("read {} bytes", count);
-                    unsafe { self.recv_buf.set_len(count) };
+                    unsafe { buf.set_len(count) };
                     return Ok(false);
                 }
                 Err(err) => match err.raw_os_error() {
@@ -122,14 +136,14 @@ where
                     Some(libc::ENODEV) => {
                         log::debug!("connection to the kernel was closed");
                         unsafe {
-                            self.recv_buf.set_len(old_len);
+                            buf.set_len(old_len);
                         }
                         self.got_destroy = true;
                         return Ok(true);
                     }
                     _ => {
                         unsafe {
-                            self.recv_buf.set_len(old_len);
+                            buf.set_len(old_len);
                         }
                         return Err(err);
                     }
@@ -138,22 +152,29 @@ where
         }
     }
 
-    pub async fn process<'a, T: Operations>(&'a mut self, ops: &'a mut T) -> io::Result<()> {
+    async fn process<'a, I, T>(
+        &'a mut self,
+        io: &'a mut I,
+        buf: &'a mut Vec<u8>,
+        ops: &'a mut T,
+    ) -> io::Result<()>
+    where
+        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+        T: Operations,
+    {
         if self.got_destroy {
             return Ok(());
         }
 
-        let (header, op) = crate::request::parse(&self.recv_buf[..])?;
+        let (header, op) = crate::request::parse(&buf[..])?;
         log::debug!("Got a request: header={:?}, op={:?}", header, op);
 
         macro_rules! reply_payload {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(out) => {
-                        crate::reply::reply_payload(&mut self.io, header.unique(), 0, &out).await?
-                    }
+                    Ok(out) => crate::reply::reply_payload(io, header.unique(), 0, &out).await?,
                     Err(Error(err)) => {
-                        crate::reply::reply_err(&mut self.io, header.unique(), err).await?;
+                        crate::reply::reply_err(io, header.unique(), err).await?;
                     }
                 }
             };
@@ -162,9 +183,9 @@ where
         macro_rules! reply_unit {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(()) => crate::reply::reply_unit(&mut self.io, header.unique()).await?,
+                    Ok(()) => crate::reply::reply_unit(io, header.unique()).await?,
                     Err(Error(err)) => {
-                        crate::reply::reply_err(&mut self.io, header.unique(), err).await?;
+                        crate::reply::reply_err(io, header.unique(), err).await?;
                     }
                 }
             };
@@ -176,8 +197,7 @@ where
 
                 if op.major() > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
-                    crate::reply::reply_payload(&mut self.io, header.unique(), 0, &init_out)
-                        .await?;
+                    crate::reply::reply_payload(io, header.unique(), 0, &init_out).await?;
                     return Ok(());
                 }
 
@@ -187,13 +207,13 @@ where
                         op.major(),
                         op.minor()
                     );
-                    crate::reply::reply_err(&mut self.io, header.unique(), libc::EPROTO).await?;
+                    crate::reply::reply_err(io, header.unique(), libc::EPROTO).await?;
                     return Ok(());
                 }
 
                 // remember the protocol version
-                self.proto_major = op.major();
-                self.proto_minor = op.minor();
+                self.proto_major = Some(op.major());
+                self.proto_minor = Some(op.minor());
 
                 // TODO: max_background, congestion_threshold, time_gran, max_pages
                 init_out.set_max_readahead(op.max_readahead());
@@ -201,36 +221,30 @@ where
 
                 self.got_init = true;
                 if let Err(Error(err)) = ops.init(header, &op, &mut init_out).await {
-                    crate::reply::reply_err(&mut self.io, header.unique(), err).await?;
+                    crate::reply::reply_err(io, header.unique(), err).await?;
                     return Ok(());
                 };
-                crate::reply::reply_payload(
-                    &mut self.io, //
-                    header.unique(),
-                    0,
-                    &init_out,
-                )
-                .await?;
+                crate::reply::reply_payload(io, header.unique(), 0, &init_out).await?;
             }
             _ if !self.got_init => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode()
                 );
-                crate::reply::reply_err(&mut self.io, header.unique(), libc::EIO).await?;
+                crate::reply::reply_err(io, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
             Op::Destroy => {
                 ops.destroy().await;
                 self.got_destroy = true;
-                crate::reply::reply_unit(&mut self.io, header.unique()).await?;
+                crate::reply::reply_unit(io, header.unique()).await?;
             }
             _ if self.got_destroy => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode()
                 );
-                crate::reply::reply_err(&mut self.io, header.unique(), libc::EIO).await?;
+                crate::reply::reply_err(io, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
             Op::Lookup { name } => reply_payload!(ops.lookup(header, name)),
@@ -282,7 +296,7 @@ where
             // CopyFileRange,
             Op::Unknown { opcode, .. } => {
                 log::warn!("unsupported opcode: {:?}", opcode);
-                crate::reply::reply_err(&mut self.io, header.unique(), libc::ENOSYS).await?;
+                crate::reply::reply_err(io, header.unique(), libc::ENOSYS).await?;
                 return Ok(());
             }
         }

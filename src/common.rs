@@ -45,6 +45,12 @@ impl Default for FileAttr {
     }
 }
 
+impl fmt::Debug for FileAttr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("FileAttr").finish()
+    }
+}
+
 impl From<libc::stat> for FileAttr {
     fn from(attr: libc::stat) -> Self {
         Self(fuse_attr {
@@ -129,6 +135,12 @@ impl FileLock {
 
 #[repr(transparent)]
 pub struct Statfs(pub(crate) fuse_kstatfs);
+
+impl fmt::Debug for Statfs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Statfs").finish()
+    }
+}
 
 impl From<libc::statvfs> for Statfs {
     fn from(st: libc::statvfs) -> Self {

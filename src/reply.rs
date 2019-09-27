@@ -1,3 +1,5 @@
+//! Replies to the kernel.
+
 use crate::{
     abi::{
         fuse_attr_out, //
@@ -20,6 +22,7 @@ use bitflags::bitflags;
 use std::{
     borrow::Cow,
     ffi::OsStr,
+    fmt,
     io::{self, IoSlice},
     mem,
     os::unix::ffi::OsStrExt,
@@ -42,6 +45,12 @@ impl Header {
 
 #[repr(transparent)]
 pub struct AttrOut(fuse_attr_out);
+
+impl fmt::Debug for AttrOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("AttrOut").finish()
+    }
+}
 
 impl Default for AttrOut {
     fn default() -> Self {
@@ -77,6 +86,12 @@ impl AttrOut {
 #[repr(transparent)]
 pub struct EntryOut(pub(crate) fuse_entry_out);
 
+impl fmt::Debug for EntryOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("EntryOut").finish()
+    }
+}
+
 impl Default for EntryOut {
     fn default() -> Self {
         unsafe { mem::zeroed() }
@@ -109,6 +124,12 @@ impl EntryOut {
 
 #[repr(transparent)]
 pub struct InitOut(fuse_init_out);
+
+impl fmt::Debug for InitOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("InitOut").finish()
+    }
+}
 
 impl Default for InitOut {
     fn default() -> Self {
@@ -144,6 +165,12 @@ impl InitOut {
 #[repr(transparent)]
 pub struct GetxattrOut(fuse_getxattr_out);
 
+impl fmt::Debug for GetxattrOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("GetxattrOut").finish()
+    }
+}
+
 impl Default for GetxattrOut {
     fn default() -> Self {
         unsafe { mem::zeroed() }
@@ -156,6 +183,7 @@ impl GetxattrOut {
     }
 }
 
+#[derive(Debug)]
 pub enum XattrOut<'a> {
     Size(GetxattrOut),
     Value(Cow<'a, [u8]>),
@@ -163,6 +191,12 @@ pub enum XattrOut<'a> {
 
 #[repr(transparent)]
 pub struct OpenOut(fuse_open_out);
+
+impl fmt::Debug for OpenOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OpenOut").finish()
+    }
+}
 
 impl Default for OpenOut {
     fn default() -> Self {
@@ -192,6 +226,12 @@ bitflags! {
 #[repr(transparent)]
 pub struct WriteOut(fuse_write_out);
 
+impl fmt::Debug for WriteOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("WriteOut").finish()
+    }
+}
+
 impl Default for WriteOut {
     fn default() -> Self {
         unsafe { mem::zeroed() }
@@ -206,6 +246,12 @@ impl WriteOut {
 
 #[repr(transparent)]
 pub struct StatfsOut(fuse_statfs_out);
+
+impl fmt::Debug for StatfsOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("StatfsOut").finish()
+    }
+}
 
 impl Default for StatfsOut {
     fn default() -> Self {
@@ -222,6 +268,12 @@ impl StatfsOut {
 #[repr(transparent)]
 pub struct LkOut(fuse_lk_out);
 
+impl fmt::Debug for LkOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("LkOut").finish()
+    }
+}
+
 impl Default for LkOut {
     fn default() -> Self {
         unsafe { mem::zeroed() }
@@ -235,6 +287,7 @@ impl LkOut {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct CreateOut {
     pub entry: EntryOut,
     pub open: OpenOut,
@@ -242,6 +295,12 @@ pub struct CreateOut {
 
 #[repr(transparent)]
 pub struct BmapOut(fuse_bmap_out);
+
+impl fmt::Debug for BmapOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("BmapOut").finish()
+    }
+}
 
 impl Default for BmapOut {
     fn default() -> Self {

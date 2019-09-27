@@ -13,14 +13,15 @@ futures-preview = { version = "0.3.0-alpha.18", features = ["nightly", "async-aw
 libc = "0.2"
 log = "0.4"
 mio = "0.6"
-tokio-io = "0.2.0-alpha.1"
+tokio-io = { version = "0.2.0-alpha.1", features = ["util"] }
 tokio-net = { version = "0.2.0-alpha.1", features = ["signal"] }
 
 [build-dependencies]
 bindgen = "0.51"
-cc = "1"
-pkg-config = "0.3"
 
-[dev-dependencies]
-tokio = "0.2.0-alpha.1"
-pretty_env_logger = "0.3"
+[workspace]
+members = [
+  ".",
+  "tokio-fuse-channel",
+  "examples/null",
+]

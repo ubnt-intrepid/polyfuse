@@ -1,0 +1,19 @@
+[package]
+name = "example-null"
+version = "0.0.0"
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+publish = false
+
+[[bin]]
+name = "example_null"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+async-trait = "0.1"
+libc = "0.2"
+pretty_env_logger = "0.3"
+tokio = "0.2.0-alpha.1"
+tokio-fuse = { version = "0.1.0", path = "../.." }
+tokio-fuse-channel = { version = "0.1.0", path = "../../tokio-fuse-channel" }

@@ -1,0 +1,19 @@
+[package]
+name = "tokio-fuse-channel"
+version = "0.1.0"
+publish = false
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+build = "build.rs"
+
+[dependencies]
+futures-preview = "0.3.0-alpha.18"
+libc = "0.2"
+mio = "0.6"
+tokio-fuse = { version = "0.1.0", path = ".." }
+tokio-io = "0.2.0-alpha.1"
+tokio-net = "0.2.0-alpha.1"
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"

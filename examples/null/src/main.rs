@@ -7,6 +7,9 @@ use tokio_fuse::{
     request::{Header, OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr, OpWrite},
     Error, Operations, Session,
 };
+use tokio_fuse_channel::Channel;
+
+const BUFFER_SIZE: usize = tokio_fuse::MAX_WRITE_SIZE + 4096;
 
 #[tokio::main(single_thread)]
 async fn main() -> io::Result<()> {
@@ -24,9 +27,11 @@ async fn main() -> io::Result<()> {
         ));
     }
 
-    let mut session = Session::mount("null", mountpoint, &[])?;
+    let mut ch = Channel::new("null", mountpoint, &[])?;
+    let mut buf = Vec::with_capacity(BUFFER_SIZE);
+    let mut session = Session::new();
     let mut op = Null;
-    session.run(&mut op).await?;
+    session.run(&mut ch, &mut buf, &mut op).await?;
 
     Ok(())
 }

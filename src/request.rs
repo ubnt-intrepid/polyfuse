@@ -1,3 +1,5 @@
+//! Requests from the kernel.
+
 use crate::{
     abi::{
         fuse_access_in, //
