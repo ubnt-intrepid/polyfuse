@@ -27,7 +27,7 @@ use fuse_async_abi::{
 use std::{ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
 
 #[derive(Debug)]
-pub enum Arg<'a> {
+pub enum Arg<'a, T = &'a [u8]> {
     Init(&'a InitIn),
     Destroy,
     Lookup {
@@ -68,7 +68,7 @@ pub enum Arg<'a> {
     Read(&'a ReadIn),
     Write {
         arg: &'a WriteIn,
-        data: &'a [u8],
+        data: T,
     },
     Release(&'a ReleaseIn),
     Statfs,
@@ -76,7 +76,7 @@ pub enum Arg<'a> {
     Setxattr {
         arg: &'a SetxattrIn,
         name: &'a OsStr,
-        value: &'a [u8],
+        value: T,
     },
     Getxattr {
         arg: &'a GetxattrIn,
@@ -109,13 +109,10 @@ pub enum Arg<'a> {
     // Rename2,
     // Lseek,
     // CopyFileRange,
-    Unknown {
-        opcode: Opcode,
-        payload: &'a [u8],
-    },
+    Unknown,
 }
 
-pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a>)> {
+pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a, &'a [u8]>)> {
     let (header, payload) = parse_header(buf)?;
     if buf.len() < header.len() as usize {
         return Err(io::Error::new(
@@ -129,7 +126,7 @@ pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a>)> {
     Ok((header, arg))
 }
 
-pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<Arg<'a>> {
+pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<Arg<'a, &'a [u8]>> {
     let arg = match header.opcode() {
         Opcode::FUSE_INIT => {
             let (arg, remains) = fetch(payload)?;
@@ -319,7 +316,7 @@ pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<Arg<'a>
         // Opcode::FUSE_RENAME2 => unimplemented!(),
         // Opcode::FUSE_LSEEK => unimplemented!(),
         // Opcode::FUSE_COPY_FILE_RANGE => unimplemented!(),
-        opcode => Arg::Unknown { opcode, payload },
+        _ => Arg::Unknown,
     };
 
     Ok(arg)

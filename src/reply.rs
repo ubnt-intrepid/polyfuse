@@ -94,7 +94,7 @@ impl_payload_for_abi! {
     BmapOut,
 }
 
-pub async fn reply_payload<'a, W: ?Sized, T: ?Sized>(
+pub async fn reply_raw<'a, W: ?Sized, T: ?Sized>(
     writer: &'a mut W,
     unique: u64,
     error: i32,
@@ -113,16 +113,28 @@ where
     Ok(())
 }
 
+pub async fn reply_payload<'a, W: ?Sized, T: ?Sized>(
+    writer: &'a mut W,
+    unique: u64,
+    data: &'a T,
+) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+    T: Payload,
+{
+    reply_raw(writer, unique, 0, data).await
+}
+
 pub async fn reply_unit<'a, W: ?Sized>(writer: &'a mut W, unique: u64) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    reply_payload(writer, unique, 0, &[] as &[u8]).await
+    reply_raw(writer, unique, 0, &[] as &[u8]).await
 }
 
 pub async fn reply_err<'a, W: ?Sized>(writer: &'a mut W, unique: u64, error: i32) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    reply_payload(writer, unique, error, &[] as &[u8]).await
+    reply_raw(writer, unique, error, &[] as &[u8]).await
 }

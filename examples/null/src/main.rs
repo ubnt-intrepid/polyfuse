@@ -14,12 +14,10 @@ use fuse_async::{
         WriteIn,
         WriteOut,
     },
-    Error, Operations, Session,
+    Buffer, Error, Operations, Session,
 };
 use fuse_async_channel::tokio::Channel;
 use std::{borrow::Cow, env, io, path::PathBuf};
-
-const BUFFER_SIZE: usize = fuse_async::MAX_WRITE_SIZE + 4096;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -39,7 +37,7 @@ async fn main() -> io::Result<()> {
 
     let mut ch = Channel::builder("null").mount(mountpoint)?;
 
-    let mut buf = Vec::with_capacity(BUFFER_SIZE);
+    let mut buf = Buffer::new();
     let mut session = Session::new();
     let mut op = Null;
     session.run(&mut ch, &mut buf, &mut op).await?;

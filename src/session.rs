@@ -1,4 +1,5 @@
 use crate::{
+    buffer::Buffer,
     error::Error, //
     op::Operations,
     request::Arg,
@@ -7,7 +8,7 @@ use crate::{
 use fuse_async_abi::InitOut;
 use futures::{
     future::{FusedFuture, FutureExt},
-    io::{AsyncRead, AsyncReadExt, AsyncWrite},
+    io::{AsyncRead, AsyncWrite},
     select,
 };
 use std::{io, pin::Pin};
@@ -45,7 +46,7 @@ impl Session {
     pub async fn run<'a, I, T>(
         &'a mut self,
         io: &'a mut I,
-        buf: &'a mut Vec<u8>,
+        buf: &'a mut Buffer,
         ops: &'a mut T,
     ) -> io::Result<()>
     where
@@ -61,7 +62,7 @@ impl Session {
     pub async fn run_until<'a, I, T, S>(
         &'a mut self,
         io: &'a mut I,
-        buf: &'a mut Vec<u8>,
+        buf: &'a mut Buffer,
         ops: &'a mut T,
         sig: S,
     ) -> io::Result<Option<S::Output>>
@@ -95,85 +96,30 @@ impl Session {
     pub async fn turn<'a, I, T>(
         &'a mut self,
         io: &'a mut I,
-        buf: &'a mut Vec<u8>,
+        buf: &'a mut Buffer,
         ops: &'a mut T,
     ) -> io::Result<bool>
     where
         I: AsyncRead + AsyncWrite + Unpin,
         T: Operations + Send,
     {
-        if self.receive(io, buf).await? {
-            return Ok(true);
-        }
-        self.process(io, buf, ops).await?;
-        Ok(false)
-    }
-
-    async fn receive<'a, I>(&'a mut self, io: &'a mut I, buf: &'a mut Vec<u8>) -> io::Result<bool>
-    where
-        I: AsyncRead + AsyncWrite + Unpin,
-    {
         if self.got_destroy {
             return Ok(true);
         }
 
-        let old_len = buf.len();
-        unsafe {
-            buf.set_len(buf.capacity());
+        if buf.receive(io).await? {
+            self.got_destroy = true;
+            return Ok(true);
         }
 
-        loop {
-            match io.read(&mut buf[..]).await {
-                Ok(count) => {
-                    log::debug!("read {} bytes", count);
-                    unsafe { buf.set_len(count) };
-                    return Ok(false);
-                }
-                Err(err) => match err.raw_os_error() {
-                    Some(libc::ENOENT) | Some(libc::EINTR) => continue,
-                    Some(libc::ENODEV) => {
-                        log::debug!("connection to the kernel was closed");
-                        unsafe {
-                            buf.set_len(old_len);
-                        }
-                        self.got_destroy = true;
-                        return Ok(true);
-                    }
-                    _ => {
-                        unsafe {
-                            buf.set_len(old_len);
-                        }
-                        return Err(err);
-                    }
-                },
-            }
-        }
-    }
-
-    async fn process<'a, I, T>(
-        &'a mut self,
-        io: &'a mut I,
-        buf: &'a mut Vec<u8>,
-        ops: &'a mut T,
-    ) -> io::Result<()>
-    where
-        I: AsyncRead + AsyncWrite + Unpin,
-        T: Operations + Send,
-    {
-        if self.got_destroy {
-            return Ok(());
-        }
-
-        let (header, arg) = crate::request::parse(&buf[..])?;
+        let (header, arg) = buf.parse()?;
         log::debug!("Got a request: header={:?}, arg={:?}", header, arg);
 
         macro_rules! reply_payload {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(out) => crate::reply::reply_payload(io, header.unique(), 0, &out).await?,
-                    Err(Error(err)) => {
-                        crate::reply::reply_err(io, header.unique(), err).await?;
-                    }
+                    Ok(out) => buf.reply_payload(io, header.unique(), &out).await?,
+                    Err(Error(err)) => buf.reply_err(io, header.unique(), err).await?,
                 }
             };
         }
@@ -181,10 +127,8 @@ impl Session {
         macro_rules! reply_unit {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(()) => crate::reply::reply_unit(io, header.unique()).await?,
-                    Err(Error(err)) => {
-                        crate::reply::reply_err(io, header.unique(), err).await?;
-                    }
+                    Ok(()) => buf.reply_unit(io, header.unique()).await?,
+                    Err(Error(err)) => buf.reply_err(io, header.unique(), err).await?,
                 }
             };
         }
@@ -195,8 +139,8 @@ impl Session {
 
                 if arg.major() > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
-                    crate::reply::reply_payload(io, header.unique(), 0, &init_out).await?;
-                    return Ok(());
+                    buf.reply_payload(io, header.unique(), &init_out).await?;
+                    return Ok(false);
                 }
 
                 if arg.major() < 7 || (arg.major() == 7 && arg.minor() < 6) {
@@ -205,8 +149,8 @@ impl Session {
                         arg.major(),
                         arg.minor()
                     );
-                    crate::reply::reply_err(io, header.unique(), libc::EPROTO).await?;
-                    return Ok(());
+                    buf.reply_err(io, header.unique(), libc::EPROTO).await?;
+                    return Err(io::Error::from_raw_os_error(libc::EPROTO));
                 }
 
                 // remember the protocol version
@@ -219,31 +163,31 @@ impl Session {
 
                 self.got_init = true;
                 if let Err(Error(err)) = ops.init(header, &arg, &mut init_out).await {
-                    crate::reply::reply_err(io, header.unique(), err).await?;
-                    return Ok(());
+                    buf.reply_err(io, header.unique(), err).await?;
+                    return Ok(false);
                 };
-                crate::reply::reply_payload(io, header.unique(), 0, &init_out).await?;
+                buf.reply_payload(io, header.unique(), &init_out).await?;
             }
             _ if !self.got_init => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode()
                 );
-                crate::reply::reply_err(io, header.unique(), libc::EIO).await?;
-                return Ok(());
+                buf.reply_err(io, header.unique(), libc::EIO).await?;
+                return Ok(false);
             }
             Arg::Destroy => {
                 ops.destroy().await;
                 self.got_destroy = true;
-                crate::reply::reply_unit(io, header.unique()).await?;
+                buf.reply_unit(io, header.unique()).await?;
             }
             _ if self.got_destroy => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode()
                 );
-                crate::reply::reply_err(io, header.unique(), libc::EIO).await?;
-                return Ok(());
+                buf.reply_err(io, header.unique(), libc::EIO).await?;
+                return Ok(false);
             }
             Arg::Lookup { name } => reply_payload!(ops.lookup(header, name)),
             Arg::Forget(arg) => {
@@ -296,13 +240,12 @@ impl Session {
             // Rename2,
             // Lseek,
             // CopyFileRange,
-            Arg::Unknown { opcode, .. } => {
-                log::warn!("unsupported opcode: {:?}", opcode);
-                crate::reply::reply_err(io, header.unique(), libc::ENOSYS).await?;
-                return Ok(());
+            Arg::Unknown => {
+                log::warn!("unsupported opcode: {:?}", header.opcode());
+                buf.reply_err(io, header.unique(), libc::ENOSYS).await?;
             }
         }
 
-        Ok(())
+        Ok(false)
     }
 }
