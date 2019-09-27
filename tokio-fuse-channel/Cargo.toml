@@ -9,7 +9,8 @@ build = "build.rs"
 [dependencies]
 tokio-fuse-io = { version = "0.1.0", path = "../tokio-fuse-io" }
 
-futures-preview = "0.3.0-alpha.18"
+futures-io-preview = "0.3.0-alpha.18"
+futures-util-preview = "0.3.0-alpha.18"
 libc = "0.2"
 mio = "0.6"
 tokio-io = "0.2.0-alpha.1"
