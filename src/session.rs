@@ -1,7 +1,7 @@
 use crate::{
     error::Error, //
     op::Operations,
-    request::Op,
+    request::Arg,
     MAX_WRITE_SIZE,
 };
 use fuse_async_abi::InitOut;
@@ -46,7 +46,7 @@ impl Session {
         &'a mut self,
         io: &'a mut I,
         buf: &'a mut Vec<u8>,
-        op: &'a mut T,
+        ops: &'a mut T,
         sig: S,
     ) -> io::Result<Option<S::Output>>
     where
@@ -56,7 +56,7 @@ impl Session {
     {
         let mut sig = sig;
         loop {
-            let mut turn = self.turn(io, buf, op);
+            let mut turn = self.turn(io, buf, ops);
             let mut turn = unsafe { Pin::new_unchecked(&mut turn) }.fuse();
 
             select! {
@@ -80,7 +80,7 @@ impl Session {
         &'a mut self,
         io: &'a mut I,
         buf: &'a mut Vec<u8>,
-        op: &'a mut T,
+        ops: &'a mut T,
     ) -> io::Result<bool>
     where
         I: AsyncRead + AsyncWrite + Unpin,
@@ -89,7 +89,7 @@ impl Session {
         if self.receive(io, buf).await? {
             return Ok(true);
         }
-        self.process(io, buf, op).await?;
+        self.process(io, buf, ops).await?;
         Ok(false)
     }
 
@@ -148,8 +148,8 @@ impl Session {
             return Ok(());
         }
 
-        let (header, op) = crate::request::parse(&buf[..])?;
-        log::debug!("Got a request: header={:?}, op={:?}", header, op);
+        let (header, arg) = crate::request::parse(&buf[..])?;
+        log::debug!("Got a request: header={:?}, arg={:?}", header, arg);
 
         macro_rules! reply_payload {
             ($e:expr) => {
@@ -173,36 +173,36 @@ impl Session {
             };
         }
 
-        match op {
-            Op::Init(op) => {
+        match arg {
+            Arg::Init(arg) => {
                 let mut init_out = InitOut::default();
 
-                if op.major() > 7 {
+                if arg.major() > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
                     crate::reply::reply_payload(io, header.unique(), 0, &init_out).await?;
                     return Ok(());
                 }
 
-                if op.major() < 7 || (op.major() == 7 && op.minor() < 6) {
+                if arg.major() < 7 || (arg.major() == 7 && arg.minor() < 6) {
                     log::warn!(
                         "unsupported protocol version: {}.{}",
-                        op.major(),
-                        op.minor()
+                        arg.major(),
+                        arg.minor()
                     );
                     crate::reply::reply_err(io, header.unique(), libc::EPROTO).await?;
                     return Ok(());
                 }
 
                 // remember the protocol version
-                self.proto_major = Some(op.major());
-                self.proto_minor = Some(op.minor());
+                self.proto_major = Some(arg.major());
+                self.proto_minor = Some(arg.minor());
 
                 // TODO: max_background, congestion_threshold, time_gran, max_pages
-                init_out.set_max_readahead(op.max_readahead());
+                init_out.set_max_readahead(arg.max_readahead());
                 init_out.set_max_write(MAX_WRITE_SIZE as u32);
 
                 self.got_init = true;
-                if let Err(Error(err)) = ops.init(header, &op, &mut init_out).await {
+                if let Err(Error(err)) = ops.init(header, &arg, &mut init_out).await {
                     crate::reply::reply_err(io, header.unique(), err).await?;
                     return Ok(());
                 };
@@ -216,7 +216,7 @@ impl Session {
                 crate::reply::reply_err(io, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
-            Op::Destroy => {
+            Arg::Destroy => {
                 ops.destroy().await;
                 self.got_destroy = true;
                 crate::reply::reply_unit(io, header.unique()).await?;
@@ -229,42 +229,46 @@ impl Session {
                 crate::reply::reply_err(io, header.unique(), libc::EIO).await?;
                 return Ok(());
             }
-            Op::Lookup { name } => reply_payload!(ops.lookup(header, name)),
-            Op::Forget(op) => {
-                ops.forget(header, op).await;
+            Arg::Lookup { name } => reply_payload!(ops.lookup(header, name)),
+            Arg::Forget(arg) => {
+                ops.forget(header, arg).await;
                 // no reply
             }
-            Op::Getattr(op) => reply_payload!(ops.getattr(header, &op)),
-            Op::Setattr(op) => reply_payload!(ops.setattr(header, &op)),
-            Op::Readlink => reply_payload!(ops.readlink(header)),
-            Op::Symlink { name, link } => reply_payload!(ops.symlink(header, name, link)),
-            Op::Mknod { op, name } => reply_payload!(ops.mknod(header, op, name)),
-            Op::Mkdir { op, name } => reply_payload!(ops.mkdir(header, op, name)),
-            Op::Unlink { name } => reply_unit!(ops.unlink(header, name)),
-            Op::Rmdir { name } => reply_unit!(ops.unlink(header, name)),
-            Op::Rename { op, name, newname } => reply_unit!(ops.rename(header, op, name, newname)),
-            Op::Link { op, newname } => reply_payload!(ops.link(header, op, newname)),
-            Op::Open(op) => reply_payload!(ops.open(header, op)),
-            Op::Read(op) => reply_payload!(ops.read(header, op)),
-            Op::Write { op, data } => reply_payload!(ops.write(header, op, data)),
-            Op::Release(op) => reply_unit!(ops.release(header, op)),
-            Op::Statfs => reply_payload!(ops.statfs(header)),
-            Op::Fsync(op) => reply_unit!(ops.fsync(header, op)),
-            Op::Setxattr { op, name, value } => reply_unit!(ops.setxattr(header, op, name, value)),
-            Op::Getxattr { op, name } => reply_payload!(ops.getxattr(header, op, name)),
-            Op::Listxattr { op } => reply_payload!(ops.listxattr(header, op)),
-            Op::Removexattr { name } => reply_unit!(ops.removexattr(header, name)),
-            Op::Flush(op) => reply_unit!(ops.flush(header, op)),
-            Op::Opendir(op) => reply_payload!(ops.opendir(header, op)),
-            Op::Readdir(op) => reply_payload!(ops.readdir(header, op)),
-            Op::Releasedir(op) => reply_unit!(ops.releasedir(header, op)),
-            Op::Fsyncdir(op) => reply_unit!(ops.fsyncdir(header, op)),
-            Op::Getlk(op) => reply_payload!(ops.getlk(header, op)),
-            Op::Setlk(op) => reply_unit!(ops.setlk(header, op, false)),
-            Op::Setlkw(op) => reply_unit!(ops.setlk(header, op, true)),
-            Op::Access(op) => reply_unit!(ops.access(header, op)),
-            Op::Create(op) => reply_payload!(ops.create(header, op)),
-            Op::Bmap(op) => reply_payload!(ops.bmap(header, op)),
+            Arg::Getattr(arg) => reply_payload!(ops.getattr(header, &arg)),
+            Arg::Setattr(arg) => reply_payload!(ops.setattr(header, &arg)),
+            Arg::Readlink => reply_payload!(ops.readlink(header)),
+            Arg::Symlink { name, link } => reply_payload!(ops.symlink(header, name, link)),
+            Arg::Mknod { arg, name } => reply_payload!(ops.mknod(header, arg, name)),
+            Arg::Mkdir { arg, name } => reply_payload!(ops.mkdir(header, arg, name)),
+            Arg::Unlink { name } => reply_unit!(ops.unlink(header, name)),
+            Arg::Rmdir { name } => reply_unit!(ops.unlink(header, name)),
+            Arg::Rename { arg, name, newname } => {
+                reply_unit!(ops.rename(header, arg, name, newname))
+            }
+            Arg::Link { arg, newname } => reply_payload!(ops.link(header, arg, newname)),
+            Arg::Open(arg) => reply_payload!(ops.open(header, arg)),
+            Arg::Read(arg) => reply_payload!(ops.read(header, arg)),
+            Arg::Write { arg, data } => reply_payload!(ops.write(header, arg, data)),
+            Arg::Release(arg) => reply_unit!(ops.release(header, arg)),
+            Arg::Statfs => reply_payload!(ops.statfs(header)),
+            Arg::Fsync(arg) => reply_unit!(ops.fsync(header, arg)),
+            Arg::Setxattr { arg, name, value } => {
+                reply_unit!(ops.setxattr(header, arg, name, value))
+            }
+            Arg::Getxattr { arg, name } => reply_payload!(ops.getxattr(header, arg, name)),
+            Arg::Listxattr { arg } => reply_payload!(ops.listxattr(header, arg)),
+            Arg::Removexattr { name } => reply_unit!(ops.removexattr(header, name)),
+            Arg::Flush(arg) => reply_unit!(ops.flush(header, arg)),
+            Arg::Opendir(arg) => reply_payload!(ops.opendir(header, arg)),
+            Arg::Readdir(arg) => reply_payload!(ops.readdir(header, arg)),
+            Arg::Releasedir(arg) => reply_unit!(ops.releasedir(header, arg)),
+            Arg::Fsyncdir(arg) => reply_unit!(ops.fsyncdir(header, arg)),
+            Arg::Getlk(arg) => reply_payload!(ops.getlk(header, arg)),
+            Arg::Setlk(arg) => reply_unit!(ops.setlk(header, arg, false)),
+            Arg::Setlkw(arg) => reply_unit!(ops.setlk(header, arg, true)),
+            Arg::Access(arg) => reply_unit!(ops.access(header, arg)),
+            Arg::Create(arg) => reply_payload!(ops.create(header, arg)),
+            Arg::Bmap(arg) => reply_payload!(ops.bmap(header, arg)),
 
             // Interrupt,
             // Ioctl,
@@ -276,7 +280,7 @@ impl Session {
             // Rename2,
             // Lseek,
             // CopyFileRange,
-            Op::Unknown { opcode, .. } => {
+            Arg::Unknown { opcode, .. } => {
                 log::warn!("unsupported opcode: {:?}", opcode);
                 crate::reply::reply_err(io, header.unique(), libc::ENOSYS).await?;
                 return Ok(());

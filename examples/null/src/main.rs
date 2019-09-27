@@ -4,14 +4,14 @@ use async_trait::async_trait;
 use fuse_async::{
     abi::{
         AttrOut, //
+        GetattrIn,
         InHeader,
-        OpGetattr,
-        OpOpen,
-        OpRead,
-        OpRelease,
-        OpSetattr,
-        OpWrite,
+        OpenIn,
         OpenOut,
+        ReadIn,
+        ReleaseIn,
+        SetattrIn,
+        WriteIn,
         WriteOut,
     },
     Error, Operations, Session,
@@ -61,7 +61,7 @@ impl Operations for Null {
     async fn getattr<'a>(
         &'a mut self,
         header: &'a InHeader,
-        _: &'a OpGetattr,
+        _: &'a GetattrIn,
     ) -> fuse_async::Result<AttrOut> {
         match header.nodeid() {
             1 => Ok(root_attr().into()),
@@ -72,7 +72,7 @@ impl Operations for Null {
     async fn setattr<'a>(
         &'a mut self,
         header: &'a InHeader,
-        _: &'a OpSetattr,
+        _: &'a SetattrIn,
     ) -> fuse_async::Result<AttrOut> {
         match header.nodeid() {
             1 => Ok(root_attr().into()),
@@ -83,7 +83,7 @@ impl Operations for Null {
     async fn open<'a>(
         &'a mut self,
         header: &'a InHeader,
-        _: &'a OpOpen,
+        _: &'a OpenIn,
     ) -> fuse_async::Result<OpenOut> {
         match header.nodeid() {
             1 => Ok(OpenOut::default()),
@@ -94,7 +94,7 @@ impl Operations for Null {
     async fn read<'a>(
         &'a mut self,
         header: &'a InHeader,
-        _: &'a OpRead,
+        _: &'a ReadIn,
     ) -> fuse_async::Result<Cow<'a, [u8]>> {
         match header.nodeid() {
             1 => Ok(Cow::Borrowed(&[] as &[u8])),
@@ -105,7 +105,7 @@ impl Operations for Null {
     async fn write<'a>(
         &'a mut self,
         header: &'a InHeader,
-        _: &'a OpWrite,
+        _: &'a WriteIn,
         buf: &'a [u8],
     ) -> fuse_async::Result<WriteOut> {
         match header.nodeid() {
@@ -121,7 +121,7 @@ impl Operations for Null {
     async fn release<'a>(
         &'a mut self,
         header: &'a InHeader,
-        _: &'a OpRelease,
+        _: &'a ReleaseIn,
     ) -> fuse_async::Result<()> {
         match header.nodeid() {
             1 => Ok(()),

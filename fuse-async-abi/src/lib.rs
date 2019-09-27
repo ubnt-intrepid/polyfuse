@@ -253,11 +253,11 @@ impl InHeader {
 }
 
 #[repr(transparent)]
-pub struct OpInit(fuse_init_in);
+pub struct InitIn(fuse_init_in);
 
-impl fmt::Debug for OpInit {
+impl fmt::Debug for InitIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpInit")
+        f.debug_struct("InitIn")
             .field("major", &self.major())
             .field("minor", &self.minor())
             .field("max_readahead", &self.max_readahead())
@@ -266,7 +266,7 @@ impl fmt::Debug for OpInit {
     }
 }
 
-impl OpInit {
+impl InitIn {
     pub fn major(&self) -> u32 {
         self.0.major
     }
@@ -285,35 +285,35 @@ impl OpInit {
 }
 
 #[repr(transparent)]
-pub struct OpForget(fuse_forget_in);
+pub struct ForgetIn(fuse_forget_in);
 
-impl fmt::Debug for OpForget {
+impl fmt::Debug for ForgetIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpForget")
+        f.debug_struct("ForgetIn")
             .field("nlookup", &self.nlookup())
             .finish()
     }
 }
 
-impl OpForget {
+impl ForgetIn {
     pub fn nlookup(&self) -> u64 {
         self.0.nlookup
     }
 }
 
 #[repr(transparent)]
-pub struct OpGetattr(fuse_getattr_in);
+pub struct GetattrIn(fuse_getattr_in);
 
-impl fmt::Debug for OpGetattr {
+impl fmt::Debug for GetattrIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpGetattr")
+        f.debug_struct("GetattrIn")
             .field("flags", &self.flags())
             .field("fh", &self.fh())
             .finish()
     }
 }
 
-impl OpGetattr {
+impl GetattrIn {
     pub fn flags(&self) -> GetattrFlags {
         GetattrFlags::from_bits_truncate(self.0.getattr_flags)
     }
@@ -330,11 +330,11 @@ bitflags! {
 }
 
 #[repr(transparent)]
-pub struct OpSetattr(fuse_setattr_in);
+pub struct SetattrIn(fuse_setattr_in);
 
-impl fmt::Debug for OpSetattr {
+impl fmt::Debug for SetattrIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpSetattr")
+        f.debug_struct("SetattrIn")
             .field("valid", &self.valid())
             .field("fh", &self.fh())
             .field("size", &self.size())
@@ -349,7 +349,7 @@ impl fmt::Debug for OpSetattr {
     }
 }
 
-impl OpSetattr {
+impl SetattrIn {
     pub fn valid(&self) -> SetattrFlags {
         SetattrFlags::from_bits_truncate(self.0.valid)
     }
@@ -408,11 +408,11 @@ bitflags! {
 }
 
 #[repr(transparent)]
-pub struct OpMknod(fuse_mknod_in);
+pub struct MknodIn(fuse_mknod_in);
 
-impl fmt::Debug for OpMknod {
+impl fmt::Debug for MknodIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpMknod")
+        f.debug_struct("MknodIn")
             .field("mode", &self.mode())
             .field("rdev", &self.rdev())
             .field("umask", &self.umask())
@@ -420,7 +420,7 @@ impl fmt::Debug for OpMknod {
     }
 }
 
-impl OpMknod {
+impl MknodIn {
     pub fn mode(&self) -> u32 {
         self.0.mode
     }
@@ -435,18 +435,18 @@ impl OpMknod {
 }
 
 #[repr(transparent)]
-pub struct OpMkdir(fuse_mkdir_in);
+pub struct MkdirIn(fuse_mkdir_in);
 
-impl fmt::Debug for OpMkdir {
+impl fmt::Debug for MkdirIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpMkdir")
+        f.debug_struct("MkdirIn")
             .field("mode", &self.mode())
             .field("umask", &self.umask())
             .finish()
     }
 }
 
-impl OpMkdir {
+impl MkdirIn {
     pub fn mode(&self) -> u32 {
         self.0.mode
     }
@@ -457,62 +457,62 @@ impl OpMkdir {
 }
 
 #[repr(transparent)]
-pub struct OpRename(fuse_rename_in);
+pub struct RenameIn(fuse_rename_in);
 
-impl fmt::Debug for OpRename {
+impl fmt::Debug for RenameIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpRename")
+        f.debug_struct("RenameIn")
             .field("newdir", &self.newdir())
             .finish()
     }
 }
 
-impl OpRename {
+impl RenameIn {
     pub fn newdir(&self) -> u64 {
         self.0.newdir
     }
 }
 
 #[repr(transparent)]
-pub struct OpLink(fuse_link_in);
+pub struct LinkIn(fuse_link_in);
 
-impl fmt::Debug for OpLink {
+impl fmt::Debug for LinkIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpLink")
+        f.debug_struct("LinkIn")
             .field("oldnodeid", &self.oldnodeid())
             .finish()
     }
 }
 
-impl OpLink {
+impl LinkIn {
     pub fn oldnodeid(&self) -> u64 {
         self.0.oldnodeid
     }
 }
 
 #[repr(transparent)]
-pub struct OpOpen(fuse_open_in);
+pub struct OpenIn(fuse_open_in);
 
-impl fmt::Debug for OpOpen {
+impl fmt::Debug for OpenIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpOpen")
+        f.debug_struct("OpenIn")
             .field("flags", &self.flags())
             .finish()
     }
 }
 
-impl OpOpen {
+impl OpenIn {
     pub fn flags(&self) -> u32 {
         self.0.flags
     }
 }
 
 #[repr(transparent)]
-pub struct OpRead(fuse_read_in);
+pub struct ReadIn(fuse_read_in);
 
-impl fmt::Debug for OpRead {
+impl fmt::Debug for ReadIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpRead")
+        f.debug_struct("ReadIn")
             .field("fh", &self.fh())
             .field("offset", &self.offset())
             .field("size", &self.size())
@@ -523,7 +523,7 @@ impl fmt::Debug for OpRead {
     }
 }
 
-impl OpRead {
+impl ReadIn {
     pub fn fh(&self) -> u64 {
         self.0.fh
     }
@@ -556,11 +556,11 @@ bitflags! {
 }
 
 #[repr(transparent)]
-pub struct OpWrite(fuse_write_in);
+pub struct WriteIn(fuse_write_in);
 
-impl fmt::Debug for OpWrite {
+impl fmt::Debug for WriteIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpWrite")
+        f.debug_struct("WriteIn")
             .field("fh", &self.fh())
             .field("offset", &self.offset())
             .field("size", &self.size())
@@ -571,7 +571,7 @@ impl fmt::Debug for OpWrite {
     }
 }
 
-impl OpWrite {
+impl WriteIn {
     pub fn fh(&self) -> u64 {
         self.0.fh
     }
@@ -605,18 +605,18 @@ bitflags! {
 }
 
 #[repr(transparent)]
-pub struct OpFlush(fuse_flush_in);
+pub struct FlushIn(fuse_flush_in);
 
-impl fmt::Debug for OpFlush {
+impl fmt::Debug for FlushIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpFlush")
+        f.debug_struct("FlushIn")
             .field("fh", &self.fh())
             .field("lock_owner", &self.lock_owner())
             .finish()
     }
 }
 
-impl OpFlush {
+impl FlushIn {
     pub fn fh(&self) -> u64 {
         self.0.fh
     }
@@ -627,11 +627,11 @@ impl OpFlush {
 }
 
 #[repr(transparent)]
-pub struct OpRelease(fuse_release_in);
+pub struct ReleaseIn(fuse_release_in);
 
-impl fmt::Debug for OpRelease {
+impl fmt::Debug for ReleaseIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpRelease")
+        f.debug_struct("ReleaseIn")
             .field("fh", &self.fh())
             .field("flags", &self.flags())
             .field("release_flags", &self.release_flags())
@@ -640,7 +640,7 @@ impl fmt::Debug for OpRelease {
     }
 }
 
-impl OpRelease {
+impl ReleaseIn {
     pub fn fh(&self) -> u64 {
         self.0.fh
     }
@@ -666,18 +666,18 @@ bitflags! {
 }
 
 #[repr(transparent)]
-pub struct OpFsync(fuse_fsync_in);
+pub struct FsyncIn(fuse_fsync_in);
 
-impl fmt::Debug for OpFsync {
+impl fmt::Debug for FsyncIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpFsync")
+        f.debug_struct("FsyncIn")
             .field("fh", &self.fh())
             .field("fsync_flags", &self.fsync_flags())
             .finish()
     }
 }
 
-impl OpFsync {
+impl FsyncIn {
     pub fn fh(&self) -> u64 {
         self.0.fh
     }
@@ -688,35 +688,35 @@ impl OpFsync {
 }
 
 #[repr(transparent)]
-pub struct OpGetxattr(fuse_getxattr_in);
+pub struct GetxattrIn(fuse_getxattr_in);
 
-impl fmt::Debug for OpGetxattr {
+impl fmt::Debug for GetxattrIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpGetxattr")
+        f.debug_struct("GetxattrIn")
             .field("size", &self.size())
             .finish()
     }
 }
 
-impl OpGetxattr {
+impl GetxattrIn {
     pub fn size(&self) -> u32 {
         self.0.size
     }
 }
 
 #[repr(transparent)]
-pub struct OpSetxattr(fuse_setxattr_in);
+pub struct SetxattrIn(fuse_setxattr_in);
 
-impl fmt::Debug for OpSetxattr {
+impl fmt::Debug for SetxattrIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpSetxattr")
+        f.debug_struct("SetxattrIn")
             .field("size", &self.size())
             .field("flags", &self.flags())
             .finish()
     }
 }
 
-impl OpSetxattr {
+impl SetxattrIn {
     pub fn size(&self) -> u32 {
         self.0.size
     }
@@ -727,11 +727,11 @@ impl OpSetxattr {
 }
 
 #[repr(transparent)]
-pub struct OpLk(fuse_lk_in);
+pub struct LkIn(fuse_lk_in);
 
-impl fmt::Debug for OpLk {
+impl fmt::Debug for LkIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpLk")
+        f.debug_struct("LkIn")
             .field("fh", &self.fh())
             .field("owner", &self.owner())
             .field("lk", &self.lk())
@@ -740,7 +740,7 @@ impl fmt::Debug for OpLk {
     }
 }
 
-impl OpLk {
+impl LkIn {
     pub fn fh(&self) -> u64 {
         self.0.fh
     }
@@ -765,37 +765,37 @@ bitflags! {
 }
 
 #[repr(transparent)]
-pub struct OpAccess(fuse_access_in);
+pub struct AccessIn(fuse_access_in);
 
-impl fmt::Debug for OpAccess {
+impl fmt::Debug for AccessIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpAccess")
+        f.debug_struct("AccessIn")
             .field("mask", &self.mask())
             .finish()
     }
 }
 
-impl OpAccess {
+impl AccessIn {
     pub fn mask(&self) -> u32 {
         self.0.mask
     }
 }
 
 #[repr(transparent)]
-pub struct OpCreate(fuse_create_in);
+pub struct CreateIn(fuse_create_in);
 
-impl fmt::Debug for OpCreate {
+impl fmt::Debug for CreateIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpCreate").finish()
+        f.debug_struct("CreateIn").finish()
     }
 }
 
 #[repr(transparent)]
-pub struct OpBmap(fuse_bmap_in);
+pub struct BmapIn(fuse_bmap_in);
 
-impl fmt::Debug for OpBmap {
+impl fmt::Debug for BmapIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpCreate").finish()
+        f.debug_struct("CreateIn").finish()
     }
 }
 
