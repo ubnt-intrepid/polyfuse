@@ -2,6 +2,8 @@
 
 #![warn(missing_debug_implementations, clippy::unimplemented)]
 
+pub use fuse_async_abi as abi;
+
 mod error;
 mod op;
 mod session;

@@ -1,8 +1,7 @@
-# `tokio-fuse`
+# `fuse-async`
 
 The goal of this project is to develop a FUSE binding for Rust language
-that has a high affinity with the Tokio runtime and incoming `async_await`
-language feature.
+that has a high affinity with the incoming `async_await` language feature.
 
 ## License
 

@@ -33,7 +33,7 @@ jobs:
     - name: Build API doc
       run: |
         cargo doc --all --verbose
-        echo '<meta http-equiv="refresh" content="0;url=tokio_fuse">' > ./target/doc/index.html
+        echo '<meta http-equiv="refresh" content="0;url=fuse_async">' > ./target/doc/index.html
     - name: Deply API doc
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       uses: peaceiris/actions-gh-pages@v2.3.1

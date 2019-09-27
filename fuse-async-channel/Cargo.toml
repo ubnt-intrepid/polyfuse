@@ -1,5 +1,5 @@
 [package]
-name = "tokio-fuse-channel"
+name = "fuse-async-channel"
 version = "0.1.0"
 publish = false
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
@@ -7,13 +7,12 @@ edition = "2018"
 build = "build.rs"
 
 [dependencies]
-tokio-fuse-io = { version = "0.1.0", path = "../tokio-fuse-io" }
+fuse-async-io = { version = "0.1.0", path = "../fuse-async-io" }
 
 futures-io-preview = "0.3.0-alpha.18"
 futures-util-preview = "0.3.0-alpha.18"
 libc = "0.2"
 mio = "0.6"
-tokio-io = "0.2.0-alpha.1"
 tokio-net = "0.2.0-alpha.1"
 
 [build-dependencies]

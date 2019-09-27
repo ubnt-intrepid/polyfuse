@@ -4,15 +4,14 @@ use crate::{
     request::Op,
     MAX_WRITE_SIZE,
 };
+use fuse_async_abi::InitOut;
 use futures::{
     future::{FusedFuture, FutureExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite},
     select,
     stream::StreamExt,
 };
 use std::{io, pin::Pin};
-use tokio_fuse_abi::InitOut;
-use tokio_fuse_io::{AsyncReadVectored, AsyncWriteVectored};
-use tokio_io::AsyncReadExt;
 
 #[derive(Debug)]
 pub struct Session {
@@ -51,7 +50,7 @@ impl Session {
         op: &'a mut T,
     ) -> io::Result<()>
     where
-        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
         T: Operations,
     {
         self.run_until(io, buf, op, default_shutdown_signal()?)
@@ -68,7 +67,7 @@ impl Session {
         sig: S,
     ) -> io::Result<Option<S::Output>>
     where
-        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
         T: Operations,
         S: FusedFuture + Unpin,
     {
@@ -101,7 +100,7 @@ impl Session {
         op: &'a mut T,
     ) -> io::Result<bool>
     where
-        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
         T: Operations,
     {
         if self.receive(io, buf).await? {
@@ -113,7 +112,7 @@ impl Session {
 
     async fn receive<'a, I>(&'a mut self, io: &'a mut I, buf: &'a mut Vec<u8>) -> io::Result<bool>
     where
-        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
     {
         if self.got_destroy {
             return Ok(true);
@@ -159,7 +158,7 @@ impl Session {
         ops: &'a mut T,
     ) -> io::Result<()>
     where
-        I: AsyncReadVectored + AsyncWriteVectored + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
         T: Operations,
     {
         if self.got_destroy {

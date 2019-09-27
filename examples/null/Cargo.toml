@@ -11,9 +11,8 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-tokio-fuse = { version = "0.1.0", path = "../.." }
-tokio-fuse-abi = { version = "0.1.0", path = "../../tokio-fuse-abi" }
-tokio-fuse-channel = { version = "0.1.0", path = "../../tokio-fuse-channel" }
+fuse-async = { version = "0.1.0", path = "../.." }
+fuse-async-channel = { version = "0.1.0", path = "../../fuse-async-channel" }
 
 async-trait = "0.1"
 libc = "0.2"

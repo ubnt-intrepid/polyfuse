@@ -1,18 +1,29 @@
 #![warn(clippy::unimplemented)]
 
 use async_trait::async_trait;
-use std::{borrow::Cow, env, io, path::PathBuf};
-use tokio_fuse::{Error, Operations, Session};
-use tokio_fuse_abi::{
-    AttrOut, InHeader, OpGetattr, OpOpen, OpRead, OpRelease, OpSetattr, OpWrite, OpenOut, WriteOut,
+use fuse_async::{
+    abi::{
+        AttrOut, //
+        InHeader,
+        OpGetattr,
+        OpOpen,
+        OpRead,
+        OpRelease,
+        OpSetattr,
+        OpWrite,
+        OpenOut,
+        WriteOut,
+    },
+    Error, Operations, Session,
 };
-use tokio_fuse_channel::Channel;
+use fuse_async_channel::Channel;
+use std::{borrow::Cow, env, io, path::PathBuf};
 
-const BUFFER_SIZE: usize = tokio_fuse::MAX_WRITE_SIZE + 4096;
+const BUFFER_SIZE: usize = fuse_async::MAX_WRITE_SIZE + 4096;
 
 #[tokio::main(single_thread)]
 async fn main() -> io::Result<()> {
-    std::env::set_var("RUST_LOG", "tokio_fuse=debug");
+    std::env::set_var("RUST_LOG", "fuse_async=debug");
     pretty_env_logger::init();
 
     let mountpoint = env::args()
@@ -43,7 +54,7 @@ impl Operations for Null {
         &'a mut self,
         header: &'a InHeader,
         _: &'a OpGetattr,
-    ) -> tokio_fuse::Result<AttrOut> {
+    ) -> fuse_async::Result<AttrOut> {
         match header.nodeid() {
             1 => Ok(root_attr().into()),
             _ => Err(Error(libc::ENOENT)),
@@ -54,7 +65,7 @@ impl Operations for Null {
         &'a mut self,
         header: &'a InHeader,
         _: &'a OpSetattr,
-    ) -> tokio_fuse::Result<AttrOut> {
+    ) -> fuse_async::Result<AttrOut> {
         match header.nodeid() {
             1 => Ok(root_attr().into()),
             _ => Err(Error(libc::ENOENT)),
@@ -65,7 +76,7 @@ impl Operations for Null {
         &'a mut self,
         header: &'a InHeader,
         _: &'a OpOpen,
-    ) -> tokio_fuse::Result<OpenOut> {
+    ) -> fuse_async::Result<OpenOut> {
         match header.nodeid() {
             1 => Ok(OpenOut::default()),
             _ => Err(Error(libc::ENOENT)),
@@ -76,7 +87,7 @@ impl Operations for Null {
         &'a mut self,
         header: &'a InHeader,
         _: &'a OpRead,
-    ) -> tokio_fuse::Result<Cow<'a, [u8]>> {
+    ) -> fuse_async::Result<Cow<'a, [u8]>> {
         match header.nodeid() {
             1 => Ok(Cow::Borrowed(&[] as &[u8])),
             _ => Err(Error(libc::ENOENT)),
@@ -88,7 +99,7 @@ impl Operations for Null {
         header: &'a InHeader,
         _: &'a OpWrite,
         buf: &'a [u8],
-    ) -> tokio_fuse::Result<WriteOut> {
+    ) -> fuse_async::Result<WriteOut> {
         match header.nodeid() {
             1 => {
                 let mut out = WriteOut::default();
@@ -103,7 +114,7 @@ impl Operations for Null {
         &'a mut self,
         header: &'a InHeader,
         _: &'a OpRelease,
-    ) -> tokio_fuse::Result<()> {
+    ) -> fuse_async::Result<()> {
         match header.nodeid() {
             1 => Ok(()),
             _ => Err(Error(libc::ENOENT)),

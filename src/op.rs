@@ -3,8 +3,7 @@ use crate::{
     reply::{CreateOut, XattrOut},
 };
 use async_trait::async_trait;
-use std::{borrow::Cow, ffi::OsStr};
-use tokio_fuse_abi::{
+use fuse_async_abi::{
     AttrOut, //
     BmapOut,
     EntryOut,
@@ -35,6 +34,7 @@ use tokio_fuse_abi::{
     StatfsOut,
     WriteOut,
 };
+use std::{borrow::Cow, ffi::OsStr};
 
 #[async_trait(?Send)]
 #[allow(unused_variables)]

@@ -1,20 +1,17 @@
-mod futures_io;
-mod tokio_io;
-
 mod libfuse3;
 use libfuse3::Connection;
 
-use ::tokio_io::AsyncWrite;
+use fuse_async_io::{set_nonblocking, FdSource};
+use futures_io::{AsyncRead, AsyncWrite, Initializer, IoSlice, IoSliceMut};
 use futures_util::ready;
 use mio::{unix::UnixReady, Ready};
 use std::{
     ffi::OsStr,
-    io::{self, IoSlice, IoSliceMut, Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     pin::Pin,
     task::{self, Poll},
 };
-use tokio_fuse_io::{set_nonblocking, FdSource};
 use tokio_net::util::PollEvented;
 
 /// Asynchronous I/O to communicate with the kernel.
@@ -50,10 +47,6 @@ impl Channel {
         &self.mountpoint
     }
 
-    fn fd(self: Pin<&mut Self>) -> Pin<&mut PollEvented<FdSource>> {
-        unsafe { Pin::map_unchecked_mut(self, |this| &mut this.fd) }
-    }
-
     fn poll_read_fn<F, R>(
         mut self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
@@ -76,6 +69,32 @@ impl Channel {
         }
     }
 
+    fn poll_write_fn<F, R>(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        f: F,
+    ) -> Poll<io::Result<R>>
+    where
+        F: FnOnce(&mut FdSource) -> io::Result<R>,
+    {
+        ready!(self.fd.poll_write_ready(cx))?;
+
+        match f(self.fd.get_mut()) {
+            Ok(ret) => Poll::Ready(Ok(ret)),
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                self.fd.clear_write_ready(cx)?;
+                Poll::Pending
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+}
+
+impl AsyncRead for Channel {
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
+    }
+
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
@@ -91,36 +110,30 @@ impl Channel {
     ) -> Poll<io::Result<usize>> {
         self.poll_read_fn(cx, |fd| fd.read_vectored(dst))
     }
+}
 
+impl AsyncWrite for Channel {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
         src: &[u8],
     ) -> Poll<io::Result<usize>> {
-        AsyncWrite::poll_write(self.fd(), cx, src)
+        self.poll_write_fn(cx, |fd| fd.write(src))
     }
 
     fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
         src: &[IoSlice],
     ) -> Poll<io::Result<usize>> {
-        ready!(self.fd.poll_write_ready(cx))?;
-        match self.fd.get_mut().write_vectored(src) {
-            Ok(count) => Poll::Ready(Ok(count)),
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.fd.clear_write_ready(cx)?;
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
+        self.poll_write_fn(cx, |fd| fd.write_vectored(src))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-        AsyncWrite::poll_flush(self.fd(), cx)
+        self.poll_write_fn(cx, |fd| fd.flush())
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-        AsyncWrite::poll_shutdown(self.fd(), cx)
+    fn poll_close(self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }

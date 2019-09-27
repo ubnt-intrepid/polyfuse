@@ -1,13 +1,6 @@
 //! Replies to the kernel.
 
-use std::{
-    borrow::Cow,
-    ffi::OsStr,
-    io::{self, IoSlice},
-    mem,
-    os::unix::ffi::OsStrExt,
-};
-use tokio_fuse_abi::{
+use fuse_async_abi::{
     AttrOut, //
     BmapOut,
     EntryOut,
@@ -19,7 +12,14 @@ use tokio_fuse_abi::{
     StatfsOut,
     WriteOut,
 };
-use tokio_fuse_io::{AsyncWriteVectored, AsyncWriteVectoredExt};
+use futures::io::{AsyncWrite, AsyncWriteExt};
+use std::{
+    borrow::Cow,
+    ffi::OsStr,
+    io::{self, IoSlice},
+    mem,
+    os::unix::ffi::OsStrExt,
+};
 
 #[derive(Debug)]
 pub enum XattrOut<'a> {
@@ -101,7 +101,7 @@ pub async fn reply_payload<'a, W: ?Sized, T: ?Sized>(
     data: &'a T,
 ) -> io::Result<()>
 where
-    W: AsyncWriteVectored + Unpin,
+    W: AsyncWrite + Unpin,
     T: Payload,
 {
     let data = unsafe { data.to_io_slice() };
@@ -115,14 +115,14 @@ where
 
 pub async fn reply_unit<'a, W: ?Sized>(writer: &'a mut W, unique: u64) -> io::Result<()>
 where
-    W: AsyncWriteVectored + Unpin,
+    W: AsyncWrite + Unpin,
 {
     reply_payload(writer, unique, 0, &[] as &[u8]).await
 }
 
 pub async fn reply_err<'a, W: ?Sized>(writer: &'a mut W, unique: u64, error: i32) -> io::Result<()>
 where
-    W: AsyncWriteVectored + Unpin,
+    W: AsyncWrite + Unpin,
 {
     reply_payload(writer, unique, error, &[] as &[u8]).await
 }

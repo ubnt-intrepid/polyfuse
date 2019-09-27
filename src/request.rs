@@ -1,7 +1,6 @@
 //! Requests from the kernel.
 
-use std::{ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
-use tokio_fuse_abi::{
+use fuse_async_abi::{
     InHeader,
     OpAccess, //
     OpBmap,
@@ -25,6 +24,7 @@ use tokio_fuse_abi::{
     OpWrite,
     Opcode,
 };
+use std::{ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
 
 #[derive(Debug)]
 pub enum Op<'a> {
