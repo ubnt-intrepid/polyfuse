@@ -50,6 +50,28 @@ impl Channel {
     fn fd(self: Pin<&mut Self>) -> Pin<&mut PollEvented<OwnedEventedFd>> {
         unsafe { Pin::map_unchecked_mut(self, |this| &mut this.fd) }
     }
+
+    fn poll_read_fn<F, R>(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        f: F,
+    ) -> Poll<io::Result<R>>
+    where
+        F: FnOnce(&mut OwnedEventedFd) -> io::Result<R>,
+    {
+        let mut ready = Ready::readable();
+        ready.insert(UnixReady::error());
+        ready!(self.fd.poll_read_ready(cx, ready))?;
+
+        match f(self.fd.get_mut()) {
+            Ok(ret) => Poll::Ready(Ok(ret)),
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                self.fd.clear_read_ready(cx, ready)?;
+                Poll::Pending
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
 }
 
 impl AsyncRead for Channel {
@@ -58,22 +80,11 @@ impl AsyncRead for Channel {
     }
 
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
         dst: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        let mut ready = Ready::readable();
-        ready.insert(UnixReady::error());
-        ready!(self.fd.poll_read_ready(cx, ready))?;
-
-        match self.fd.get_mut().read(dst) {
-            Ok(count) => Poll::Ready(Ok(count)),
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.fd.clear_read_ready(cx, ready)?;
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
+        self.poll_read_fn(cx, |fd| fd.read(dst))
     }
 }
 
@@ -97,22 +108,11 @@ impl AsyncWrite for Channel {
 
 impl AsyncReadVectored for Channel {
     fn poll_read_vectored(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
         dst: &mut [IoSliceMut],
     ) -> Poll<io::Result<usize>> {
-        let mut ready = Ready::readable();
-        ready.insert(UnixReady::error());
-        ready!(self.fd.poll_read_ready(cx, ready))?;
-
-        match self.fd.get_mut().read_vectored(dst) {
-            Ok(count) => Poll::Ready(Ok(count)),
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.fd.clear_read_ready(cx, ready)?;
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
+        self.poll_read_fn(cx, |fd| fd.read_vectored(dst))
     }
 }
 
