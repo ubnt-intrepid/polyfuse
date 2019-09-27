@@ -32,7 +32,10 @@ jobs:
       run: cargo test --all --verbose
     - name: Build API doc
       run: |
-        cargo doc --all --verbose
+        cargo doc -p fuse-async-abi --verbose
+        cargo doc -p fuse-async-io --verbose
+        cargo doc -p fuse-async-channel --verbose
+        cargo doc -p fuse-async --all-features --verbose
         echo '<meta http-equiv="refresh" content="0;url=fuse_async">' > ./target/doc/index.html
     - name: Deply API doc
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'

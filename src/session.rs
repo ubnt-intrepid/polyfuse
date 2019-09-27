@@ -41,6 +41,22 @@ impl Session {
         self.proto_minor
     }
 
+    #[cfg(feature = "tokio")]
+    pub async fn run<'a, I, T>(
+        &'a mut self,
+        io: &'a mut I,
+        buf: &'a mut Vec<u8>,
+        ops: &'a mut T,
+    ) -> io::Result<()>
+    where
+        I: AsyncRead + AsyncWrite + Unpin,
+        T: Operations + Send,
+    {
+        self.run_until(io, buf, ops, crate::tokio::default_shutdown_signal()?)
+            .await?;
+        Ok(())
+    }
+
     /// Run a session with the kernel until the provided shutdown signal is received.
     pub async fn run_until<'a, I, T, S>(
         &'a mut self,

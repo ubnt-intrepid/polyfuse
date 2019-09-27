@@ -14,6 +14,16 @@ futures-preview = { version = "0.3.0-alpha.18", features = ["nightly", "async-aw
 libc = "0.2"
 log = "0.4"
 
+[dependencies.tokio-net]
+version = "0.2.0-alpha.1"
+optional = true
+features = ["signal"]
+default-features = false
+
+[features]
+default = ["tokio"]
+tokio = ["tokio-net"]
+
 [workspace]
 members = [
   ".",

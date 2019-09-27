@@ -10,6 +10,7 @@ mod session;
 
 pub mod reply;
 pub mod request;
+pub mod tokio;
 
 pub use crate::error::{Error, Result};
 pub use crate::op::Operations;
