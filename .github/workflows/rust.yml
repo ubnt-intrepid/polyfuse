@@ -11,9 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: rust:latest
-      options: --security-opt seccomp=unconfined
     steps:
     - uses: actions/checkout@v1
+
     - name: Install dependencies
       run: |
         apt-get update -yqq
@@ -25,21 +25,27 @@ jobs:
              clang \
              libfuse-dev \
              udev \
-             libudev-dev \
-             libssl-dev \
-             cmake \
-             zlib1g-dev
-        cargo install --debug cargo-tarpaulin
-    - name: Build
-      run: cargo build --all --verbose
+             libudev-dev
+        rustup component add clippy rustfmt
+
     - name: Run tests
-      run: cargo test --all --verbose
-    - name: Run coverage test
-      run: cargo tarpaulin --out Xml --all --verbose
-    - uses: codecov/codecov-action@v1.0.2
-      if: success()
+      uses: actions-rs/cargo@v1
       with:
-        token: ${{ secrets.CODECOV_TOKEN }}
+        command: test
+        args: --all --verbose
+
+    - name: Run rustfmt
+      uses: actions-rs/cargo@v1
+      with:
+        command: fmt
+        args: --all -- --check
+
+    - name: Run clippy
+      uses: actions-rs/cargo@v1
+      with:
+        command: clippy
+        args: --all
+
     - name: Build API doc
       run: |
         cargo doc -p fuse-async-abi --verbose
@@ -53,3 +59,33 @@ jobs:
         ACTIONS_DEPLOY_KEY: ${{ secrets.ACTIONS_DEPLOY_KEY }}
         PUBLISH_BRANCH: gh-pages
         PUBLISH_DIR: ./target/doc
+
+  Tarpaulin:
+    runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:latest-nightly
+      options: --security-opt seccomp=unconfined
+    steps:
+    - name: Install dependencies
+      run: |
+        apt-get update -yqq
+        apt-get install -yqq --no-install-recommends \
+             build-essential \
+             pkg-config \
+             llvm-dev \
+             libclang-dev \
+             clang \
+             libfuse-dev \
+             udev \
+             libudev-dev
+    - name: Run coverage test
+      continue-on-error: true
+      uses: actions-rs/cargo@v1
+      with:
+        command: tarpaulin
+        args: --out Xml --all --verbose
+
+    - uses: codecov/codecov-action@v1.0.2
+      if: success()
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
