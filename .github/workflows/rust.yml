@@ -80,10 +80,8 @@ jobs:
              libudev-dev
     - name: Run coverage test
       continue-on-error: true
-      uses: actions-rs/cargo@v1
-      with:
-        command: tarpaulin
-        args: --out Xml --all --verbose
+      run: |
+        cargo tarpaulin --out Xml --all --verbose
 
     - uses: codecov/codecov-action@v1.0.2
       if: success()
