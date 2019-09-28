@@ -125,14 +125,14 @@ where
     reply_raw(writer, unique, 0, data).await
 }
 
-pub async fn reply_unit<'a, W: ?Sized>(writer: &'a mut W, unique: u64) -> io::Result<()>
+pub async fn reply_unit<W: ?Sized>(writer: &mut W, unique: u64) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
     reply_raw(writer, unique, 0, &[] as &[u8]).await
 }
 
-pub async fn reply_err<'a, W: ?Sized>(writer: &'a mut W, unique: u64, error: i32) -> io::Result<()>
+pub async fn reply_err<W: ?Sized>(writer: &mut W, unique: u64, error: i32) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {

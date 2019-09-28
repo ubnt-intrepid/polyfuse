@@ -21,6 +21,12 @@ pub struct Session {
     got_destroy: bool,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
     /// Create a new `Session`.
     pub fn new() -> Self {
@@ -93,6 +99,7 @@ impl Session {
     }
 
     /// Receives one request from the channel, and returns its processing result.
+    #[allow(clippy::cognitive_complexity)]
     pub async fn turn<'a, I, T>(
         &'a mut self,
         io: &'a mut I,
