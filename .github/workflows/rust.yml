@@ -20,9 +20,6 @@ jobs:
         apt-get install -yqq --no-install-recommends \
              build-essential \
              pkg-config \
-             llvm-dev \
-             libclang-dev \
-             clang \
              libfuse-dev \
              udev \
              libudev-dev
@@ -72,9 +69,6 @@ jobs:
         apt-get install -yqq --no-install-recommends \
              build-essential \
              pkg-config \
-             llvm-dev \
-             libclang-dev \
-             clang \
              libfuse-dev \
              udev \
              libudev-dev

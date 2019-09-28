@@ -1,4 +1,5 @@
 use crate::{
+    abi::Unique,
     reply::{reply_err, reply_payload, reply_unit, Payload},
     request::Arg,
 };
@@ -69,7 +70,7 @@ impl Buffer {
     pub async fn reply_err<'a, W>(
         &'a mut self,
         io: &'a mut W,
-        unique: u64,
+        unique: Unique,
         err: i32,
     ) -> io::Result<()>
     where
@@ -78,7 +79,7 @@ impl Buffer {
         reply_err(io, unique, err).await
     }
 
-    pub async fn reply_unit<'a, W>(&'a mut self, io: &'a mut W, unique: u64) -> io::Result<()>
+    pub async fn reply_unit<'a, W>(&'a mut self, io: &'a mut W, unique: Unique) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
@@ -88,7 +89,7 @@ impl Buffer {
     pub async fn reply_payload<'a, W, T>(
         &'a mut self,
         io: &'a mut W,
-        unique: u64,
+        unique: Unique,
         payload: &'a T,
     ) -> io::Result<()>
     where
@@ -98,7 +99,7 @@ impl Buffer {
         reply_payload(io, unique, payload).await
     }
 
-    pub async fn reply_none<'a, W>(&'a mut self, io: &'a mut W, unique: u64) -> io::Result<()> {
+    pub async fn reply_none<'a, W>(&'a mut self, io: &'a mut W, unique: Unique) -> io::Result<()> {
         drop((io, unique));
         Ok(())
     }

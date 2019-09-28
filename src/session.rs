@@ -120,8 +120,8 @@ impl Session {
         }
 
         let (header, arg) = buf.parse()?;
-        let unique = header.unique();
-        let opcode = header.opcode();
+        let unique = header.unique;
+        let opcode = header.opcode;
         log::debug!("Got a request: header={:?}, arg={:?}", header, arg);
 
         macro_rules! reply_payload {
@@ -146,29 +146,25 @@ impl Session {
             Arg::Init(arg) => {
                 let mut init_out = InitOut::default();
 
-                if arg.major() > 7 {
+                if arg.major > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
                     buf.reply_payload(io, unique, &init_out).await?;
                     return Ok(false);
                 }
 
-                if arg.major() < 7 || (arg.major() == 7 && arg.minor() < 6) {
-                    log::warn!(
-                        "unsupported protocol version: {}.{}",
-                        arg.major(),
-                        arg.minor()
-                    );
+                if arg.major < 7 || (arg.major == 7 && arg.minor < 6) {
+                    log::warn!("unsupported protocol version: {}.{}", arg.major, arg.minor);
                     buf.reply_err(io, unique, libc::EPROTO).await?;
                     return Err(io::Error::from_raw_os_error(libc::EPROTO));
                 }
 
                 // remember the protocol version
-                self.proto_major = Some(arg.major());
-                self.proto_minor = Some(arg.minor());
+                self.proto_major = Some(arg.major);
+                self.proto_minor = Some(arg.minor);
 
                 // TODO: max_background, congestion_threshold, time_gran, max_pages
-                init_out.set_max_readahead(arg.max_readahead());
-                init_out.set_max_write(MAX_WRITE_SIZE as u32);
+                init_out.max_readahead = arg.max_readahead;
+                init_out.max_write = MAX_WRITE_SIZE as u32;
 
                 self.got_init = true;
                 if let Err(Error(err)) = ops.init(header, &arg, &mut init_out).await {
@@ -190,7 +186,7 @@ impl Session {
             _ if self.got_destroy => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
-                    header.opcode()
+                    header.opcode
                 );
                 buf.reply_err(io, unique, libc::EIO).await?;
                 return Ok(false);

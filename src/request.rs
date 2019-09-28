@@ -114,7 +114,7 @@ pub enum Arg<'a, T = &'a [u8]> {
 
 pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a, &'a [u8]>)> {
     let (header, payload) = parse_header(buf)?;
-    if buf.len() < header.len() as usize {
+    if buf.len() < header.len as usize {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "received data is too short",
@@ -128,195 +128,185 @@ pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a, &'a [u8]>)>
 
 #[allow(clippy::cognitive_complexity)]
 pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<Arg<'a, &'a [u8]>> {
-    let arg = match header.opcode() {
-        Opcode::FUSE_INIT => {
+    let arg = match header.opcode {
+        Opcode::Init => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Init(arg)
         }
-        Opcode::FUSE_DESTROY => {
+        Opcode::Destroy => {
             debug_assert!(payload.is_empty());
             Arg::Destroy
         }
-        Opcode::FUSE_LOOKUP => {
+        Opcode::Lookup => {
             let (name, remains) = fetch_str(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Lookup { name }
         }
-        Opcode::FUSE_FORGET => {
+        Opcode::Forget => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Forget(arg)
         }
-        Opcode::FUSE_GETATTR => {
+        Opcode::Getattr => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Getattr(arg)
         }
-        Opcode::FUSE_SETATTR => {
+        Opcode::Setattr => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Setattr(arg)
         }
-        Opcode::FUSE_READLINK => {
+        Opcode::Readlink => {
             debug_assert!(payload.is_empty());
             Arg::Readlink
         }
-        Opcode::FUSE_SYMLINK => {
+        Opcode::Symlink => {
             let (name, remains) = fetch_str(payload)?;
             let (link, _remains) = fetch_str(remains)?;
             debug_assert!(remains.is_empty());
             Arg::Symlink { name, link }
         }
-        Opcode::FUSE_MKNOD => {
+        Opcode::Mknod => {
             let (arg, remains) = fetch(payload)?;
             let (name, remains) = fetch_str(remains)?;
             debug_assert!(remains.is_empty());
             Arg::Mknod { arg, name }
         }
-        Opcode::FUSE_MKDIR => {
+        Opcode::Mkdir => {
             let (arg, remains) = fetch(payload)?;
             let (name, remains) = fetch_str(remains)?;
             debug_assert!(remains.is_empty());
             Arg::Mkdir { arg, name }
         }
-        Opcode::FUSE_UNLINK => {
+        Opcode::Unlink => {
             let (name, remains) = fetch_str(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Unlink { name }
         }
-        Opcode::FUSE_RMDIR => {
+        Opcode::Rmdir => {
             let (name, remains) = fetch_str(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Rmdir { name }
         }
-        Opcode::FUSE_RENAME => {
+        Opcode::Rename => {
             let (arg, remains) = fetch(payload)?;
             let (name, remains) = fetch_str(remains)?;
             let (newname, _remains) = fetch_str(remains)?;
             debug_assert!(remains.is_empty());
             Arg::Rename { arg, name, newname }
         }
-        Opcode::FUSE_LINK => {
+        Opcode::Link => {
             let (arg, remains) = fetch(payload)?;
             let (newname, _remains) = fetch_str(remains)?;
             debug_assert!(remains.is_empty());
             Arg::Link { arg, newname }
         }
-        Opcode::FUSE_OPEN => {
+        Opcode::Open => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Open(arg)
         }
-        Opcode::FUSE_READ => {
+        Opcode::Read => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Read(arg)
         }
-        Opcode::FUSE_WRITE => {
+        Opcode::Write => {
             let (arg, data) = fetch(payload)?;
             Arg::Write { arg, data }
         }
-        Opcode::FUSE_RELEASE => {
+        Opcode::Release => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Release(arg)
         }
-        Opcode::FUSE_STATFS => {
+        Opcode::Statfs => {
             debug_assert!(payload.is_empty());
             Arg::Statfs
         }
-        Opcode::FUSE_FSYNC => {
+        Opcode::Fsync => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Fsync(arg)
         }
-        Opcode::FUSE_SETXATTR => {
+        Opcode::Setxattr => {
             let (arg, remains) = fetch(payload)?;
             let (name, value) = fetch_str(remains)?;
             Arg::Setxattr { arg, name, value }
         }
-        Opcode::FUSE_GETXATTR => {
+        Opcode::Getxattr => {
             let (arg, remains) = fetch(payload)?;
             let (name, remains) = fetch_str(remains)?;
             debug_assert!(remains.is_empty());
             Arg::Getxattr { arg, name }
         }
-        Opcode::FUSE_LISTXATTR => {
+        Opcode::Listxattr => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Listxattr { arg }
         }
-        Opcode::FUSE_REMOVEXATTR => {
+        Opcode::Removexattr => {
             let (name, remains) = fetch_str(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Removexattr { name }
         }
-        Opcode::FUSE_FLUSH => {
+        Opcode::Flush => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Flush(arg)
         }
-        Opcode::FUSE_OPENDIR => {
+        Opcode::Opendir => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Opendir(arg)
         }
-        Opcode::FUSE_READDIR => {
+        Opcode::Readdir => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Readdir(arg)
         }
-        Opcode::FUSE_RELEASEDIR => {
+        Opcode::Releasedir => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Releasedir(arg)
         }
-        Opcode::FUSE_FSYNCDIR => {
+        Opcode::Fsyncdir => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Fsyncdir(arg)
         }
-        Opcode::FUSE_GETLK => {
+        Opcode::Getlk => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Getlk(arg)
         }
-        Opcode::FUSE_SETLK => {
+        Opcode::Setlk => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Setlk(arg)
         }
-        Opcode::FUSE_SETLKW => {
+        Opcode::Setlkw => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Setlkw(arg)
         }
-        Opcode::FUSE_ACCESS => {
+        Opcode::Access => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Access(arg)
         }
-        Opcode::FUSE_CREATE => {
+        Opcode::Create => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Create(arg)
         }
-        Opcode::FUSE_BMAP => {
+        Opcode::Bmap => {
             let (arg, remains) = fetch(payload)?;
             debug_assert!(remains.is_empty());
             Arg::Bmap(arg)
         }
-        // Opcode::FUSE_INTERRUPT => unimplemented!(),
-        // Opcode::FUSE_IOCTL => unimplemented!(),
-        // Opcode::FUSE_POLL => unimplemented!(),
-        // Opcode::FUSE_NOTIFY_REPLY => unimplemented!(),
-        // Opcode::FUSE_BATCH_FORGET => unimplemented!(),
-        // Opcode::FUSE_FALLOCATE => unimplemented!(),
-        // Opcode::FUSE_READDIRPLUS => unimplemented!(),
-        // Opcode::FUSE_RENAME2 => unimplemented!(),
-        // Opcode::FUSE_LSEEK => unimplemented!(),
-        // Opcode::FUSE_COPY_FILE_RANGE => unimplemented!(),
         _ => Arg::Unknown,
     };
 

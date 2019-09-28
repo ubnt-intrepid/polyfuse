@@ -7,6 +7,7 @@ use fuse_async::{
         AttrOut, //
         GetattrIn,
         InHeader,
+        Nodeid,
         OpenIn,
         OpenOut,
         ReadIn,
@@ -51,22 +52,22 @@ struct Null;
 #[async_trait]
 impl Operations for Null {
     async fn getattr(&mut self, header: &InHeader, _: &GetattrIn) -> fuse_async::Result<AttrOut> {
-        match header.nodeid() {
-            1 => Ok(root_attr().into()),
+        match header.nodeid {
+            Nodeid::ROOT => Ok(root_attr().into()),
             _ => Err(Error(libc::ENOENT)),
         }
     }
 
     async fn setattr(&mut self, header: &InHeader, _: &SetattrIn) -> fuse_async::Result<AttrOut> {
-        match header.nodeid() {
-            1 => Ok(root_attr().into()),
+        match header.nodeid {
+            Nodeid::ROOT => Ok(root_attr().into()),
             _ => Err(Error(libc::ENOENT)),
         }
     }
 
     async fn open(&mut self, header: &InHeader, _: &OpenIn) -> fuse_async::Result<OpenOut> {
-        match header.nodeid() {
-            1 => Ok(OpenOut::default()),
+        match header.nodeid {
+            Nodeid::ROOT => Ok(OpenOut::default()),
             _ => Err(Error(libc::ENOENT)),
         }
     }
@@ -76,8 +77,8 @@ impl Operations for Null {
         header: &InHeader,
         _: &ReadIn,
     ) -> fuse_async::Result<Cow<'a, [u8]>> {
-        match header.nodeid() {
-            1 => Ok(Cow::Borrowed(&[] as &[u8])),
+        match header.nodeid {
+            Nodeid::ROOT => Ok(Cow::Borrowed(&[] as &[u8])),
             _ => Err(Error(libc::ENOENT)),
         }
     }
@@ -88,10 +89,10 @@ impl Operations for Null {
         _: &WriteIn,
         buf: &[u8],
     ) -> fuse_async::Result<WriteOut> {
-        match header.nodeid() {
-            1 => {
+        match header.nodeid {
+            Nodeid::ROOT => {
                 let mut out = WriteOut::default();
-                out.set_size(buf.len() as u32);
+                out.size = buf.len() as u32;
                 Ok(out)
             }
             _ => Err(Error(libc::ENOENT)),
@@ -99,8 +100,8 @@ impl Operations for Null {
     }
 
     async fn release(&mut self, header: &InHeader, _: &ReleaseIn) -> fuse_async::Result<()> {
-        match header.nodeid() {
-            1 => Ok(()),
+        match header.nodeid {
+            Nodeid::ROOT => Ok(()),
             _ => Err(Error(libc::ENOENT)),
         }
     }

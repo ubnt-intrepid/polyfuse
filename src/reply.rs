@@ -10,6 +10,7 @@ use fuse_async_abi::{
     OpenOut,
     OutHeader,
     StatfsOut,
+    Unique,
     WriteOut,
 };
 use futures::io::{AsyncWrite, AsyncWriteExt};
@@ -96,7 +97,7 @@ impl_payload_for_abi! {
 
 pub async fn reply_raw<'a, W: ?Sized, T: ?Sized>(
     writer: &'a mut W,
-    unique: u64,
+    unique: Unique,
     error: i32,
     data: &'a T,
 ) -> io::Result<()>
@@ -105,7 +106,11 @@ where
     T: Payload,
 {
     let data = unsafe { data.to_io_slice() };
-    let out_header = OutHeader::new(unique, error, data.len());
+    let out_header = OutHeader {
+        unique,
+        error: -error,
+        len: (mem::size_of::<OutHeader>() + data.len()) as u32,
+    };
     let out_header = unsafe { out_header.to_io_slice() };
 
     (*writer).write_vectored(&[out_header, data]).await?;
@@ -115,7 +120,7 @@ where
 
 pub async fn reply_payload<'a, W: ?Sized, T: ?Sized>(
     writer: &'a mut W,
-    unique: u64,
+    unique: Unique,
     data: &'a T,
 ) -> io::Result<()>
 where
@@ -125,14 +130,14 @@ where
     reply_raw(writer, unique, 0, data).await
 }
 
-pub async fn reply_unit<W: ?Sized>(writer: &mut W, unique: u64) -> io::Result<()>
+pub async fn reply_unit<W: ?Sized>(writer: &mut W, unique: Unique) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
     reply_raw(writer, unique, 0, &[] as &[u8]).await
 }
 
-pub async fn reply_err<W: ?Sized>(writer: &mut W, unique: u64, error: i32) -> io::Result<()>
+pub async fn reply_err<W: ?Sized>(writer: &mut W, unique: Unique, error: i32) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
