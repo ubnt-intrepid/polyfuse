@@ -1,118 +1,113 @@
 //! FUSE application binary interface.
 
-#![allow(missing_debug_implementations)]
-
-#[allow(
-    dead_code,
-    nonstandard_style,
-    clippy::unreadable_literal,
-    clippy::useless_transmute
+#![warn(
+    missing_debug_implementations, //
+    unsafe_code,
+    clippy::unimplemented,
 )]
-mod bindings {
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
 
-pub use crate::bindings::fuse_opcode as Opcode;
-
-use crate::bindings::{
-    fuse_access_in, //
-    fuse_attr,
-    fuse_attr_out,
-    fuse_bmap_in,
-    fuse_bmap_out,
-    fuse_create_in,
-    fuse_entry_out,
-    fuse_file_lock,
-    fuse_flush_in,
-    fuse_forget_in,
-    fuse_fsync_in,
-    fuse_getattr_in,
-    fuse_getxattr_in,
-    fuse_getxattr_out,
-    fuse_in_header,
-    fuse_init_in,
-    fuse_init_out,
-    fuse_kstatfs,
-    fuse_link_in,
-    fuse_lk_in,
-    fuse_lk_out,
-    fuse_mkdir_in,
-    fuse_mknod_in,
-    fuse_open_in,
-    fuse_open_out,
-    fuse_out_header,
-    fuse_read_in,
-    fuse_release_in,
-    fuse_rename_in,
-    fuse_setattr_in,
-    fuse_setxattr_in,
-    fuse_statfs_out,
-    fuse_write_in,
-    fuse_write_out,
-};
 use bitflags::bitflags;
-use std::{fmt, mem};
 
-bitflags! {
-    pub struct CapFlags: u32 {
-        const ASYNC_READ = crate::bindings::FUSE_ASYNC_READ;
-        const POSIX_LOCKS = crate::bindings::FUSE_POSIX_LOCKS;
-        const FILE_OPS = crate::bindings::FUSE_FILE_OPS;
-        const ATOMIC_O_TRUNC = crate::bindings::FUSE_ATOMIC_O_TRUNC;
-        const EXPORT_SUPPORT = crate::bindings::FUSE_EXPORT_SUPPORT;
-        const BIG_WRITES = crate::bindings::FUSE_BIG_WRITES;
-        const DONT_MASK = crate::bindings::FUSE_DONT_MASK;
-        const SPLICE_WRITE = crate::bindings::FUSE_SPLICE_WRITE;
-        const SPLICE_MOVE = crate::bindings::FUSE_SPLICE_MOVE;
-        const SPLICE_READ = crate::bindings::FUSE_SPLICE_READ;
-        const FLOCK_LOCKS = crate::bindings::FUSE_FLOCK_LOCKS;
-        const HAS_IOCTL_DIR = crate::bindings::FUSE_HAS_IOCTL_DIR;
-        const AUTO_INVAL_DATA = crate::bindings::FUSE_AUTO_INVAL_DATA;
-        const DO_READDIRPLUS = crate::bindings::FUSE_DO_READDIRPLUS;
-        const READDIRPLUS_AUTO = crate::bindings::FUSE_READDIRPLUS_AUTO;
-        const ASYNC_DIO = crate::bindings::FUSE_ASYNC_DIO;
-        const WRITEBACK_CACHE = crate::bindings::FUSE_WRITEBACK_CACHE;
-        const NO_OPEN_SUPPORT = crate::bindings::FUSE_NO_OPEN_SUPPORT;
-        const PARALLEL_DIROPS = crate::bindings::FUSE_PARALLEL_DIROPS;
-        const HANDLE_KILLPRIV = crate::bindings::FUSE_HANDLE_KILLPRIV;
-        const POSIX_ACL = crate::bindings:: FUSE_POSIX_ACL;
-        const ABORT_ERROR = crate::bindings::FUSE_ABORT_ERROR;
+pub mod consts {
+    /// The major version number of FUSE protocol.
+    pub const KERNEL_VERSION: u32 = 7;
 
-        // 7.28
-        //const MAX_PAGES = crate::bindings::FUSE_MAX_PAGES;
-        //const CACHE_SYMLINKS = crate::bindings::FUSE_CACHE_SYMLINKS;
+    /// The minor version number of FUSE protocol.
+    pub const KERNEL_MINOR_VERSION: u32 = 28;
 
-        // 7.29
-        //const NO_OPENDIR_SUPPORT = crate::bindings::FUSE_NO_OPENDIR_SUPPORT;
-    }
+    /// The minimum length of read buffer.
+    pub const MIN_READ_BUFFER: u32 = 8192;
+
+    /// Maximum of in_iovecs + out_iovecs
+    pub const IOCTL_MAX_IOV: u32 = 256;
+
+    // misc
+    pub const COMPAT_ENTRY_OUT_SIZE: usize = 120;
+    pub const COMPAT_ATTR_OUT_SIZE: usize = 96;
+    pub const COMPAT_MKNOD_IN_SIZE: usize = 8;
+    pub const COMPAT_WRITE_IN_SIZE: usize = 24;
+    pub const COMPAT_STATFS_SIZE: usize = 48;
+    pub const COMPAT_INIT_OUT_SIZE: usize = 8;
+    pub const COMPAT_22_INIT_OUT_SIZE: usize = 24;
+
+    pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 }
 
-#[repr(transparent)]
-pub struct FileAttr(pub(crate) fuse_attr);
+macro_rules! newtype {
+    ($(
+        $(#[$m:meta])*
+        $vis:vis type $Name:ident = $T:ty ;
+    )*) => {$(
+        $(#[$m])*
+        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
+        #[repr(transparent)]
+        $vis struct $Name { raw: $T }
 
-impl Default for FileAttr {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
+        impl $Name {
+            #[inline]
+            pub const fn from_raw(raw: $T) -> Self {
+                Self { raw }
+            }
+
+            #[inline]
+            pub const fn into_raw(self) -> $T {
+                self.raw
+            }
+        }
+    )*}
 }
 
-impl fmt::Debug for FileAttr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("FileAttr").finish()
-    }
+newtype! {
+    /// The unique identifier of FUSE requests.
+    pub type Unique = u64;
+
+    /// The unique identifier of inode in the filesystem.
+    pub type Nodeid = u64;
+}
+
+impl Nodeid {
+    /// The node ID of the root inode.
+    pub const ROOT: Self = Self::from_raw(1);
+}
+
+newtype! {
+    pub type Uid = u32;
+    pub type Gid = u32;
+    pub type Pid = u32;
+}
+
+newtype! {
+    pub type FileMode = u32;
+}
+
+/// ABI compatible with `fuse_attr`.
+#[derive(Default, Debug, Clone)]
+#[repr(C)]
+pub struct FileAttr {
+    pub ino: Nodeid,
+    pub size: u64,
+    pub blocks: u64,
+    pub atime: u64,
+    pub mtime: u64,
+    pub ctime: u64,
+    pub atimensec: u32,
+    pub mtimensec: u32,
+    pub ctimensec: u32,
+    pub mode: FileMode,
+    pub nlink: u32,
+    pub uid: Uid,
+    pub gid: Gid,
+    pub rdev: u32,
+    pub blksize: u32,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
 impl From<libc::stat> for FileAttr {
     fn from(attr: libc::stat) -> Self {
-        Self(fuse_attr {
-            ino: attr.st_ino,
-            mode: attr.st_mode,
-            nlink: attr.st_nlink as u32,
-            uid: attr.st_uid,
-            gid: attr.st_gid,
-            rdev: attr.st_gid,
+        Self {
+            ino: Nodeid::from_raw(attr.st_ino),
             size: attr.st_size as u64,
-            blksize: attr.st_blksize as u32,
             blocks: attr.st_blocks as u64,
             atime: attr.st_atime as u64,
             mtime: attr.st_mtime as u64,
@@ -120,82 +115,71 @@ impl From<libc::stat> for FileAttr {
             atimensec: attr.st_atime_nsec as u32,
             mtimensec: attr.st_mtime_nsec as u32,
             ctimensec: attr.st_ctime_nsec as u32,
+            mode: FileMode::from_raw(attr.st_mode),
+            nlink: attr.st_nlink as u32,
+            uid: Uid::from_raw(attr.st_uid),
+            gid: Gid::from_raw(attr.st_gid),
+            rdev: attr.st_gid,
+            blksize: attr.st_blksize as u32,
             padding: 0,
-        })
+        }
     }
 }
 
-#[repr(transparent)]
-pub struct FileLock(pub(crate) fuse_file_lock);
+impl FileAttr {
+    pub fn atime(&self) -> (u64, u32) {
+        (self.atime, self.atimensec)
+    }
 
-impl fmt::Debug for FileLock {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileLock")
-            .field("start", &self.start())
-            .field("end", &self.end())
-            .field("type", &self.type_())
-            .field("pid", &self.pid())
-            .finish()
+    pub fn mtime(&self) -> (u64, u32) {
+        (self.mtime, self.mtimensec)
+    }
+
+    pub fn ctime(&self) -> (u64, u32) {
+        (self.ctime, self.ctimensec)
     }
 }
 
-impl Clone for FileLock {
-    fn clone(&self) -> Self {
-        Self(fuse_file_lock {
-            start: self.0.start,
-            end: self.0.end,
-            type_: self.0.type_,
-            pid: self.0.pid,
-        })
-    }
+/// ABI compatible with `fuse_dirent`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct DirEntry {
+    pub ino: Nodeid,
+    pub off: u64,
+    pub namelen: u32,
+    pub typ: u32,
+    pub name: [u8; 0],
 }
 
-impl FileLock {
-    pub fn start(&self) -> u64 {
-        self.0.start
-    }
-
-    pub fn set_start(&mut self, start: u64) {
-        self.0.start = start;
-    }
-
-    pub fn end(&self) -> u64 {
-        self.0.end
-    }
-
-    pub fn set_end(&mut self, end: u64) {
-        self.0.end = end;
-    }
-
-    pub fn type_(&self) -> u32 {
-        self.0.type_
-    }
-
-    pub fn set_type(&mut self, type_: u32) {
-        self.0.type_ = type_;
-    }
-
-    pub fn pid(&self) -> u32 {
-        self.0.pid
-    }
-
-    pub fn set_pid(&mut self, pid: u32) {
-        self.0.pid = pid;
-    }
+/// ABI compatible with `fuse_direntplus`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct DirEntryPlus {
+    pub entry_out: EntryOut,
+    pub dirent: DirEntry,
 }
 
-#[repr(transparent)]
-pub struct Statfs(pub(crate) fuse_kstatfs);
-
-impl fmt::Debug for Statfs {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Statfs").finish()
-    }
+/// ABI compatible with `fuse_kstatfs`.
+#[derive(Debug, Default, Clone)]
+#[repr(C)]
+pub struct Statfs {
+    pub blocks: u64,
+    pub bfree: u64,
+    pub bavail: u64,
+    pub files: u64,
+    pub ffree: u64,
+    pub bsize: u32,
+    pub namelen: u32,
+    pub frsize: u32,
+    #[doc(hidden)]
+    pub padding: u32,
+    #[doc(hidden)]
+    pub spare: [u32; 6usize],
 }
 
 impl From<libc::statvfs> for Statfs {
     fn from(st: libc::statvfs) -> Self {
-        Self(fuse_kstatfs {
+        Self {
             bsize: st.f_bsize as u32,
             frsize: st.f_frsize as u32,
             blocks: st.f_blocks,
@@ -206,637 +190,526 @@ impl From<libc::statvfs> for Statfs {
             namelen: st.f_namemax as u32,
             padding: 0,
             spare: [0u32; 6],
-        })
+        }
     }
 }
 
-#[repr(transparent)]
-pub struct InHeader(fuse_in_header);
+/// ABI compatible with `fuse_file_lock`.
+#[derive(Debug, Default, Clone)]
+#[repr(C)]
+pub struct FileLock {
+    pub start: u64,
+    pub end: u64,
+    pub typ: u32,
+    pub pid: Pid,
+}
 
-impl fmt::Debug for InHeader {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("InHeader")
-            .field("len", &self.len())
-            .field("opcode", &self.opcode())
-            .field("unique", &self.unique())
-            .field("nodeid", &self.nodeid())
-            .field("uid", &self.uid())
-            .field("gid", &self.gid())
-            .field("pid", &self.pid())
-            .finish()
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum Opcode {
+    Lookup = 1,
+    Forget = 2,
+    Getattr = 3,
+    Setattr = 4,
+    Readlink = 5,
+    Symlink = 6,
+    // _ = 7,
+    Mknod = 8,
+    Mkdir = 9,
+    Unlink = 10,
+    Rmdir = 11,
+    Rename = 12,
+    Link = 13,
+    Open = 14,
+    Read = 15,
+    Write = 16,
+    Statfs = 17,
+    Release = 18,
+    // _ = 19,
+    Fsync = 20,
+    Setxattr = 21,
+    Getxattr = 22,
+    Listxattr = 23,
+    Removexattr = 24,
+    Flush = 25,
+    Init = 26,
+    Opendir = 27,
+    Readdir = 28,
+    Releasedir = 29,
+    Fsyncdir = 30,
+    Getlk = 31,
+    Setlk = 32,
+    Setlkw = 33,
+    Access = 34,
+    Create = 35,
+    Interrupt = 36,
+    Bmap = 37,
+    Destroy = 38,
+    Ioctl = 39,
+    Poll = 40,
+    NotifyReply = 41,
+    BatchForget = 42,
+    Fallocate = 43,
+    Readdirplus = 44,
+    Rename2 = 45,
+    Lseek = 46,
+    CopyFileRange = 47,
+
+    CuseInit = 4096,
+}
+
+/// ABI compatible with `fuse_in_header`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct InHeader {
+    pub len: u32,
+    pub opcode: Opcode,
+    pub unique: Unique,
+    pub nodeid: Nodeid,
+    pub uid: Uid,
+    pub gid: Gid,
+    pub pid: Pid,
+    #[doc(hidden)]
+    pub padding: u32,
+}
+
+/// ABI compatible with `fuse_init_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct InitIn {
+    pub major: u32,
+    pub minor: u32,
+    pub max_readahead: u32,
+    pub flags: CapFlags,
+}
+
+bitflags! {
+    /// Capability flags.
+    #[repr(transparent)]
+    pub struct CapFlags: u32 {
+        const ASYNC_READ = 1;
+        const POSIX_LOCKS = 1 << 1;
+        const FILE_OPS = 1 << 2;
+        const ATOMIC_O_TRUNC = 1 << 3;
+        const EXPORT_SUPPORT = 1 << 4;
+        const BIG_WRITES = 1 << 5;
+        const DONT_MASK = 1 << 6;
+        const SPLICE_WRITE = 1 << 7;
+        const SPLICE_MOVE = 1 << 8;
+        const SPLICE_READ = 1 << 9;
+        const FLOCK_LOCKS = 1 << 10;
+        const HAS_IOCTL_DIR = 1 << 11;
+        const AUTO_INVAL_DATA = 1 << 12;
+        const DO_READDIRPLUS = 1 << 13;
+        const READDIRPLUS_AUTO = 1 << 14;
+        const ASYNC_DIO = 1 << 15;
+        const WRITEBACK_CACHE = 1 << 16;
+        const NO_OPEN_SUPPORT = 1 << 17;
+        const PARALLEL_DIROPS = 1 << 18;
+        const HANDLE_KILLPRIV = 1 << 19;
+        const POSIX_ACL = 1 << 20;
+        const ABORT_ERROR = 1 << 21;
+        const MAX_PAGES = 1 << 22;
+        const CACHE_SYMLINKS = 1 << 23;
     }
 }
 
-#[allow(clippy::len_without_is_empty)]
-impl InHeader {
-    pub fn len(&self) -> u32 {
-        self.0.len
-    }
-
-    pub fn opcode(&self) -> Opcode {
-        unsafe { mem::transmute(self.0.opcode) }
-    }
-
-    pub fn unique(&self) -> u64 {
-        self.0.unique
-    }
-
-    pub fn nodeid(&self) -> u64 {
-        self.0.nodeid
-    }
-
-    pub fn uid(&self) -> u32 {
-        self.0.uid
-    }
-
-    pub fn gid(&self) -> u32 {
-        self.0.gid
-    }
-
-    pub fn pid(&self) -> u32 {
-        self.0.pid
-    }
+/// ABI compatible with `fuse_forget_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct ForgetIn {
+    pub nlookup: u64,
 }
 
-#[repr(transparent)]
-pub struct InitIn(fuse_init_in);
-
-impl fmt::Debug for InitIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("InitIn")
-            .field("major", &self.major())
-            .field("minor", &self.minor())
-            .field("max_readahead", &self.max_readahead())
-            .field("flags", &self.flags())
-            .finish()
-    }
-}
-
-impl InitIn {
-    pub fn major(&self) -> u32 {
-        self.0.major
-    }
-
-    pub fn minor(&self) -> u32 {
-        self.0.minor
-    }
-
-    pub fn max_readahead(&self) -> u32 {
-        self.0.max_readahead
-    }
-
-    pub fn flags(&self) -> CapFlags {
-        CapFlags::from_bits_truncate(self.0.flags)
-    }
-}
-
-#[repr(transparent)]
-pub struct ForgetIn(fuse_forget_in);
-
-impl fmt::Debug for ForgetIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ForgetIn")
-            .field("nlookup", &self.nlookup())
-            .finish()
-    }
-}
-
-impl ForgetIn {
-    pub fn nlookup(&self) -> u64 {
-        self.0.nlookup
-    }
-}
-
-#[repr(transparent)]
-pub struct GetattrIn(fuse_getattr_in);
-
-impl fmt::Debug for GetattrIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("GetattrIn")
-            .field("flags", &self.flags())
-            .field("fh", &self.fh())
-            .finish()
-    }
+/// ABI compatible with `fuse_getattr_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct GetattrIn {
+    pub getattr_flags: GetattrFlags,
+    #[doc(hidden)]
+    pub dummy: u32,
+    pub fh: u64,
 }
 
 impl GetattrIn {
-    pub fn flags(&self) -> GetattrFlags {
-        GetattrFlags::from_bits_truncate(self.0.getattr_flags)
-    }
-
-    pub fn fh(&self) -> u64 {
-        self.0.fh
+    pub fn fh(&self) -> Option<u64> {
+        if self.getattr_flags.contains(GetattrFlags::FH) {
+            Some(self.fh)
+        } else {
+            None
+        }
     }
 }
 
 bitflags! {
+    /// Getattr flags.
+    #[repr(transparent)]
     pub struct GetattrFlags: u32 {
-        const FH = crate::bindings::FUSE_GETATTR_FH;
+        const FH = 1 << 0;
     }
 }
 
-#[repr(transparent)]
-pub struct SetattrIn(fuse_setattr_in);
-
-impl fmt::Debug for SetattrIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("SetattrIn")
-            .field("valid", &self.valid())
-            .field("fh", &self.fh())
-            .field("size", &self.size())
-            .field("lock_owner", &self.lock_owner())
-            .field("atime", &self.atime())
-            .field("mtime", &self.mtime())
-            .field("ctime", &self.ctime())
-            .field("mode", &self.mode())
-            .field("uid", &self.uid())
-            .field("gid", &self.gid())
-            .finish()
-    }
+/// ABI compatible with `fuse_setattr_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct SetattrIn {
+    pub valid: SetattrFlags,
+    #[doc(hidden)]
+    pub padding: u32,
+    pub fh: u64,
+    pub size: u64,
+    pub lock_owner: u64,
+    pub atime: u64,
+    pub mtime: u64,
+    pub ctime: u64,
+    pub atimensec: u32,
+    pub mtimensec: u32,
+    pub ctimensec: u32,
+    pub mode: FileMode,
+    #[doc(hidden)]
+    pub unused4: u32,
+    pub uid: Uid,
+    pub gid: Gid,
+    #[doc(hidden)]
+    pub unused5: u32,
 }
 
 impl SetattrIn {
-    pub fn valid(&self) -> SetattrFlags {
-        SetattrFlags::from_bits_truncate(self.0.valid)
+    #[inline]
+    fn get<R>(&self, flag: SetattrFlags, f: impl FnOnce(&Self) -> R) -> Option<R> {
+        if self.valid.contains(flag) {
+            Some(f(self))
+        } else {
+            None
+        }
     }
 
-    pub fn fh(&self) -> u64 {
-        self.0.fh
+    pub fn fh(&self) -> Option<u64> {
+        self.get(SetattrFlags::FH, |this| this.fh)
     }
 
-    pub fn size(&self) -> u64 {
-        self.0.size
+    pub fn size(&self) -> Option<u64> {
+        self.get(SetattrFlags::SIZE, |this| this.size)
     }
 
-    pub fn lock_owner(&self) -> u64 {
-        self.0.lock_owner
+    pub fn lock_owner(&self) -> Option<u64> {
+        self.get(SetattrFlags::LOCKOWNER, |this| this.lock_owner)
     }
 
-    pub fn atime(&self) -> (u64, u32) {
-        (self.0.atime, self.0.atimensec)
+    pub fn atime(&self) -> Option<(u64, u32, bool)> {
+        self.get(SetattrFlags::ATIME, |this| {
+            (
+                this.atime,
+                this.atimensec,
+                this.valid.contains(SetattrFlags::ATIME_NOW),
+            )
+        })
     }
 
-    pub fn mtime(&self) -> (u64, u32) {
-        (self.0.mtime, self.0.mtimensec)
+    pub fn mtime(&self) -> Option<(u64, u32, bool)> {
+        self.get(SetattrFlags::CTIME, |this| {
+            (
+                this.mtime,
+                this.mtimensec,
+                this.valid.contains(SetattrFlags::MTIME_NOW),
+            )
+        })
     }
 
-    pub fn ctime(&self) -> (u64, u32) {
-        (self.0.ctime, self.0.ctimensec)
+    pub fn ctime(&self) -> Option<(u64, u32)> {
+        self.get(SetattrFlags::CTIME, |this| (this.ctime, this.ctimensec))
     }
 
-    pub fn mode(&self) -> u32 {
-        self.0.mode
+    /// Returns the new file if specified.
+    pub fn mode(&self) -> Option<FileMode> {
+        self.get(SetattrFlags::MODE, |this| this.mode)
     }
 
-    pub fn uid(&self) -> u32 {
-        self.0.uid
+    /// Returns the new UID if specified.
+    pub fn uid(&self) -> Option<Uid> {
+        self.get(SetattrFlags::UID, |this| this.uid)
     }
 
-    pub fn gid(&self) -> u32 {
-        self.0.gid
+    /// Returns the new GID if specified.
+    pub fn gid(&self) -> Option<Gid> {
+        self.get(SetattrFlags::GID, |this| this.gid)
     }
 }
 
 bitflags! {
+    /// Setattr flags.
+    #[repr(transparent)]
     pub struct SetattrFlags: u32 {
-        const MODE = crate::bindings::FATTR_MODE;
-        const UID = crate::bindings::FATTR_UID;
-        const GID = crate::bindings::FATTR_GID;
-        const SIZE = crate::bindings::FATTR_SIZE;
-        const ATIME = crate::bindings::FATTR_ATIME;
-        const MTIME = crate::bindings::FATTR_MTIME;
-        const FH = crate::bindings::FATTR_FH;
-        const ATIME_NOW = crate::bindings::FATTR_ATIME_NOW;
-        const MTIME_NOW = crate::bindings::FATTR_MTIME_NOW;
-        const LOCKOWNER = crate::bindings::FATTR_LOCKOWNER;
-        const CTIME = crate::bindings::FATTR_CTIME;
+        const MODE = 1 << 0;
+        const UID = 1 << 1;
+        const GID = 1 << 2;
+        const SIZE = 1 << 3;
+        const ATIME = 1 << 4;
+        const MTIME = 1 << 5;
+        const FH = 1 << 6;
+        const ATIME_NOW = 1 << 7;
+        const MTIME_NOW = 1 << 8;
+        const LOCKOWNER = 1 << 9;
+        const CTIME = 1 << 10;
     }
 }
 
-#[repr(transparent)]
-pub struct MknodIn(fuse_mknod_in);
-
-impl fmt::Debug for MknodIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("MknodIn")
-            .field("mode", &self.mode())
-            .field("rdev", &self.rdev())
-            .field("umask", &self.umask())
-            .finish()
-    }
+/// ABI compatible with `fuse_mknod_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct MknodIn {
+    pub mode: u32,
+    pub rdev: u32,
+    pub umask: u32,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
-impl MknodIn {
-    pub fn mode(&self) -> u32 {
-        self.0.mode
-    }
-
-    pub fn rdev(&self) -> u32 {
-        self.0.mode
-    }
-
-    pub fn umask(&self) -> u32 {
-        self.0.mode
-    }
+/// ABI compatible with `fuse_mknod_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct MkdirIn {
+    pub mode: u32,
+    pub umask: u32,
 }
 
-#[repr(transparent)]
-pub struct MkdirIn(fuse_mkdir_in);
-
-impl fmt::Debug for MkdirIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("MkdirIn")
-            .field("mode", &self.mode())
-            .field("umask", &self.umask())
-            .finish()
-    }
+/// ABI compatible with `fuse_rename_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct RenameIn {
+    pub newdir: u64,
 }
 
-impl MkdirIn {
-    pub fn mode(&self) -> u32 {
-        self.0.mode
-    }
-
-    pub fn umask(&self) -> u32 {
-        self.0.mode
-    }
+/// ABI compatible with `fuse_link_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct LinkIn {
+    pub oldnodeid: u64,
 }
 
-#[repr(transparent)]
-pub struct RenameIn(fuse_rename_in);
-
-impl fmt::Debug for RenameIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("RenameIn")
-            .field("newdir", &self.newdir())
-            .finish()
-    }
+/// ABI compatible with `fuse_open_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct OpenIn {
+    pub flags: u32,
+    #[doc(hidden)]
+    pub unused: u32,
 }
 
-impl RenameIn {
-    pub fn newdir(&self) -> u64 {
-        self.0.newdir
-    }
-}
-
-#[repr(transparent)]
-pub struct LinkIn(fuse_link_in);
-
-impl fmt::Debug for LinkIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("LinkIn")
-            .field("oldnodeid", &self.oldnodeid())
-            .finish()
-    }
-}
-
-impl LinkIn {
-    pub fn oldnodeid(&self) -> u64 {
-        self.0.oldnodeid
-    }
-}
-
-#[repr(transparent)]
-pub struct OpenIn(fuse_open_in);
-
-impl fmt::Debug for OpenIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpenIn")
-            .field("flags", &self.flags())
-            .finish()
-    }
-}
-
-impl OpenIn {
-    pub fn flags(&self) -> u32 {
-        self.0.flags
-    }
-}
-
-#[repr(transparent)]
-pub struct ReadIn(fuse_read_in);
-
-impl fmt::Debug for ReadIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ReadIn")
-            .field("fh", &self.fh())
-            .field("offset", &self.offset())
-            .field("size", &self.size())
-            .field("read_flags", &self.read_flags())
-            .field("lock_owner", &self.lock_owner())
-            .field("flags", &self.flags())
-            .finish()
-    }
+/// ABI compatible with `fuse_read_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct ReadIn {
+    pub fh: u64,
+    pub offset: u64,
+    pub size: u32,
+    pub read_flags: ReadFlags,
+    pub lock_owner: u64,
+    pub flags: u32,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
 impl ReadIn {
-    pub fn fh(&self) -> u64 {
-        self.0.fh
-    }
-
-    pub fn offset(&self) -> u64 {
-        self.0.offset
-    }
-
-    pub fn size(&self) -> u32 {
-        self.0.size
-    }
-
-    pub fn read_flags(&self) -> ReadFlags {
-        ReadFlags::from_bits_truncate(self.0.read_flags)
-    }
-
-    pub fn lock_owner(&self) -> u64 {
-        self.0.lock_owner
-    }
-
-    pub fn flags(&self) -> u32 {
-        self.0.flags
+    pub fn lock_owner(&self) -> Option<u64> {
+        if self.read_flags.contains(ReadFlags::LOCKOWNER) {
+            Some(self.lock_owner)
+        } else {
+            None
+        }
     }
 }
 
 bitflags! {
+    /// Read flags.
+    #[repr(transparent)]
     pub struct ReadFlags: u32 {
-        const LOCKOWNER = crate::bindings::FUSE_READ_LOCKOWNER;
+        /// The field `lock_owner` is valid.
+        const LOCKOWNER = 1 << 1;
     }
 }
 
-#[repr(transparent)]
-pub struct WriteIn(fuse_write_in);
-
-impl fmt::Debug for WriteIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("WriteIn")
-            .field("fh", &self.fh())
-            .field("offset", &self.offset())
-            .field("size", &self.size())
-            .field("write_flags", &self.write_flags())
-            .field("lock_owner", &self.lock_owner())
-            .field("flags", &self.flags())
-            .finish()
-    }
+/// ABI compatible with `fuse_write_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct WriteIn {
+    pub fh: u64,
+    pub offset: u64,
+    pub size: u32,
+    pub write_flags: WriteFlags,
+    pub lock_owner: u64,
+    pub flags: u32,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
 impl WriteIn {
-    pub fn fh(&self) -> u64 {
-        self.0.fh
-    }
-
-    pub fn offset(&self) -> u64 {
-        self.0.offset
-    }
-
-    pub fn size(&self) -> u32 {
-        self.0.size
-    }
-
-    pub fn write_flags(&self) -> WriteFlags {
-        WriteFlags::from_bits_truncate(self.0.write_flags)
-    }
-
-    pub fn lock_owner(&self) -> u64 {
-        self.0.lock_owner
-    }
-
-    pub fn flags(&self) -> u32 {
-        self.0.flags
+    pub fn lock_owner(&self) -> Option<u64> {
+        if self.write_flags.contains(WriteFlags::LOCKOWNER) {
+            Some(self.lock_owner)
+        } else {
+            None
+        }
     }
 }
 
 bitflags! {
+    /// Write flags.
+    #[repr(transparent)]
     pub struct WriteFlags: u32 {
-        const CACHE = crate::bindings::FUSE_WRITE_CACHE;
-        const LOCKOWNER = crate::bindings::FUSE_WRITE_LOCKOWNER;
+        /// Delayed write from page cache, file handle is guessed.
+        const CACHE = 1 << 0;
+
+        /// The field `lock_owner` is valid.
+        const LOCKOWNER = 1 << 1;
     }
 }
 
-#[repr(transparent)]
-pub struct FlushIn(fuse_flush_in);
-
-impl fmt::Debug for FlushIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("FlushIn")
-            .field("fh", &self.fh())
-            .field("lock_owner", &self.lock_owner())
-            .finish()
-    }
+/// ABI compatible with `fuse_flush_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct FlushIn {
+    pub fh: u64,
+    #[doc(hidden)]
+    pub unused: u32,
+    #[doc(hidden)]
+    pub padding: u32,
+    pub lock_owner: u64,
 }
 
-impl FlushIn {
-    pub fn fh(&self) -> u64 {
-        self.0.fh
-    }
-
-    pub fn lock_owner(&self) -> u64 {
-        self.0.lock_owner
-    }
-}
-
-#[repr(transparent)]
-pub struct ReleaseIn(fuse_release_in);
-
-impl fmt::Debug for ReleaseIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ReleaseIn")
-            .field("fh", &self.fh())
-            .field("flags", &self.flags())
-            .field("release_flags", &self.release_flags())
-            .field("lock_owner", &self.lock_owner())
-            .finish()
-    }
+/// ABI compatible with `fuse_release_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct ReleaseIn {
+    pub fh: u64,
+    pub flags: u32,
+    pub release_flags: ReleaseFlags,
+    pub lock_owner: u64,
 }
 
 impl ReleaseIn {
-    pub fn fh(&self) -> u64 {
-        self.0.fh
-    }
-
-    pub fn flags(&self) -> u32 {
-        self.0.flags
-    }
-
-    pub fn release_flags(&self) -> ReleaseFlags {
-        ReleaseFlags::from_bits_truncate(self.0.release_flags)
-    }
-
-    pub fn lock_owner(&self) -> u64 {
-        self.0.lock_owner
+    pub fn flush(&self) -> bool {
+        self.release_flags.contains(ReleaseFlags::FLUSH)
     }
 }
 
 bitflags! {
+    /// Release flags.
+    #[repr(transparent)]
     pub struct ReleaseFlags: u32 {
-        const FLUSH = crate::bindings::FUSE_RELEASE_FLUSH;
-        const FLOCK_UNLOCK = crate::bindings::FUSE_RELEASE_FLOCK_UNLOCK;
+        const FLUSH = 1 << 0;
+        const FLOCK_UNLOCK = 1 << 1;
     }
 }
 
-#[repr(transparent)]
-pub struct FsyncIn(fuse_fsync_in);
-
-impl fmt::Debug for FsyncIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("FsyncIn")
-            .field("fh", &self.fh())
-            .field("fsync_flags", &self.fsync_flags())
-            .finish()
-    }
-}
-
-impl FsyncIn {
-    pub fn fh(&self) -> u64 {
-        self.0.fh
-    }
-
-    pub fn fsync_flags(&self) -> u32 {
-        self.0.fsync_flags
-    }
-}
-
-#[repr(transparent)]
-pub struct GetxattrIn(fuse_getxattr_in);
-
-impl fmt::Debug for GetxattrIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("GetxattrIn")
-            .field("size", &self.size())
-            .finish()
-    }
-}
-
-impl GetxattrIn {
-    pub fn size(&self) -> u32 {
-        self.0.size
-    }
-}
-
-#[repr(transparent)]
-pub struct SetxattrIn(fuse_setxattr_in);
-
-impl fmt::Debug for SetxattrIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("SetxattrIn")
-            .field("size", &self.size())
-            .field("flags", &self.flags())
-            .finish()
-    }
-}
-
-impl SetxattrIn {
-    pub fn size(&self) -> u32 {
-        self.0.size
-    }
-
-    pub fn flags(&self) -> u32 {
-        self.0.flags
-    }
-}
-
-#[repr(transparent)]
-pub struct LkIn(fuse_lk_in);
-
-impl fmt::Debug for LkIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("LkIn")
-            .field("fh", &self.fh())
-            .field("owner", &self.owner())
-            .field("lk", &self.lk())
-            .field("fh", &self.fh())
-            .finish()
-    }
-}
-
-impl LkIn {
-    pub fn fh(&self) -> u64 {
-        self.0.fh
-    }
-
-    pub fn owner(&self) -> u64 {
-        self.0.owner
-    }
-
-    pub fn lk(&self) -> &FileLock {
-        unsafe { &*(&self.0.lk as *const _ as *const FileLock) }
-    }
-
-    pub fn lk_flags(&self) -> LkFlags {
-        LkFlags::from_bits_truncate(self.0.lk_flags)
-    }
+/// ABI compatible with `fuse_fsync_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct FsyncIn {
+    pub fh: u64,
+    pub fsync_flags: FsyncFlags,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
 bitflags! {
+    #[repr(transparent)]
+    pub struct FsyncFlags: u32 {
+        const DATASYNC = 1 << 0;
+    }
+}
+
+/// ABI compatible with `fuse_getxattr_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct GetxattrIn {
+    pub size: u32,
+    #[doc(hidden)]
+    pub padding: u32,
+}
+
+/// ABI compatible with `fuse_setxattr_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct SetxattrIn {
+    pub size: u32,
+    pub flags: u32,
+}
+
+/// ABI compatible with `fuse_lk_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct LkIn {
+    pub fh: u64,
+    pub owner: u64,
+    pub lk: FileLock,
+    pub lk_flags: LkFlags,
+    #[doc(hidden)]
+    pub padding: u32,
+}
+
+bitflags! {
+    /// Lk flags.
+    #[repr(transparent)]
     pub struct LkFlags: u32 {
-        const FLOCK = crate::bindings::FUSE_LK_FLOCK;
+        const FLOCK = 1 << 0;
     }
 }
 
-#[repr(transparent)]
-pub struct AccessIn(fuse_access_in);
-
-impl fmt::Debug for AccessIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("AccessIn")
-            .field("mask", &self.mask())
-            .finish()
-    }
+/// ABI compatible with `fuse_access_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct AccessIn {
+    pub mask: u32,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
-impl AccessIn {
-    pub fn mask(&self) -> u32 {
-        self.0.mask
-    }
+/// ABI compatible with `fuse_create_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct CreateIn {
+    pub flags: u32,
+    pub mode: FileMode,
+    pub umask: u32,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
-#[repr(transparent)]
-pub struct CreateIn(fuse_create_in);
-
-impl fmt::Debug for CreateIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("CreateIn").finish()
-    }
+/// ABI compatible with `fuse_bmap_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct BmapIn {
+    pub block: u64,
+    pub blocksize: u32,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
-#[repr(transparent)]
-pub struct BmapIn(fuse_bmap_in);
-
-impl fmt::Debug for BmapIn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("CreateIn").finish()
-    }
+/// ABI compatible with `fuse_out_header`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct OutHeader {
+    pub len: u32,
+    pub error: i32,
+    pub unique: Unique,
 }
 
-#[repr(transparent)]
-pub struct OutHeader(fuse_out_header);
-
-impl OutHeader {
-    pub fn new(unique: u64, error: i32, data_len: usize) -> Self {
-        Self(fuse_out_header {
-            unique,
-            error: -error,
-            len: (mem::size_of::<fuse_out_header>() + data_len) as u32,
-        })
-    }
-}
-
-#[repr(transparent)]
-pub struct AttrOut(fuse_attr_out);
-
-impl fmt::Debug for AttrOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("AttrOut").finish()
-    }
-}
-
-impl Default for AttrOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
+/// ABI compatible with `fuse_attr_out`.
+#[derive(Debug, Default, Clone)]
+#[repr(C)]
+pub struct AttrOut {
+    pub attr_valid: u64,
+    pub attr_valid_nsec: u32,
+    #[doc(hidden)]
+    pub dummy: u32,
+    pub attr: FileAttr,
 }
 
 impl From<FileAttr> for AttrOut {
     fn from(attr: FileAttr) -> Self {
         let mut attr_out = Self::default();
-        attr_out.set_attr(attr);
+        attr_out.attr = attr.into();
         attr_out
     }
 }
@@ -848,230 +721,429 @@ impl From<libc::stat> for AttrOut {
 }
 
 impl AttrOut {
-    pub fn set_attr(&mut self, attr: impl Into<FileAttr>) {
-        self.0.attr = attr.into().0;
+    pub fn attr_valid(&self) -> (u64, u32) {
+        (self.attr_valid, self.attr_valid_nsec)
     }
 
     pub fn set_attr_valid(&mut self, sec: u64, nsec: u32) {
-        self.0.attr_valid = sec;
-        self.0.attr_valid_nsec = nsec;
+        self.attr_valid = sec;
+        self.attr_valid_nsec = nsec;
     }
 }
 
-#[repr(transparent)]
-pub struct EntryOut(pub(crate) fuse_entry_out);
-
-impl fmt::Debug for EntryOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("EntryOut").finish()
-    }
-}
-
-impl Default for EntryOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
+/// ABI compatible with `fuse_entry_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct EntryOut {
+    pub nodeid: Nodeid,
+    pub generation: u64,
+    pub entry_valid: u64,
+    pub attr_valid: u64,
+    pub entry_valid_nsec: u32,
+    pub attr_valid_nsec: u32,
+    pub attr: FileAttr,
 }
 
 impl EntryOut {
-    pub fn set_nodeid(&mut self, nodeid: u64) {
-        self.0.nodeid = nodeid;
-    }
-
-    pub fn set_generation(&mut self, generation: u64) {
-        self.0.generation = generation;
+    pub fn entry_valid(&self) -> (u64, u32) {
+        (self.entry_valid, self.entry_valid_nsec)
     }
 
     pub fn set_entry_valid(&mut self, sec: u64, nsec: u32) {
-        self.0.entry_valid = sec;
-        self.0.entry_valid_nsec = nsec;
+        self.entry_valid = sec;
+        self.entry_valid_nsec = nsec;
+    }
+
+    pub fn attr_valid(&self) -> (u64, u32) {
+        (self.attr_valid, self.attr_valid_nsec)
     }
 
     pub fn set_attr_valid(&mut self, sec: u64, nsec: u32) {
-        self.0.attr_valid = sec;
-        self.0.attr_valid_nsec = nsec;
-    }
-
-    pub fn set_attr(&mut self, attr: impl Into<FileAttr>) {
-        self.0.attr = attr.into().0;
+        self.attr_valid = sec;
+        self.attr_valid_nsec = nsec;
     }
 }
 
-#[repr(transparent)]
-pub struct InitOut(fuse_init_out);
-
-impl fmt::Debug for InitOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("InitOut").finish()
-    }
+/// ABI compatible with `fuse_init_out`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct InitOut {
+    pub major: u32,
+    pub minor: u32,
+    pub max_readahead: u32,
+    pub flags: CapFlags,
+    pub max_background: u16,
+    pub congestion_threshold: u16,
+    pub max_write: u32,
+    pub time_gran: u32,
+    pub max_pages: u16,
+    #[doc(hidden)]
+    pub padding: u16,
+    #[doc(hidden)]
+    pub unused: [u32; 8],
 }
 
 impl Default for InitOut {
     fn default() -> Self {
-        let mut init_out: fuse_init_out = unsafe { mem::zeroed() };
-        init_out.major = crate::bindings::FUSE_KERNEL_VERSION;
-        init_out.minor = crate::bindings::FUSE_KERNEL_MINOR_VERSION;
-        Self(init_out)
+        Self {
+            major: crate::consts::KERNEL_VERSION,
+            minor: crate::consts::KERNEL_MINOR_VERSION,
+            max_readahead: 0,
+            flags: CapFlags::empty(),
+            max_background: 0,
+            congestion_threshold: 0,
+            max_write: 0,
+            time_gran: 0,
+            max_pages: 0,
+            padding: 0,
+            unused: [0; 8],
+        }
     }
 }
 
-impl InitOut {
-    pub fn set_flags(&mut self, flags: CapFlags) {
-        self.0.flags = flags.bits();
-    }
-
-    pub fn max_readahead(&self) -> u32 {
-        self.0.max_readahead
-    }
-
-    pub fn set_max_readahead(&mut self, max_readahead: u32) {
-        self.0.max_readahead = max_readahead;
-    }
-
-    pub fn max_write(&self) -> u32 {
-        self.0.max_write
-    }
-
-    pub fn set_max_write(&mut self, max_write: u32) {
-        self.0.max_write = max_write;
-    }
+/// ABI compatible with `fuse_getxattr_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct GetxattrOut {
+    pub size: u32,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
-#[repr(transparent)]
-pub struct GetxattrOut(fuse_getxattr_out);
-
-impl fmt::Debug for GetxattrOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("GetxattrOut").finish()
-    }
-}
-
-impl Default for GetxattrOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl GetxattrOut {
-    pub fn set_size(&mut self, size: u32) {
-        self.0.size = size;
-    }
-}
-
-#[repr(transparent)]
-pub struct OpenOut(fuse_open_out);
-
-impl fmt::Debug for OpenOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OpenOut").finish()
-    }
+/// ABI compatible with `fuse_open_out`.
+#[derive(Debug)]
+#[repr(C)]
+pub struct OpenOut {
+    pub fh: u64,
+    pub open_flags: OpenFlags,
+    #[doc(hidden)]
+    pub padding: u32,
 }
 
 impl Default for OpenOut {
     fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl OpenOut {
-    pub fn set_fh(&mut self, fh: u64) {
-        self.0.fh = fh;
-    }
-
-    pub fn set_flags(&mut self, flags: OpenFlags) {
-        self.0.open_flags = flags.bits();
+        Self {
+            fh: 0,
+            open_flags: OpenFlags::empty(),
+            padding: 0,
+        }
     }
 }
 
 bitflags! {
+    /// Open flags.
+    #[repr(transparent)]
     pub struct OpenFlags: u32 {
-        const DIRECT_IO = crate::bindings::FOPEN_DIRECT_IO;
-        const KEEP_CACHE = crate::bindings::FOPEN_KEEP_CACHE;
-        const NONSEEKABLE = crate::bindings::FOPEN_NONSEEKABLE;
-        //const CACHE_DIR = crate::abi::FOPEN_CACHE_DIR;
+        const DIRECT_IO = 1 << 0;
+        const KEEP_CACHE = 1 << 1;
+        const NONSEEKABLE = 1 << 2;
+        const CACHE_DIR = 1 << 3;
     }
 }
 
-#[repr(transparent)]
-pub struct WriteOut(fuse_write_out);
+/// ABI compatible with `fuse_write_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct WriteOut {
+    pub size: u32,
+    #[doc(hidden)]
+    pub padding: u32,
+}
 
-impl fmt::Debug for WriteOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("WriteOut").finish()
+/// ABI compatible with `fuse_statfs_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct StatfsOut {
+    pub st: Statfs,
+}
+
+/// ABI compatible with `fuse_lk_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct LkOut {
+    pub lk: FileLock,
+}
+
+/// ABI compatible with `fuse_bmap_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct BmapOut {
+    pub block: u64,
+}
+
+/// ABI compatible with `fuse_ioctl_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct IoctlIn {
+    pub fh: u64,
+    pub flags: IoctlFlags,
+    pub cmd: u32,
+    pub arg: u64,
+    pub in_size: u32,
+    pub out_size: u32,
+}
+
+/// ABI compatible with `fuse_ioctl_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct IoctlOut {
+    pub result: i32,
+    pub flags: u32,
+    pub in_iovs: u32,
+    pub out_iovs: u32,
+}
+
+bitflags! {
+    /// Ioctl flags.
+    #[repr(transparent)]
+    pub struct IoctlFlags: u32 {
+        const COMPAT = 1 << 0;
+        const UNRESTRICTED = 1 << 1;
+        const RETRY = 1 << 2;
+        const USE_32BIT = 1 << 3;
+        const DIR = 1 << 4;
     }
 }
 
-impl Default for WriteOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
+/// ABI compatible with `fuse_ioctl_iovec`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct IoctlIovec {
+    pub base: u64,
+    pub len: u64,
+}
+
+/// ABI compatible with `fuse_poll_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct PollIn {
+    pub fh: u64,
+    pub kh: u64,
+    pub flags: u32,
+    pub events: u32,
+}
+
+/// ABI compatible with `fuse_poll_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct PollOut {
+    pub revents: u32,
+    #[doc(hidden)]
+    pub padding: u32,
+}
+
+bitflags! {
+    /// Poll flags.
+    #[repr(transparent)]
+    pub struct PollFlags: u32 {
+        const SCHEDULE_NOTIFY = 1 << 0;
     }
 }
 
-impl WriteOut {
-    pub fn set_size(&mut self, size: u32) {
-        self.0.size = size;
+/// ABI compatible with `fuse_interrupt_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct InterruptIn {
+    pub unique: Unique,
+}
+
+/// ABI compatible with `fuse_fallocate_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct FallocateIn {
+    pub fh: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub mode: u32,
+    #[doc(hidden)]
+    pub padding: u32,
+}
+
+/// ABI compatible with `fuse_batch_forget_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct BatchForgetIn {
+    pub count: u32,
+    #[doc(hidden)]
+    pub dummy: u32,
+}
+
+/// ABI compatible with `fuse_forget_one`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct ForgetOne {
+    pub nodeid: Nodeid,
+    pub nlookup: u64,
+}
+
+/// ABI compatible with `fuse_rename2_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct Rename2In {
+    pub newdir: u64,
+    pub flags: u32,
+    #[doc(hidden)]
+    pub padding: u32,
+}
+
+/// ABI compatible with `fuse_lseek_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct LseekIn {
+    pub fh: u64,
+    pub offset: u64,
+    pub whence: u32,
+    #[doc(hidden)]
+    pub padding: u32,
+}
+
+/// ABI compatible with `fuse_lseek_out`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct LseekOut {
+    pub offset: u64,
+}
+
+/// ABI compatible with `fuse_copy_file_range_in`.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct CopyFileRangeIn {
+    pub fh_in: u64,
+    pub off_in: u64,
+    pub nodeid_out: u64,
+    pub fh_out: u64,
+    pub off_out: u64,
+    pub len: u64,
+    pub flags: u64,
+}
+
+pub mod notify {
+    use crate::{Nodeid, Unique};
+
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(u32)]
+    pub enum NotifyCode {
+        Poll = 1,
+        InvalInode = 2,
+        InvalEntry = 3,
+        Store = 4,
+        Retrieve = 5,
+        Delete = 6,
+    }
+
+    impl NotifyCode {
+        pub const MAX: u32 = FUSE_NOTIFY_CODE_MAX;
+    }
+
+    pub const FUSE_NOTIFY_CODE_MAX: u32 = 7;
+
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub struct PollWakeupOut {
+        pub kh: u64,
+    }
+
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub struct InvalInodeOut {
+        pub ino: Nodeid,
+        pub off: i64,
+        pub len: i64,
+    }
+
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub struct InvalEntryOut {
+        pub parent: Nodeid,
+        pub namelen: u32,
+        #[doc(hidden)]
+        pub padding: u32,
+    }
+
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub struct DeleteOut {
+        pub parent: Nodeid,
+        pub child: Nodeid,
+        pub namelen: u32,
+        #[doc(hidden)]
+        pub padding: u32,
+    }
+
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub struct StoreOut {
+        pub nodeid: Nodeid,
+        pub offset: u64,
+        pub size: u32,
+        #[doc(hidden)]
+        pub padding: u32,
+    }
+
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub struct RetrieveOut {
+        pub notify_unique: Unique,
+        pub nodeid: Nodeid,
+        pub offset: u64,
+        pub size: u32,
+        #[doc(hidden)]
+        pub padding: u32,
+    }
+
+    #[derive(Debug, Clone)]
+    #[repr(C)]
+    pub struct RetrieveIn {
+        #[doc(hidden)]
+        pub dummy1: u64,
+        pub offset: u64,
+        pub size: u32,
+        #[doc(hidden)]
+        pub dummy2: u32,
+        #[doc(hidden)]
+        pub dummy3: u64,
+        #[doc(hidden)]
+        pub dummy4: u64,
     }
 }
 
-#[repr(transparent)]
-pub struct StatfsOut(fuse_statfs_out);
+/// CUSE
+pub mod cuse {
+    use bitflags::bitflags;
 
-impl fmt::Debug for StatfsOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("StatfsOut").finish()
+    /// ABI compatible with `cuse_init_in`.
+    #[derive(Debug, Clone)]
+    #[repr(C)]
+    pub struct InitIn {
+        pub major: u32,
+        pub minor: u32,
+        #[doc(hidden)]
+        pub unused: u32,
+        pub flags: CuseFlags,
     }
-}
 
-impl Default for StatfsOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
+    /// ABI compatible with `cuse_init_out`.
+    #[derive(Debug, Clone)]
+    #[repr(C)]
+    pub struct InitOut {
+        pub major: u32,
+        pub minor: u32,
+        #[doc(hidden)]
+        pub unused: u32,
+        pub flags: CuseFlags,
+        pub max_read: u32,
+        pub max_write: u32,
+        pub dev_major: u32,
+        pub dev_minor: u32,
+        #[doc(hidden)]
+        pub spare: [u32; 10],
     }
-}
 
-impl StatfsOut {
-    pub fn set_st(&mut self, st: impl Into<Statfs>) {
-        self.0.st = st.into().0;
-    }
-}
-
-#[repr(transparent)]
-pub struct LkOut(fuse_lk_out);
-
-impl fmt::Debug for LkOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("LkOut").finish()
-    }
-}
-
-impl Default for LkOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl LkOut {
-    pub fn set_lk(&mut self, lk: impl Into<FileLock>) {
-        self.0.lk = lk.into().0;
-    }
-}
-
-#[repr(transparent)]
-pub struct BmapOut(fuse_bmap_out);
-
-impl fmt::Debug for BmapOut {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("BmapOut").finish()
-    }
-}
-
-impl Default for BmapOut {
-    fn default() -> Self {
-        unsafe { mem::zeroed() }
-    }
-}
-
-impl BmapOut {
-    pub fn set_block(&mut self, block: u64) {
-        self.0.block = block;
+    bitflags! {
+        /// CUSE init flags.
+        pub struct CuseFlags: u32 {
+            /// use unrestricted ioctl.
+            const UNRESTRICTED_IOCTL = 1 << 0;
+        }
     }
 }
