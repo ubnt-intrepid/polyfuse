@@ -7,7 +7,6 @@ edition = "2018"
 
 [dependencies]
 fuse-async-abi = { version = "0.1.0", path = "fuse-async-abi" }
-fuse-async-io = { version = "0.1.0", path = "fuse-async-io" }
 
 async-trait = "0.1"
 futures-preview = { version = "0.3.0-alpha.18", features = ["nightly", "async-await"] }
@@ -29,7 +28,6 @@ members = [
   ".",
   "fuse-async-abi",
   "fuse-async-channel",
-  "fuse-async-io",
 
   "examples/null",
 ]

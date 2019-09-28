@@ -1,5 +1,7 @@
-use crate::backend::Connection;
-use fuse_async_io::{set_nonblocking, FdSource};
+use crate::{
+    backend::Connection,
+    io::{set_nonblocking, FdSource},
+};
 use futures_io::{AsyncRead, AsyncWrite, Initializer, IoSlice, IoSliceMut};
 use futures_util::ready;
 use mio::{unix::UnixReady, Ready};

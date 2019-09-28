@@ -7,8 +7,6 @@ edition = "2018"
 build = "build.rs"
 
 [dependencies]
-fuse-async-io = { version = "0.1.0", path = "../fuse-async-io" }
-
 futures-io-preview = "0.3.0-alpha.18"
 futures-util-preview = "0.3.0-alpha.18"
 libc = "0.2"

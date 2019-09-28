@@ -1,3 +1,5 @@
+//! Additional I/O primitives.
+
 use libc::{c_int, c_void, iovec};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
 use std::io::{self, IoSlice, IoSliceMut};
@@ -6,8 +8,22 @@ use std::{
     os::unix::io::RawFd,
 };
 
+pub(crate) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let res = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if res < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
 #[derive(Debug)]
-pub struct FdSource(pub RawFd);
+pub(crate) struct FdSource(pub(crate) RawFd);
 
 impl Read for FdSource {
     fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
