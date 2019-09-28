@@ -2,7 +2,12 @@
 
 #![allow(missing_debug_implementations)]
 
-#[allow(dead_code, nonstandard_style)]
+#[allow(
+    dead_code,
+    nonstandard_style,
+    clippy::unreadable_literal,
+    clippy::useless_transmute
+)]
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
@@ -222,6 +227,7 @@ impl fmt::Debug for InHeader {
     }
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl InHeader {
     pub fn len(&self) -> u32 {
         self.0.len
@@ -750,7 +756,7 @@ impl LkIn {
     }
 
     pub fn lk(&self) -> &FileLock {
-        unsafe { mem::transmute(&self.0.lk) }
+        unsafe { &*(&self.0.lk as *const _ as *const FileLock) }
     }
 
     pub fn lk_flags(&self) -> LkFlags {

@@ -1,4 +1,5 @@
 #![warn(clippy::unimplemented)]
+#![allow(clippy::needless_lifetimes)]
 
 use async_trait::async_trait;
 use fuse_async::{

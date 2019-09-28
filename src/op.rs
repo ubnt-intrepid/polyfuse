@@ -1,3 +1,5 @@
+#![allow(clippy::needless_lifetimes)]
+
 use crate::{
     error::{Error, Result},
     reply::{CreateOut, XattrOut},

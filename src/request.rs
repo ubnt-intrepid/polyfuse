@@ -126,6 +126,7 @@ pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a, &'a [u8]>)>
     Ok((header, arg))
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<Arg<'a, &'a [u8]>> {
     let arg = match header.opcode() {
         Opcode::FUSE_INIT => {
@@ -322,6 +323,7 @@ pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<Arg<'a,
     Ok(arg)
 }
 
+#[allow(clippy::cast_ptr_alignment)]
 fn parse_header<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, &'a [u8])> {
     const IN_HEADER_SIZE: usize = mem::size_of::<InHeader>();
 

@@ -13,6 +13,12 @@ pub struct Buffer {
     recv_buf: Vec<u8>,
 }
 
+impl Default for Buffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Buffer {
     pub fn new() -> Self {
         Self {
