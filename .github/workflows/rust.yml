@@ -22,8 +22,7 @@ jobs:
              llvm-dev \
              libclang-dev \
              clang \
-             fuse3 \
-             libfuse3-dev \
+             libfuse-dev \
              udev \
              libudev-dev
     - name: Build
