@@ -8,10 +8,10 @@ mod buffer;
 mod error;
 mod op;
 mod session;
+mod tokio;
 
 pub mod reply;
 pub mod request;
-pub mod tokio;
 
 pub use crate::buffer::Buffer;
 pub use crate::error::{Error, Result};

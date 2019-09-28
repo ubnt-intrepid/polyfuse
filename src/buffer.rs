@@ -60,14 +60,19 @@ impl Buffer {
         crate::request::parse(&self.recv_buf[..])
     }
 
-    pub async fn reply_err<'a, W>(&'a self, io: &'a mut W, unique: u64, err: i32) -> io::Result<()>
+    pub async fn reply_err<'a, W>(
+        &'a mut self,
+        io: &'a mut W,
+        unique: u64,
+        err: i32,
+    ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         reply_err(io, unique, err).await
     }
 
-    pub async fn reply_unit<'a, W>(&'a self, io: &'a mut W, unique: u64) -> io::Result<()>
+    pub async fn reply_unit<'a, W>(&'a mut self, io: &'a mut W, unique: u64) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
@@ -75,7 +80,7 @@ impl Buffer {
     }
 
     pub async fn reply_payload<'a, W, T>(
-        &'a self,
+        &'a mut self,
         io: &'a mut W,
         unique: u64,
         payload: &'a T,
@@ -85,5 +90,10 @@ impl Buffer {
         T: Payload,
     {
         reply_payload(io, unique, payload).await
+    }
+
+    pub async fn reply_none<'a, W>(&'a mut self, io: &'a mut W, unique: u64) -> io::Result<()> {
+        drop((io, unique));
+        Ok(())
     }
 }

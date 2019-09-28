@@ -49,33 +49,21 @@ struct Null;
 
 #[async_trait]
 impl Operations for Null {
-    async fn getattr<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        _: &'a GetattrIn,
-    ) -> fuse_async::Result<AttrOut> {
+    async fn getattr(&mut self, header: &InHeader, _: &GetattrIn) -> fuse_async::Result<AttrOut> {
         match header.nodeid() {
             1 => Ok(root_attr().into()),
             _ => Err(Error(libc::ENOENT)),
         }
     }
 
-    async fn setattr<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        _: &'a SetattrIn,
-    ) -> fuse_async::Result<AttrOut> {
+    async fn setattr(&mut self, header: &InHeader, _: &SetattrIn) -> fuse_async::Result<AttrOut> {
         match header.nodeid() {
             1 => Ok(root_attr().into()),
             _ => Err(Error(libc::ENOENT)),
         }
     }
 
-    async fn open<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        _: &'a OpenIn,
-    ) -> fuse_async::Result<OpenOut> {
+    async fn open(&mut self, header: &InHeader, _: &OpenIn) -> fuse_async::Result<OpenOut> {
         match header.nodeid() {
             1 => Ok(OpenOut::default()),
             _ => Err(Error(libc::ENOENT)),
@@ -84,8 +72,8 @@ impl Operations for Null {
 
     async fn read<'a>(
         &'a mut self,
-        header: &'a InHeader,
-        _: &'a ReadIn,
+        header: &InHeader,
+        _: &ReadIn,
     ) -> fuse_async::Result<Cow<'a, [u8]>> {
         match header.nodeid() {
             1 => Ok(Cow::Borrowed(&[] as &[u8])),
@@ -93,11 +81,11 @@ impl Operations for Null {
         }
     }
 
-    async fn write<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        _: &'a WriteIn,
-        buf: &'a [u8],
+    async fn write(
+        &mut self,
+        header: &InHeader,
+        _: &WriteIn,
+        buf: &[u8],
     ) -> fuse_async::Result<WriteOut> {
         match header.nodeid() {
             1 => {
@@ -109,11 +97,7 @@ impl Operations for Null {
         }
     }
 
-    async fn release<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        _: &'a ReleaseIn,
-    ) -> fuse_async::Result<()> {
+    async fn release(&mut self, header: &InHeader, _: &ReleaseIn) -> fuse_async::Result<()> {
         match header.nodeid() {
             1 => Ok(()),
             _ => Err(Error(libc::ENOENT)),

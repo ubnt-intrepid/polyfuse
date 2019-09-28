@@ -113,13 +113,15 @@ impl Session {
         }
 
         let (header, arg) = buf.parse()?;
+        let unique = header.unique();
+        let opcode = header.opcode();
         log::debug!("Got a request: header={:?}, arg={:?}", header, arg);
 
         macro_rules! reply_payload {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(out) => buf.reply_payload(io, header.unique(), &out).await?,
-                    Err(Error(err)) => buf.reply_err(io, header.unique(), err).await?,
+                    Ok(out) => buf.reply_payload(io, unique, &out).await?,
+                    Err(Error(err)) => buf.reply_err(io, unique, err).await?,
                 }
             };
         }
@@ -127,8 +129,8 @@ impl Session {
         macro_rules! reply_unit {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(()) => buf.reply_unit(io, header.unique()).await?,
-                    Err(Error(err)) => buf.reply_err(io, header.unique(), err).await?,
+                    Ok(()) => buf.reply_unit(io, unique).await?,
+                    Err(Error(err)) => buf.reply_err(io, unique, err).await?,
                 }
             };
         }
@@ -139,7 +141,7 @@ impl Session {
 
                 if arg.major() > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
-                    buf.reply_payload(io, header.unique(), &init_out).await?;
+                    buf.reply_payload(io, unique, &init_out).await?;
                     return Ok(false);
                 }
 
@@ -149,7 +151,7 @@ impl Session {
                         arg.major(),
                         arg.minor()
                     );
-                    buf.reply_err(io, header.unique(), libc::EPROTO).await?;
+                    buf.reply_err(io, unique, libc::EPROTO).await?;
                     return Err(io::Error::from_raw_os_error(libc::EPROTO));
                 }
 
@@ -163,36 +165,33 @@ impl Session {
 
                 self.got_init = true;
                 if let Err(Error(err)) = ops.init(header, &arg, &mut init_out).await {
-                    buf.reply_err(io, header.unique(), err).await?;
+                    buf.reply_err(io, unique, err).await?;
                     return Ok(false);
                 };
-                buf.reply_payload(io, header.unique(), &init_out).await?;
+                buf.reply_payload(io, unique, &init_out).await?;
             }
             _ if !self.got_init => {
-                log::warn!(
-                    "ignoring an operation before init (opcode={:?})",
-                    header.opcode()
-                );
-                buf.reply_err(io, header.unique(), libc::EIO).await?;
+                log::warn!("ignoring an operation before init (opcode={:?})", opcode,);
+                buf.reply_err(io, unique, libc::EIO).await?;
                 return Ok(false);
             }
             Arg::Destroy => {
                 ops.destroy().await;
                 self.got_destroy = true;
-                buf.reply_unit(io, header.unique()).await?;
+                buf.reply_unit(io, unique).await?;
             }
             _ if self.got_destroy => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode()
                 );
-                buf.reply_err(io, header.unique(), libc::EIO).await?;
+                buf.reply_err(io, unique, libc::EIO).await?;
                 return Ok(false);
             }
             Arg::Lookup { name } => reply_payload!(ops.lookup(header, name)),
             Arg::Forget(arg) => {
                 ops.forget(header, arg).await;
-                // no reply
+                buf.reply_none(io, unique).await?;
             }
             Arg::Getattr(arg) => reply_payload!(ops.getattr(header, &arg)),
             Arg::Setattr(arg) => reply_payload!(ops.setattr(header, &arg)),
@@ -241,8 +240,8 @@ impl Session {
             // Lseek,
             // CopyFileRange,
             Arg::Unknown => {
-                log::warn!("unsupported opcode: {:?}", header.opcode());
-                buf.reply_err(io, header.unique(), libc::ENOSYS).await?;
+                log::warn!("unsupported opcode: {:?}", opcode);
+                buf.reply_err(io, unique, libc::ENOSYS).await?;
             }
         }
 

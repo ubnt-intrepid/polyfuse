@@ -39,211 +39,156 @@ use std::{borrow::Cow, ffi::OsStr};
 #[async_trait]
 #[allow(unused_variables)]
 pub trait Operations {
-    async fn init<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a InitIn,
-        out: &'a mut InitOut,
-    ) -> Result<()> {
+    async fn init(&mut self, header: &InHeader, arg: &InitIn, out: &mut InitOut) -> Result<()> {
         Ok(())
     }
 
-    async fn destroy<'a>(&'a mut self) {}
+    async fn destroy(&mut self) {}
 
-    async fn lookup<'a>(&'a mut self, header: &'a InHeader, name: &'a OsStr) -> Result<EntryOut> {
+    async fn lookup(&mut self, header: &InHeader, name: &OsStr) -> Result<EntryOut> {
         Err(Error::NOSYS)
     }
 
-    async fn forget<'a>(&'a mut self, header: &'a InHeader, arg: &'a ForgetIn) {}
+    async fn forget(&mut self, header: &InHeader, arg: &ForgetIn) {}
 
-    async fn getattr<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a GetattrIn,
-    ) -> Result<AttrOut> {
+    async fn getattr(&mut self, header: &InHeader, arg: &GetattrIn) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn setattr<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a SetattrIn,
-    ) -> Result<AttrOut> {
+    async fn setattr(&mut self, header: &InHeader, arg: &SetattrIn) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn readlink<'a>(&'a mut self, header: &'a InHeader) -> Result<Cow<'a, OsStr>> {
+    async fn readlink<'s>(&'s mut self, header: &InHeader) -> Result<Cow<'s, OsStr>> {
         Err(Error::NOSYS)
     }
 
-    async fn symlink<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        name: &'a OsStr,
-        link: &'a OsStr,
-    ) -> Result<AttrOut> {
+    async fn symlink(&mut self, header: &InHeader, name: &OsStr, link: &OsStr) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn mknod<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a MknodIn,
-        name: &'a OsStr,
-    ) -> Result<AttrOut> {
+    async fn mknod(&mut self, header: &InHeader, arg: &MknodIn, name: &OsStr) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn mkdir<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a MkdirIn,
-        name: &'a OsStr,
-    ) -> Result<AttrOut> {
+    async fn mkdir(&mut self, header: &InHeader, arg: &MkdirIn, name: &OsStr) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn unlink<'a>(&'a mut self, header: &'a InHeader, name: &'a OsStr) -> Result<()> {
+    async fn unlink(&mut self, header: &InHeader, name: &OsStr) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn rmdir<'a>(&'a mut self, header: &'a InHeader, name: &'a OsStr) -> Result<()> {
+    async fn rmdir(&mut self, header: &InHeader, name: &OsStr) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn rename<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a RenameIn,
-        name: &'a OsStr,
-        newname: &'a OsStr,
+    async fn rename(
+        &mut self,
+        header: &InHeader,
+        arg: &RenameIn,
+        name: &OsStr,
+        newname: &OsStr,
     ) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn link<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a LinkIn,
-        newname: &'a OsStr,
-    ) -> Result<AttrOut> {
+    async fn link(&mut self, header: &InHeader, arg: &LinkIn, newname: &OsStr) -> Result<AttrOut> {
         Err(Error::NOSYS)
     }
 
-    async fn open<'a>(&'a mut self, header: &'a InHeader, arg: &'a OpenIn) -> Result<OpenOut> {
+    async fn open(&mut self, header: &InHeader, arg: &OpenIn) -> Result<OpenOut> {
         Err(Error::NOSYS)
     }
 
-    async fn read<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a ReadIn,
-    ) -> Result<Cow<'a, [u8]>> {
+    async fn read<'s>(&'s mut self, header: &InHeader, arg: &ReadIn) -> Result<Cow<'s, [u8]>> {
         Err(Error::NOSYS)
     }
 
-    async fn write<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a WriteIn,
-        data: &'a [u8],
-    ) -> Result<WriteOut> {
+    async fn write(&mut self, header: &InHeader, arg: &WriteIn, data: &[u8]) -> Result<WriteOut> {
         Err(Error::NOSYS)
     }
 
-    async fn release<'a>(&'a mut self, header: &'a InHeader, arg: &'a ReleaseIn) -> Result<()> {
+    async fn release(&mut self, header: &InHeader, arg: &ReleaseIn) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn statfs<'a>(&'a mut self, header: &'a InHeader) -> Result<StatfsOut> {
+    async fn statfs(&mut self, header: &InHeader) -> Result<StatfsOut> {
         Err(Error::NOSYS)
     }
 
-    async fn fsync<'a>(&'a mut self, header: &'a InHeader, arg: &'a FsyncIn) -> Result<()> {
+    async fn fsync(&mut self, header: &InHeader, arg: &FsyncIn) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn setxattr<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a SetxattrIn,
-        name: &'a OsStr,
-        value: &'a [u8],
+    async fn setxattr(
+        &mut self,
+        header: &InHeader,
+        arg: &SetxattrIn,
+        name: &OsStr,
+        value: &[u8],
     ) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn getxattr<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a GetxattrIn,
-        name: &'a OsStr,
-    ) -> Result<XattrOut<'a>> {
+    async fn getxattr<'s>(
+        &'s mut self,
+        header: &InHeader,
+        arg: &GetxattrIn,
+        name: &OsStr,
+    ) -> Result<XattrOut<'s>> {
         Err(Error::NOSYS)
     }
 
-    async fn listxattr<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a GetxattrIn,
-    ) -> Result<XattrOut<'a>> {
+    async fn listxattr<'s>(
+        &'s mut self,
+        header: &InHeader,
+        arg: &GetxattrIn,
+    ) -> Result<XattrOut<'s>> {
         Err(Error::NOSYS)
     }
 
-    async fn removexattr<'a>(&'a mut self, header: &'a InHeader, name: &'a OsStr) -> Result<()> {
+    async fn removexattr(&mut self, header: &InHeader, name: &OsStr) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn flush<'a>(&'a mut self, header: &'a InHeader, arg: &'a FlushIn) -> Result<()> {
+    async fn flush(&mut self, header: &InHeader, arg: &FlushIn) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn opendir<'a>(&'a mut self, header: &'a InHeader, arg: &'a OpenIn) -> Result<OpenOut> {
+    async fn opendir(&mut self, header: &InHeader, arg: &OpenIn) -> Result<OpenOut> {
         Err(Error::NOSYS)
     }
 
-    async fn readdir<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a ReadIn,
-    ) -> Result<Cow<'a, [u8]>> {
+    async fn readdir<'s>(&'s mut self, header: &InHeader, arg: &ReadIn) -> Result<Cow<'s, [u8]>> {
         Err(Error::NOSYS)
     }
 
-    async fn releasedir<'a>(&'a mut self, header: &'a InHeader, arg: &'a ReleaseIn) -> Result<()> {
+    async fn releasedir(&mut self, header: &InHeader, arg: &ReleaseIn) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn fsyncdir<'a>(&'a mut self, header: &'a InHeader, arg: &'a FsyncIn) -> Result<()> {
+    async fn fsyncdir(&mut self, header: &InHeader, arg: &FsyncIn) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn getlk<'a>(&'a mut self, header: &'a InHeader, arg: &'a LkIn) -> Result<LkOut> {
+    async fn getlk(&mut self, header: &InHeader, arg: &LkIn) -> Result<LkOut> {
         Err(Error::NOSYS)
     }
 
-    async fn setlk<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a LkIn,
-        sleep: bool,
-    ) -> Result<()> {
+    async fn setlk(&mut self, header: &InHeader, arg: &LkIn, sleep: bool) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn access<'a>(&'a mut self, header: &'a InHeader, arg: &'a AccessIn) -> Result<()> {
+    async fn access(&mut self, header: &InHeader, arg: &AccessIn) -> Result<()> {
         Err(Error::NOSYS)
     }
 
-    async fn create<'a>(
-        &'a mut self,
-        header: &'a InHeader,
-        arg: &'a CreateIn,
-    ) -> Result<CreateOut> {
+    async fn create(&mut self, header: &InHeader, arg: &CreateIn) -> Result<CreateOut> {
         Err(Error::NOSYS)
     }
 
-    async fn bmap<'a>(&'a mut self, header: &'a InHeader, arg: &'a BmapIn) -> Result<BmapOut> {
+    async fn bmap(&mut self, header: &InHeader, arg: &BmapIn) -> Result<BmapOut> {
         Err(Error::NOSYS)
     }
 
