@@ -1147,3 +1147,32 @@ pub mod cuse {
         }
     }
 }
+
+macro_rules! impl_as_ref_for_abi {
+    ($($t:ty,)*) => {$(
+        impl AsRef<[u8]> for $t {
+        #[allow(unsafe_code)]
+            fn as_ref(&self) -> &[u8] {
+                unsafe {
+                    std::slice::from_raw_parts(
+                        self as *const Self as *const u8,
+                        std::mem::size_of::<Self>(),
+                    )
+                }
+            }
+        }
+    )*}
+}
+
+impl_as_ref_for_abi! {
+    OutHeader,
+    InitOut,
+    OpenOut,
+    AttrOut,
+    EntryOut,
+    GetxattrOut,
+    WriteOut,
+    StatfsOut,
+    LkOut,
+    BmapOut,
+}

@@ -1,7 +1,7 @@
 use crate::{
-    buffer::Buffer,
-    error::Error, //
+    buffer::Buffer, //
     op::Operations,
+    reply::{ReplyInit, ReplyRaw},
     request::Arg,
     MAX_WRITE_SIZE,
 };
@@ -57,7 +57,7 @@ impl Session {
     ) -> io::Result<()>
     where
         I: AsyncRead + AsyncWrite + Unpin,
-        T: Operations + Send,
+        T: Operations,
     {
         self.run_until(io, buf, ops, crate::tokio::default_shutdown_signal()?)
             .await?;
@@ -74,7 +74,7 @@ impl Session {
     ) -> io::Result<Option<S::Output>>
     where
         I: AsyncRead + AsyncWrite + Unpin,
-        T: Operations + Send,
+        T: Operations,
         S: FusedFuture + Unpin,
     {
         let mut sig = sig;
@@ -108,7 +108,7 @@ impl Session {
     ) -> io::Result<bool>
     where
         I: AsyncRead + AsyncWrite + Unpin,
-        T: Operations + Send,
+        T: Operations,
     {
         if self.got_destroy {
             return Ok(true);
@@ -120,41 +120,23 @@ impl Session {
         }
 
         let (header, arg) = buf.parse()?;
-        let unique = header.unique;
         let opcode = header.opcode;
         log::debug!("Got a request: header={:?}, arg={:?}", header, arg);
 
-        macro_rules! reply_payload {
-            ($e:expr) => {
-                match ($e).await {
-                    Ok(out) => buf.reply_payload(io, unique, &out).await?,
-                    Err(Error(err)) => buf.reply_err(io, unique, err).await?,
-                }
-            };
-        }
-
-        macro_rules! reply_unit {
-            ($e:expr) => {
-                match ($e).await {
-                    Ok(()) => buf.reply_unit(io, unique).await?,
-                    Err(Error(err)) => buf.reply_err(io, unique, err).await?,
-                }
-            };
-        }
-
+        let reply = ReplyRaw::new(header.unique, &mut *io);
         match arg {
             Arg::Init(arg) => {
                 let mut init_out = InitOut::default();
 
                 if arg.major > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
-                    buf.reply_payload(io, unique, &init_out).await?;
+                    reply.ok(&init_out).await?;
                     return Ok(false);
                 }
 
                 if arg.major < 7 || (arg.major == 7 && arg.minor < 6) {
                     log::warn!("unsupported protocol version: {}.{}", arg.major, arg.minor);
-                    buf.reply_err(io, unique, libc::EPROTO).await?;
+                    reply.err(libc::EPROTO).await?;
                     return Err(io::Error::from_raw_os_error(libc::EPROTO));
                 }
 
@@ -167,70 +149,66 @@ impl Session {
                 init_out.max_write = MAX_WRITE_SIZE as u32;
 
                 self.got_init = true;
-                if let Err(Error(err)) = ops.init(header, &arg, &mut init_out).await {
-                    buf.reply_err(io, unique, err).await?;
-                    return Ok(false);
-                };
-                buf.reply_payload(io, unique, &init_out).await?;
+                ops.init(&header, &arg, ReplyInit::new(reply, init_out))
+                    .await?;
             }
             _ if !self.got_init => {
                 log::warn!("ignoring an operation before init (opcode={:?})", opcode,);
-                buf.reply_err(io, unique, libc::EIO).await?;
+                reply.err(libc::EIO).await?;
                 return Ok(false);
             }
             Arg::Destroy => {
-                ops.destroy().await;
+                ops.destroy();
                 self.got_destroy = true;
-                buf.reply_unit(io, unique).await?;
+                reply.ok(&[]).await?;
             }
             _ if self.got_destroy => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode
                 );
-                buf.reply_err(io, unique, libc::EIO).await?;
+                reply.err(libc::EIO).await?;
                 return Ok(false);
             }
-            Arg::Lookup { name } => reply_payload!(ops.lookup(header, name)),
+            Arg::Lookup { name } => ops.lookup(header, name, reply.into()).await?,
             Arg::Forget(arg) => {
-                ops.forget(header, arg).await;
-                buf.reply_none(io, unique).await?;
+                ops.forget(header, arg);
             }
-            Arg::Getattr(arg) => reply_payload!(ops.getattr(header, &arg)),
-            Arg::Setattr(arg) => reply_payload!(ops.setattr(header, &arg)),
-            Arg::Readlink => reply_payload!(ops.readlink(header)),
-            Arg::Symlink { name, link } => reply_payload!(ops.symlink(header, name, link)),
-            Arg::Mknod { arg, name } => reply_payload!(ops.mknod(header, arg, name)),
-            Arg::Mkdir { arg, name } => reply_payload!(ops.mkdir(header, arg, name)),
-            Arg::Unlink { name } => reply_unit!(ops.unlink(header, name)),
-            Arg::Rmdir { name } => reply_unit!(ops.unlink(header, name)),
+            Arg::Getattr(arg) => ops.getattr(header, &arg, reply.into()).await?,
+            Arg::Setattr(arg) => ops.setattr(header, &arg, reply.into()).await?,
+            Arg::Readlink => ops.readlink(header, reply.into()).await?,
+            Arg::Symlink { name, link } => ops.symlink(header, name, link, reply.into()).await?,
+            Arg::Mknod { arg, name } => ops.mknod(header, arg, name, reply.into()).await?,
+            Arg::Mkdir { arg, name } => ops.mkdir(header, arg, name, reply.into()).await?,
+            Arg::Unlink { name } => ops.unlink(header, name, reply.into()).await?,
+            Arg::Rmdir { name } => ops.unlink(header, name, reply.into()).await?,
             Arg::Rename { arg, name, newname } => {
-                reply_unit!(ops.rename(header, arg, name, newname))
+                ops.rename(header, arg, name, newname, reply.into()).await?
             }
-            Arg::Link { arg, newname } => reply_payload!(ops.link(header, arg, newname)),
-            Arg::Open(arg) => reply_payload!(ops.open(header, arg)),
-            Arg::Read(arg) => reply_payload!(ops.read(header, arg)),
-            Arg::Write { arg, data } => reply_payload!(ops.write(header, arg, data)),
-            Arg::Release(arg) => reply_unit!(ops.release(header, arg)),
-            Arg::Statfs => reply_payload!(ops.statfs(header)),
-            Arg::Fsync(arg) => reply_unit!(ops.fsync(header, arg)),
+            Arg::Link { arg, newname } => ops.link(header, arg, newname, reply.into()).await?,
+            Arg::Open(arg) => ops.open(header, arg, reply.into()).await?,
+            Arg::Read(arg) => ops.read(header, arg, reply.into()).await?,
+            Arg::Write { arg, data } => ops.write(header, arg, data, reply.into()).await?,
+            Arg::Release(arg) => ops.release(header, arg, reply.into()).await?,
+            Arg::Statfs => ops.statfs(header, reply.into()).await?,
+            Arg::Fsync(arg) => ops.fsync(header, arg, reply.into()).await?,
             Arg::Setxattr { arg, name, value } => {
-                reply_unit!(ops.setxattr(header, arg, name, value))
+                ops.setxattr(header, arg, name, value, reply.into()).await?
             }
-            Arg::Getxattr { arg, name } => reply_payload!(ops.getxattr(header, arg, name)),
-            Arg::Listxattr { arg } => reply_payload!(ops.listxattr(header, arg)),
-            Arg::Removexattr { name } => reply_unit!(ops.removexattr(header, name)),
-            Arg::Flush(arg) => reply_unit!(ops.flush(header, arg)),
-            Arg::Opendir(arg) => reply_payload!(ops.opendir(header, arg)),
-            Arg::Readdir(arg) => reply_payload!(ops.readdir(header, arg)),
-            Arg::Releasedir(arg) => reply_unit!(ops.releasedir(header, arg)),
-            Arg::Fsyncdir(arg) => reply_unit!(ops.fsyncdir(header, arg)),
-            Arg::Getlk(arg) => reply_payload!(ops.getlk(header, arg)),
-            Arg::Setlk(arg) => reply_unit!(ops.setlk(header, arg, false)),
-            Arg::Setlkw(arg) => reply_unit!(ops.setlk(header, arg, true)),
-            Arg::Access(arg) => reply_unit!(ops.access(header, arg)),
-            Arg::Create(arg) => reply_payload!(ops.create(header, arg)),
-            Arg::Bmap(arg) => reply_payload!(ops.bmap(header, arg)),
+            Arg::Getxattr { arg, name } => ops.getxattr(header, arg, name, reply.into()).await?,
+            Arg::Listxattr { arg } => ops.listxattr(header, arg, reply.into()).await?,
+            Arg::Removexattr { name } => ops.removexattr(header, name, reply.into()).await?,
+            Arg::Flush(arg) => ops.flush(header, arg, reply.into()).await?,
+            Arg::Opendir(arg) => ops.opendir(header, arg, reply.into()).await?,
+            Arg::Readdir(arg) => ops.readdir(header, arg, reply.into()).await?,
+            Arg::Releasedir(arg) => ops.releasedir(header, arg, reply.into()).await?,
+            Arg::Fsyncdir(arg) => ops.fsyncdir(header, arg, reply.into()).await?,
+            Arg::Getlk(arg) => ops.getlk(header, arg, reply.into()).await?,
+            Arg::Setlk(arg) => ops.setlk(header, arg, false, reply.into()).await?,
+            Arg::Setlkw(arg) => ops.setlk(header, arg, true, reply.into()).await?,
+            Arg::Access(arg) => ops.access(header, arg, reply.into()).await?,
+            Arg::Create(arg) => ops.create(header, arg, reply.into()).await?,
+            Arg::Bmap(arg) => ops.bmap(header, arg, reply.into()).await?,
 
             // Interrupt,
             // Ioctl,
@@ -244,7 +222,7 @@ impl Session {
             // CopyFileRange,
             Arg::Unknown => {
                 log::warn!("unsupported opcode: {:?}", opcode);
-                buf.reply_err(io, unique, libc::ENOSYS).await?;
+                reply.err(libc::ENOSYS).await?;
             }
         }
 

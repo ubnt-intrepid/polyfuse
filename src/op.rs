@@ -1,17 +1,23 @@
 #![allow(clippy::needless_lifetimes)]
 
-use crate::{
-    error::{Error, Result},
-    reply::{CreateOut, XattrOut},
+use crate::reply::{
+    ReplyAttr, //
+    ReplyBmap,
+    ReplyCreate,
+    ReplyData,
+    ReplyEntry,
+    ReplyInit,
+    ReplyLk,
+    ReplyOpen,
+    ReplyStatfs,
+    ReplyUnit,
+    ReplyWrite,
+    ReplyXattr,
 };
-use async_trait::async_trait;
 use fuse_async_abi::{
-    AccessIn,
-    AttrOut, //
+    AccessIn, //
     BmapIn,
-    BmapOut,
     CreateIn,
-    EntryOut,
     FlushIn,
     ForgetIn,
     FsyncIn,
@@ -19,179 +25,324 @@ use fuse_async_abi::{
     GetxattrIn,
     InHeader,
     InitIn,
-    InitOut,
     LinkIn,
     LkIn,
-    LkOut,
     MkdirIn,
     MknodIn,
     OpenIn,
-    OpenOut,
     ReadIn,
     ReleaseIn,
     RenameIn,
     SetattrIn,
     SetxattrIn,
-    StatfsOut,
     WriteIn,
-    WriteOut,
 };
-use std::{borrow::Cow, ffi::OsStr};
+use std::future::Future;
+use std::{ffi::OsStr, io, pin::Pin};
 
-#[async_trait]
+type ImplFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
 #[allow(unused_variables)]
 pub trait Operations {
-    async fn init(&mut self, header: &InHeader, arg: &InitIn, out: &mut InitOut) -> Result<()> {
-        Ok(())
+    fn init<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &InitIn,
+        reply: ReplyInit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.ok())
     }
 
-    async fn destroy(&mut self) {}
+    fn destroy(&mut self) {}
 
-    async fn lookup(&mut self, header: &InHeader, name: &OsStr) -> Result<EntryOut> {
-        Err(Error::NOSYS)
+    fn lookup<'a>(
+        &mut self,
+        header: &InHeader,
+        name: &OsStr,
+        reply: ReplyEntry<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn forget(&mut self, header: &InHeader, arg: &ForgetIn) {}
+    fn forget(&mut self, header: &InHeader, arg: &ForgetIn) {}
 
-    async fn getattr(&mut self, header: &InHeader, arg: &GetattrIn) -> Result<AttrOut> {
-        Err(Error::NOSYS)
+    fn getattr<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &GetattrIn,
+        reply: ReplyAttr<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn setattr(&mut self, header: &InHeader, arg: &SetattrIn) -> Result<AttrOut> {
-        Err(Error::NOSYS)
+    fn setattr<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &SetattrIn,
+        reply: ReplyAttr<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn readlink<'s>(&'s mut self, header: &InHeader) -> Result<Cow<'s, OsStr>> {
-        Err(Error::NOSYS)
+    fn readlink<'a>(
+        &mut self,
+        header: &InHeader,
+        reply: ReplyData<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn symlink(&mut self, header: &InHeader, name: &OsStr, link: &OsStr) -> Result<AttrOut> {
-        Err(Error::NOSYS)
+    fn symlink<'a>(
+        &mut self,
+        header: &InHeader,
+        name: &OsStr,
+        link: &OsStr,
+        reply: ReplyAttr<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn mknod(&mut self, header: &InHeader, arg: &MknodIn, name: &OsStr) -> Result<AttrOut> {
-        Err(Error::NOSYS)
+    fn mknod<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &MknodIn,
+        name: &OsStr,
+        reply: ReplyAttr<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn mkdir(&mut self, header: &InHeader, arg: &MkdirIn, name: &OsStr) -> Result<AttrOut> {
-        Err(Error::NOSYS)
+    fn mkdir<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &MkdirIn,
+        name: &OsStr,
+        reply: ReplyAttr<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn unlink(&mut self, header: &InHeader, name: &OsStr) -> Result<()> {
-        Err(Error::NOSYS)
+    fn unlink<'a>(
+        &mut self,
+        header: &InHeader,
+        name: &OsStr,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn rmdir(&mut self, header: &InHeader, name: &OsStr) -> Result<()> {
-        Err(Error::NOSYS)
+    fn rmdir<'a>(
+        &mut self,
+        header: &InHeader,
+        name: &OsStr,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn rename(
+    fn rename<'a>(
         &mut self,
         header: &InHeader,
         arg: &RenameIn,
         name: &OsStr,
         newname: &OsStr,
-    ) -> Result<()> {
-        Err(Error::NOSYS)
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn link(&mut self, header: &InHeader, arg: &LinkIn, newname: &OsStr) -> Result<AttrOut> {
-        Err(Error::NOSYS)
+    fn link<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &LinkIn,
+        newname: &OsStr,
+        reply: ReplyAttr<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn open(&mut self, header: &InHeader, arg: &OpenIn) -> Result<OpenOut> {
-        Err(Error::NOSYS)
+    fn open<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &OpenIn,
+        reply: ReplyOpen<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn read<'s>(&'s mut self, header: &InHeader, arg: &ReadIn) -> Result<Cow<'s, [u8]>> {
-        Err(Error::NOSYS)
+    fn read<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &ReadIn,
+        reply: ReplyData<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn write(&mut self, header: &InHeader, arg: &WriteIn, data: &[u8]) -> Result<WriteOut> {
-        Err(Error::NOSYS)
+    fn write<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &WriteIn,
+        data: &[u8],
+        reply: ReplyWrite<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn release(&mut self, header: &InHeader, arg: &ReleaseIn) -> Result<()> {
-        Err(Error::NOSYS)
+    fn release<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &ReleaseIn,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn statfs(&mut self, header: &InHeader) -> Result<StatfsOut> {
-        Err(Error::NOSYS)
+    fn statfs<'a>(
+        &mut self,
+        header: &InHeader,
+        reply: ReplyStatfs<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn fsync(&mut self, header: &InHeader, arg: &FsyncIn) -> Result<()> {
-        Err(Error::NOSYS)
+    fn fsync<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &FsyncIn,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn setxattr(
+    fn setxattr<'a>(
         &mut self,
         header: &InHeader,
         arg: &SetxattrIn,
         name: &OsStr,
         value: &[u8],
-    ) -> Result<()> {
-        Err(Error::NOSYS)
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn getxattr<'s>(
-        &'s mut self,
+    fn getxattr<'a>(
+        &mut self,
         header: &InHeader,
         arg: &GetxattrIn,
         name: &OsStr,
-    ) -> Result<XattrOut<'s>> {
-        Err(Error::NOSYS)
+        reply: ReplyXattr<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn listxattr<'s>(
-        &'s mut self,
+    fn listxattr<'a>(
+        &mut self,
         header: &InHeader,
         arg: &GetxattrIn,
-    ) -> Result<XattrOut<'s>> {
-        Err(Error::NOSYS)
+        reply: ReplyXattr<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn removexattr(&mut self, header: &InHeader, name: &OsStr) -> Result<()> {
-        Err(Error::NOSYS)
+    fn removexattr<'a>(
+        &mut self,
+        header: &InHeader,
+        name: &OsStr,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn flush(&mut self, header: &InHeader, arg: &FlushIn) -> Result<()> {
-        Err(Error::NOSYS)
+    fn flush<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &FlushIn,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn opendir(&mut self, header: &InHeader, arg: &OpenIn) -> Result<OpenOut> {
-        Err(Error::NOSYS)
+    fn opendir<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &OpenIn,
+        reply: ReplyOpen<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn readdir<'s>(&'s mut self, header: &InHeader, arg: &ReadIn) -> Result<Cow<'s, [u8]>> {
-        Err(Error::NOSYS)
+    fn readdir<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &ReadIn,
+        reply: ReplyData<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn releasedir(&mut self, header: &InHeader, arg: &ReleaseIn) -> Result<()> {
-        Err(Error::NOSYS)
+    fn releasedir<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &ReleaseIn,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn fsyncdir(&mut self, header: &InHeader, arg: &FsyncIn) -> Result<()> {
-        Err(Error::NOSYS)
+    fn fsyncdir<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &FsyncIn,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn getlk(&mut self, header: &InHeader, arg: &LkIn) -> Result<LkOut> {
-        Err(Error::NOSYS)
+    fn getlk<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &LkIn,
+        reply: ReplyLk<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn setlk(&mut self, header: &InHeader, arg: &LkIn, sleep: bool) -> Result<()> {
-        Err(Error::NOSYS)
+    fn setlk<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &LkIn,
+        sleep: bool,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn access(&mut self, header: &InHeader, arg: &AccessIn) -> Result<()> {
-        Err(Error::NOSYS)
+    fn access<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &AccessIn,
+        reply: ReplyUnit<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn create(&mut self, header: &InHeader, arg: &CreateIn) -> Result<CreateOut> {
-        Err(Error::NOSYS)
+    fn create<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &CreateIn,
+        reply: ReplyCreate<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
-    async fn bmap(&mut self, header: &InHeader, arg: &BmapIn) -> Result<BmapOut> {
-        Err(Error::NOSYS)
+    fn bmap<'a>(
+        &mut self,
+        header: &InHeader,
+        arg: &BmapIn,
+        reply: ReplyBmap<'a>,
+    ) -> ImplFuture<'a, io::Result<()>> {
+        Box::pin(reply.err(libc::ENOSYS))
     }
 
     // interrupt

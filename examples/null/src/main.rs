@@ -1,11 +1,9 @@
 #![warn(clippy::unimplemented)]
 #![allow(clippy::needless_lifetimes)]
 
-use async_trait::async_trait;
 use fuse_async::{
     abi::{
-        AttrOut, //
-        GetattrIn,
+        GetattrIn, //
         InHeader,
         Nodeid,
         OpenIn,
@@ -16,10 +14,11 @@ use fuse_async::{
         WriteIn,
         WriteOut,
     },
-    Buffer, Error, Operations, Session,
+    reply::{ReplyAttr, ReplyData, ReplyOpen, ReplyUnit, ReplyWrite},
+    Buffer, Operations, Session,
 };
 use fuse_async_channel::tokio::Channel;
-use std::{borrow::Cow, env, io, path::PathBuf};
+use std::{env, future::Future, io, path::PathBuf, pin::Pin};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -49,60 +48,81 @@ async fn main() -> io::Result<()> {
 
 struct Null;
 
-#[async_trait]
 impl Operations for Null {
-    async fn getattr(&mut self, header: &InHeader, _: &GetattrIn) -> fuse_async::Result<AttrOut> {
+    fn getattr<'a>(
+        &mut self,
+        header: &InHeader,
+        _: &GetattrIn,
+        reply: ReplyAttr<'a>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
         match header.nodeid {
-            Nodeid::ROOT => Ok(root_attr().into()),
-            _ => Err(Error(libc::ENOENT)),
+            Nodeid::ROOT => Box::pin(reply.ok(root_attr().into())),
+            _ => Box::pin(reply.err(libc::ENOENT)),
         }
     }
 
-    async fn setattr(&mut self, header: &InHeader, _: &SetattrIn) -> fuse_async::Result<AttrOut> {
+    fn setattr<'a>(
+        &mut self,
+        header: &InHeader,
+        _: &SetattrIn,
+        reply: ReplyAttr<'a>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
         match header.nodeid {
-            Nodeid::ROOT => Ok(root_attr().into()),
-            _ => Err(Error(libc::ENOENT)),
+            Nodeid::ROOT => Box::pin(reply.ok(root_attr().into())),
+            _ => Box::pin(reply.err(libc::ENOENT)),
         }
     }
 
-    async fn open(&mut self, header: &InHeader, _: &OpenIn) -> fuse_async::Result<OpenOut> {
+    fn open<'a>(
+        &mut self,
+        header: &InHeader,
+        _: &OpenIn,
+        reply: ReplyOpen<'a>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
         match header.nodeid {
-            Nodeid::ROOT => Ok(OpenOut::default()),
-            _ => Err(Error(libc::ENOENT)),
+            Nodeid::ROOT => Box::pin(reply.ok(OpenOut::default())),
+            _ => Box::pin(reply.err(libc::ENOENT)),
         }
     }
 
-    async fn read<'a>(
-        &'a mut self,
+    fn read<'a>(
+        &mut self,
         header: &InHeader,
         _: &ReadIn,
-    ) -> fuse_async::Result<Cow<'a, [u8]>> {
+        reply: ReplyData<'a>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
         match header.nodeid {
-            Nodeid::ROOT => Ok(Cow::Borrowed(&[] as &[u8])),
-            _ => Err(Error(libc::ENOENT)),
+            Nodeid::ROOT => Box::pin(reply.ok(&[])),
+            _ => Box::pin(reply.err(libc::ENOENT)),
         }
     }
 
-    async fn write(
+    fn write<'a>(
         &mut self,
         header: &InHeader,
         _: &WriteIn,
         buf: &[u8],
-    ) -> fuse_async::Result<WriteOut> {
+        reply: ReplyWrite<'a>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
         match header.nodeid {
             Nodeid::ROOT => {
                 let mut out = WriteOut::default();
                 out.size = buf.len() as u32;
-                Ok(out)
+                Box::pin(reply.ok(out))
             }
-            _ => Err(Error(libc::ENOENT)),
+            _ => Box::pin(reply.err(libc::ENOENT)),
         }
     }
 
-    async fn release(&mut self, header: &InHeader, _: &ReleaseIn) -> fuse_async::Result<()> {
+    fn release<'a>(
+        &mut self,
+        header: &InHeader,
+        _: &ReleaseIn,
+        reply: ReplyUnit<'a>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
         match header.nodeid {
-            Nodeid::ROOT => Ok(()),
-            _ => Err(Error(libc::ENOENT)),
+            Nodeid::ROOT => Box::pin(reply.ok()),
+            _ => Box::pin(reply.err(libc::ENOENT)),
         }
     }
 }

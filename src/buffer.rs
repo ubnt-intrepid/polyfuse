@@ -1,10 +1,6 @@
-use crate::{
-    abi::Unique,
-    reply::{reply_err, reply_payload, reply_unit, Payload},
-    request::Arg,
-};
+use crate::request::Arg;
 use fuse_async_abi::InHeader;
-use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use futures::io::{AsyncRead, AsyncReadExt};
 use std::io;
 
 const RECV_BUF_SIZE: usize = crate::MAX_WRITE_SIZE + 4096;
@@ -65,42 +61,5 @@ impl Buffer {
 
     pub fn parse(&self) -> io::Result<(&InHeader, Arg)> {
         crate::request::parse(&self.recv_buf[..])
-    }
-
-    pub async fn reply_err<'a, W>(
-        &'a mut self,
-        io: &'a mut W,
-        unique: Unique,
-        err: i32,
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        reply_err(io, unique, err).await
-    }
-
-    pub async fn reply_unit<'a, W>(&'a mut self, io: &'a mut W, unique: Unique) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        reply_unit(io, unique).await
-    }
-
-    pub async fn reply_payload<'a, W, T>(
-        &'a mut self,
-        io: &'a mut W,
-        unique: Unique,
-        payload: &'a T,
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-        T: Payload,
-    {
-        reply_payload(io, unique, payload).await
-    }
-
-    pub async fn reply_none<'a, W>(&'a mut self, io: &'a mut W, unique: Unique) -> io::Result<()> {
-        drop((io, unique));
-        Ok(())
     }
 }

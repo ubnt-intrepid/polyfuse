@@ -5,7 +5,6 @@
 pub use fuse_async_abi as abi;
 
 mod buffer;
-mod error;
 mod op;
 mod session;
 mod tokio;
@@ -14,7 +13,6 @@ pub mod reply;
 pub mod request;
 
 pub use crate::buffer::Buffer;
-pub use crate::error::{Error, Result};
 pub use crate::op::Operations;
 pub use crate::session::Session;
 
