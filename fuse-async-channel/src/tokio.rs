@@ -2,12 +2,12 @@ use crate::{
     backend::Connection,
     io::{set_nonblocking, FdSource},
 };
-use futures_io::{AsyncRead, AsyncWrite, Initializer, IoSlice, IoSliceMut};
+use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::ready;
 use mio::{unix::UnixReady, Ready};
 use std::{
     ffi::{OsStr, OsString},
-    io::{self, Read, Write},
+    io::{self, IoSlice, IoSliceMut, Read, Write},
     os::unix::io::AsRawFd,
     path::{Path, PathBuf},
     pin::Pin,
@@ -118,10 +118,6 @@ impl Channel {
 }
 
 impl AsyncRead for Channel {
-    unsafe fn initializer(&self) -> Initializer {
-        Initializer::nop()
-    }
-
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,

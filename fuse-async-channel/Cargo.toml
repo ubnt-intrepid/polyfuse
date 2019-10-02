@@ -7,11 +7,11 @@ edition = "2018"
 build = "build.rs"
 
 [dependencies]
-futures-io-preview = "0.3.0-alpha.18"
-futures-util-preview = "0.3.0-alpha.18"
+futures-io-preview = "0.3.0-alpha.19"
+futures-util-preview = "0.3.0-alpha.19"
 libc = "0.2"
 mio = "0.6"
-tokio-net = "0.2.0-alpha.1"
+tokio-net = "0.2.0-alpha.6"
 
 [build-dependencies]
 pkg-config = "0.3"

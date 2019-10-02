@@ -9,7 +9,7 @@ edition = "2018"
 fuse-async-abi = { version = "0.1.0", path = "fuse-async-abi" }
 
 async-trait = "0.1"
-futures-preview = { version = "0.3.0-alpha.18", features = ["nightly", "async-await"] }
+futures-preview = { version = "0.3.0-alpha.19", features = ["unstable", "async-await"] }
 libc = "0.2"
 log = "0.4"
 
