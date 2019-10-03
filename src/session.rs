@@ -13,6 +13,10 @@ use futures::{
 };
 use std::{io, pin::Pin};
 
+/// A single threaded, sequential filesystem driver.
+///
+/// This session driver does *not* receive the next request from the kernel,
+/// until the processing result for the previous request has been sent.
 #[derive(Debug)]
 pub struct Session {
     proto_major: Option<u32>,
@@ -48,6 +52,7 @@ impl Session {
         self.proto_minor
     }
 
+    /// Run a session with the kernel.
     #[cfg(feature = "tokio")]
     pub async fn run<'a, I, T>(
         &'a mut self,

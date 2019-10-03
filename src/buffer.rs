@@ -5,6 +5,7 @@ use std::io;
 
 const RECV_BUF_SIZE: usize = crate::MAX_WRITE_SIZE + 4096;
 
+/// A buffer to hold request data from the kernel.
 #[derive(Debug)]
 pub struct Buffer {
     recv_buf: Vec<u8>,
@@ -17,6 +18,7 @@ impl Default for Buffer {
 }
 
 impl Buffer {
+    /// Create a new `Buffer`.
     pub fn new() -> Self {
         Self {
             recv_buf: Vec::with_capacity(RECV_BUF_SIZE),
