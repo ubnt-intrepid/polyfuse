@@ -23,7 +23,11 @@ impl Buffer {
         }
     }
 
-    pub async fn receive<'a, I: ?Sized>(&'a mut self, io: &'a mut I) -> io::Result<bool>
+    /// Receive a request from the kernel.
+    pub async fn receive<'a, I: ?Sized>(
+        &'a mut self,
+        io: &mut I,
+    ) -> io::Result<Option<(&'a InHeader, Arg<'a>)>>
     where
         I: AsyncRead + Unpin,
     {
@@ -37,7 +41,7 @@ impl Buffer {
                 Ok(count) => {
                     log::debug!("read {} bytes", count);
                     unsafe { self.recv_buf.set_len(count) };
-                    return Ok(false);
+                    return crate::request::parse(&self.recv_buf[..]).map(Some);
                 }
                 Err(err) => match err.raw_os_error() {
                     Some(libc::ENOENT) | Some(libc::EINTR) => continue,
@@ -46,7 +50,7 @@ impl Buffer {
                         unsafe {
                             self.recv_buf.set_len(old_len);
                         }
-                        return Ok(true);
+                        return Ok(None);
                     }
                     _ => {
                         unsafe {
@@ -57,9 +61,5 @@ impl Buffer {
                 },
             }
         }
-    }
-
-    pub fn parse(&self) -> io::Result<(&InHeader, Arg)> {
-        crate::request::parse(&self.recv_buf[..])
     }
 }

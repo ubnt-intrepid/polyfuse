@@ -114,12 +114,14 @@ impl Session {
             return Ok(true);
         }
 
-        if buf.receive(io).await? {
-            self.got_destroy = true;
-            return Ok(true);
-        }
+        let (header, arg) = match buf.receive(io).await? {
+            Some(res) => res,
+            None => {
+                self.got_destroy = true;
+                return Ok(true);
+            }
+        };
 
-        let (header, arg) = buf.parse()?;
         let opcode = header.opcode;
         log::debug!("Got a request: header={:?}, arg={:?}", header, arg);
 
