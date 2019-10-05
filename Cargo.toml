@@ -6,8 +6,7 @@ authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-fuse-async-abi = { version = "0.1.0", path = "fuse-async-abi" }
-
+bitflags = "1.2"
 futures-preview = { version = "0.3.0-alpha.19", features = ["unstable", "async-await"] }
 libc = "0.2"
 log = "0.4"
@@ -25,7 +24,6 @@ tokio = ["tokio-net"]
 [workspace]
 members = [
   ".",
-  "fuse-async-abi",
   "fuse-async-channel",
 
   "examples/null",

@@ -1,5 +1,4 @@
-use crate::request::Arg;
-use fuse_async_abi::InHeader;
+use crate::{abi::InHeader, request::Arg};
 use futures::io::{AsyncRead, AsyncReadExt};
 use std::io;
 

@@ -45,9 +45,8 @@ jobs:
 
     - name: Build API doc
       run: |
-        cargo doc -p fuse-async-abi --verbose
-        cargo doc -p fuse-async --all-features --verbose
-        cargo doc -p fuse-async-channel --verbose
+        cargo doc --no-deps -p fuse-async --all-features --verbose
+        cargo doc --no-deps -p fuse-async-channel --verbose
         echo '<meta http-equiv="refresh" content="0;url=fuse_async">' > ./target/doc/index.html
     - name: Deply API doc
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'

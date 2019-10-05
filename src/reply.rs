@@ -1,6 +1,6 @@
 //! Replies to the kernel.
 
-use fuse_async_abi::{
+use crate::abi::{
     AttrOut, //
     BmapOut,
     EntryOut,

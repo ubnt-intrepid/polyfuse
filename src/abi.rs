@@ -1,7 +1,7 @@
 //! FUSE application binary interface.
 
 #![warn(
-    missing_debug_implementations, //
+missing_debug_implementations, //
     unsafe_code,
     clippy::unimplemented,
 )]
@@ -786,8 +786,8 @@ pub struct InitOut {
 impl Default for InitOut {
     fn default() -> Self {
         Self {
-            major: crate::consts::KERNEL_VERSION,
-            minor: crate::consts::KERNEL_MINOR_VERSION,
+            major: crate::abi::consts::KERNEL_VERSION,
+            minor: crate::abi::consts::KERNEL_MINOR_VERSION,
             max_readahead: 0,
             flags: CapFlags::empty(),
             max_background: 0,
@@ -1018,7 +1018,7 @@ pub struct CopyFileRangeIn {
 }
 
 pub mod notify {
-    use crate::{Nodeid, Unique};
+    use crate::abi::{Nodeid, Unique};
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(u32)]

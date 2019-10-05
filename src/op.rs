@@ -1,6 +1,29 @@
 #![allow(clippy::needless_lifetimes)]
 
 use crate::{
+    abi::{
+        AccessIn, //
+        BmapIn,
+        CreateIn,
+        FlushIn,
+        ForgetIn,
+        FsyncIn,
+        GetattrIn,
+        GetxattrIn,
+        InHeader,
+        InitIn,
+        LinkIn,
+        LkIn,
+        MkdirIn,
+        MknodIn,
+        OpenIn,
+        ReadIn,
+        ReleaseIn,
+        RenameIn,
+        SetattrIn,
+        SetxattrIn,
+        WriteIn,
+    },
     buffer::Data,
     reply::{
         ReplyAttr, //
@@ -16,29 +39,6 @@ use crate::{
         ReplyWrite,
         ReplyXattr,
     },
-};
-use fuse_async_abi::{
-    AccessIn, //
-    BmapIn,
-    CreateIn,
-    FlushIn,
-    ForgetIn,
-    FsyncIn,
-    GetattrIn,
-    GetxattrIn,
-    InHeader,
-    InitIn,
-    LinkIn,
-    LkIn,
-    MkdirIn,
-    MknodIn,
-    OpenIn,
-    ReadIn,
-    ReleaseIn,
-    RenameIn,
-    SetattrIn,
-    SetxattrIn,
-    WriteIn,
 };
 use std::future::Future;
 use std::{ffi::OsStr, io, pin::Pin};

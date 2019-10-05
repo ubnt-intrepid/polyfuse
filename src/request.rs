@@ -1,6 +1,6 @@
 //! Requests from the kernel.
 
-use fuse_async_abi::{
+use crate::abi::{
     AccessIn, //
     BmapIn,
     CreateIn,

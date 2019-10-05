@@ -1,11 +1,11 @@
 use crate::{
-    buffer::Buffer, //
+    abi::InitOut, //
+    buffer::Buffer,
     op::Operations,
     reply::{ReplyInit, ReplyRaw},
     request::Arg,
     MAX_WRITE_SIZE,
 };
-use fuse_async_abi::InitOut;
 use futures::{
     future::{FusedFuture, FutureExt},
     io::{AsyncRead, AsyncWrite},

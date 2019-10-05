@@ -2,13 +2,12 @@
 
 #![warn(missing_debug_implementations, clippy::unimplemented)]
 
-pub use fuse_async_abi as abi;
-
 mod buffer;
 mod op;
 mod session;
 mod tokio;
 
+pub mod abi;
 pub mod reply;
 pub mod request;
 
