@@ -1,4 +1,7 @@
-use crate::{abi::InHeader, request::Arg};
+use crate::{
+    abi::InHeader,
+    request::{Arg, Parser},
+};
 use futures::io::{AsyncRead, AsyncReadExt};
 use std::io;
 
@@ -49,7 +52,7 @@ impl Buffer {
 
         log::debug!("receive {} bytes", self.recv_buf.len());
 
-        let (header, arg, offset) = crate::request::parse(&self.recv_buf[..])?;
+        let (header, arg, offset) = Parser::new(&self.recv_buf[..]).parse()?;
         let data = match arg {
             Arg::Write(arg) => {
                 let size = arg.size as usize;

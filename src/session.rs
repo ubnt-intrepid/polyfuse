@@ -127,10 +127,10 @@ impl Session {
             }
         };
 
-        let opcode = header.opcode;
         log::debug!(
-            "Got a request: header={:?}, arg={:?}, data={:?}",
-            header,
+            "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
+            header.unique,
+            header.opcode(),
             arg,
             data
         );
@@ -165,7 +165,10 @@ impl Session {
                     .await?;
             }
             _ if !self.got_init => {
-                log::warn!("ignoring an operation before init (opcode={:?})", opcode,);
+                log::warn!(
+                    "ignoring an operation before init (opcode={:?})",
+                    header.opcode
+                );
                 reply.err(libc::EIO).await?;
                 return Ok(false);
             }
@@ -236,7 +239,7 @@ impl Session {
             // Lseek,
             // CopyFileRange,
             Arg::Unknown => {
-                log::warn!("unsupported opcode: {:?}", opcode);
+                log::warn!("unsupported opcode: {:?}", header.opcode);
                 reply.err(libc::ENOSYS).await?;
             }
         }

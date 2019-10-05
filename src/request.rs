@@ -26,8 +26,6 @@ use crate::abi::{
 };
 use std::{ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
 
-const IN_HEADER_SIZE: usize = mem::size_of::<InHeader>();
-
 #[derive(Debug)]
 pub enum Arg<'a> {
     Init(&'a InitIn),
@@ -111,198 +109,58 @@ pub enum Arg<'a> {
     Unknown,
 }
 
-pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a>, usize)> {
-    let header = parse_header(buf)?;
-    if buf.len() < header.len as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "received data is too short",
-        ));
-    }
+pub trait FromBytes<'a> {
+    const SIZE: usize;
 
-    let (arg, arg_len) = parse_arg(header, &buf[IN_HEADER_SIZE..])?;
-
-    Ok((header, arg, IN_HEADER_SIZE + arg_len))
+    unsafe fn from_bytes(bytes: &'a [u8]) -> &'a Self;
 }
 
-#[allow(clippy::cast_ptr_alignment)]
-pub fn parse_header<'a>(buf: &'a [u8]) -> io::Result<&'a InHeader> {
-    let header = buf
-        .get(..IN_HEADER_SIZE)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "in_header"))?;
-    Ok(unsafe { &*(header.as_ptr() as *const InHeader) })
+macro_rules! impl_from_bytes {
+    ($($t:ty,)*) => {$(
+        impl<'a> FromBytes<'a> for $t {
+            const SIZE: usize = mem::size_of::<Self>();
+
+            unsafe fn from_bytes(bytes: &'a [u8]) -> &'a Self {
+                debug_assert_eq!(bytes.len(), Self::SIZE);
+                &*(bytes.as_ptr() as *const Self)
+            }
+        }
+    )*};
 }
 
-pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<(Arg<'a>, usize)> {
-    let mut cursor = Cursor::new(payload);
-    let arg = match header.opcode {
-        Opcode::Init => {
-            let arg = cursor.fetch()?;
-            Arg::Init(arg)
-        }
-        Opcode::Destroy => Arg::Destroy,
-        Opcode::Lookup => {
-            let name = cursor.fetch_str()?;
-            Arg::Lookup { name }
-        }
-        Opcode::Forget => {
-            let arg = cursor.fetch()?;
-            Arg::Forget(arg)
-        }
-        Opcode::Getattr => {
-            let arg = cursor.fetch()?;
-            Arg::Getattr(arg)
-        }
-        Opcode::Setattr => {
-            let arg = cursor.fetch()?;
-            Arg::Setattr(arg)
-        }
-        Opcode::Readlink => Arg::Readlink,
-        Opcode::Symlink => {
-            let name = cursor.fetch_str()?;
-            let link = cursor.fetch_str()?;
-            Arg::Symlink { name, link }
-        }
-        Opcode::Mknod => {
-            let arg = cursor.fetch()?;
-            let name = cursor.fetch_str()?;
-            Arg::Mknod { arg, name }
-        }
-        Opcode::Mkdir => {
-            let arg = cursor.fetch()?;
-            let name = cursor.fetch_str()?;
-            Arg::Mkdir { arg, name }
-        }
-        Opcode::Unlink => {
-            let name = cursor.fetch_str()?;
-            Arg::Unlink { name }
-        }
-        Opcode::Rmdir => {
-            let name = cursor.fetch_str()?;
-            Arg::Rmdir { name }
-        }
-        Opcode::Rename => {
-            let arg = cursor.fetch()?;
-            let name = cursor.fetch_str()?;
-            let newname = cursor.fetch_str()?;
-            Arg::Rename { arg, name, newname }
-        }
-        Opcode::Link => {
-            let arg = cursor.fetch()?;
-            let newname = cursor.fetch_str()?;
-            Arg::Link { arg, newname }
-        }
-        Opcode::Open => {
-            let arg = cursor.fetch()?;
-            Arg::Open(arg)
-        }
-        Opcode::Read => {
-            let arg = cursor.fetch()?;
-            Arg::Read(arg)
-        }
-        Opcode::Write => {
-            let arg = cursor.fetch()?;
-            Arg::Write(arg)
-        }
-        Opcode::Release => {
-            let arg = cursor.fetch()?;
-            Arg::Release(arg)
-        }
-        Opcode::Statfs => Arg::Statfs,
-        Opcode::Fsync => {
-            let arg = cursor.fetch()?;
-            Arg::Fsync(arg)
-        }
-        Opcode::Setxattr => {
-            let arg: &SetxattrIn = cursor.fetch()?;
-            let name = cursor.fetch_str()?;
-            let value = cursor.fetch_bytes(arg.size as usize)?;
-            Arg::Setxattr { arg, name, value }
-        }
-        Opcode::Getxattr => {
-            let arg = cursor.fetch()?;
-            let name = cursor.fetch_str()?;
-            Arg::Getxattr { arg, name }
-        }
-        Opcode::Listxattr => {
-            let arg = cursor.fetch()?;
-            Arg::Listxattr { arg }
-        }
-        Opcode::Removexattr => {
-            let name = cursor.fetch_str()?;
-            Arg::Removexattr { name }
-        }
-        Opcode::Flush => {
-            let arg = cursor.fetch()?;
-            Arg::Flush(arg)
-        }
-        Opcode::Opendir => {
-            let arg = cursor.fetch()?;
-            Arg::Opendir(arg)
-        }
-        Opcode::Readdir => {
-            let arg = cursor.fetch()?;
-            Arg::Readdir(arg)
-        }
-        Opcode::Releasedir => {
-            let arg = cursor.fetch()?;
-            Arg::Releasedir(arg)
-        }
-        Opcode::Fsyncdir => {
-            let arg = cursor.fetch()?;
-            Arg::Fsyncdir(arg)
-        }
-        Opcode::Getlk => {
-            let arg = cursor.fetch()?;
-            Arg::Getlk(arg)
-        }
-        Opcode::Setlk => {
-            let arg = cursor.fetch()?;
-            Arg::Setlk(arg)
-        }
-        Opcode::Setlkw => {
-            let arg = cursor.fetch()?;
-            Arg::Setlkw(arg)
-        }
-        Opcode::Access => {
-            let arg = cursor.fetch()?;
-            Arg::Access(arg)
-        }
-        Opcode::Create => {
-            let arg = cursor.fetch()?;
-            Arg::Create(arg)
-        }
-        Opcode::Bmap => {
-            let arg = cursor.fetch()?;
-            Arg::Bmap(arg)
-        }
-        _ => Arg::Unknown,
-    };
-
-    Ok((arg, cursor.offset))
+impl_from_bytes! {
+    InHeader,
+    InitIn,
+    ForgetIn,
+    GetattrIn,
+    SetattrIn,
+    MknodIn,
+    MkdirIn,
+    RenameIn,
+    LinkIn,
+    OpenIn,
+    ReadIn,
+    WriteIn,
+    ReleaseIn,
+    FsyncIn,
+    SetxattrIn,
+    GetxattrIn,
+    FlushIn,
+    LkIn,
+    AccessIn,
+    CreateIn,
+    BmapIn,
 }
 
-struct Cursor<'a> {
+#[derive(Debug)]
+pub struct Parser<'a> {
     buf: &'a [u8],
     offset: usize,
 }
 
-impl<'a> Cursor<'a> {
-    fn new(buf: &'a [u8]) -> Self {
+impl<'a> Parser<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
         Self { buf, offset: 0 }
-    }
-
-    fn fetch<T>(&mut self) -> io::Result<&'a T> {
-        self.fetch_bytes(mem::size_of::<T>())
-            .map(|data| unsafe { &*(data.as_ptr() as *const T) })
-    }
-
-    fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
-        let len = self.buf[self.offset..]
-            .iter()
-            .position(|&b| b == b'\0')
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fetch_str: missing \\0"))?;
-        self.fetch_bytes(len).map(OsStr::from_bytes)
     }
 
     fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
@@ -314,5 +172,188 @@ impl<'a> Cursor<'a> {
         self.offset += count;
 
         Ok(data)
+    }
+
+    fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
+        let len = self.buf[self.offset..]
+            .iter()
+            .position(|&b| b == b'\0')
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fetch_str: missing \\0"))?;
+        self.fetch_bytes(len).map(OsStr::from_bytes)
+    }
+
+    fn fetch<T: FromBytes<'a>>(&mut self) -> io::Result<&'a T> {
+        self.fetch_bytes(T::SIZE)
+            .map(|data| unsafe { T::from_bytes(data) })
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn parse(&mut self) -> io::Result<(&'a InHeader, Arg<'a>, usize)> {
+        let header = self.parse_header()?;
+        let arg = self.parse_arg(header)?;
+        Ok((header, arg, self.offset()))
+    }
+
+    #[allow(clippy::cast_ptr_alignment)]
+    pub fn parse_header(&mut self) -> io::Result<&'a InHeader> {
+        let header = self.fetch::<InHeader>()?;
+
+        if self.buf.len() < header.len as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "received data is too short",
+            ));
+        }
+
+        Ok(header)
+    }
+
+    pub fn parse_arg(&mut self, header: &'a InHeader) -> io::Result<Arg<'a>> {
+        match header.opcode() {
+            Some(Opcode::Init) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Init(arg))
+            }
+            Some(Opcode::Destroy) => Ok(Arg::Destroy),
+            Some(Opcode::Lookup) => {
+                let name = self.fetch_str()?;
+                Ok(Arg::Lookup { name })
+            }
+            Some(Opcode::Forget) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Forget(arg))
+            }
+            Some(Opcode::Getattr) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Getattr(arg))
+            }
+            Some(Opcode::Setattr) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Setattr(arg))
+            }
+            Some(Opcode::Readlink) => Ok(Arg::Readlink),
+            Some(Opcode::Symlink) => {
+                let name = self.fetch_str()?;
+                let link = self.fetch_str()?;
+                Ok(Arg::Symlink { name, link })
+            }
+            Some(Opcode::Mknod) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                Ok(Arg::Mknod { arg, name })
+            }
+            Some(Opcode::Mkdir) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                Ok(Arg::Mkdir { arg, name })
+            }
+            Some(Opcode::Unlink) => {
+                let name = self.fetch_str()?;
+                Ok(Arg::Unlink { name })
+            }
+            Some(Opcode::Rmdir) => {
+                let name = self.fetch_str()?;
+                Ok(Arg::Rmdir { name })
+            }
+            Some(Opcode::Rename) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                let newname = self.fetch_str()?;
+                Ok(Arg::Rename { arg, name, newname })
+            }
+            Some(Opcode::Link) => {
+                let arg = self.fetch()?;
+                let newname = self.fetch_str()?;
+                Ok(Arg::Link { arg, newname })
+            }
+            Some(Opcode::Open) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Open(arg))
+            }
+            Some(Opcode::Read) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Read(arg))
+            }
+            Some(Opcode::Write) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Write(arg))
+            }
+            Some(Opcode::Release) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Release(arg))
+            }
+            Some(Opcode::Statfs) => Ok(Arg::Statfs),
+            Some(Opcode::Fsync) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Fsync(arg))
+            }
+            Some(Opcode::Setxattr) => {
+                let arg: &SetxattrIn = self.fetch()?;
+                let name = self.fetch_str()?;
+                let value = self.fetch_bytes(arg.size as usize)?;
+                Ok(Arg::Setxattr { arg, name, value })
+            }
+            Some(Opcode::Getxattr) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                Ok(Arg::Getxattr { arg, name })
+            }
+            Some(Opcode::Listxattr) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Listxattr { arg })
+            }
+            Some(Opcode::Removexattr) => {
+                let name = self.fetch_str()?;
+                Ok(Arg::Removexattr { name })
+            }
+            Some(Opcode::Flush) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Flush(arg))
+            }
+            Some(Opcode::Opendir) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Opendir(arg))
+            }
+            Some(Opcode::Readdir) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Readdir(arg))
+            }
+            Some(Opcode::Releasedir) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Releasedir(arg))
+            }
+            Some(Opcode::Fsyncdir) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Fsyncdir(arg))
+            }
+            Some(Opcode::Getlk) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Getlk(arg))
+            }
+            Some(Opcode::Setlk) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Setlk(arg))
+            }
+            Some(Opcode::Setlkw) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Setlkw(arg))
+            }
+            Some(Opcode::Access) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Access(arg))
+            }
+            Some(Opcode::Create) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Create(arg))
+            }
+            Some(Opcode::Bmap) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Bmap(arg))
+            }
+            _ => Ok(Arg::Unknown),
+        }
     }
 }

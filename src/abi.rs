@@ -7,6 +7,7 @@ missing_debug_implementations, //
 )]
 
 use bitflags::bitflags;
+use std::{convert::TryFrom, error, fmt};
 
 pub mod consts {
     /// The major version number of FUSE protocol.
@@ -63,6 +64,12 @@ newtype! {
 
     /// The unique identifier of inode in the filesystem.
     pub type Nodeid = u64;
+}
+
+impl fmt::Display for Unique {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&self.raw, f)
+    }
 }
 
 impl Nodeid {
@@ -204,9 +211,36 @@ pub struct FileLock {
     pub pid: Pid,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[repr(u32)]
-pub enum Opcode {
+macro_rules! define_opcode {
+    ($(
+        $(#[$m:meta])*
+        $Variant:ident = $val:expr,
+    )*) => {
+        #[derive(Debug, Copy, Clone, PartialEq, Hash)]
+        #[repr(u32)]
+        pub enum Opcode {
+            $(
+                $(#[$m])*
+                $Variant = $val,
+            )*
+        }
+
+        impl TryFrom<u32> for Opcode {
+            type Error = UnknownOpcode;
+
+            fn try_from(opcode: u32) -> Result<Self, Self::Error> {
+                match opcode {
+                    $(
+                        $val => Ok(Self::$Variant),
+                    )*
+                    opcode => Err(UnknownOpcode(opcode)),
+                }
+            }
+        }
+    };
+}
+
+define_opcode! {
     Lookup = 1,
     Forget = 2,
     Getattr = 3,
@@ -258,12 +292,23 @@ pub enum Opcode {
     CuseInit = 4096,
 }
 
+#[derive(Debug)]
+pub struct UnknownOpcode(u32);
+
+impl fmt::Display for UnknownOpcode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "unknown opcode: {}", self.0)
+    }
+}
+
+impl error::Error for UnknownOpcode {}
+
 /// ABI compatible with `fuse_in_header`.
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct InHeader {
     pub len: u32,
-    pub opcode: Opcode,
+    pub opcode: u32,
     pub unique: Unique,
     pub nodeid: Nodeid,
     pub uid: Uid,
@@ -271,6 +316,12 @@ pub struct InHeader {
     pub pid: Pid,
     #[doc(hidden)]
     pub padding: u32,
+}
+
+impl InHeader {
+    pub fn opcode(&self) -> Option<Opcode> {
+        Opcode::try_from(self.opcode).ok()
+    }
 }
 
 /// ABI compatible with `fuse_init_in`.
