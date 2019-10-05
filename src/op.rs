@@ -1,18 +1,21 @@
 #![allow(clippy::needless_lifetimes)]
 
-use crate::reply::{
-    ReplyAttr, //
-    ReplyBmap,
-    ReplyCreate,
-    ReplyData,
-    ReplyEntry,
-    ReplyInit,
-    ReplyLk,
-    ReplyOpen,
-    ReplyStatfs,
-    ReplyUnit,
-    ReplyWrite,
-    ReplyXattr,
+use crate::{
+    buffer::Data,
+    reply::{
+        ReplyAttr, //
+        ReplyBmap,
+        ReplyCreate,
+        ReplyData,
+        ReplyEntry,
+        ReplyInit,
+        ReplyLk,
+        ReplyOpen,
+        ReplyStatfs,
+        ReplyUnit,
+        ReplyWrite,
+        ReplyXattr,
+    },
 };
 use fuse_async_abi::{
     AccessIn, //
@@ -183,7 +186,7 @@ pub trait Operations {
         &mut self,
         header: &InHeader,
         arg: &WriteIn,
-        data: &[u8],
+        data: Data<'_>,
         reply: ReplyWrite<'a>,
     ) -> ImplFuture<'a, io::Result<()>> {
         Box::pin(reply.err(libc::ENOSYS))

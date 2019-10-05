@@ -12,7 +12,7 @@ mod tokio;
 pub mod reply;
 pub mod request;
 
-pub use crate::buffer::Buffer;
+pub use crate::buffer::{Buffer, Data};
 pub use crate::op::Operations;
 pub use crate::session::Session;
 

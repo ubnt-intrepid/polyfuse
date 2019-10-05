@@ -26,8 +26,10 @@ use fuse_async_abi::{
 };
 use std::{ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
 
+const IN_HEADER_SIZE: usize = mem::size_of::<InHeader>();
+
 #[derive(Debug)]
-pub enum Arg<'a, T = &'a [u8]> {
+pub enum Arg<'a> {
     Init(&'a InitIn),
     Destroy,
     Lookup {
@@ -66,17 +68,14 @@ pub enum Arg<'a, T = &'a [u8]> {
     },
     Open(&'a OpenIn),
     Read(&'a ReadIn),
-    Write {
-        arg: &'a WriteIn,
-        data: T,
-    },
+    Write(&'a WriteIn),
     Release(&'a ReleaseIn),
     Statfs,
     Fsync(&'a FsyncIn),
     Setxattr {
         arg: &'a SetxattrIn,
         name: &'a OsStr,
-        value: T,
+        value: &'a [u8],
     },
     Getxattr {
         arg: &'a GetxattrIn,
@@ -112,8 +111,8 @@ pub enum Arg<'a, T = &'a [u8]> {
     Unknown,
 }
 
-pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a, &'a [u8]>)> {
-    let (header, payload) = parse_header(buf)?;
+pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a>, usize)> {
+    let header = parse_header(buf)?;
     if buf.len() < header.len as usize {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -121,228 +120,199 @@ pub fn parse<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, Arg<'a, &'a [u8]>)>
         ));
     }
 
-    let arg = parse_arg(header, payload)?;
+    let (arg, arg_len) = parse_arg(header, &buf[IN_HEADER_SIZE..])?;
 
-    Ok((header, arg))
+    Ok((header, arg, IN_HEADER_SIZE + arg_len))
 }
 
-#[allow(clippy::cognitive_complexity)]
-pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<Arg<'a, &'a [u8]>> {
+#[allow(clippy::cast_ptr_alignment)]
+pub fn parse_header<'a>(buf: &'a [u8]) -> io::Result<&'a InHeader> {
+    let header = buf
+        .get(..IN_HEADER_SIZE)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "in_header"))?;
+    Ok(unsafe { &*(header.as_ptr() as *const InHeader) })
+}
+
+pub fn parse_arg<'a>(header: &InHeader, payload: &'a [u8]) -> io::Result<(Arg<'a>, usize)> {
+    let mut cursor = Cursor::new(payload);
     let arg = match header.opcode {
         Opcode::Init => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Init(arg)
         }
-        Opcode::Destroy => {
-            debug_assert!(payload.is_empty());
-            Arg::Destroy
-        }
+        Opcode::Destroy => Arg::Destroy,
         Opcode::Lookup => {
-            let (name, remains) = fetch_str(payload)?;
-            debug_assert!(remains.is_empty());
+            let name = cursor.fetch_str()?;
             Arg::Lookup { name }
         }
         Opcode::Forget => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Forget(arg)
         }
         Opcode::Getattr => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Getattr(arg)
         }
         Opcode::Setattr => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Setattr(arg)
         }
-        Opcode::Readlink => {
-            debug_assert!(payload.is_empty());
-            Arg::Readlink
-        }
+        Opcode::Readlink => Arg::Readlink,
         Opcode::Symlink => {
-            let (name, remains) = fetch_str(payload)?;
-            let (link, _remains) = fetch_str(remains)?;
-            debug_assert!(remains.is_empty());
+            let name = cursor.fetch_str()?;
+            let link = cursor.fetch_str()?;
             Arg::Symlink { name, link }
         }
         Opcode::Mknod => {
-            let (arg, remains) = fetch(payload)?;
-            let (name, remains) = fetch_str(remains)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
+            let name = cursor.fetch_str()?;
             Arg::Mknod { arg, name }
         }
         Opcode::Mkdir => {
-            let (arg, remains) = fetch(payload)?;
-            let (name, remains) = fetch_str(remains)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
+            let name = cursor.fetch_str()?;
             Arg::Mkdir { arg, name }
         }
         Opcode::Unlink => {
-            let (name, remains) = fetch_str(payload)?;
-            debug_assert!(remains.is_empty());
+            let name = cursor.fetch_str()?;
             Arg::Unlink { name }
         }
         Opcode::Rmdir => {
-            let (name, remains) = fetch_str(payload)?;
-            debug_assert!(remains.is_empty());
+            let name = cursor.fetch_str()?;
             Arg::Rmdir { name }
         }
         Opcode::Rename => {
-            let (arg, remains) = fetch(payload)?;
-            let (name, remains) = fetch_str(remains)?;
-            let (newname, _remains) = fetch_str(remains)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
+            let name = cursor.fetch_str()?;
+            let newname = cursor.fetch_str()?;
             Arg::Rename { arg, name, newname }
         }
         Opcode::Link => {
-            let (arg, remains) = fetch(payload)?;
-            let (newname, _remains) = fetch_str(remains)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
+            let newname = cursor.fetch_str()?;
             Arg::Link { arg, newname }
         }
         Opcode::Open => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Open(arg)
         }
         Opcode::Read => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Read(arg)
         }
         Opcode::Write => {
-            let (arg, data) = fetch(payload)?;
-            Arg::Write { arg, data }
+            let arg = cursor.fetch()?;
+            Arg::Write(arg)
         }
         Opcode::Release => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Release(arg)
         }
-        Opcode::Statfs => {
-            debug_assert!(payload.is_empty());
-            Arg::Statfs
-        }
+        Opcode::Statfs => Arg::Statfs,
         Opcode::Fsync => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Fsync(arg)
         }
         Opcode::Setxattr => {
-            let (arg, remains) = fetch(payload)?;
-            let (name, value) = fetch_str(remains)?;
+            let arg: &SetxattrIn = cursor.fetch()?;
+            let name = cursor.fetch_str()?;
+            let value = cursor.fetch_bytes(arg.size as usize)?;
             Arg::Setxattr { arg, name, value }
         }
         Opcode::Getxattr => {
-            let (arg, remains) = fetch(payload)?;
-            let (name, remains) = fetch_str(remains)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
+            let name = cursor.fetch_str()?;
             Arg::Getxattr { arg, name }
         }
         Opcode::Listxattr => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Listxattr { arg }
         }
         Opcode::Removexattr => {
-            let (name, remains) = fetch_str(payload)?;
-            debug_assert!(remains.is_empty());
+            let name = cursor.fetch_str()?;
             Arg::Removexattr { name }
         }
         Opcode::Flush => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Flush(arg)
         }
         Opcode::Opendir => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Opendir(arg)
         }
         Opcode::Readdir => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Readdir(arg)
         }
         Opcode::Releasedir => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Releasedir(arg)
         }
         Opcode::Fsyncdir => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Fsyncdir(arg)
         }
         Opcode::Getlk => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Getlk(arg)
         }
         Opcode::Setlk => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Setlk(arg)
         }
         Opcode::Setlkw => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Setlkw(arg)
         }
         Opcode::Access => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Access(arg)
         }
         Opcode::Create => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Create(arg)
         }
         Opcode::Bmap => {
-            let (arg, remains) = fetch(payload)?;
-            debug_assert!(remains.is_empty());
+            let arg = cursor.fetch()?;
             Arg::Bmap(arg)
         }
         _ => Arg::Unknown,
     };
 
-    Ok(arg)
+    Ok((arg, cursor.offset))
 }
 
-#[allow(clippy::cast_ptr_alignment)]
-fn parse_header<'a>(buf: &'a [u8]) -> io::Result<(&'a InHeader, &'a [u8])> {
-    const IN_HEADER_SIZE: usize = mem::size_of::<InHeader>();
+struct Cursor<'a> {
+    buf: &'a [u8],
+    offset: usize,
+}
 
-    if buf.len() < IN_HEADER_SIZE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "in_header"));
+impl<'a> Cursor<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, offset: 0 }
     }
-    let (header, remains) = buf.split_at(IN_HEADER_SIZE);
 
-    let header = unsafe { &*(header.as_ptr() as *const InHeader) };
-
-    Ok((header, remains))
-}
-
-fn fetch<'a, T>(buf: &'a [u8]) -> io::Result<(&'a T, &'a [u8])> {
-    if buf.len() < mem::size_of::<T>() {
-        return Err(io::ErrorKind::InvalidData.into());
+    fn fetch<T>(&mut self) -> io::Result<&'a T> {
+        self.fetch_bytes(mem::size_of::<T>())
+            .map(|data| unsafe { &*(data.as_ptr() as *const T) })
     }
-    let (data, remains) = buf.split_at(mem::size_of::<T>());
-    Ok((unsafe { &*(data.as_ptr() as *const T) }, remains))
-}
 
-fn fetch_str<'a>(buf: &'a [u8]) -> io::Result<(&'a OsStr, &'a [u8])> {
-    let pos = buf.iter().position(|&b| b == b'\0');
-    let (s, remains) = if let Some(pos) = pos {
-        let (s, remains) = buf.split_at(pos);
-        let remains = &remains[1..]; // skip '\0'
-        (s, remains)
-    } else {
-        (buf, &[] as &[u8])
-    };
-    Ok((OsStr::from_bytes(s), remains))
+    fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
+        let len = self.buf[self.offset..]
+            .iter()
+            .position(|&b| b == b'\0')
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fetch_str: missing \\0"))?;
+        self.fetch_bytes(len).map(OsStr::from_bytes)
+    }
+
+    fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
+        if self.buf.len() < self.offset + count {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "fetch"));
+        }
+
+        let data = &self.buf[self.offset..self.offset + count];
+        self.offset += count;
+
+        Ok(data)
+    }
 }

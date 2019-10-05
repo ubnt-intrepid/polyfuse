@@ -15,7 +15,7 @@ use fuse_async::{
         WriteOut,
     },
     reply::{ReplyAttr, ReplyData, ReplyOpen, ReplyUnit, ReplyWrite},
-    Buffer, Operations, Session,
+    Buffer, Data, Operations, Session,
 };
 use fuse_async_channel::tokio::Channel;
 use std::{env, future::Future, io, path::PathBuf, pin::Pin};
@@ -101,13 +101,18 @@ impl Operations for Null {
         &mut self,
         header: &InHeader,
         _: &WriteIn,
-        buf: &[u8],
+        data: Data,
         reply: ReplyWrite<'a>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
         match header.nodeid {
             Nodeid::ROOT => {
+                let data = match data {
+                    Data::Bytes(bytes) => bytes,
+                    _ => unimplemented!(),
+                };
+
                 let mut out = WriteOut::default();
-                out.size = buf.len() as u32;
+                out.size = data.len() as u32;
                 Box::pin(reply.ok(out))
             }
             _ => Box::pin(reply.err(libc::ENOENT)),

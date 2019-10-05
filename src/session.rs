@@ -119,7 +119,7 @@ impl Session {
             return Ok(true);
         }
 
-        let (header, arg) = match buf.receive(io).await? {
+        let (header, arg, data) = match buf.receive(io).await? {
             Some(res) => res,
             None => {
                 self.got_destroy = true;
@@ -128,7 +128,12 @@ impl Session {
         };
 
         let opcode = header.opcode;
-        log::debug!("Got a request: header={:?}, arg={:?}", header, arg);
+        log::debug!(
+            "Got a request: header={:?}, arg={:?}, data={:?}",
+            header,
+            arg,
+            data
+        );
 
         let reply = ReplyRaw::new(header.unique, &mut *io);
         match arg {
@@ -195,7 +200,10 @@ impl Session {
             Arg::Link { arg, newname } => ops.link(header, arg, newname, reply.into()).await?,
             Arg::Open(arg) => ops.open(header, arg, reply.into()).await?,
             Arg::Read(arg) => ops.read(header, arg, reply.into()).await?,
-            Arg::Write { arg, data } => ops.write(header, arg, data, reply.into()).await?,
+            Arg::Write(arg) => match data {
+                Some(data) => ops.write(header, arg, data, reply.into()).await?,
+                None => panic!("unexpected condition"),
+            },
             Arg::Release(arg) => ops.release(header, arg, reply.into()).await?,
             Arg::Statfs => ops.statfs(header, reply.into()).await?,
             Arg::Fsync(arg) => ops.fsync(header, arg, reply.into()).await?,
