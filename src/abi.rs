@@ -1,5 +1,6 @@
 //! FUSE application binary interface.
 
+#![allow(clippy::identity_op)]
 #![warn(
 missing_debug_implementations, //
     unsafe_code,
@@ -760,7 +761,7 @@ pub struct AttrOut {
 impl From<FileAttr> for AttrOut {
     fn from(attr: FileAttr) -> Self {
         let mut attr_out = Self::default();
-        attr_out.attr = attr.into();
+        attr_out.attr = attr;
         attr_out
     }
 }

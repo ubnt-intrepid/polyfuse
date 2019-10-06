@@ -38,25 +38,27 @@ pub struct DirEntry {
 impl DirEntry {
     pub fn new(name: impl AsRef<OsStr>) -> Self {
         let name = name.as_ref().as_bytes();
+
         let entlen = mem::size_of::<DirEntryHeader>() + name.len();
         let entsize = aligned(entlen);
         let padlen = entsize - entlen;
-        let name_offset = offset_of!(DirEntryHeader, name);
 
         let mut dirent_buf = Vec::<u8>::with_capacity(entsize);
         unsafe {
             let p = dirent_buf.as_mut_ptr();
 
+            #[allow(clippy::cast_ptr_alignment)]
             let pheader = p as *mut DirEntryHeader;
             (*pheader).ino = Nodeid::from_raw(0);
             (*pheader).off = 0;
             (*pheader).namelen = name.len() as u32;
             (*pheader).typ = 0;
 
-            let p = p.offset(name_offset as isize);
+            #[allow(clippy::unneeded_field_pattern)]
+            let p = p.add(offset_of!(DirEntryHeader, name));
             ptr::copy_nonoverlapping(name.as_ptr(), p, name.len());
 
-            let p = p.offset(name.len() as isize);
+            let p = p.add(name.len());
             ptr::write_bytes(p, 0u8, padlen);
 
             dirent_buf.set_len(entsize);
@@ -67,11 +69,13 @@ impl DirEntry {
 
     unsafe fn header(&self) -> &DirEntryHeader {
         debug_assert!(self.dirent_buf.len() > mem::size_of::<DirEntryHeader>());
+        #[allow(clippy::cast_ptr_alignment)]
         &*(self.dirent_buf.as_ptr() as *mut DirEntryHeader)
     }
 
     unsafe fn header_mut(&mut self) -> &mut DirEntryHeader {
         debug_assert!(self.dirent_buf.len() > mem::size_of::<DirEntryHeader>());
+        #[allow(clippy::cast_ptr_alignment)]
         &mut *(self.dirent_buf.as_mut_ptr() as *mut DirEntryHeader)
     }
 
@@ -100,28 +104,40 @@ impl DirEntry {
     }
 
     pub fn name(&self) -> &OsStr {
+        #[allow(clippy::unneeded_field_pattern)]
         let name_offset = offset_of!(DirEntryHeader, name);
         let namelen = unsafe { self.header().namelen as usize };
         OsStr::from_bytes(&self.dirent_buf[name_offset..name_offset + namelen])
     }
 
+    #[allow(clippy::cast_ptr_alignment)]
     pub fn set_name(&mut self, name: impl AsRef<OsStr>) {
         let name = name.as_ref().as_bytes();
+
         let entlen = mem::size_of::<DirEntryHeader>() + name.len();
         let entsize = aligned(entlen);
         let padlen = entsize - entlen;
-        let name_offset = offset_of!(DirEntryHeader, name);
 
-        self.dirent_buf.resize(entsize, 0);
+        if self.dirent_buf.capacity() < entsize {
+            self.dirent_buf
+                .reserve_exact(entsize - self.dirent_buf.len());
+        }
+
         unsafe {
             let p = self.dirent_buf.as_mut_ptr();
-            (*(p as *mut DirEntryHeader)).namelen = name.len() as u32;
 
-            let p = p.offset(name_offset as isize);
+            #[allow(clippy::cast_ptr_alignment)]
+            let pheader = p as *mut DirEntryHeader;
+            (*pheader).namelen = name.len() as u32;
+
+            #[allow(clippy::unneeded_field_pattern)]
+            let p = p.add(offset_of!(DirEntryHeader, name));
             ptr::copy_nonoverlapping(name.as_ptr(), p, name.len());
 
-            let p = p.offset(name.len() as isize);
+            let p = p.add(name.len());
             ptr::write_bytes(p, 0u8, padlen);
+
+            self.dirent_buf.set_len(entsize);
         }
     }
 }
@@ -162,7 +178,7 @@ impl<'a> ReplyRaw<'a> {
 
         let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_ref()))
             .into_iter()
-            .chain(data.into_iter().map(|t| IoSlice::new(&*t)))
+            .chain(data.iter().map(|t| IoSlice::new(&*t)))
             .collect();
 
         (*self.io).write_vectored(&*vec).await?;
