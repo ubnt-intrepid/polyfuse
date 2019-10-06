@@ -2,7 +2,7 @@ use crate::{
     abi::InitOut, //
     buffer::Buffer,
     op::Operations,
-    reply::{ReplyInit, ReplyRaw},
+    reply::ReplyRaw,
     request::Arg,
     MAX_WRITE_SIZE,
 };
@@ -122,7 +122,6 @@ impl Session {
         let (header, arg, data) = match buf.receive(io).await? {
             Some(res) => res,
             None => {
-                self.got_destroy = true;
                 return Ok(true);
             }
         };
@@ -161,8 +160,7 @@ impl Session {
                 init_out.max_write = MAX_WRITE_SIZE as u32;
 
                 self.got_init = true;
-                ops.init(&header, &arg, ReplyInit::new(reply, init_out))
-                    .await?;
+                reply.ok(&init_out).await?;
             }
             _ if !self.got_init => {
                 log::warn!(
@@ -173,13 +171,12 @@ impl Session {
                 return Ok(false);
             }
             Arg::Destroy => {
-                ops.destroy();
                 self.got_destroy = true;
                 reply.ok(&[]).await?;
             }
             _ if self.got_destroy => {
                 log::warn!(
-                    "ignoring an operation before init (opcode={:?})",
+                    "ignoring an operation after destroy (opcode={:?})",
                     header.opcode
                 );
                 reply.err(libc::EIO).await?;

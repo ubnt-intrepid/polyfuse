@@ -11,7 +11,6 @@ use crate::{
         GetattrIn,
         GetxattrIn,
         InHeader,
-        InitIn,
         LinkIn,
         LkIn,
         MkdirIn,
@@ -31,7 +30,6 @@ use crate::{
         ReplyCreate,
         ReplyData,
         ReplyEntry,
-        ReplyInit,
         ReplyLk,
         ReplyOpen,
         ReplyStatfs,
@@ -47,17 +45,6 @@ type ImplFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 #[allow(unused_variables)]
 pub trait Operations {
-    fn init<'a>(
-        &mut self,
-        header: &InHeader,
-        arg: &InitIn,
-        reply: ReplyInit<'a>,
-    ) -> ImplFuture<'a, io::Result<()>> {
-        Box::pin(reply.ok())
-    }
-
-    fn destroy(&mut self) {}
-
     fn lookup<'a>(
         &mut self,
         header: &InHeader,

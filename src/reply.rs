@@ -5,7 +5,6 @@ use crate::abi::{
     BmapOut,
     EntryOut,
     GetxattrOut,
-    InitOut,
     LkOut,
     OpenOut,
     OutHeader,
@@ -137,31 +136,6 @@ impl<'a> From<ReplyRaw<'a>> for ReplyData<'a> {
 impl<'a> ReplyData<'a> {
     pub async fn ok(self, data: &[u8]) -> io::Result<()> {
         self.raw.ok(data).await
-    }
-
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.err(errno).await
-    }
-}
-
-#[derive(Debug)]
-#[must_use]
-pub struct ReplyInit<'a> {
-    raw: ReplyRaw<'a>,
-    out: InitOut,
-}
-
-impl<'a> ReplyInit<'a> {
-    pub(crate) fn new(raw: ReplyRaw<'a>, out: InitOut) -> Self {
-        Self { raw, out }
-    }
-
-    pub fn out(&mut self) -> &mut InitOut {
-        &mut self.out
-    }
-
-    pub async fn ok(self) -> io::Result<()> {
-        self.raw.ok(&self.out).await
     }
 
     pub async fn err(self, errno: i32) -> io::Result<()> {
