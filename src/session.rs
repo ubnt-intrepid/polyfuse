@@ -141,13 +141,13 @@ impl Session {
 
                 if arg.major > 7 {
                     log::debug!("wait for a second INIT request with a 7.X version.");
-                    reply.ok(&init_out).await?;
+                    reply.reply(0, &[init_out.as_ref()]).await?;
                     return Ok(false);
                 }
 
                 if arg.major < 7 || (arg.major == 7 && arg.minor < 6) {
                     log::warn!("unsupported protocol version: {}.{}", arg.major, arg.minor);
-                    reply.err(libc::EPROTO).await?;
+                    reply.reply_err(libc::EPROTO).await?;
                     return Err(io::Error::from_raw_os_error(libc::EPROTO));
                 }
 
@@ -160,26 +160,26 @@ impl Session {
                 init_out.max_write = MAX_WRITE_SIZE as u32;
 
                 self.got_init = true;
-                reply.ok(&init_out).await?;
+                reply.reply(0, &[init_out.as_ref()]).await?;
             }
             _ if !self.got_init => {
                 log::warn!(
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode
                 );
-                reply.err(libc::EIO).await?;
+                reply.reply_err(libc::EIO).await?;
                 return Ok(false);
             }
             Arg::Destroy => {
                 self.got_destroy = true;
-                reply.ok(&[]).await?;
+                reply.reply(0, &[]).await?;
             }
             _ if self.got_destroy => {
                 log::warn!(
                     "ignoring an operation after destroy (opcode={:?})",
                     header.opcode
                 );
-                reply.err(libc::EIO).await?;
+                reply.reply_err(libc::EIO).await?;
                 return Ok(false);
             }
             Arg::Lookup { name } => ops.lookup(header, name, reply.into()).await?,
@@ -237,7 +237,7 @@ impl Session {
             // CopyFileRange,
             Arg::Unknown => {
                 log::warn!("unsupported opcode: {:?}", header.opcode);
-                reply.err(libc::ENOSYS).await?;
+                reply.reply_err(libc::ENOSYS).await?;
             }
         }
 
