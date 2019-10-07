@@ -56,12 +56,13 @@ jobs:
         PUBLISH_BRANCH: gh-pages
         PUBLISH_DIR: ./target/doc
 
-  Tarpaulin:
+  Coverage:
     runs-on: ubuntu-latest
     container:
-      image: xd009642/tarpaulin:latest-nightly
-      options: --security-opt seccomp=unconfined
+      image: rust:latest
     steps:
+    - uses: actions/checkout@v1
+
     - name: Install dependencies
       run: |
         apt-get update -yqq
@@ -71,12 +72,33 @@ jobs:
              libfuse-dev \
              udev \
              libudev-dev
-    - name: Run coverage test
-      continue-on-error: true
-      run: |
-        cargo +nightly tarpaulin --out Xml --all --verbose
+        curl -L https://github.com/mozilla/grcov/releases/latest/download/grcov-linux-x86_64.tar.bz2 | tar jxf -
+        mv -v ./grcov /usr/local/bin
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        override: true
+
+    - uses: actions-rs/cargo@v1
+      with:
+        command: test
+        args: --all --verbose
+      env:
+        CARGO_INCREMENTAL: 0
+        RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Zno-landing-pads"
+
+    - uses: actions-rs/grcov@v0.1
+      if: success()
+      id: coverage
+
+    - run: cp -v $REPORT_FILE ./lcov.info
+      if: success()
+      env:
+        REPORT_FILE: ${{ steps.coverage.outputs.report }}
 
     - uses: codecov/codecov-action@v1.0.2
       if: success()
       with:
+        file: ./lcov.info
         token: ${{ secrets.CODECOV_TOKEN }}
