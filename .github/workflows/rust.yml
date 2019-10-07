@@ -74,7 +74,7 @@ jobs:
     - name: Run coverage test
       continue-on-error: true
       run: |
-        cargo tarpaulin --out Xml --all --verbose
+        cargo +nightly tarpaulin --out Xml --all --verbose
 
     - uses: codecov/codecov-action@v1.0.2
       if: success()
