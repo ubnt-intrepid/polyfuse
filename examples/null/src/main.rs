@@ -3,6 +3,7 @@
 
 use fuse_async::{
     abi::{
+        FileAttr,
         GetattrIn, //
         InHeader,
         Nodeid,
@@ -18,7 +19,7 @@ use fuse_async::{
     Buffer, Data, Operations, Session,
 };
 use fuse_async_channel::tokio::Channel;
-use std::{env, future::Future, io, path::PathBuf, pin::Pin};
+use std::{convert::TryInto, env, future::Future, io, path::PathBuf, pin::Pin};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -132,11 +133,11 @@ impl Operations for Null {
     }
 }
 
-fn root_attr() -> libc::stat {
+fn root_attr() -> FileAttr {
     let mut attr: libc::stat = unsafe { std::mem::zeroed() };
     attr.st_mode = libc::S_IFREG | 0o644;
     attr.st_nlink = 1;
     attr.st_uid = unsafe { libc::getuid() };
     attr.st_gid = unsafe { libc::getgid() };
-    attr
+    attr.try_into().unwrap()
 }

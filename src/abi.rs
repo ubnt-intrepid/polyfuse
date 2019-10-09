@@ -1,11 +1,6 @@
 //! FUSE application binary interface.
 
 #![allow(clippy::identity_op)]
-#![warn(
-missing_debug_implementations, //
-    unsafe_code,
-    clippy::unimplemented,
-)]
 
 use bitflags::bitflags;
 use std::{convert::TryFrom, error, fmt};
@@ -111,26 +106,28 @@ pub struct FileAttr {
     pub padding: u32,
 }
 
-impl From<libc::stat> for FileAttr {
-    fn from(attr: libc::stat) -> Self {
-        Self {
-            ino: Nodeid::from_raw(attr.st_ino),
-            size: attr.st_size as u64,
-            blocks: attr.st_blocks as u64,
-            atime: attr.st_atime as u64,
-            mtime: attr.st_mtime as u64,
-            ctime: attr.st_ctime as u64,
-            atimensec: attr.st_atime_nsec as u32,
-            mtimensec: attr.st_mtime_nsec as u32,
-            ctimensec: attr.st_ctime_nsec as u32,
-            mode: FileMode::from_raw(attr.st_mode),
-            nlink: attr.st_nlink as u32,
-            uid: Uid::from_raw(attr.st_uid),
-            gid: Gid::from_raw(attr.st_gid),
-            rdev: attr.st_gid,
-            blksize: attr.st_blksize as u32,
+impl TryFrom<libc::stat> for FileAttr {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(attr: libc::stat) -> Result<Self, Self::Error> {
+        Ok(Self {
+            ino: Nodeid::from_raw(u64::try_from(attr.st_ino)?),
+            size: u64::try_from(attr.st_size)?,
+            blocks: u64::try_from(attr.st_blocks)?,
+            atime: u64::try_from(attr.st_atime)?,
+            mtime: u64::try_from(attr.st_mtime)?,
+            ctime: u64::try_from(attr.st_ctime)?,
+            atimensec: u32::try_from(attr.st_atime_nsec)?,
+            mtimensec: u32::try_from(attr.st_mtime_nsec)?,
+            ctimensec: u32::try_from(attr.st_ctime_nsec)?,
+            mode: FileMode::from_raw(u32::try_from(attr.st_mode)?),
+            nlink: u32::try_from(attr.st_nlink)?,
+            uid: Uid::from_raw(u32::try_from(attr.st_uid)?),
+            gid: Gid::from_raw(u32::try_from(attr.st_gid)?),
+            rdev: u32::try_from(attr.st_gid)?,
+            blksize: u32::try_from(attr.st_blksize)?,
             padding: 0,
-        }
+        })
     }
 }
 
@@ -185,20 +182,22 @@ pub struct Statfs {
     pub spare: [u32; 6usize],
 }
 
-impl From<libc::statvfs> for Statfs {
-    fn from(st: libc::statvfs) -> Self {
-        Self {
-            bsize: st.f_bsize as u32,
-            frsize: st.f_frsize as u32,
-            blocks: st.f_blocks,
-            bfree: st.f_bfree,
-            bavail: st.f_bavail,
-            files: st.f_files,
-            ffree: st.f_ffree,
-            namelen: st.f_namemax as u32,
+impl TryFrom<libc::statvfs> for Statfs {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
+        Ok(Self {
+            bsize: u32::try_from(st.f_bsize)?,
+            frsize: u32::try_from(st.f_frsize)?,
+            blocks: u64::try_from(st.f_blocks)?,
+            bfree: u64::try_from(st.f_bfree)?,
+            bavail: u64::try_from(st.f_bavail)?,
+            files: u64::try_from(st.f_files)?,
+            ffree: u64::try_from(st.f_ffree)?,
+            namelen: u32::try_from(st.f_namemax)?,
             padding: 0,
             spare: [0u32; 6],
-        }
+        })
     }
 }
 
@@ -766,9 +765,11 @@ impl From<FileAttr> for AttrOut {
     }
 }
 
-impl From<libc::stat> for AttrOut {
-    fn from(attr: libc::stat) -> Self {
-        Self::from(FileAttr::from(attr))
+impl TryFrom<libc::stat> for AttrOut {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(attr: libc::stat) -> Result<Self, Self::Error> {
+        FileAttr::try_from(attr).map(Self::from)
     }
 }
 

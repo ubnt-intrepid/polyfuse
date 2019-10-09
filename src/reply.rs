@@ -18,6 +18,7 @@ use futures::io::{AsyncWrite, AsyncWriteExt};
 use memoffset::offset_of;
 use smallvec::SmallVec;
 use std::{
+    convert::TryFrom,
     ffi::OsStr,
     fmt,
     io::{self, IoSlice},
@@ -38,6 +39,7 @@ pub struct DirEntry {
 impl DirEntry {
     pub fn new(name: impl AsRef<OsStr>) -> Self {
         let name = name.as_ref().as_bytes();
+        let namelen = u32::try_from(name.len()).expect("the length of name is too large.");
 
         let entlen = mem::size_of::<DirEntryHeader>() + name.len();
         let entsize = aligned(entlen);
@@ -51,7 +53,7 @@ impl DirEntry {
             let pheader = p as *mut DirEntryHeader;
             (*pheader).ino = Nodeid::from_raw(0);
             (*pheader).off = 0;
-            (*pheader).namelen = name.len() as u32;
+            (*pheader).namelen = namelen;
             (*pheader).typ = 0;
 
             #[allow(clippy::unneeded_field_pattern)]
@@ -113,6 +115,7 @@ impl DirEntry {
     #[allow(clippy::cast_ptr_alignment)]
     pub fn set_name(&mut self, name: impl AsRef<OsStr>) {
         let name = name.as_ref().as_bytes();
+        let namelen = u32::try_from(name.len()).expect("the length of name is too large");
 
         let entlen = mem::size_of::<DirEntryHeader>() + name.len();
         let entsize = aligned(entlen);
@@ -128,7 +131,7 @@ impl DirEntry {
 
             #[allow(clippy::cast_ptr_alignment)]
             let pheader = p as *mut DirEntryHeader;
-            (*pheader).namelen = name.len() as u32;
+            (*pheader).namelen = namelen;
 
             #[allow(clippy::unneeded_field_pattern)]
             let p = p.add(offset_of!(DirEntryHeader, name));
@@ -173,7 +176,12 @@ impl<'a> ReplyRaw<'a> {
         let out_header = OutHeader {
             unique: self.unique,
             error: -error,
-            len: (mem::size_of::<OutHeader>() + data_len) as u32,
+            len: u32::try_from(mem::size_of::<OutHeader>() + data_len).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("the total length of data is too long: {}", e),
+                )
+            })?,
         };
 
         let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_ref()))

@@ -11,7 +11,7 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
     select,
 };
-use std::{io, pin::Pin};
+use std::{convert::TryFrom, io, pin::Pin};
 
 /// A single threaded, sequential filesystem driver.
 ///
@@ -157,7 +157,7 @@ impl Session {
 
                 // TODO: max_background, congestion_threshold, time_gran, max_pages
                 init_out.max_readahead = arg.max_readahead;
-                init_out.max_write = MAX_WRITE_SIZE as u32;
+                init_out.max_write = u32::try_from(MAX_WRITE_SIZE).expect("caught a bug");
 
                 self.got_init = true;
                 reply.reply(0, &[init_out.as_ref()]).await?;
