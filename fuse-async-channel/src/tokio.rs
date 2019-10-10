@@ -8,14 +8,17 @@ use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::ready;
 use mio::{unix::UnixReady, Ready};
 use std::{
+    cell::UnsafeCell,
     ffi::{OsStr, OsString},
     io::{self, IoSlice, IoSliceMut, Read, Write},
     os::unix::io::AsRawFd,
     path::{Path, PathBuf},
     pin::Pin,
+    sync::Arc,
     task::{self, Poll},
 };
 use tokio_net::util::PollEvented;
+use tokio_sync::semaphore::{Permit, Semaphore};
 
 #[derive(Debug)]
 pub struct Builder {
@@ -39,8 +42,12 @@ impl Builder {
         set_nonblocking(raw_fd)?;
 
         Ok(Channel {
-            conn,
-            fd: PollEvented::new(FdSource(raw_fd)),
+            inner: Arc::new(Inner {
+                conn,
+                fd: UnsafeCell::new(PollEvented::new(FdSource(raw_fd))),
+                semaphore: Semaphore::new(1),
+            }),
+            permit: Permit::new(),
             mountpoint: mountpoint.into(),
         })
     }
@@ -49,9 +56,32 @@ impl Builder {
 /// Asynchronous I/O to communicate with the kernel.
 #[derive(Debug)]
 pub struct Channel {
-    conn: Connection,
-    fd: PollEvented<FdSource>,
+    inner: Arc<Inner>,
+    permit: Permit,
     mountpoint: PathBuf,
+}
+
+#[derive(Debug)]
+struct Inner {
+    conn: Connection,
+    fd: UnsafeCell<PollEvented<FdSource>>,
+    semaphore: Semaphore,
+}
+
+impl Clone for Channel {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            permit: Permit::new(),
+            mountpoint: self.mountpoint.clone(),
+        }
+    }
+}
+
+impl Drop for Channel {
+    fn drop(&mut self) {
+        self.release_lock();
+    }
 }
 
 impl Channel {
@@ -76,46 +106,80 @@ impl Channel {
         &self.mountpoint
     }
 
-    fn poll_read_fn<F, R>(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        f: F,
-    ) -> Poll<io::Result<R>>
+    fn poll_lock<F, R>(mut self: Pin<&mut Self>, cx: &mut task::Context, f: F) -> Poll<R>
     where
-        F: FnOnce(&mut FdSource) -> io::Result<R>,
+        F: FnOnce(Pin<&mut PollEvented<FdSource>>, &mut task::Context) -> Poll<R>,
     {
-        let mut ready = Ready::readable();
-        ready.insert(UnixReady::error());
-        ready!(self.fd.poll_read_ready(cx, ready))?;
+        let this = &mut *self;
+        ready!(this.poll_acquire_lock(cx));
 
-        match f(self.fd.get_mut()) {
-            Ok(ret) => Poll::Ready(Ok(ret)),
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.fd.clear_read_ready(cx, ready)?;
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
+        let evented = unsafe { Pin::new_unchecked(&mut (*this.inner.fd.get())) };
+        let ret = ready!(f(evented, cx));
+
+        this.release_lock();
+        Poll::Ready(ret)
     }
 
-    fn poll_write_fn<F, R>(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        f: F,
-    ) -> Poll<io::Result<R>>
-    where
-        F: FnOnce(&mut FdSource) -> io::Result<R>,
-    {
-        ready!(self.fd.poll_write_ready(cx))?;
-
-        match f(self.fd.get_mut()) {
-            Ok(ret) => Poll::Ready(Ok(ret)),
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.fd.clear_write_ready(cx)?;
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
+    fn poll_acquire_lock(&mut self, cx: &mut task::Context) -> Poll<()> {
+        if self.permit.is_acquired() {
+            return Poll::Ready(());
         }
+
+        ready!(self.permit.poll_acquire(cx, &self.inner.semaphore))
+            .unwrap_or_else(|e| unreachable!("{}", e));
+
+        Poll::Ready(())
+    }
+
+    fn release_lock(&mut self) {
+        if self.permit.is_acquired() {
+            self.permit.release(&self.inner.semaphore);
+        }
+    }
+}
+
+fn poll_read_fn<F, R>(
+    mut evented: Pin<&mut PollEvented<FdSource>>,
+    cx: &mut task::Context<'_>,
+    f: F,
+) -> Poll<io::Result<R>>
+where
+    F: FnOnce(&mut FdSource) -> io::Result<R>,
+{
+    let evented = &mut *evented;
+
+    let mut ready = Ready::readable();
+    ready.insert(UnixReady::error());
+    ready!(evented.poll_read_ready(cx, ready))?;
+
+    match f(evented.get_mut()) {
+        Ok(ret) => Poll::Ready(Ok(ret)),
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            evented.clear_read_ready(cx, ready)?;
+            Poll::Pending
+        }
+        Err(e) => Poll::Ready(Err(e)),
+    }
+}
+
+fn poll_write_fn<F, R>(
+    mut evented: Pin<&mut PollEvented<FdSource>>,
+    cx: &mut task::Context<'_>,
+    f: F,
+) -> Poll<io::Result<R>>
+where
+    F: FnOnce(&mut FdSource) -> io::Result<R>,
+{
+    let evented = &mut *evented;
+    ready!(evented.poll_write_ready(cx))?;
+
+    match f(evented.get_mut()) {
+        Ok(ret) => Poll::Ready(Ok(ret)),
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            evented.clear_write_ready(cx)?;
+            Poll::Pending
+        }
+        Err(e) => Poll::Ready(Err(e)),
     }
 }
 
@@ -125,7 +189,9 @@ impl AsyncRead for Channel {
         cx: &mut task::Context<'_>,
         dst: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        self.poll_read_fn(cx, |fd| fd.read(dst))
+        self.poll_lock(cx, |evented, cx| {
+            poll_read_fn(evented, cx, |fd| fd.read(dst))
+        })
     }
 
     fn poll_read_vectored(
@@ -133,7 +199,9 @@ impl AsyncRead for Channel {
         cx: &mut task::Context<'_>,
         dst: &mut [IoSliceMut],
     ) -> Poll<io::Result<usize>> {
-        self.poll_read_fn(cx, |fd| fd.read_vectored(dst))
+        self.poll_lock(cx, |evented, cx| {
+            poll_read_fn(evented, cx, |fd| fd.read_vectored(dst))
+        })
     }
 }
 
@@ -143,7 +211,9 @@ impl AsyncWrite for Channel {
         cx: &mut task::Context<'_>,
         src: &[u8],
     ) -> Poll<io::Result<usize>> {
-        self.poll_write_fn(cx, |fd| fd.write(src))
+        self.poll_lock(cx, |evented, cx| {
+            poll_write_fn(evented, cx, |fd| fd.write(src))
+        })
     }
 
     fn poll_write_vectored(
@@ -151,11 +221,15 @@ impl AsyncWrite for Channel {
         cx: &mut task::Context<'_>,
         src: &[IoSlice],
     ) -> Poll<io::Result<usize>> {
-        self.poll_write_fn(cx, |fd| fd.write_vectored(src))
+        self.poll_lock(cx, |evented, cx| {
+            poll_write_fn(evented, cx, |fd| fd.write_vectored(src))
+        })
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_write_fn(cx, |fd| fd.flush())
+        self.poll_lock(cx, |evented, cx| {
+            poll_write_fn(evented, cx, |fd| fd.flush())
+        })
     }
 
     fn poll_close(self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<io::Result<()>> {

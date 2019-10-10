@@ -24,18 +24,22 @@ pub use crate::op::Operations;
 
 // ==== impl ====
 
-use crate::{reply::ReplyRaw, request::Buffer, session::Session};
-use futures::{
-    future::{FusedFuture, FutureExt},
-    io::{AsyncRead, AsyncWrite},
-    select,
+use crate::{
+    reply::ReplyRaw,
+    request::Buffer,
+    session::{Background, Session},
 };
-use std::{io, pin::Pin};
+use futures::{
+    future::{poll_fn, FusedFuture, FutureExt},
+    io::{AsyncRead, AsyncWrite},
+    ready,
+};
+use std::{io, task::Poll};
 
 /// Run a FUSE filesystem.
 pub async fn run<I, S, T>(channel: I, sig: S, ops: T) -> io::Result<Option<S::Output>>
 where
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin + Clone,
     S: FusedFuture + Unpin,
     T: for<'a> Operations<&'a [u8]>,
 {
@@ -48,43 +52,54 @@ where
     let mut session = Session::initializer() //
         .start(&mut channel, &mut buf)
         .await?;
+    let mut background = Background::new();
 
-    loop {
-        let mut turn = async {
-            let terminated = buf.receive(&mut channel).await?;
-            if terminated {
-                log::debug!("closing the session");
-                return Ok(true);
+    poll_fn(move |cx| {
+        loop {
+            if let Poll::Ready(sig) = sig.poll_unpin(cx) {
+                // FIXME: graceful shutdown the background tasks.
+                return Poll::Ready(Ok(Some(sig)));
             }
 
-            let (request, data) = buf.extract()?;
-            log::debug!(
-                "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
-                request.header.unique,
-                request.header.opcode(),
-                request.arg,
-                data
-            );
+            log::trace!("run background tasks (num = {})", background.num_remains());
+            let poll_background = background.poll_tasks(cx)?;
 
-            let reply = ReplyRaw::new(request.header.unique, &mut channel);
-            session.process(request, data, reply, &mut ops).await
-        };
-        let mut turn = unsafe { Pin::new_unchecked(&mut turn) }.fuse();
+            if session.got_destroy() {
+                continue;
+            }
 
-        select! {
-            res = turn => {
-                let destroyed = res?;
-                if destroyed {
-                    log::debug!("The session is closed successfully");
-                    return Ok(None);
+            match ready!(buf.poll_receive(cx, &mut channel))? {
+                /* terminated = */
+                true => {
+                    log::debug!("connection was closed by the kernel");
+                    log::trace!(
+                        "remaining background tasks (num = {})",
+                        background.num_remains()
+                    );
+
+                    if poll_background.is_ready() {
+                        // FIXME: graceful shutdown the background tasks.
+                    }
+                    return Poll::Ready(Ok(None));
                 }
-            },
-            res = sig => {
-                log::debug!("Got shutdown signal");
-                return Ok(Some(res))
-            },
-        };
-    }
+                /* terminated = */
+                false => {
+                    let (request, data) = buf.extract()?;
+                    log::debug!(
+                        "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
+                        request.header.unique,
+                        request.header.opcode(),
+                        request.arg,
+                        data
+                    );
+
+                    let reply = ReplyRaw::new(request.header.unique, channel.clone());
+                    session.dispatch(request, data, reply, &mut ops, &mut background);
+                }
+            }
+        }
+    })
+    .await
 }
 
 /// Run a FUSE filesystem mounted on the specified path.

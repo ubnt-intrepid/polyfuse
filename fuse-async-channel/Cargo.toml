@@ -16,9 +16,13 @@ mio = "0.6"
 version = "0.2.0-alpha.6"
 optional = true
 
+[dependencies.tokio-sync]
+version = "0.2.0-alpha.6"
+optional = true
+
 [build-dependencies]
 pkg-config = "0.3"
 
 [features]
 default = ["tokio"]
-tokio = ["tokio-net"]
+tokio = ["tokio-net", "tokio-sync"]
