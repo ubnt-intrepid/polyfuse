@@ -6,8 +6,18 @@ use crate::{
     reply::ReplyRaw,
     request::{Arg, Buffer, Request, MAX_WRITE_SIZE},
 };
-use futures::io::{AsyncRead, AsyncWrite};
-use std::io;
+use futures::{
+    io::{AsyncRead, AsyncWrite},
+    ready,
+    stream::{FuturesUnordered, StreamExt},
+};
+use std::{
+    fmt,
+    future::Future,
+    io,
+    pin::Pin,
+    task::{self, Poll},
+};
 
 /// A FUSE filesystem driver.
 ///
@@ -41,72 +51,103 @@ impl Session {
         self.max_readahead
     }
 
-    /// Process an incoming request and return its reply to the kernel.
+    pub fn got_destroy(&self) -> bool {
+        self.got_destroy
+    }
+
+    /// Dispatch an incoming request to the provided operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<T>(
+    pub fn dispatch<'a, T>(
         &mut self,
         request: Request<'_>,
         data: Option<T>,
-        reply: ReplyRaw<'_>,
+        reply: ReplyRaw<'a>,
         ops: &mut impl Operations<T>,
-    ) -> io::Result<bool> {
+        background: &mut Background<'a>,
+    ) {
         let Request { header, arg, .. } = request;
+
+        if self.got_destroy {
+            log::warn!(
+                "ignoring an operation after destroy (opcode={:?})",
+                header.opcode
+            );
+            background.spawn_task(reply.reply_err(libc::EIO));
+            return;
+        }
+
         match arg {
-            Arg::Init { .. } => reply.reply_err(libc::EIO).await?,
+            Arg::Init { .. } => {
+                log::warn!("");
+                background.spawn_task(reply.reply_err(libc::EIO));
+            }
             Arg::Destroy => {
                 self.got_destroy = true;
-                reply.reply(0, &[]).await?;
+                background.spawn_task(reply.reply(0, &[]));
             }
-            _ if self.got_destroy => {
-                log::warn!(
-                    "ignoring an operation after destroy (opcode={:?})",
-                    header.opcode
-                );
-                reply.reply_err(libc::EIO).await?;
-                return Ok(false);
-            }
-            Arg::Lookup { name } => ops.lookup(header, name, reply.into()).await?,
+            Arg::Lookup { name } => background.spawn_task(ops.lookup(header, name, reply.into())),
             Arg::Forget { arg } => {
                 ops.forget(header, arg);
+                // no reply.
             }
-            Arg::Getattr { arg } => ops.getattr(header, &arg, reply.into()).await?,
-            Arg::Setattr { arg } => ops.setattr(header, &arg, reply.into()).await?,
-            Arg::Readlink => ops.readlink(header, reply.into()).await?,
-            Arg::Symlink { name, link } => ops.symlink(header, name, link, reply.into()).await?,
-            Arg::Mknod { arg, name } => ops.mknod(header, arg, name, reply.into()).await?,
-            Arg::Mkdir { arg, name } => ops.mkdir(header, arg, name, reply.into()).await?,
-            Arg::Unlink { name } => ops.unlink(header, name, reply.into()).await?,
-            Arg::Rmdir { name } => ops.unlink(header, name, reply.into()).await?,
+            Arg::Getattr { arg } => background.spawn_task(ops.getattr(header, &arg, reply.into())),
+            Arg::Setattr { arg } => background.spawn_task(ops.setattr(header, &arg, reply.into())),
+            Arg::Readlink => background.spawn_task(ops.readlink(header, reply.into())),
+            Arg::Symlink { name, link } => {
+                background.spawn_task(ops.symlink(header, name, link, reply.into()))
+            }
+            Arg::Mknod { arg, name } => {
+                background.spawn_task(ops.mknod(header, arg, name, reply.into()))
+            }
+            Arg::Mkdir { arg, name } => {
+                background.spawn_task(ops.mkdir(header, arg, name, reply.into()))
+            }
+            Arg::Unlink { name } => background.spawn_task(ops.unlink(header, name, reply.into())),
+            Arg::Rmdir { name } => background.spawn_task(ops.unlink(header, name, reply.into())),
             Arg::Rename { arg, name, newname } => {
-                ops.rename(header, arg, name, newname, reply.into()).await?
+                background.spawn_task(ops.rename(header, arg, name, newname, reply.into()))
             }
-            Arg::Link { arg, newname } => ops.link(header, arg, newname, reply.into()).await?,
-            Arg::Open { arg } => ops.open(header, arg, reply.into()).await?,
-            Arg::Read { arg } => ops.read(header, arg, reply.into()).await?,
+            Arg::Link { arg, newname } => {
+                background.spawn_task(ops.link(header, arg, newname, reply.into()))
+            }
+            Arg::Open { arg } => background.spawn_task(ops.open(header, arg, reply.into())),
+            Arg::Read { arg } => background.spawn_task(ops.read(header, arg, reply.into())),
             Arg::Write { arg } => match data {
-                Some(data) => ops.write(header, arg, data, reply.into()).await?,
+                Some(data) => background.spawn_task(ops.write(header, arg, data, reply.into())),
                 None => panic!("unexpected condition"),
             },
-            Arg::Release { arg } => ops.release(header, arg, reply.into()).await?,
-            Arg::Statfs => ops.statfs(header, reply.into()).await?,
-            Arg::Fsync { arg } => ops.fsync(header, arg, reply.into()).await?,
+            Arg::Release { arg } => background.spawn_task(ops.release(header, arg, reply.into())),
+            Arg::Statfs => background.spawn_task(ops.statfs(header, reply.into())),
+            Arg::Fsync { arg } => background.spawn_task(ops.fsync(header, arg, reply.into())),
             Arg::Setxattr { arg, name, value } => {
-                ops.setxattr(header, arg, name, value, reply.into()).await?
+                background.spawn_task(ops.setxattr(header, arg, name, value, reply.into()))
             }
-            Arg::Getxattr { arg, name } => ops.getxattr(header, arg, name, reply.into()).await?,
-            Arg::Listxattr { arg } => ops.listxattr(header, arg, reply.into()).await?,
-            Arg::Removexattr { name } => ops.removexattr(header, name, reply.into()).await?,
-            Arg::Flush { arg } => ops.flush(header, arg, reply.into()).await?,
-            Arg::Opendir { arg } => ops.opendir(header, arg, reply.into()).await?,
-            Arg::Readdir { arg } => ops.readdir(header, arg, reply.into()).await?,
-            Arg::Releasedir { arg } => ops.releasedir(header, arg, reply.into()).await?,
-            Arg::Fsyncdir { arg } => ops.fsyncdir(header, arg, reply.into()).await?,
-            Arg::Getlk { arg } => ops.getlk(header, arg, reply.into()).await?,
-            Arg::Setlk { arg } => ops.setlk(header, arg, false, reply.into()).await?,
-            Arg::Setlkw { arg } => ops.setlk(header, arg, true, reply.into()).await?,
-            Arg::Access { arg } => ops.access(header, arg, reply.into()).await?,
-            Arg::Create { arg } => ops.create(header, arg, reply.into()).await?,
-            Arg::Bmap { arg } => ops.bmap(header, arg, reply.into()).await?,
+            Arg::Getxattr { arg, name } => {
+                background.spawn_task(ops.getxattr(header, arg, name, reply.into()))
+            }
+            Arg::Listxattr { arg } => {
+                background.spawn_task(ops.listxattr(header, arg, reply.into()))
+            }
+            Arg::Removexattr { name } => {
+                background.spawn_task(ops.removexattr(header, name, reply.into()))
+            }
+            Arg::Flush { arg } => background.spawn_task(ops.flush(header, arg, reply.into())),
+            Arg::Opendir { arg } => background.spawn_task(ops.opendir(header, arg, reply.into())),
+            Arg::Readdir { arg } => background.spawn_task(ops.readdir(header, arg, reply.into())),
+            Arg::Releasedir { arg } => {
+                background.spawn_task(ops.releasedir(header, arg, reply.into()))
+            }
+            Arg::Fsyncdir { arg } => background.spawn_task(ops.fsyncdir(header, arg, reply.into())),
+            Arg::Getlk { arg } => background.spawn_task(ops.getlk(header, arg, reply.into())),
+            Arg::Setlk { arg } => {
+                background.spawn_task(ops.setlk(header, arg, false, reply.into()))
+            }
+            Arg::Setlkw { arg } => {
+                background.spawn_task(ops.setlk(header, arg, true, reply.into()))
+            }
+            Arg::Access { arg } => background.spawn_task(ops.access(header, arg, reply.into())),
+            Arg::Create { arg } => background.spawn_task(ops.create(header, arg, reply.into())),
+            Arg::Bmap { arg } => background.spawn_task(ops.bmap(header, arg, reply.into())),
 
             // Interrupt,
             // Ioctl,
@@ -120,11 +161,9 @@ impl Session {
             // CopyFileRange,
             Arg::Unknown => {
                 log::warn!("unsupported opcode: {:?}", header.opcode);
-                reply.reply_err(libc::ENOSYS).await?;
+                background.spawn_task(reply.reply_err(libc::ENOSYS));
             }
         }
-
-        Ok(false)
     }
 }
 
@@ -198,5 +237,49 @@ impl InitSession {
                 got_destroy: false,
             });
         }
+    }
+}
+
+pub struct Background<'a> {
+    tasks: FuturesUnordered<Pin<Box<dyn Future<Output = io::Result<()>> + 'a>>>,
+}
+
+impl fmt::Debug for Background<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Background").finish()
+    }
+}
+
+impl Default for Background<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'a> Background<'a> {
+    pub fn new() -> Self {
+        Self {
+            tasks: FuturesUnordered::new(),
+        }
+    }
+
+    pub fn num_remains(&self) -> usize {
+        self.tasks.len()
+    }
+
+    pub fn spawn_task<T>(&mut self, task: T)
+    where
+        T: Future<Output = io::Result<()>> + 'a,
+    {
+        self.tasks.push(Box::pin(task));
+    }
+
+    pub fn poll_tasks(&mut self, cx: &mut task::Context) -> Poll<io::Result<()>> {
+        while let Some(res) = ready!(self.tasks.poll_next_unpin(cx)) {
+            if let Err(e) = res {
+                return Poll::Ready(Err(e));
+            }
+        }
+        Poll::Ready(Ok(()))
     }
 }

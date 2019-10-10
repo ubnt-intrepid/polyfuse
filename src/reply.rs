@@ -24,6 +24,7 @@ use std::{
     io::{self, IoSlice},
     mem,
     os::unix::ffi::OsStrExt,
+    pin::Pin,
     ptr,
 };
 
@@ -152,8 +153,8 @@ impl AsRef<[u8]> for DirEntry {
 }
 
 pub struct ReplyRaw<'a> {
-    io: &'a mut (dyn AsyncWrite + Unpin),
     unique: Unique,
+    writer: Pin<Box<dyn AsyncWrite + Unpin + 'a>>,
 }
 
 impl fmt::Debug for ReplyRaw<'_> {
@@ -165,16 +166,21 @@ impl fmt::Debug for ReplyRaw<'_> {
 }
 
 impl<'a> ReplyRaw<'a> {
-    pub(crate) fn new(unique: Unique, io: &'a mut (impl AsyncWrite + Unpin)) -> Self {
-        Self { unique, io }
+    pub(crate) fn new(unique: Unique, writer: impl AsyncWrite + Unpin + 'a) -> Self {
+        Self {
+            unique,
+            writer: Box::pin(writer),
+        }
     }
 
     /// Repy the specified data to the kernel.
     pub async fn reply(self, error: i32, data: &[&[u8]]) -> io::Result<()> {
+        let mut this = self;
+
         let data_len: usize = data.iter().map(|t| t.len()).sum();
 
         let out_header = OutHeader {
-            unique: self.unique,
+            unique: this.unique,
             error: -error,
             len: u32::try_from(mem::size_of::<OutHeader>() + data_len).map_err(|e| {
                 io::Error::new(
@@ -189,7 +195,7 @@ impl<'a> ReplyRaw<'a> {
             .chain(data.iter().map(|t| IoSlice::new(&*t)))
             .collect();
 
-        (*self.io).write_vectored(&*vec).await?;
+        (*this.writer).write_vectored(&*vec).await?;
 
         Ok(())
     }
@@ -326,7 +332,7 @@ impl<'a> From<ReplyRaw<'a>> for ReplyWrite<'a> {
     }
 }
 
-impl<'a> ReplyWrite<'a> {
+impl ReplyWrite<'_> {
     pub async fn ok(self, out: WriteOut) -> io::Result<()> {
         self.raw.reply(0, &[out.as_ref()]).await
     }
@@ -374,7 +380,7 @@ impl<'a> From<ReplyRaw<'a>> for ReplyStatfs<'a> {
     }
 }
 
-impl<'a> ReplyStatfs<'a> {
+impl ReplyStatfs<'_> {
     pub async fn ok(self, out: StatfsOut) -> io::Result<()> {
         self.raw.reply(0, &[out.as_ref()]).await
     }
@@ -396,7 +402,7 @@ impl<'a> From<ReplyRaw<'a>> for ReplyLk<'a> {
     }
 }
 
-impl<'a> ReplyLk<'a> {
+impl ReplyLk<'_> {
     pub async fn ok(self, out: LkOut) -> io::Result<()> {
         self.raw.reply(0, &[out.as_ref()]).await
     }
@@ -418,7 +424,7 @@ impl<'a> From<ReplyRaw<'a>> for ReplyCreate<'a> {
     }
 }
 
-impl<'a> ReplyCreate<'a> {
+impl ReplyCreate<'_> {
     pub async fn ok(self, entry: EntryOut, open: OpenOut) -> io::Result<()> {
         self.raw.reply(0, &[entry.as_ref(), open.as_ref()]).await
     }
@@ -440,7 +446,7 @@ impl<'a> From<ReplyRaw<'a>> for ReplyBmap<'a> {
     }
 }
 
-impl<'a> ReplyBmap<'a> {
+impl ReplyBmap<'_> {
     pub async fn ok(self, out: BmapOut) -> io::Result<()> {
         self.raw.reply(0, &[out.as_ref()]).await
     }
