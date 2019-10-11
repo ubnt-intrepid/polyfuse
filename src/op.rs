@@ -23,7 +23,6 @@ use crate::{
         SetxattrIn,
         WriteIn,
     },
-    buffer::Data,
     reply::{
         ReplyAttr, //
         ReplyBmap,
@@ -44,7 +43,7 @@ use std::{ffi::OsStr, io, pin::Pin};
 type ImplFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 #[allow(unused_variables)]
-pub trait Operations {
+pub trait Operations<T> {
     fn lookup<'a>(
         &mut self,
         header: &InHeader,
@@ -173,7 +172,7 @@ pub trait Operations {
         &mut self,
         header: &InHeader,
         arg: &WriteIn,
-        data: Data<'_>,
+        data: T,
         reply: ReplyWrite<'a>,
     ) -> ImplFuture<'a, io::Result<()>> {
         Box::pin(reply.err(libc::ENOSYS))

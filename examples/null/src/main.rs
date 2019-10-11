@@ -16,9 +16,8 @@ use fuse_async::{
         WriteOut,
     },
     reply::{ReplyAttr, ReplyData, ReplyOpen, ReplyUnit, ReplyWrite},
-    Buffer, Data, Operations, Session,
+    Operations,
 };
-use fuse_async_channel::tokio::Channel;
 use std::{convert::TryInto, env, future::Future, io, path::PathBuf, pin::Pin};
 
 #[tokio::main]
@@ -37,19 +36,15 @@ async fn main() -> io::Result<()> {
         ));
     }
 
-    let mut ch = Channel::builder("null").mount(mountpoint)?;
-
-    let mut buf = Buffer::new();
-    let mut session = Session::new();
-    let mut op = Null;
-    session.run(&mut ch, &mut buf, &mut op).await?;
+    let op = Null;
+    fuse_async::mount("nullfs", mountpoint, &[], op).await?;
 
     Ok(())
 }
 
 struct Null;
 
-impl Operations for Null {
+impl<'d> Operations<&'d [u8]> for Null {
     fn getattr<'a>(
         &mut self,
         header: &InHeader,
@@ -102,16 +97,11 @@ impl Operations for Null {
         &mut self,
         header: &InHeader,
         _: &WriteIn,
-        data: Data,
+        data: &'d [u8],
         reply: ReplyWrite<'a>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
         match header.nodeid {
             Nodeid::ROOT => {
-                let data = match data {
-                    Data::Bytes(bytes) => bytes,
-                    _ => unimplemented!(),
-                };
-
                 let mut out = WriteOut::default();
                 out.size = data.len() as u32;
                 Box::pin(reply.ok(out))

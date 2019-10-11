@@ -11,7 +11,14 @@ futures-io-preview = "0.3.0-alpha.19"
 futures-util-preview = "0.3.0-alpha.19"
 libc = "0.2"
 mio = "0.6"
-tokio-net = "0.2.0-alpha.6"
+
+[dependencies.tokio-net]
+version = "0.2.0-alpha.6"
+optional = true
 
 [build-dependencies]
 pkg-config = "0.3"
+
+[features]
+default = ["tokio"]
+tokio = ["tokio-net"]

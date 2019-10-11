@@ -1,3 +1,5 @@
+#![cfg(feature = "tokio")]
+
 use crate::{
     backend::Connection,
     io::{set_nonblocking, FdSource},

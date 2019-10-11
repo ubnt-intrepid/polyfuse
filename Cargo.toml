@@ -19,9 +19,15 @@ optional = true
 features = ["signal"]
 default-features = false
 
+[dependencies.fuse-async-channel]
+version = "0.1.0"
+path = "fuse-async-channel"
+optional = true
+
 [features]
-default = ["tokio"]
-tokio = ["tokio-net"]
+default = ["tokio", "channel"]
+channel = ["fuse-async-channel"]
+tokio = ["tokio-net", "fuse-async-channel/tokio"]
 
 [workspace]
 members = [

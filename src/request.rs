@@ -24,18 +24,44 @@ use crate::abi::{
     SetxattrIn,
     WriteIn,
 };
-use std::{ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
+use futures::{future::poll_fn, io::AsyncRead};
+use std::{
+    ffi::OsStr,
+    io, mem,
+    os::unix::ffi::OsStrExt,
+    pin::Pin,
+    task::{self, Poll},
+};
+
+pub const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
+
+pub const DEFAULT_RECV_BUF_SIZE: u32 = MAX_WRITE_SIZE + 4096;
+
+#[derive(Debug)]
+pub struct Request<'a> {
+    pub header: &'a InHeader,
+    pub arg: Arg<'a>,
+    _p: (),
+}
 
 #[derive(Debug)]
 pub enum Arg<'a> {
-    Init(&'a InitIn),
+    Init {
+        arg: &'a InitIn,
+    },
     Destroy,
     Lookup {
         name: &'a OsStr,
     },
-    Forget(&'a ForgetIn),
-    Getattr(&'a GetattrIn),
-    Setattr(&'a SetattrIn),
+    Forget {
+        arg: &'a ForgetIn,
+    },
+    Getattr {
+        arg: &'a GetattrIn,
+    },
+    Setattr {
+        arg: &'a SetattrIn,
+    },
     Readlink,
     Symlink {
         name: &'a OsStr,
@@ -64,12 +90,22 @@ pub enum Arg<'a> {
         arg: &'a LinkIn,
         newname: &'a OsStr,
     },
-    Open(&'a OpenIn),
-    Read(&'a ReadIn),
-    Write(&'a WriteIn),
-    Release(&'a ReleaseIn),
+    Open {
+        arg: &'a OpenIn,
+    },
+    Read {
+        arg: &'a ReadIn,
+    },
+    Write {
+        arg: &'a WriteIn,
+    },
+    Release {
+        arg: &'a ReleaseIn,
+    },
     Statfs,
-    Fsync(&'a FsyncIn),
+    Fsync {
+        arg: &'a FsyncIn,
+    },
     Setxattr {
         arg: &'a SetxattrIn,
         name: &'a OsStr,
@@ -85,17 +121,39 @@ pub enum Arg<'a> {
     Removexattr {
         name: &'a OsStr,
     },
-    Flush(&'a FlushIn),
-    Opendir(&'a OpenIn),
-    Readdir(&'a ReadIn),
-    Releasedir(&'a ReleaseIn),
-    Fsyncdir(&'a FsyncIn),
-    Getlk(&'a LkIn),
-    Setlk(&'a LkIn),
-    Setlkw(&'a LkIn),
-    Access(&'a AccessIn),
-    Create(&'a CreateIn),
-    Bmap(&'a BmapIn),
+    Flush {
+        arg: &'a FlushIn,
+    },
+    Opendir {
+        arg: &'a OpenIn,
+    },
+    Readdir {
+        arg: &'a ReadIn,
+    },
+    Releasedir {
+        arg: &'a ReleaseIn,
+    },
+    Fsyncdir {
+        arg: &'a FsyncIn,
+    },
+    Getlk {
+        arg: &'a LkIn,
+    },
+    Setlk {
+        arg: &'a LkIn,
+    },
+    Setlkw {
+        arg: &'a LkIn,
+    },
+    Access {
+        arg: &'a AccessIn,
+    },
+    Create {
+        arg: &'a CreateIn,
+    },
+    Bmap {
+        arg: &'a BmapIn,
+    },
     // Interrupt,
     // Ioctl,
     // Poll,
@@ -191,14 +249,21 @@ impl<'a> Parser<'a> {
         self.offset
     }
 
-    pub fn parse(&mut self) -> io::Result<(&'a InHeader, Arg<'a>, usize)> {
+    pub fn parse(&mut self) -> io::Result<(Request<'a>, usize)> {
         let header = self.parse_header()?;
         let arg = self.parse_arg(header)?;
-        Ok((header, arg, self.offset()))
+        Ok((
+            Request {
+                header,
+                arg,
+                _p: (),
+            },
+            self.offset(),
+        ))
     }
 
     #[allow(clippy::cast_ptr_alignment)]
-    pub fn parse_header(&mut self) -> io::Result<&'a InHeader> {
+    fn parse_header(&mut self) -> io::Result<&'a InHeader> {
         let header = self.fetch::<InHeader>()?;
 
         if self.buf.len() < header.len as usize {
@@ -211,11 +276,11 @@ impl<'a> Parser<'a> {
         Ok(header)
     }
 
-    pub fn parse_arg(&mut self, header: &'a InHeader) -> io::Result<Arg<'a>> {
+    fn parse_arg(&mut self, header: &'a InHeader) -> io::Result<Arg<'a>> {
         match header.opcode() {
             Some(Opcode::Init) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Init(arg))
+                Ok(Arg::Init { arg })
             }
             Some(Opcode::Destroy) => Ok(Arg::Destroy),
             Some(Opcode::Lookup) => {
@@ -224,15 +289,15 @@ impl<'a> Parser<'a> {
             }
             Some(Opcode::Forget) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Forget(arg))
+                Ok(Arg::Forget { arg })
             }
             Some(Opcode::Getattr) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Getattr(arg))
+                Ok(Arg::Getattr { arg })
             }
             Some(Opcode::Setattr) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Setattr(arg))
+                Ok(Arg::Setattr { arg })
             }
             Some(Opcode::Readlink) => Ok(Arg::Readlink),
             Some(Opcode::Symlink) => {
@@ -271,24 +336,24 @@ impl<'a> Parser<'a> {
             }
             Some(Opcode::Open) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Open(arg))
+                Ok(Arg::Open { arg })
             }
             Some(Opcode::Read) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Read(arg))
+                Ok(Arg::Read { arg })
             }
             Some(Opcode::Write) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Write(arg))
+                Ok(Arg::Write { arg })
             }
             Some(Opcode::Release) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Release(arg))
+                Ok(Arg::Release { arg })
             }
             Some(Opcode::Statfs) => Ok(Arg::Statfs),
             Some(Opcode::Fsync) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Fsync(arg))
+                Ok(Arg::Fsync { arg })
             }
             Some(Opcode::Setxattr) => {
                 let arg: &SetxattrIn = self.fetch()?;
@@ -311,49 +376,143 @@ impl<'a> Parser<'a> {
             }
             Some(Opcode::Flush) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Flush(arg))
+                Ok(Arg::Flush { arg })
             }
             Some(Opcode::Opendir) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Opendir(arg))
+                Ok(Arg::Opendir { arg })
             }
             Some(Opcode::Readdir) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Readdir(arg))
+                Ok(Arg::Readdir { arg })
             }
             Some(Opcode::Releasedir) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Releasedir(arg))
+                Ok(Arg::Releasedir { arg })
             }
             Some(Opcode::Fsyncdir) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Fsyncdir(arg))
+                Ok(Arg::Fsyncdir { arg })
             }
             Some(Opcode::Getlk) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Getlk(arg))
+                Ok(Arg::Getlk { arg })
             }
             Some(Opcode::Setlk) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Setlk(arg))
+                Ok(Arg::Setlk { arg })
             }
             Some(Opcode::Setlkw) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Setlkw(arg))
+                Ok(Arg::Setlkw { arg })
             }
             Some(Opcode::Access) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Access(arg))
+                Ok(Arg::Access { arg })
             }
             Some(Opcode::Create) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Create(arg))
+                Ok(Arg::Create { arg })
             }
             Some(Opcode::Bmap) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Bmap(arg))
+                Ok(Arg::Bmap { arg })
             }
             _ => Ok(Arg::Unknown),
         }
+    }
+}
+
+/// A buffer to hold request data from the kernel.
+#[derive(Debug)]
+pub struct Buffer {
+    recv_buf: Vec<u8>,
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self::new(DEFAULT_RECV_BUF_SIZE as usize)
+    }
+}
+
+impl Buffer {
+    /// Create a new `Buffer`.
+    pub fn new(bufsize: usize) -> Self {
+        Self {
+            recv_buf: Vec::with_capacity(bufsize),
+        }
+    }
+
+    /// Acquires an incoming request from the kernel.
+    ///
+    /// The received data is stored in the internal buffer, and could be
+    /// retrieved using `parse`.
+    pub fn poll_receive<I: ?Sized>(
+        &mut self,
+        cx: &mut task::Context,
+        io: &mut I,
+    ) -> Poll<io::Result<bool>>
+    where
+        I: AsyncRead + Unpin,
+    {
+        let old_len = self.recv_buf.len();
+        unsafe {
+            let capacity = self.recv_buf.capacity();
+            self.recv_buf.set_len(capacity);
+        }
+
+        loop {
+            match Pin::new(&mut *io).poll_read(cx, &mut self.recv_buf[..]) {
+                Poll::Pending => {
+                    unsafe {
+                        self.recv_buf.set_len(old_len);
+                    }
+                    return Poll::Pending;
+                }
+                Poll::Ready(Ok(count)) => {
+                    unsafe {
+                        self.recv_buf.set_len(count);
+                    }
+                    return Poll::Ready(Ok(false));
+                }
+                Poll::Ready(Err(err)) => match err.raw_os_error() {
+                    Some(libc::ENOENT) | Some(libc::EINTR) => {
+                        log::debug!("continue reading from the kernel");
+                        continue;
+                    }
+                    Some(libc::ENODEV) => {
+                        log::debug!("the connection was closed by the kernel");
+                        return Poll::Ready(Ok(true));
+                    }
+                    _ => return Poll::Ready(Err(err)),
+                },
+            }
+        }
+    }
+
+    /// Receive a request from the kernel asynchronously.
+    ///
+    /// This method is a helper to call `poll_receive` in async functions.
+    pub async fn receive<I: ?Sized>(&mut self, io: &mut I) -> io::Result<bool>
+    where
+        I: AsyncRead + Unpin,
+    {
+        poll_fn(move |cx| self.poll_receive(cx, io)).await
+    }
+
+    /// Extract the last incoming request.
+    pub fn extract(&mut self) -> io::Result<(Request<'_>, Option<&[u8]>)> {
+        let (request, offset) = Parser::new(&self.recv_buf[..]).parse()?;
+        let data = match request.arg {
+            Arg::Write { arg: write_in } => {
+                let size = write_in.size as usize;
+                if offset + size < self.recv_buf.len() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "receive_write"));
+                }
+                Some(&self.recv_buf[offset..offset + size])
+            }
+            _ => None,
+        };
+        Ok((request, data))
     }
 }
