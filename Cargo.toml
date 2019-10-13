@@ -5,6 +5,9 @@ publish = false
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
 
+[package.metadata.docs.rs]
+features = ["docs"]
+
 [dependencies]
 bitflags = "1.2"
 futures-preview = { version = "0.3.0-alpha.19", features = ["unstable", "async-await"] }
@@ -30,6 +33,7 @@ path = "fuse-async-channel"
 
 [features]
 default = ["tokio"]
+docs = []
 tokio = ["tokio-net", "tokio-sync"]
 
 [workspace]
