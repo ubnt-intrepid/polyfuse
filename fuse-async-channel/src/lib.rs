@@ -1,4 +1,6 @@
-//! Asynchronous I/O to communicate with the kernel.
+//! Evented I/O that communicates with the FUSE kernel driver.
+
+#![deny(missing_debug_implementations, clippy::unimplemented)]
 
 use libc::{c_char, c_int, c_void, iovec};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
@@ -26,6 +28,7 @@ extern "C" {
     fn fuse_opt_free_args(args: *mut fuse_args);
 }
 
+/// An evented I/O object that communicates with the FUSE kernel driver.
 #[derive(Debug)]
 pub struct Channel {
     raw_fd: RawFd,
@@ -41,20 +44,18 @@ impl Drop for Channel {
 }
 
 impl Channel {
-    pub fn new(
-        fsname: impl AsRef<OsStr>,
+    /// Open a new channel.
+    pub fn open(
         mountpoint: impl AsRef<Path>,
         mountopts: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> io::Result<Self> {
-        let fsname = fsname.as_ref();
         let mountpoint = mountpoint.as_ref();
-
         let c_mountpoint = CString::new(mountpoint.as_os_str().as_bytes())?;
 
-        let mut args = vec![CString::new(fsname.as_bytes())?];
-        for opt in mountopts {
-            args.push(CString::new(opt.as_ref().as_bytes())?);
-        }
+        let args: Vec<CString> = mountopts
+            .into_iter()
+            .map(|opt| CString::new(opt.as_ref().as_bytes()))
+            .collect::<Result<_, _>>()?;
         let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
 
         let mut f_args = fuse_args {
