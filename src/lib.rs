@@ -13,12 +13,12 @@
 )]
 
 mod op;
-mod tokio;
 
 pub mod abi;
 pub mod reply;
 pub mod request;
 pub mod session;
+pub mod tokio;
 
 pub use crate::op::Operations;
 
@@ -103,7 +103,7 @@ where
 }
 
 /// Run a FUSE filesystem mounted on the specified path.
-#[cfg(all(feature = "tokio", feature = "channel"))]
+#[cfg(feature = "tokio")]
 pub async fn mount<T>(
     fsname: impl AsRef<std::ffi::OsStr>,
     mointpoint: impl AsRef<std::path::Path>,
@@ -113,7 +113,7 @@ pub async fn mount<T>(
 where
     T: for<'a> Operations<&'a [u8]>,
 {
-    let channel = fuse_async_channel::tokio::Channel::mount(fsname, mointpoint, mountopts)?;
+    let channel = crate::tokio::Channel::mount(fsname, mointpoint, mountopts)?;
     let sig = crate::tokio::default_shutdown_signal()?;
 
     crate::run(channel, sig, ops).await?;

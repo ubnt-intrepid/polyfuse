@@ -11,6 +11,7 @@ futures-preview = { version = "0.3.0-alpha.19", features = ["unstable", "async-a
 libc = "0.2"
 log = "0.4"
 memoffset = "0.5"
+mio = "0.6"
 smallvec = "0.6"
 
 [dependencies.tokio-net]
@@ -19,15 +20,17 @@ optional = true
 features = ["signal"]
 default-features = false
 
+[dependencies.tokio-sync]
+version = "0.2.0-alpha.6"
+optional = true
+
 [dependencies.fuse-async-channel]
 version = "0.1.0"
 path = "fuse-async-channel"
-optional = true
 
 [features]
-default = ["tokio", "channel"]
-channel = ["fuse-async-channel"]
-tokio = ["tokio-net", "fuse-async-channel/tokio"]
+default = ["tokio"]
+tokio = ["tokio-net", "tokio-sync"]
 
 [workspace]
 members = [
