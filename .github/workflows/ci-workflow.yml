@@ -1,4 +1,4 @@
-name: Actions
+name: CI Workflow
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  Linux:
+  Test:
     runs-on: ubuntu-latest
     container:
       image: rust:latest
@@ -23,7 +23,6 @@ jobs:
              libfuse-dev \
              udev \
              libudev-dev
-        rustup component add clippy rustfmt
 
     - name: Run tests
       uses: actions-rs/cargo@v1
@@ -31,24 +30,64 @@ jobs:
         command: test
         args: --all --verbose
 
-    - name: Run rustfmt
+  Lint:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:latest
+    steps:
+    - uses: actions/checkout@v1
+
+    - name: Install dependencies
+      run: |
+        apt-get update -yqq
+        apt-get install -yqq --no-install-recommends \
+             build-essential \
+             pkg-config \
+             libfuse-dev \
+             udev \
+             libudev-dev
+
+    - name: Install components
+      run: |
+        rustup component add rustfmt clippy
+
+    - name: Format check
       uses: actions-rs/cargo@v1
       with:
         command: fmt
         args: --all -- --check
 
-    - name: Run clippy
+    - name: Clippy
       uses: actions-rs/cargo@v1
       with:
         command: clippy
         args: --all
 
-    - name: Build API doc
+  DeployMasterDoc:
+    runs-on: ubuntu-latest
+    container:
+      image: rustops/crates-build-env:latest
+    steps:
+    - uses: actions/checkout@v1
+
+    - name: Install Rustup
       run: |
-        cargo doc --no-deps -p fuse-async --all-features --verbose
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain nightly -y
+        echo ::add-path::$HOME/.cargo/bin
+
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        override: true
+
+    - name: Build
+      run: |
         cargo doc --no-deps -p fuse-async-channel --verbose
+        cargo doc --no-deps -p fuse-async --all-features --verbose
         echo '<meta http-equiv="refresh" content="0;url=fuse_async">' > ./target/doc/index.html
-    - name: Deply API doc
+
+    - name: Deply to GitHub Pages
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       uses: peaceiris/actions-gh-pages@v2.3.1
       env:
@@ -72,15 +111,20 @@ jobs:
              libfuse-dev \
              udev \
              libudev-dev
+
+    - name: Install grcov
+      run: |
         curl -L https://github.com/mozilla/grcov/releases/latest/download/grcov-linux-x86_64.tar.bz2 | tar jxf -
         mv -v ./grcov /usr/local/bin
 
-    - uses: actions-rs/toolchain@v1
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
         override: true
 
-    - uses: actions-rs/cargo@v1
+    - name: Run test (with coverage report)
+      uses: actions-rs/cargo@v1
       with:
         command: test
         args: --all --verbose
@@ -88,11 +132,13 @@ jobs:
         CARGO_INCREMENTAL: 0
         RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Zno-landing-pads"
 
-    - uses: actions-rs/grcov@v0.1.2
+    - name: Collect coverage reports
+      uses: actions-rs/grcov@v0.1.2
       if: success()
       id: coverage
 
-    - uses: codecov/codecov-action@v1.0.2
+    - name: Send report to Codecov
+      uses: codecov/codecov-action@v1.0.2
       if: success()
       with:
         file: ./lcov.info
