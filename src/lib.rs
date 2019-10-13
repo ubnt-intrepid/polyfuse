@@ -1,5 +1,6 @@
 //! FUSE (Filesystem in userspace) framework for Rust.
 
+#![cfg_attr(feature = "docs", feature(doc_cfg))]
 #![warn(clippy::checked_conversions)]
 #![deny(
     missing_debug_implementations,
@@ -104,6 +105,7 @@ where
 
 /// Run a FUSE filesystem mounted on the specified path.
 #[cfg(feature = "tokio")]
+#[cfg_attr(feature = "docs", doc(cfg(tokio)))]
 pub async fn mount<T>(
     fsname: impl AsRef<std::ffi::OsStr>,
     mointpoint: impl AsRef<std::path::Path>,

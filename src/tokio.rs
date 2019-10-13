@@ -1,4 +1,5 @@
 #![cfg(feature = "tokio")]
+#![cfg_attr(feature = "docs", doc(cfg(tokio)))]
 
 use fuse_async_channel::Channel as RawChannel;
 use futures::{
