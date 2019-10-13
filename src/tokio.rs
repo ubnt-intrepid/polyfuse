@@ -1,14 +1,15 @@
 #![cfg(feature = "tokio")]
-#![cfg_attr(feature = "docs", doc(cfg(tokio)))]
+#![cfg_attr(feature = "docs", doc(cfg(feature = "tokio")))]
 
 use crate::op::Operations;
 use fuse_async_channel::Channel as RawChannel;
 use futures::{
-    future::{Future, FutureExt},
+    future::Future,
     io::{AsyncRead, AsyncWrite},
-    ready,
+    ready, select,
     stream::StreamExt,
 };
+use libc::c_int;
 use mio::{unix::UnixReady, Ready};
 use std::{
     cell::UnsafeCell,
@@ -19,12 +20,19 @@ use std::{
     sync::Arc,
     task::{self, Poll},
 };
-use tokio_net::{signal::ctrl_c, util::PollEvented};
+use tokio_net::{
+    signal::unix::{signal, SignalKind},
+    util::PollEvented,
+};
 use tokio_sync::semaphore::{Permit, Semaphore};
 
 /// Run a FUSE filesystem mounted on the specified path.
 #[cfg(feature = "tokio")]
-pub async fn mount<T>(mointpoint: impl AsRef<Path>, mountopts: &[&OsStr], ops: T) -> io::Result<()>
+pub async fn mount<T>(
+    mointpoint: impl AsRef<Path>,
+    mountopts: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    ops: T,
+) -> io::Result<()>
 where
     T: for<'a> Operations<&'a [u8]>,
 {
@@ -35,8 +43,35 @@ where
     Ok(())
 }
 
-pub fn default_shutdown_signal() -> io::Result<impl Future<Output = ()> + Unpin> {
-    Ok(ctrl_c()?.into_future().map(|_| ()))
+/// Create a signal future that captures some kind of signals.
+pub fn default_shutdown_signal() -> io::Result<impl Future<Output = c_int> + Unpin> {
+    let mut sighup = signal(SignalKind::hangup())?.into_future();
+    let mut sigint = signal(SignalKind::interrupt())?.into_future();
+    let mut sigterm = signal(SignalKind::terminate())?.into_future();
+    let mut sigpipe = signal(SignalKind::pipe())?.into_future();
+
+    Ok(Box::pin(async move {
+        loop {
+            select! {
+                _ = sighup => {
+                    log::debug!("Got SIGHUP");
+                    return libc::SIGHUP;
+                },
+                _ = sigint => {
+                    log::debug!("Got SIGINT");
+                    return libc::SIGINT;
+                },
+                _ = sigterm => {
+                    log::debug!("Got SIGTERM");
+                    return libc::SIGTERM;
+                },
+                _ = sigpipe => {
+                    log::debug!("Got SIGPIPE (and ignored)");
+                    continue
+                }
+            }
+        }
+    }))
 }
 
 /// Asynchronous I/O object that communicates with the FUSE kernel driver.
