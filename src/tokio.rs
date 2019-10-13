@@ -1,9 +1,10 @@
 #![cfg(feature = "tokio")]
 #![cfg_attr(feature = "docs", doc(cfg(tokio)))]
 
+use crate::op::Operations;
 use fuse_async_channel::Channel as RawChannel;
 use futures::{
-    future::{FusedFuture, FutureExt},
+    future::{Future, FutureExt},
     io::{AsyncRead, AsyncWrite},
     ready,
     stream::StreamExt,
@@ -21,7 +22,25 @@ use std::{
 use tokio_net::{signal::ctrl_c, util::PollEvented};
 use tokio_sync::semaphore::{Permit, Semaphore};
 
-pub fn default_shutdown_signal() -> io::Result<impl FusedFuture<Output = ()> + Unpin> {
+/// Run a FUSE filesystem mounted on the specified path.
+#[cfg(feature = "tokio")]
+pub async fn mount<T>(
+    fsname: impl AsRef<OsStr>,
+    mointpoint: impl AsRef<Path>,
+    mountopts: &[&OsStr],
+    ops: T,
+) -> io::Result<()>
+where
+    T: for<'a> Operations<&'a [u8]>,
+{
+    let channel = Channel::mount(fsname, mointpoint, mountopts)?;
+    let sig = default_shutdown_signal()?;
+
+    crate::main_loop(channel, sig, ops).await?;
+    Ok(())
+}
+
+pub fn default_shutdown_signal() -> io::Result<impl Future<Output = ()> + Unpin> {
     Ok(ctrl_c()?.into_future().map(|_| ()))
 }
 

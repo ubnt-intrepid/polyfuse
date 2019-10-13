@@ -37,7 +37,7 @@ async fn main() -> io::Result<()> {
     }
 
     let op = Null;
-    fuse_async::mount("nullfs", mountpoint, &[], op).await?;
+    fuse_async::tokio::mount("nullfs", mountpoint, &[], op).await?;
 
     Ok(())
 }
