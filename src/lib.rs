@@ -13,14 +13,16 @@
     clippy::unimplemented
 )]
 
+mod dir;
 mod main_loop;
 mod op;
 
 pub mod abi;
+pub mod buf;
 pub mod reply;
-pub mod request;
 pub mod session;
 pub mod tokio;
 
+pub use crate::dir::DirEntry;
 pub use crate::main_loop::main_loop;
 pub use crate::op::Operations;

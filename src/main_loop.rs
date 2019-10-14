@@ -1,7 +1,6 @@
 use crate::{
+    buf::Buffer,
     op::Operations,
-    reply::ReplyRaw,
-    request::Buffer,
     session::{Background, Session},
 };
 use futures::{
@@ -98,23 +97,12 @@ where
                 }
                 /* terminated = */
                 false => {
-                    let (request, data) = this.buf.extract()?;
-                    log::debug!(
-                        "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
-                        request.header.unique,
-                        request.header.opcode(),
-                        request.arg,
-                        data
-                    );
-
-                    let reply = ReplyRaw::new(request.header.unique, this.channel.clone());
                     this.session.dispatch(
-                        request,
-                        data,
-                        reply,
+                        &mut *this.buf,
+                        this.channel.clone(),
                         &mut *this.ops,
                         &mut this.background,
-                    );
+                    )?;
                 }
             }
         }

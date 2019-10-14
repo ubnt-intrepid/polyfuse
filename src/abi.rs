@@ -2,6 +2,8 @@
 
 #![allow(clippy::identity_op)]
 
+pub mod parse;
+
 use bitflags::bitflags;
 use std::{convert::TryFrom, error, fmt};
 

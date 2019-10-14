@@ -1,10 +1,13 @@
 //! FUSE session driver.
 
 use crate::{
-    abi::InitOut, //
+    abi::{
+        parse::{Arg, Request},
+        InitOut,
+    }, //
+    buf::{Buffer, MAX_WRITE_SIZE},
     op::Operations,
     reply::ReplyRaw,
-    request::{Arg, Buffer, Request, MAX_WRITE_SIZE},
 };
 use futures::{
     io::{AsyncRead, AsyncWrite},
@@ -57,23 +60,34 @@ impl Session {
 
     /// Dispatch an incoming request to the provided operations.
     #[allow(clippy::cognitive_complexity)]
-    pub fn dispatch<'a, T>(
+    pub fn dispatch<'a, I, T>(
         &mut self,
-        request: Request<'_>,
-        data: Option<T>,
-        reply: ReplyRaw<'a>,
-        ops: &mut impl Operations<T>,
+        buffer: &mut Buffer,
+        channel: I,
+        ops: &mut T,
         background: &mut Background<'a>,
-    ) {
-        let Request { header, arg, .. } = request;
+    ) -> io::Result<()>
+    where
+        I: AsyncWrite + Clone + Unpin + 'a,
+        T: for<'s> Operations<&'s [u8]>,
+    {
+        let (Request { header, arg, .. }, data) = buffer.extract()?;
+        log::debug!(
+            "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
+            header.unique,
+            header.opcode(),
+            arg,
+            data
+        );
 
+        let reply = ReplyRaw::new(header.unique, channel.clone());
         if self.got_destroy {
             log::warn!(
                 "ignoring an operation after destroy (opcode={:?})",
                 header.opcode
             );
             background.spawn_task(reply.reply_err(libc::EIO));
-            return;
+            return Ok(());
         }
 
         match arg {
@@ -164,6 +178,8 @@ impl Session {
                 background.spawn_task(reply.reply_err(libc::ENOSYS));
             }
         }
+
+        Ok(())
     }
 }
 
