@@ -31,7 +31,7 @@ pub struct Session {
     proto_major: u32,
     proto_minor: u32,
     max_readahead: u32,
-    got_destroy: bool,
+    exited: bool,
 }
 
 impl Session {
@@ -54,8 +54,12 @@ impl Session {
         self.max_readahead
     }
 
-    pub fn got_destroy(&self) -> bool {
-        self.got_destroy
+    pub fn exit(&mut self) {
+        self.exited = true;
+    }
+
+    pub fn exited(&self) -> bool {
+        self.exited
     }
 
     /// Dispatch an incoming request to the provided operations.
@@ -71,6 +75,11 @@ impl Session {
         I: AsyncWrite + Clone + Unpin + 'a,
         T: for<'s> Operations<&'s [u8]>,
     {
+        if self.exited() {
+            log::warn!("The sesson has already been exited");
+            return Ok(());
+        }
+
         let (Request { header, arg, .. }, data) = buffer.extract()?;
         log::debug!(
             "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
@@ -81,22 +90,13 @@ impl Session {
         );
 
         let reply = ReplyRaw::new(header.unique, channel.clone());
-        if self.got_destroy {
-            log::warn!(
-                "ignoring an operation after destroy (opcode={:?})",
-                header.opcode
-            );
-            background.spawn_task(reply.reply_err(libc::EIO));
-            return Ok(());
-        }
-
         match arg {
             Arg::Init { .. } => {
                 log::warn!("");
                 background.spawn_task(reply.reply_err(libc::EIO));
             }
             Arg::Destroy => {
-                self.got_destroy = true;
+                self.exit();
                 background.spawn_task(reply.reply(0, &[]));
             }
             Arg::Lookup { name } => background.spawn_task(ops.lookup(header, name, reply.into())),
@@ -250,7 +250,7 @@ impl InitSession {
                 proto_major,
                 proto_minor,
                 max_readahead,
-                got_destroy: false,
+                exited: false,
             });
         }
     }

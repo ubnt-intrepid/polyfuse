@@ -6,7 +6,7 @@ use crate::{
 use futures::{
     future::{Future, FutureExt},
     io::{AsyncRead, AsyncWrite},
-    ready,
+    ready, select,
 };
 use std::{
     io,
@@ -22,7 +22,7 @@ where
     T: for<'a> Operations<&'a [u8]>,
 {
     let mut channel = channel;
-    let mut sig = sig;
+    let mut sig = sig.fuse();
     let mut ops = ops;
 
     let mut buf = Buffer::default();
@@ -33,78 +33,69 @@ where
 
     let mut background = Background::new();
 
-    MainLoop {
+    let mut main_loop = MainLoop {
         session: &mut session,
         background: &mut background,
         channel: &mut channel,
         buf: &mut buf,
-        sig: &mut sig,
         ops: &mut ops,
     }
-    .await
+    .fuse();
+
+    // FIXME: graceful shutdown the background tasks.
+    select! {
+        _ = main_loop => Ok(None),
+        sig = sig => Ok(Some(sig)),
+    }
 }
 
 #[allow(missing_debug_implementations)]
-struct MainLoop<'a, 'b, I, S, T> {
+struct MainLoop<'a, 'b, I, T> {
     session: &'a mut Session,
     background: &'a mut Background<'b>,
     channel: &'b mut I,
     buf: &'a mut Buffer,
-    sig: &'a mut S,
     ops: &'a mut T,
 }
 
-impl<'a, 'b, I, S, T> Future for MainLoop<'a, 'b, I, S, T>
+impl<'a, 'b, I, T> Future for MainLoop<'a, 'b, I, T>
 where
     I: AsyncRead + AsyncWrite + Unpin + Clone,
-    S: Future + Unpin,
     T: for<'s> Operations<&'s [u8]>,
 {
-    type Output = io::Result<Option<S::Output>>;
+    type Output = io::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
         let this = &mut *self;
 
         loop {
-            if let Poll::Ready(sig) = this.sig.poll_unpin(cx) {
-                // FIXME: graceful shutdown the background tasks.
-                return Poll::Ready(Ok(Some(sig)));
+            if this.session.exited() {
+                log::debug!("Got a DESTROY request and session was exited");
+                return Poll::Ready(Ok(()));
             }
 
             log::trace!(
                 "run background tasks (num = {})",
                 this.background.num_remains()
             );
-            let poll_background = this.background.poll_tasks(cx)?;
+            let _ = this.background.poll_tasks(cx)?;
 
-            if this.session.got_destroy() {
-                continue;
+            let terminated = ready!(this.buf.poll_receive(cx, &mut this.channel))?;
+            if terminated {
+                log::debug!("connection was closed by the kernel");
+                log::trace!(
+                    "remaining background tasks (num = {})",
+                    this.background.num_remains()
+                );
+                return Poll::Ready(Ok(()));
             }
 
-            match ready!(this.buf.poll_receive(cx, &mut this.channel))? {
-                /* terminated = */
-                true => {
-                    log::debug!("connection was closed by the kernel");
-                    log::trace!(
-                        "remaining background tasks (num = {})",
-                        this.background.num_remains()
-                    );
-
-                    if poll_background.is_ready() {
-                        // FIXME: graceful shutdown the background tasks.
-                    }
-                    return Poll::Ready(Ok(None));
-                }
-                /* terminated = */
-                false => {
-                    this.session.dispatch(
-                        &mut *this.buf,
-                        this.channel.clone(),
-                        &mut *this.ops,
-                        &mut this.background,
-                    )?;
-                }
-            }
+            this.session.dispatch(
+                &mut *this.buf,
+                this.channel.clone(),
+                &mut *this.ops,
+                &mut this.background,
+            )?;
         }
     }
 }
