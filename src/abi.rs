@@ -85,7 +85,9 @@ newtype! {
     pub type FileMode = u32;
 }
 
-/// ABI compatible with `fuse_attr`.
+/// A set of attributes associated with an inode.
+///
+/// This type has ABI compatibility with `fuse_attr`.
 #[derive(Default, Debug, Clone)]
 #[repr(C)]
 pub struct FileAttr {
@@ -166,7 +168,9 @@ pub struct DirEntryPlus {
     pub dirent: DirEntry,
 }
 
-/// ABI compatible with `fuse_kstatfs`.
+/// The filesystem statistics.
+///
+/// This type has ABI compatibility with `fuse_kstatfs`.
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
 pub struct Statfs {
@@ -203,15 +207,100 @@ impl TryFrom<libc::statvfs> for Statfs {
     }
 }
 
-/// ABI compatible with `fuse_file_lock`.
+/// The information about a POSIX lock.
+///
+/// This type has ABI compatibility with `fuse_file_lock`.
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
 pub struct FileLock {
     pub start: u64,
     pub end: u64,
-    pub typ: u32,
+    pub typ: LockType,
     pub pid: Pid,
 }
+
+impl TryFrom<libc::flock> for FileLock {
+    type Error = InvalidLockType;
+
+    #[allow(clippy::cast_sign_loss)]
+    fn try_from(lk: libc::flock) -> Result<Self, Self::Error> {
+        let mut lock = FileLock::default();
+        lock.pid = Pid::from_raw(lk.l_pid as u32);
+        lock.typ = LockType::try_from(lk.l_type)?;
+
+        match lock.typ {
+            LockType::Unlock => (),
+            LockType::Read | LockType::Write => {
+                lock.start = lk.l_start as u64;
+                if lk.l_len == 0 {
+                    lock.end = std::u64::MAX;
+                } else {
+                    lock.end = lock.start + (lk.l_len as u64) - 1;
+                };
+            }
+        }
+
+        Ok(lock)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum LockType {
+    Read = 0,
+    Write = 1,
+    Unlock = 2,
+}
+
+impl Default for LockType {
+    fn default() -> Self {
+        Self::Read
+    }
+}
+
+impl TryFrom<libc::c_int> for LockType {
+    type Error = InvalidLockType;
+
+    fn try_from(typ: libc::c_int) -> Result<Self, Self::Error> {
+        match typ {
+            /* F_RDLCK = */ 0 => Ok(Self::Read),
+            /* F_WRLCK = */ 1 => Ok(Self::Write),
+            /* F_UNLCK = */ 2 => Ok(Self::Unlock),
+            _n => Err(InvalidLockType(())),
+        }
+    }
+}
+
+impl TryFrom<libc::c_short> for LockType {
+    type Error = InvalidLockType;
+
+    fn try_from(typ: libc::c_short) -> Result<Self, Self::Error> {
+        Self::try_from(libc::c_int::try_from(typ)?)
+    }
+}
+
+#[derive(Debug)]
+pub struct InvalidLockType(());
+
+impl From<std::convert::Infallible> for InvalidLockType {
+    fn from(infallible: std::convert::Infallible) -> Self {
+        match infallible {}
+    }
+}
+
+impl From<std::num::TryFromIntError> for InvalidLockType {
+    fn from(_: std::num::TryFromIntError) -> Self {
+        Self(())
+    }
+}
+
+impl fmt::Display for InvalidLockType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "invalid lock type")
+    }
+}
+
+impl error::Error for InvalidLockType {}
 
 macro_rules! define_opcode {
     ($(
@@ -511,7 +600,7 @@ bitflags! {
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct MknodIn {
-    pub mode: u32,
+    pub mode: FileMode,
     pub rdev: u32,
     pub umask: u32,
     #[doc(hidden)]
@@ -522,7 +611,7 @@ pub struct MknodIn {
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct MkdirIn {
-    pub mode: u32,
+    pub mode: FileMode,
     pub umask: u32,
 }
 
@@ -530,14 +619,14 @@ pub struct MkdirIn {
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct RenameIn {
-    pub newdir: u64,
+    pub newdir: Nodeid,
 }
 
 /// ABI compatible with `fuse_link_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct LinkIn {
-    pub oldnodeid: u64,
+    pub oldnodeid: Nodeid,
 }
 
 /// ABI compatible with `fuse_open_in`.
@@ -663,6 +752,12 @@ pub struct FsyncIn {
     pub fsync_flags: FsyncFlags,
     #[doc(hidden)]
     pub padding: u32,
+}
+
+impl FsyncIn {
+    pub fn datasync(&self) -> bool {
+        self.fsync_flags.contains(FsyncFlags::DATASYNC)
+    }
 }
 
 bitflags! {

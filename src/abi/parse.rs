@@ -128,15 +128,14 @@ pub enum Arg<'a> {
     },
     Setlk {
         arg: &'a LkIn,
-    },
-    Setlkw {
-        arg: &'a LkIn,
+        sleep: bool,
     },
     Access {
         arg: &'a AccessIn,
     },
     Create {
         arg: &'a CreateIn,
+        name: &'a OsStr,
     },
     Bmap {
         arg: &'a BmapIn,
@@ -387,11 +386,11 @@ impl<'a> Parser<'a> {
             }
             Some(Opcode::Setlk) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Setlk { arg })
+                Ok(Arg::Setlk { arg, sleep: false })
             }
             Some(Opcode::Setlkw) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Setlkw { arg })
+                Ok(Arg::Setlk { arg, sleep: true })
             }
             Some(Opcode::Access) => {
                 let arg = self.fetch()?;
@@ -399,7 +398,8 @@ impl<'a> Parser<'a> {
             }
             Some(Opcode::Create) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Create { arg })
+                let name = self.fetch_str()?;
+                Ok(Arg::Create { arg, name })
             }
             Some(Opcode::Bmap) => {
                 let arg = self.fetch()?;
