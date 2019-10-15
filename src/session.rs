@@ -3,10 +3,10 @@
 use crate::{
     abi::{
         parse::{Arg, Request},
-        InitOut,
+        InitOut, LkFlags, LockType, ReleaseFlags,
     }, //
     buf::{Buffer, MAX_WRITE_SIZE},
-    op::Operations,
+    op::{AttrSet, Context, Operations},
     reply::ReplyRaw,
 };
 use futures::{
@@ -89,7 +89,15 @@ impl Session {
             data
         );
 
+        let ino = header.nodeid;
+        let cx = Context {
+            uid: header.uid,
+            gid: header.gid,
+            pid: header.pid,
+            _p: (),
+        };
         let reply = ReplyRaw::new(header.unique, channel.clone());
+
         match arg {
             Arg::Init { .. } => {
                 log::warn!("");
@@ -99,69 +107,188 @@ impl Session {
                 self.exit();
                 background.spawn_task(reply.reply(0, &[]));
             }
-            Arg::Lookup { name } => background.spawn_task(ops.lookup(header, name, reply.into())),
+            Arg::Lookup { name } => background.spawn_task(ops.lookup(&cx, ino, name, reply.into())),
             Arg::Forget { arg } => {
-                ops.forget(header, arg);
                 // no reply.
+                background.spawn_task(ops.forget(&cx, &[(ino, arg.nlookup)]));
             }
-            Arg::Getattr { arg } => background.spawn_task(ops.getattr(header, &arg, reply.into())),
-            Arg::Setattr { arg } => background.spawn_task(ops.setattr(header, &arg, reply.into())),
-            Arg::Readlink => background.spawn_task(ops.readlink(header, reply.into())),
+            Arg::Getattr { arg } => {
+                background.spawn_task(ops.getattr(&cx, ino, arg.fh(), reply.into()))
+            }
+            Arg::Setattr { arg } => {
+                let attrs = AttrSet {
+                    mode: arg.mode(),
+                    uid: arg.uid(),
+                    gid: arg.gid(),
+                    size: arg.size(),
+                    atime: arg.atime(),
+                    mtime: arg.mtime(),
+                    ctime: arg.ctime(),
+                    ..Default::default()
+                };
+                background.spawn_task(ops.setattr(&cx, ino, arg.fh(), attrs, reply.into()))
+            }
+            Arg::Readlink => background.spawn_task(ops.readlink(&cx, ino, reply.into())),
             Arg::Symlink { name, link } => {
-                background.spawn_task(ops.symlink(header, name, link, reply.into()))
+                background.spawn_task(ops.symlink(&cx, ino, name, link, reply.into()))
             }
-            Arg::Mknod { arg, name } => {
-                background.spawn_task(ops.mknod(header, arg, name, reply.into()))
-            }
-            Arg::Mkdir { arg, name } => {
-                background.spawn_task(ops.mkdir(header, arg, name, reply.into()))
-            }
-            Arg::Unlink { name } => background.spawn_task(ops.unlink(header, name, reply.into())),
-            Arg::Rmdir { name } => background.spawn_task(ops.unlink(header, name, reply.into())),
-            Arg::Rename { arg, name, newname } => {
-                background.spawn_task(ops.rename(header, arg, name, newname, reply.into()))
-            }
+            Arg::Mknod { arg, name } => background.spawn_task(ops.mknod(
+                &cx,
+                ino,
+                name,
+                arg.mode,
+                arg.rdev,
+                Some(arg.umask),
+                reply.into(),
+            )),
+            Arg::Mkdir { arg, name } => background.spawn_task(ops.mkdir(
+                &cx,
+                ino,
+                name,
+                arg.mode,
+                Some(arg.umask),
+                reply.into(),
+            )),
+            Arg::Unlink { name } => background.spawn_task(ops.unlink(&cx, ino, name, reply.into())),
+            Arg::Rmdir { name } => background.spawn_task(ops.rmdir(&cx, ino, name, reply.into())),
+            Arg::Rename { arg, name, newname } => background.spawn_task(ops.rename(
+                &cx,
+                ino,
+                name,
+                arg.newdir,
+                newname,
+                0,
+                reply.into(),
+            )),
             Arg::Link { arg, newname } => {
-                background.spawn_task(ops.link(header, arg, newname, reply.into()))
+                background.spawn_task(ops.link(&cx, arg.oldnodeid, ino, newname, reply.into()))
             }
-            Arg::Open { arg } => background.spawn_task(ops.open(header, arg, reply.into())),
-            Arg::Read { arg } => background.spawn_task(ops.read(header, arg, reply.into())),
+            Arg::Open { arg } => background.spawn_task(ops.open(&cx, ino, arg.flags, reply.into())),
+            Arg::Read { arg } => background.spawn_task(ops.read(
+                &cx,
+                ino,
+                arg.fh,
+                arg.offset,
+                arg.size,
+                arg.flags,
+                arg.lock_owner(),
+                reply.into(),
+            )),
             Arg::Write { arg } => match data {
-                Some(data) => background.spawn_task(ops.write(header, arg, data, reply.into())),
+                Some(data) => background.spawn_task(ops.write(
+                    &cx,
+                    ino,
+                    arg.fh,
+                    arg.offset,
+                    data,
+                    arg.size,
+                    arg.flags,
+                    arg.lock_owner(),
+                    reply.into(),
+                )),
                 None => panic!("unexpected condition"),
             },
-            Arg::Release { arg } => background.spawn_task(ops.release(header, arg, reply.into())),
-            Arg::Statfs => background.spawn_task(ops.statfs(header, reply.into())),
-            Arg::Fsync { arg } => background.spawn_task(ops.fsync(header, arg, reply.into())),
+            Arg::Release { arg } => {
+                let mut flush = false;
+                let mut flock_release = false;
+                let mut lock_owner = None;
+                if self.proto_minor() >= 8 {
+                    flush = arg.release_flags.contains(ReleaseFlags::FLUSH);
+                    lock_owner.get_or_insert_with(|| arg.lock_owner);
+                }
+                if arg.release_flags.contains(ReleaseFlags::FLOCK_UNLOCK) {
+                    flock_release = true;
+                    lock_owner.get_or_insert_with(|| arg.lock_owner);
+                }
+                background.spawn_task(ops.release(
+                    &cx,
+                    ino,
+                    arg.fh,
+                    arg.flags,
+                    lock_owner,
+                    flush,
+                    flock_release,
+                    reply.into(),
+                ))
+            }
+            Arg::Statfs => background.spawn_task(ops.statfs(&cx, ino, reply.into())),
+            Arg::Fsync { arg } => {
+                background.spawn_task(ops.fsync(&cx, ino, arg.fh, arg.datasync(), reply.into()))
+            }
             Arg::Setxattr { arg, name, value } => {
-                background.spawn_task(ops.setxattr(header, arg, name, value, reply.into()))
+                background.spawn_task(ops.setxattr(&cx, ino, name, value, arg.flags, reply.into()))
             }
             Arg::Getxattr { arg, name } => {
-                background.spawn_task(ops.getxattr(header, arg, name, reply.into()))
+                background.spawn_task(ops.getxattr(&cx, ino, name, arg.size, reply.into()))
             }
             Arg::Listxattr { arg } => {
-                background.spawn_task(ops.listxattr(header, arg, reply.into()))
+                background.spawn_task(ops.listxattr(&cx, ino, arg.size, reply.into()))
             }
             Arg::Removexattr { name } => {
-                background.spawn_task(ops.removexattr(header, name, reply.into()))
+                background.spawn_task(ops.removexattr(&cx, ino, name, reply.into()))
             }
-            Arg::Flush { arg } => background.spawn_task(ops.flush(header, arg, reply.into())),
-            Arg::Opendir { arg } => background.spawn_task(ops.opendir(header, arg, reply.into())),
-            Arg::Readdir { arg } => background.spawn_task(ops.readdir(header, arg, reply.into())),
+            Arg::Flush { arg } => {
+                background.spawn_task(ops.flush(&cx, ino, arg.fh, arg.lock_owner, reply.into()))
+            }
+            Arg::Opendir { arg } => {
+                background.spawn_task(ops.opendir(&cx, ino, arg.flags, reply.into()))
+            }
+            Arg::Readdir { arg } => background.spawn_task(ops.readdir(
+                &cx,
+                ino,
+                arg.fh,
+                arg.offset,
+                arg.size,
+                reply.into(),
+            )),
             Arg::Releasedir { arg } => {
-                background.spawn_task(ops.releasedir(header, arg, reply.into()))
+                background.spawn_task(ops.releasedir(&cx, ino, arg.fh, arg.flags, reply.into()))
             }
-            Arg::Fsyncdir { arg } => background.spawn_task(ops.fsyncdir(header, arg, reply.into())),
-            Arg::Getlk { arg } => background.spawn_task(ops.getlk(header, arg, reply.into())),
-            Arg::Setlk { arg } => {
-                background.spawn_task(ops.setlk(header, arg, false, reply.into()))
+            Arg::Fsyncdir { arg } => {
+                background.spawn_task(ops.fsyncdir(&cx, ino, arg.fh, arg.datasync(), reply.into()))
             }
-            Arg::Setlkw { arg } => {
-                background.spawn_task(ops.setlk(header, arg, true, reply.into()))
+            Arg::Getlk { arg } => {
+                background.spawn_task(ops.getlk(&cx, ino, arg.fh, arg.owner, &arg.lk, reply.into()))
             }
-            Arg::Access { arg } => background.spawn_task(ops.access(header, arg, reply.into())),
-            Arg::Create { arg } => background.spawn_task(ops.create(header, arg, reply.into())),
-            Arg::Bmap { arg } => background.spawn_task(ops.bmap(header, arg, reply.into())),
+            Arg::Setlk { arg, sleep } => {
+                if arg.lk_flags.contains(LkFlags::FLOCK) {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let mut op = match arg.lk.typ {
+                        LockType::Read => libc::LOCK_SH as u32,
+                        LockType::Write => libc::LOCK_EX as u32,
+                        LockType::Unlock => libc::LOCK_UN as u32,
+                    };
+                    if !sleep {
+                        op |= libc::LOCK_NB as u32;
+                    }
+                    background.spawn_task(ops.flock(&cx, ino, arg.fh, arg.owner, op, reply.into()))
+                } else {
+                    background.spawn_task(ops.setlk(
+                        &cx,
+                        ino,
+                        arg.fh,
+                        arg.owner,
+                        &arg.lk,
+                        sleep,
+                        reply.into(),
+                    ))
+                }
+            }
+            Arg::Access { arg } => {
+                background.spawn_task(ops.access(&cx, ino, arg.mask, reply.into()))
+            }
+            Arg::Create { arg, name } => background.spawn_task(ops.create(
+                &cx,
+                ino,
+                name,
+                arg.mode,
+                Some(arg.umask),
+                arg.flags,
+                reply.into(),
+            )),
+            Arg::Bmap { arg } => {
+                background.spawn_task(ops.bmap(&cx, ino, arg.block, arg.blocksize, reply.into()))
+            }
 
             // Interrupt,
             // Ioctl,
