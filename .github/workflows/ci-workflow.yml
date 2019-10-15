@@ -8,21 +8,29 @@ on:
 
 jobs:
   Test:
-    runs-on: ubuntu-latest
-    container:
-      image: rust:latest
+    runs-on: ubuntu-18.04
+    strategy:
+      matrix:
+        rust_toolchain: [beta, nightly]
     steps:
     - uses: actions/checkout@v1
 
-    - name: Install dependencies
+    - name: Install APT dependencies
       run: |
-        apt-get update -yqq
-        apt-get install -yqq --no-install-recommends \
+        sudo apt-get update -yqq
+        sudo apt-get install -yqq --no-install-recommends \
              build-essential \
              pkg-config \
              libfuse-dev \
              udev \
              libudev-dev
+
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: ${{ matrix.rust_toolchain }}
+        override: true
 
     - name: Run tests
       uses: actions-rs/cargo@v1
@@ -31,25 +39,27 @@ jobs:
         args: --all --verbose
 
   Lint:
-    runs-on: ubuntu-latest
-    container:
-      image: rust:latest
+    runs-on: ubuntu-18.04
     steps:
     - uses: actions/checkout@v1
 
-    - name: Install dependencies
+    - name: Install APT dependencies
       run: |
-        apt-get update -yqq
-        apt-get install -yqq --no-install-recommends \
+        sudo apt-get update -yqq
+        sudo apt-get install -yqq --no-install-recommends \
              build-essential \
              pkg-config \
              libfuse-dev \
              udev \
              libudev-dev
 
-    - name: Install components
-      run: |
-        rustup component add rustfmt clippy
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: beta
+        components: rustfmt, clippy
+        override: true
 
     - name: Format check
       uses: actions-rs/cargo@v1
@@ -64,7 +74,7 @@ jobs:
         args: --all
 
   DeployMasterDoc:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-18.04
     container:
       image: rustops/crates-build-env:latest
       options: --memory 3221225472
@@ -74,6 +84,7 @@ jobs:
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1
       with:
+        profile: minimal
         toolchain: nightly
         override: true
 
@@ -104,16 +115,14 @@ jobs:
         PUBLISH_DIR: ./target/doc
 
   Coverage:
-    runs-on: ubuntu-latest
-    container:
-      image: rust:latest
+    runs-on: ubuntu-18.04
     steps:
     - uses: actions/checkout@v1
 
-    - name: Install dependencies
+    - name: Install APT dependencies
       run: |
-        apt-get update -yqq
-        apt-get install -yqq --no-install-recommends \
+        sudo apt-get update -yqq
+        sudo apt-get install -yqq --no-install-recommends \
              build-essential \
              pkg-config \
              libfuse-dev \
@@ -123,15 +132,18 @@ jobs:
     - name: Install grcov
       run: |
         curl -L https://github.com/mozilla/grcov/releases/latest/download/grcov-linux-x86_64.tar.bz2 | tar jxf -
-        mv -v ./grcov /usr/local/bin
+        mkdir -pv $HOME/.grcov/bin
+        mv -v ./grcov $HOME/.grcov/bin
+        echo ::add-path::$HOME/.grcov/bin
 
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
+        profile: minimal
         override: true
 
-    - name: Run test (with coverage report)
+    - name: Run test (with generating coverage reports)
       uses: actions-rs/cargo@v1
       with:
         command: test
@@ -146,7 +158,7 @@ jobs:
       id: coverage
 
     - name: Send report to Codecov
-      uses: codecov/codecov-action@v1.0.2
+      uses: codecov/codecov-action@v1.0.3
       if: success()
       with:
         file: ./lcov.info
