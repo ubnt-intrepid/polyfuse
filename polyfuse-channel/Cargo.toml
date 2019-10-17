@@ -1,5 +1,5 @@
 [package]
-name = "fuse-async-channel"
+name = "polyfuse-channel"
 version = "0.1.0"
 publish = false
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]

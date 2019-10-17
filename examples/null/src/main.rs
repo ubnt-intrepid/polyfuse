@@ -1,7 +1,7 @@
 #![warn(clippy::unimplemented)]
 #![allow(clippy::needless_lifetimes)]
 
-use fuse_async::{
+use polyfuse::{
     abi::{
         FileAttr,
         GetattrIn, //
@@ -37,7 +37,7 @@ async fn main() -> io::Result<()> {
     }
 
     let op = Null;
-    fuse_async::tokio::mount(mountpoint, None::<&str>, op).await?;
+    polyfuse::tokio::mount(mountpoint, None::<&str>, op).await?;
 
     Ok(())
 }

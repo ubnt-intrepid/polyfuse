@@ -11,7 +11,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-fuse-async = { version = "0.1.0", path = "../.." }
+polyfuse = { version = "0.1.0", path = "../.." }
 
 libc = "0.2"
 pretty_env_logger = "0.3"

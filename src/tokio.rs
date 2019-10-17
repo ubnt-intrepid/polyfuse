@@ -2,7 +2,6 @@
 #![cfg_attr(feature = "docs", doc(cfg(feature = "tokio")))]
 
 use crate::op::Operations;
-use fuse_async_channel::Channel as RawChannel;
 use futures::{
     future::Future,
     io::{AsyncRead, AsyncWrite},
@@ -11,6 +10,7 @@ use futures::{
 };
 use libc::c_int;
 use mio::{unix::UnixReady, Ready};
+use polyfuse_channel::Channel as RawChannel;
 use std::{
     cell::UnsafeCell,
     ffi::OsStr,

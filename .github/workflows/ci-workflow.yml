@@ -83,9 +83,9 @@ jobs:
 
     - name: Build
       run: |
-        cargo doc --no-deps -p fuse-async-channel --verbose
-        cargo doc --no-deps -p fuse-async --all-features --verbose
-        echo '<meta http-equiv="refresh" content="0;url=fuse_async">' > ./target/doc/index.html
+        cargo doc --no-deps -p polyfuse-channel --verbose
+        cargo doc --no-deps -p polyfuse --all-features --verbose
+        echo '<meta http-equiv="refresh" content="0;url=polyfuse">' > ./target/doc/index.html
 
     - name: Deply to GitHub Pages
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'

@@ -1,5 +1,5 @@
 [package]
-name = "fuse-async-fuzz"
+name = "polyfuse-fuzz"
 version = "0.0.0"
 publish = false
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
@@ -9,7 +9,7 @@ edition = "2018"
 cargo-fuzz = true
 
 [dependencies]
-fuse-async = { path = ".." }
+polyfuse = { path = ".." }
 libfuzzer-sys = { git = "https://github.com/rust-fuzz/libfuzzer-sys.git" }
 
 # Prevent this from interfering with workspaces
