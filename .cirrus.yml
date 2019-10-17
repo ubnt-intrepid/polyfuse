@@ -12,7 +12,7 @@ task:
   setup_script:
     - pkg install -y pkgconf fusefs-libs
     - fetch https://sh.rustup.rs -o rustup.sh
-    - sh rustup.sh -y
+    - sh rustup.sh -y --profile=minimal
   build_script:
     - . $HOME/.cargo/env
     - cargo build --all --all-targets --verbose
