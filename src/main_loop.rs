@@ -17,7 +17,7 @@ use std::{
 /// Run a main loop of FUSE filesystem.
 pub async fn main_loop<I, S, T>(channel: I, sig: S, ops: T) -> io::Result<Option<S::Output>>
 where
-    I: AsyncRead + AsyncWrite + Unpin + Clone,
+    I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
     S: Future + Unpin,
     T: for<'a> Operations<&'a [u8]>,
 {
@@ -50,17 +50,17 @@ where
 }
 
 #[allow(missing_debug_implementations)]
-struct MainLoop<'a, 'b, I, T> {
+struct MainLoop<'a, I, T> {
     session: &'a mut Session,
-    background: &'a mut Background<'b>,
-    channel: &'b mut I,
+    background: &'a mut Background,
+    channel: &'a mut I,
     buf: &'a mut Buffer,
     ops: &'a mut T,
 }
 
-impl<'a, 'b, I, T> Future for MainLoop<'a, 'b, I, T>
+impl<'a, I, T> Future for MainLoop<'a, I, T>
 where
-    I: AsyncRead + AsyncWrite + Unpin + Clone,
+    I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
     T: for<'s> Operations<&'s [u8]>,
 {
     type Output = io::Result<()>;
@@ -92,7 +92,7 @@ where
 
             this.session.dispatch(
                 &mut *this.buf,
-                this.channel.clone(),
+                &*this.channel,
                 &mut *this.ops,
                 &mut this.background,
             )?;

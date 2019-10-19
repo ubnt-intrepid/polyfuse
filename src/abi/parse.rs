@@ -9,6 +9,7 @@ use super::{
     GetxattrIn,
     InHeader,
     InitIn,
+    InterruptIn,
     LinkIn,
     LkIn,
     MkdirIn,
@@ -137,10 +138,12 @@ pub enum Arg<'a> {
         arg: &'a CreateIn,
         name: &'a OsStr,
     },
+    Interrupt {
+        arg: &'a InterruptIn,
+    },
     Bmap {
         arg: &'a BmapIn,
     },
-    // Interrupt,
     // Ioctl,
     // Poll,
     // NotifyReply,
@@ -193,6 +196,7 @@ impl_from_bytes! {
     LkIn,
     AccessIn,
     CreateIn,
+    InterruptIn,
     BmapIn,
 }
 
@@ -400,6 +404,10 @@ impl<'a> Parser<'a> {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(Arg::Create { arg, name })
+            }
+            Some(Opcode::Interrupt) => {
+                let arg = self.fetch()?;
+                Ok(Arg::Interrupt { arg })
             }
             Some(Opcode::Bmap) => {
                 let arg = self.fetch()?;
