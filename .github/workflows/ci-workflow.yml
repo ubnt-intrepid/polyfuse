@@ -67,13 +67,9 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: rustops/crates-build-env:latest
+      options: --memory 3221225472
     steps:
     - uses: actions/checkout@v1
-
-    - name: Install Rustup
-      run: |
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain nightly -y
-        echo ::add-path::$HOME/.cargo/bin
 
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1
@@ -81,11 +77,23 @@ jobs:
         toolchain: nightly
         override: true
 
+    # TODO:
+    # * restrict network access during building docs.
+    # * restrict all write access expect target/
     - name: Build
       run: |
-        cargo doc --no-deps -p polyfuse-channel --verbose
-        cargo doc --no-deps -p polyfuse --all-features --verbose
+        set -ex
+        cargo fetch --verbose
+        timeout -sKILL 900 cargo doc --no-deps -p polyfuse-channel --verbose
+        timeout -sKILL 900 cargo doc --no-deps -p polyfuse --all-features --verbose
+        rm -rfv ./target/doc/.lock
         echo '<meta http-equiv="refresh" content="0;url=polyfuse">' > ./target/doc/index.html
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@master
+      with:
+        name: published-docs
+        path: target/doc
 
     - name: Deply to GitHub Pages
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
