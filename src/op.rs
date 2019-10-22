@@ -1,24 +1,22 @@
 #![allow(clippy::needless_lifetimes)]
 
-use crate::{
-    abi::{FileLock, FileMode, Gid, Nodeid, Pid, Uid},
-    reply::{
-        ReplyAttr, //
-        ReplyBmap,
-        ReplyCreate,
-        ReplyData,
-        ReplyEmpty,
-        ReplyEntry,
-        ReplyLk,
-        ReplyOpen,
-        ReplyOpendir,
-        ReplyReaddir,
-        ReplyReadlink,
-        ReplyStatfs,
-        ReplyWrite,
-        ReplyXattr,
-    },
+use crate::reply::{
+    ReplyAttr, //
+    ReplyBmap,
+    ReplyCreate,
+    ReplyData,
+    ReplyEmpty,
+    ReplyEntry,
+    ReplyLk,
+    ReplyOpen,
+    ReplyOpendir,
+    ReplyReaddir,
+    ReplyReadlink,
+    ReplyStatfs,
+    ReplyWrite,
+    ReplyXattr,
 };
+use polyfuse_abi::{FileLock, FileMode, Gid, Nodeid, Pid, Uid};
 use std::future::Future;
 use std::{ffi::OsStr, io, pin::Pin};
 

@@ -1,10 +1,6 @@
 //! FUSE session driver.
 
 use crate::{
-    abi::{
-        parse::{Arg, Request},
-        InitOut, LkFlags, LockType, ReleaseFlags, Unique,
-    }, //
     buf::{Buffer, MAX_WRITE_SIZE},
     op::{AttrSet, Context, Operations},
     reply::ReplyRaw,
@@ -13,6 +9,10 @@ use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{
     ready,
     stream::{FuturesUnordered, StreamExt},
+};
+use polyfuse_abi::{
+    parse::{Arg, Request},
+    InitOut, LkFlags, LockType, ReleaseFlags, Unique,
 };
 use std::{
     fmt,

@@ -1,0 +1,10 @@
+[package]
+name = "polyfuse-abi"
+version = "0.1.0"
+publish = false
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+bitflags = "1.2"
+libc = "0.2"

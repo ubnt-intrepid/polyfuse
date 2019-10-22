@@ -10,7 +10,6 @@ edition = "2018"
 features = ["docs"]
 
 [dependencies]
-bitflags = "1.2"
 futures-io-preview = "0.3.0-alpha.19"
 libc = "0.2"
 log = "0.4"
@@ -35,6 +34,10 @@ optional = true
 version = "0.1.0"
 path = "polyfuse-sys"
 
+[dependencies.polyfuse-abi]
+version = "0.1.0"
+path = "polyfuse-abi"
+
 [dev-dependencies]
 pretty_env_logger = "0.3"
 tokio = "0.2.0-alpha.6"
@@ -47,5 +50,6 @@ with-tokio = ["tokio-net", "tokio-sync"]
 [workspace]
 members = [
   ".",
+  "polyfuse-abi",
   "polyfuse-sys",
 ]

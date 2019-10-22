@@ -18,14 +18,14 @@ mod dir;
 mod main_loop;
 mod op;
 
-pub mod abi;
 pub mod buf;
 pub mod reply;
 pub mod session;
 pub mod tokio;
 
-#[doc(inline)]
-pub use crate::abi::{FileAttr, FileLock, FileMode, Gid, Nodeid, Pid, Statfs, Uid};
 pub use crate::dir::DirEntry;
 pub use crate::main_loop::main_loop;
 pub use crate::op::{AttrSet, Context, Operations};
+
+// re-exports from polyfuse-abi
+pub use polyfuse_abi::{FileAttr, FileLock, FileMode, Gid, Nodeid, Pid, Statfs, Uid};

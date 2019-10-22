@@ -1,5 +1,5 @@
-use crate::abi::{DirEntry as DirEntryHeader, Nodeid};
 use memoffset::offset_of;
+use polyfuse_abi::{DirEntry as DirEntryHeader, Nodeid};
 use std::{convert::TryFrom, ffi::OsStr, mem, os::unix::ffi::OsStrExt, ptr};
 
 fn aligned(len: usize) -> usize {

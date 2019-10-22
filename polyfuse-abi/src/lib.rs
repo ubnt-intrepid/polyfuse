@@ -1,6 +1,17 @@
 //! FUSE application binary interface.
 
 #![allow(clippy::identity_op)]
+#![warn(clippy::checked_conversions)]
+#![deny(
+    missing_debug_implementations,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::invalid_upcast_comparisons,
+    clippy::unimplemented
+)]
 
 pub mod parse;
 
@@ -936,8 +947,8 @@ pub struct InitOut {
 impl Default for InitOut {
     fn default() -> Self {
         Self {
-            major: crate::abi::consts::KERNEL_VERSION,
-            minor: crate::abi::consts::KERNEL_MINOR_VERSION,
+            major: consts::KERNEL_VERSION,
+            minor: consts::KERNEL_MINOR_VERSION,
             max_readahead: 0,
             flags: CapFlags::empty(),
             max_background: 0,
@@ -1168,7 +1179,7 @@ pub struct CopyFileRangeIn {
 }
 
 pub mod notify {
-    use crate::abi::{Nodeid, Unique};
+    use crate::{Nodeid, Unique};
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(u32)]

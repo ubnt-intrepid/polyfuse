@@ -1,6 +1,8 @@
 //! Replies to the kernel.
 
-use crate::abi::{
+use futures_io::AsyncWrite;
+use futures_util::io::AsyncWriteExt;
+use polyfuse_abi::{
     AttrOut, //
     BmapOut,
     EntryOut,
@@ -16,8 +18,6 @@ use crate::abi::{
     Unique,
     WriteOut,
 };
-use futures_io::AsyncWrite;
-use futures_util::io::AsyncWriteExt;
 use smallvec::SmallVec;
 use std::{
     convert::{TryFrom, TryInto},
