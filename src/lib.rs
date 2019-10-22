@@ -13,6 +13,7 @@
     clippy::unimplemented
 )]
 
+mod conn;
 mod dir;
 mod main_loop;
 mod op;

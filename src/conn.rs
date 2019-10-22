@@ -1,9 +1,18 @@
-//! Evented I/O that communicates with the FUSE kernel driver.
-
-#![deny(missing_debug_implementations, clippy::unimplemented)]
+// FIXME: re-enable lint rules
+#![allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 
 use libc::{c_char, c_int, c_void, iovec};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
+use polyfuse_sys::v2::{
+    fuse_args, //
+    fuse_mount_compat25,
+    fuse_opt_free_args,
+    fuse_unmount_compat22,
+};
 use std::{
     ffi::{CString, OsStr}, //
     io::{self, IoSlice, IoSliceMut, Read, Write},
@@ -14,37 +23,21 @@ use std::{
     path::Path,
 };
 
-#[allow(nonstandard_style)]
-#[repr(C)]
-struct fuse_args {
-    argc: c_int,
-    argv: *const *const c_char,
-    allocated: c_int,
-}
-
-extern "C" {
-    fn fuse_mount_compat25(mountpoint: *const c_char, args: *mut fuse_args) -> c_int;
-    fn fuse_unmount_compat22(mountpoint: *const c_char);
-    fn fuse_opt_free_args(args: *mut fuse_args);
-}
-
-/// An evented I/O object that communicates with the FUSE kernel driver.
+/// A connection with the FUSE kernel driver.
 #[derive(Debug)]
-pub struct Channel {
-    raw_fd: RawFd,
-    mountpoint: CString,
+pub struct Connection {
+    fd: RawFd,
+    mountpoint: Option<CString>,
 }
 
-impl Drop for Channel {
+impl Drop for Connection {
     fn drop(&mut self) {
-        unsafe {
-            fuse_unmount_compat22(self.mountpoint.as_ptr());
-        }
+        let _e = self.unmount();
     }
 }
 
-impl Channel {
-    /// Open a new channel.
+impl Connection {
+    /// Establish a new connection with the FUSE kernel driver.
     pub fn open(
         mountpoint: impl AsRef<Path>,
         mountopts: impl IntoIterator<Item = impl AsRef<OsStr>>,
@@ -58,40 +51,45 @@ impl Channel {
             .collect::<Result<_, _>>()?;
         let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
 
-        let mut f_args = fuse_args {
-            argc: c_args.len() as c_int,
-            argv: c_args.as_ptr(),
-            allocated: 0,
-        };
+        let mut f_args = fuse_args::new(c_args.len() as c_int, c_args.as_ptr());
 
-        let raw_fd = unsafe { fuse_mount_compat25(c_mountpoint.as_ptr(), &mut f_args) };
+        let fd = unsafe { fuse_mount_compat25(c_mountpoint.as_ptr(), &mut f_args) };
         unsafe {
             fuse_opt_free_args(&mut f_args);
         }
-        if raw_fd == -1 {
+        if fd == -1 {
             return Err(io::Error::last_os_error());
         }
 
-        set_nonblocking(raw_fd)?;
+        set_nonblocking(fd)?;
 
-        Ok(Channel {
-            raw_fd,
-            mountpoint: c_mountpoint,
+        Ok(Connection {
+            fd,
+            mountpoint: Some(c_mountpoint),
         })
     }
-}
 
-impl AsRawFd for Channel {
-    fn as_raw_fd(&self) -> RawFd {
-        self.raw_fd
+    pub fn unmount(&mut self) -> io::Result<()> {
+        if let Some(mountpoint) = self.mountpoint.take() {
+            unsafe {
+                fuse_unmount_compat22(mountpoint.as_ptr());
+            }
+        }
+        Ok(())
     }
 }
 
-impl Read for Channel {
+impl AsRawFd for Connection {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
+    }
+}
+
+impl Read for Connection {
     fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
         let res = unsafe {
             libc::read(
-                self.raw_fd, //
+                self.fd, //
                 dst.as_mut_ptr() as *mut c_void,
                 dst.len(),
             )
@@ -105,7 +103,7 @@ impl Read for Channel {
     fn read_vectored(&mut self, dst: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         let res = unsafe {
             libc::readv(
-                self.raw_fd, //
+                self.fd, //
                 dst.as_mut_ptr() as *mut iovec,
                 dst.len() as c_int,
             )
@@ -117,11 +115,11 @@ impl Read for Channel {
     }
 }
 
-impl Write for Channel {
+impl Write for Connection {
     fn write(&mut self, src: &[u8]) -> io::Result<usize> {
         let res = unsafe {
             libc::write(
-                self.raw_fd, //
+                self.fd, //
                 src.as_ptr() as *const c_void,
                 src.len(),
             )
@@ -135,7 +133,7 @@ impl Write for Channel {
     fn write_vectored(&mut self, src: &[IoSlice]) -> io::Result<usize> {
         let res = unsafe {
             libc::writev(
-                self.raw_fd, //
+                self.fd, //
                 src.as_ptr() as *const iovec,
                 src.len() as c_int,
             )
@@ -147,7 +145,7 @@ impl Write for Channel {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let res = unsafe { libc::fsync(self.raw_fd) };
+        let res = unsafe { libc::fsync(self.fd) };
         if res < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -155,7 +153,7 @@ impl Write for Channel {
     }
 }
 
-impl Evented for Channel {
+impl Evented for Connection {
     fn register(
         &self,
         poll: &mio::Poll,
@@ -163,7 +161,7 @@ impl Evented for Channel {
         interest: Ready,
         opts: PollOpt,
     ) -> io::Result<()> {
-        EventedFd(&self.raw_fd).register(poll, token, interest, opts)
+        EventedFd(&self.fd).register(poll, token, interest, opts)
     }
 
     fn reregister(
@@ -173,11 +171,11 @@ impl Evented for Channel {
         interest: Ready,
         opts: PollOpt,
     ) -> io::Result<()> {
-        EventedFd(&self.raw_fd).reregister(poll, token, interest, opts)
+        EventedFd(&self.fd).reregister(poll, token, interest, opts)
     }
 
     fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
-        EventedFd(&self.raw_fd).deregister(poll)
+        EventedFd(&self.fd).deregister(poll)
     }
 }
 

@@ -1,12 +1,11 @@
 #![cfg(feature = "with-tokio")]
 #![cfg_attr(feature = "docs", doc(cfg(feature = "with-tokio")))]
 
-use crate::op::Operations;
+use crate::{conn::Connection, op::Operations};
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{future::Future, ready, select, stream::StreamExt};
 use libc::c_int;
 use mio::{unix::UnixReady, Ready};
-use polyfuse_channel::Channel as RawChannel;
 use std::{
     cell::UnsafeCell,
     ffi::OsStr,
@@ -78,7 +77,7 @@ pub struct Channel {
 
 #[derive(Debug)]
 struct Inner {
-    channel: UnsafeCell<PollEvented<RawChannel>>,
+    conn: UnsafeCell<PollEvented<Connection>>,
     mountpoint: PathBuf,
     semaphore: Semaphore,
 }
@@ -108,11 +107,11 @@ impl Channel {
     ) -> io::Result<Self> {
         let mountpoint = mountpoint.as_ref();
 
-        let channel = RawChannel::open(mountpoint, mountopts)?;
+        let conn = Connection::open(mountpoint, mountopts)?;
 
         Ok(Self {
             inner: Arc::new(Inner {
-                channel: UnsafeCell::new(PollEvented::new(channel)),
+                conn: UnsafeCell::new(PollEvented::new(conn)),
                 mountpoint: mountpoint.into(),
                 semaphore: Semaphore::new(1),
             }),
@@ -127,12 +126,12 @@ impl Channel {
 
     fn poll_lock_with<F, R>(&mut self, cx: &mut task::Context, f: F) -> Poll<R>
     where
-        F: FnOnce(&mut PollEvented<RawChannel>, &mut task::Context) -> Poll<R>,
+        F: FnOnce(&mut PollEvented<Connection>, &mut task::Context) -> Poll<R>,
     {
         ready!(self.poll_acquire_lock(cx));
 
-        let evented = unsafe { &mut (*self.inner.channel.get()) };
-        let ret = ready!(f(evented, cx));
+        let conn = unsafe { &mut (*self.inner.conn.get()) };
+        let ret = ready!(f(conn, cx));
 
         self.release_lock();
 
@@ -158,17 +157,17 @@ impl Channel {
 
     fn poll_read_with<F, R>(&mut self, cx: &mut task::Context<'_>, f: F) -> Poll<io::Result<R>>
     where
-        F: FnOnce(&mut RawChannel) -> io::Result<R>,
+        F: FnOnce(&mut Connection) -> io::Result<R>,
     {
-        self.poll_lock_with(cx, |evented, cx| {
+        self.poll_lock_with(cx, |conn, cx| {
             let mut ready = Ready::readable();
             ready.insert(UnixReady::error());
-            ready!(evented.poll_read_ready(cx, ready))?;
+            ready!(conn.poll_read_ready(cx, ready))?;
 
-            match f(evented.get_mut()) {
+            match f(conn.get_mut()) {
                 Ok(ret) => Poll::Ready(Ok(ret)),
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    evented.clear_read_ready(cx, ready)?;
+                    conn.clear_read_ready(cx, ready)?;
                     Poll::Pending
                 }
                 Err(e) => Poll::Ready(Err(e)),
@@ -178,15 +177,15 @@ impl Channel {
 
     fn poll_write_with<F, R>(&mut self, cx: &mut task::Context<'_>, f: F) -> Poll<io::Result<R>>
     where
-        F: FnOnce(&mut RawChannel) -> io::Result<R>,
+        F: FnOnce(&mut Connection) -> io::Result<R>,
     {
-        self.poll_lock_with(cx, |evented, cx| {
-            ready!(evented.poll_write_ready(cx))?;
+        self.poll_lock_with(cx, |conn, cx| {
+            ready!(conn.poll_write_ready(cx))?;
 
-            match f(evented.get_mut()) {
+            match f(conn.get_mut()) {
                 Ok(ret) => Poll::Ready(Ok(ret)),
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    evented.clear_write_ready(cx)?;
+                    conn.clear_write_ready(cx)?;
                     Poll::Pending
                 }
                 Err(e) => Poll::Ready(Err(e)),

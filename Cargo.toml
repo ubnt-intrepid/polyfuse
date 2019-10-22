@@ -31,9 +31,9 @@ features = ["signal"]
 version = "0.2.0-alpha.6"
 optional = true
 
-[dependencies.polyfuse-channel]
+[dependencies.polyfuse-sys]
 version = "0.1.0"
-path = "polyfuse-channel"
+path = "polyfuse-sys"
 
 [dev-dependencies]
 pretty_env_logger = "0.3"
@@ -47,5 +47,5 @@ with-tokio = ["tokio-net", "tokio-sync"]
 [workspace]
 members = [
   ".",
-  "polyfuse-channel",
+  "polyfuse-sys",
 ]

@@ -91,14 +91,8 @@ jobs:
     # TODO:
     # * restrict network access during building docs.
     # * restrict all write access expect target/
-    - name: Build
-      run: |
-        set -ex
-        cargo fetch --verbose
-        timeout -sKILL 900 cargo doc --no-deps -p polyfuse-channel --verbose
-        timeout -sKILL 900 cargo doc --no-deps -p polyfuse --all-features --verbose
-        rm -rfv ./target/doc/.lock
-        echo '<meta http-equiv="refresh" content="0;url=polyfuse">' > ./target/doc/index.html
+    - name: Build API docs
+      run: bash ./scripts/gen_docs.sh
 
     - name: Upload artifact
       uses: actions/upload-artifact@master
