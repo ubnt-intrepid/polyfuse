@@ -3,9 +3,9 @@ use crate::{
     op::Operations,
     session::{Background, Session},
 };
-use futures::{
+use futures_io::{AsyncRead, AsyncWrite};
+use futures_util::{
     future::{Future, FutureExt},
-    io::{AsyncRead, AsyncWrite},
     ready, select,
 };
 use std::{

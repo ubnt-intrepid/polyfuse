@@ -1,7 +1,8 @@
 //! Requests from the kernel.
 
 use crate::abi::parse::{Arg, Parser, Request};
-use futures::{future::poll_fn, io::AsyncRead};
+use futures_io::AsyncRead;
+use futures_util::future::poll_fn;
 use std::{
     io,
     pin::Pin,

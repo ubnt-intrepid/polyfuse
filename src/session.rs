@@ -9,8 +9,8 @@ use crate::{
     op::{AttrSet, Context, Operations},
     reply::ReplyRaw,
 };
-use futures::{
-    io::{AsyncRead, AsyncWrite},
+use futures_io::{AsyncRead, AsyncWrite};
+use futures_util::{
     ready,
     stream::{FuturesUnordered, StreamExt},
 };

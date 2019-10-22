@@ -16,7 +16,8 @@ use crate::abi::{
     Unique,
     WriteOut,
 };
-use futures::io::{AsyncWrite, AsyncWriteExt};
+use futures_io::AsyncWrite;
+use futures_util::io::AsyncWriteExt;
 use smallvec::SmallVec;
 use std::{
     convert::{TryFrom, TryInto},

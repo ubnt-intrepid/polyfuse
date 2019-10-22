@@ -1,13 +1,9 @@
-#![cfg(feature = "tokio")]
-#![cfg_attr(feature = "docs", doc(cfg(feature = "tokio")))]
+#![cfg(feature = "with-tokio")]
+#![cfg_attr(feature = "docs", doc(cfg(feature = "with-tokio")))]
 
 use crate::op::Operations;
-use futures::{
-    future::Future,
-    io::{AsyncRead, AsyncWrite},
-    ready, select,
-    stream::StreamExt,
-};
+use futures_io::{AsyncRead, AsyncWrite};
+use futures_util::{future::Future, ready, select, stream::StreamExt};
 use libc::c_int;
 use mio::{unix::UnixReady, Ready};
 use polyfuse_channel::Channel as RawChannel;
@@ -27,7 +23,6 @@ use tokio_net::{
 use tokio_sync::semaphore::{Permit, Semaphore};
 
 /// Run a FUSE filesystem mounted on the specified path.
-#[cfg(feature = "tokio")]
 pub async fn mount<T>(
     mointpoint: impl AsRef<Path>,
     mountopts: impl IntoIterator<Item = impl AsRef<OsStr>>,

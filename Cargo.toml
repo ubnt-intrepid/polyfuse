@@ -11,18 +11,21 @@ features = ["docs"]
 
 [dependencies]
 bitflags = "1.2"
-futures-preview = { version = "0.3.0-alpha.19", features = ["unstable", "async-await"] }
+futures-io-preview = "0.3.0-alpha.19"
 libc = "0.2"
 log = "0.4"
 memoffset = "0.5"
 mio = "0.6"
 smallvec = "0.6"
 
+[dependencies.futures-util-preview]
+version = "0.3.0-alpha.19"
+features = ["unstable", "io", "select-macro"]
+
 [dependencies.tokio-net]
 version = "0.2.0-alpha.1"
 optional = true
 features = ["signal"]
-default-features = false
 
 [dependencies.tokio-sync]
 version = "0.2.0-alpha.6"
@@ -32,15 +35,17 @@ optional = true
 version = "0.1.0"
 path = "polyfuse-channel"
 
+[dev-dependencies]
+pretty_env_logger = "0.3"
+tokio = "0.2.0-alpha.6"
+
 [features]
-default = ["tokio"]
+default = ["with-tokio"]
 docs = []
-tokio = ["tokio-net", "tokio-sync"]
+with-tokio = ["tokio-net", "tokio-sync"]
 
 [workspace]
 members = [
   ".",
   "polyfuse-channel",
-
-  "examples/null",
 ]
