@@ -15,11 +15,11 @@ use std::{
 };
 
 /// Run a main loop of FUSE filesystem.
-pub async fn main_loop<I, S, T>(channel: I, sig: S, ops: T) -> io::Result<Option<S::Output>>
+pub async fn main_loop<T, I, S>(ops: T, channel: I, sig: S) -> io::Result<Option<S::Output>>
 where
+    T: for<'a> Operations<&'a [u8]>,
     I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
     S: Future + Unpin,
-    T: for<'a> Operations<&'a [u8]>,
 {
     let mut channel = channel;
     let mut sig = sig.fuse();

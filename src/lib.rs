@@ -23,6 +23,7 @@ pub mod reply;
 pub mod session;
 pub mod tokio;
 
+pub use crate::conn::MountOptions;
 pub use crate::dir::DirEntry;
 pub use crate::main_loop::main_loop;
 pub use crate::op::{AttrSet, Context, Operations};

@@ -14,7 +14,8 @@ use polyfuse_sys::v2::{
     fuse_unmount_compat22,
 };
 use std::{
-    ffi::{CString, OsStr}, //
+    env,
+    ffi::{CString, OsString}, //
     io::{self, IoSlice, IoSliceMut, Read, Write},
     os::unix::{
         ffi::OsStrExt,
@@ -22,6 +23,19 @@ use std::{
     },
     path::Path,
 };
+
+#[derive(Debug, Default)]
+pub struct MountOptions {
+    args: Vec<OsString>,
+}
+
+impl MountOptions {
+    pub fn from_env() -> Self {
+        Self {
+            args: env::args_os().collect(),
+        }
+    }
+}
 
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
@@ -38,16 +52,14 @@ impl Drop for Connection {
 
 impl Connection {
     /// Establish a new connection with the FUSE kernel driver.
-    pub fn open(
-        mountpoint: impl AsRef<Path>,
-        mountopts: impl IntoIterator<Item = impl AsRef<OsStr>>,
-    ) -> io::Result<Self> {
+    pub fn open(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
         let mountpoint = mountpoint.as_ref();
         let c_mountpoint = CString::new(mountpoint.as_os_str().as_bytes())?;
 
         let args: Vec<CString> = mountopts
+            .args
             .into_iter()
-            .map(|opt| CString::new(opt.as_ref().as_bytes()))
+            .map(|arg| CString::new(arg.as_bytes()))
             .collect::<Result<_, _>>()?;
         let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
 

@@ -1,14 +1,16 @@
 #![cfg(feature = "with-tokio")]
 #![cfg_attr(feature = "docs", doc(cfg(feature = "with-tokio")))]
 
-use crate::{conn::Connection, op::Operations};
+use crate::{
+    conn::{Connection, MountOptions},
+    op::Operations,
+};
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{future::Future, ready, select, stream::StreamExt};
 use libc::c_int;
 use mio::{unix::UnixReady, Ready};
 use std::{
     cell::UnsafeCell,
-    ffi::OsStr,
     io::{self, IoSlice, IoSliceMut, Read, Write},
     path::{Path, PathBuf},
     pin::Pin,
@@ -23,9 +25,9 @@ use tokio_sync::semaphore::{Permit, Semaphore};
 
 /// Run a FUSE filesystem mounted on the specified path.
 pub async fn mount<T>(
-    mointpoint: impl AsRef<Path>,
-    mountopts: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ops: T,
+    mointpoint: impl AsRef<Path>,
+    mountopts: MountOptions,
 ) -> io::Result<()>
 where
     T: for<'a> Operations<&'a [u8]>,
@@ -33,7 +35,7 @@ where
     let channel = Channel::open(mointpoint, mountopts)?;
     let sig = default_shutdown_signal()?;
 
-    crate::main_loop(channel, sig, ops).await?;
+    crate::main_loop(ops, channel, sig).await?;
     Ok(())
 }
 
@@ -101,10 +103,7 @@ unsafe impl Send for Channel {}
 
 impl Channel {
     /// Open a new communication channel mounted to the specified path.
-    pub fn open(
-        mountpoint: impl AsRef<Path>,
-        mountopts: impl IntoIterator<Item = impl AsRef<OsStr>>,
-    ) -> io::Result<Self> {
+    pub fn open(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
         let mountpoint = mountpoint.as_ref();
 
         let conn = Connection::open(mountpoint, mountopts)?;
