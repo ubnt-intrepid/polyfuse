@@ -10,7 +10,6 @@ use crate::reply::{
     ReplyLk,
     ReplyOpen,
     ReplyOpendir,
-    ReplyReaddir,
     ReplyReadlink,
     ReplyStatfs,
     ReplyWrite,
@@ -219,7 +218,6 @@ pub trait Operations<T> {
         ino: Nodeid,
         fh: u64,
         offset: u64,
-        size: u32,
         flags: u32,
         lock_owner: Option<u64>,
         reply: ReplyData<'a>,
@@ -370,8 +368,7 @@ pub trait Operations<T> {
         ino: Nodeid,
         fh: u64,
         offset: u64,
-        size: u32,
-        reply: ReplyReaddir<'a>,
+        reply: ReplyData<'a>,
     ) -> ImplFuture<'a, io::Result<()>> {
         Box::pin(reply.err(libc::ENOSYS))
     }

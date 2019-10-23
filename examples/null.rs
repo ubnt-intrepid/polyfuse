@@ -78,7 +78,6 @@ impl<'d> Operations<&'d [u8]> for Null {
         ino: Nodeid,
         _fh: u64,
         _offset: u64,
-        _size: u32,
         _flags: u32,
         _lock_owner: Option<u64>,
         reply: ReplyData<'a>,

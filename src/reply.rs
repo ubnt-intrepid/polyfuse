@@ -114,23 +114,32 @@ impl ReplyEmpty<'_> {
 #[must_use]
 pub struct ReplyData<'a> {
     raw: ReplyRaw<'a>,
-}
-
-impl<'a> From<ReplyRaw<'a>> for ReplyData<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self { raw }
-    }
+    size: u32,
 }
 
 impl<'a> ReplyData<'a> {
+    pub(crate) fn new(raw: ReplyRaw<'a>, size: u32) -> Self {
+        Self { raw, size }
+    }
+
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
     /// Reply to the kernel with a data.
     pub async fn data(self, data: impl AsRef<[u8]>) -> io::Result<()> {
         self.data_vectored(&[data.as_ref()]).await
     }
 
     /// Reply to the kernel with a *split* data.
+    #[allow(clippy::cast_possible_truncation)]
     pub async fn data_vectored(self, data: &[&[u8]]) -> io::Result<()> {
-        self.raw.reply(0, data).await
+        let len: u32 = data.iter().map(|t| t.len() as u32).sum();
+        if len <= self.size {
+            self.raw.reply(0, data).await
+        } else {
+            self.err(libc::ERANGE).await
+        }
     }
 
     // TODO: async fn reader(self, impl AsyncRead) -> io::Result<()>
@@ -418,9 +427,6 @@ impl ReplyOpendir<'_> {
         self.raw.reply_err(errno).await
     }
 }
-
-// placeholder.
-pub type ReplyReaddir<'a> = ReplyData<'a>;
 
 /// Reply to a request about extended attributes.
 #[derive(Debug)]

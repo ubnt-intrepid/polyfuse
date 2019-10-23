@@ -3,7 +3,7 @@
 use crate::{
     buf::{Buffer, MAX_WRITE_SIZE},
     op::{AttrSet, Context, Operations},
-    reply::ReplyRaw,
+    reply::{ReplyData, ReplyRaw},
 };
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{
@@ -175,10 +175,9 @@ impl Session {
                     ino,
                     arg.fh,
                     arg.offset,
-                    arg.size,
                     arg.flags,
                     arg.lock_owner(),
-                    reply.into(),
+                    ReplyData::new(reply, arg.size),
                 ),
             ),
             Arg::Write { arg } => match data {
@@ -251,7 +250,13 @@ impl Session {
             }
             Arg::Readdir { arg } => background.spawn_task(
                 unique,
-                ops.readdir(&cx, ino, arg.fh, arg.offset, arg.size, reply.into()),
+                ops.readdir(
+                    &cx,
+                    ino,
+                    arg.fh,
+                    arg.offset,
+                    ReplyData::new(reply, arg.size),
+                ),
             ),
             Arg::Releasedir { arg } => background.spawn_task(
                 unique,
