@@ -1,13 +1,6 @@
-#![cfg(feature = "with-tokio")]
-#![cfg_attr(feature = "docs", doc(cfg(feature = "with-tokio")))]
-
-use crate::{
-    conn::{Connection, MountOptions},
-    fs::Filesystem,
-};
+use crate::conn::{Connection, MountOptions};
 use futures_io::{AsyncRead, AsyncWrite};
-use futures_util::{future::Future, ready, select, stream::StreamExt};
-use libc::c_int;
+use futures_util::ready;
 use mio::{unix::UnixReady, Ready};
 use std::{
     cell::UnsafeCell,
@@ -17,58 +10,8 @@ use std::{
     sync::Arc,
     task::{self, Poll},
 };
-use tokio_net::{
-    signal::unix::{signal, SignalKind},
-    util::PollEvented,
-};
+use tokio_net::util::PollEvented;
 use tokio_sync::semaphore::{Permit, Semaphore};
-
-/// Run a FUSE filesystem mounted on the specified path.
-pub async fn mount<T>(
-    fs: T,
-    mointpoint: impl AsRef<Path>,
-    mountopts: MountOptions,
-) -> io::Result<()>
-where
-    T: for<'a> Filesystem<&'a [u8]>,
-{
-    let channel = Channel::open(mointpoint, mountopts)?;
-    let sig = default_shutdown_signal()?;
-
-    crate::main_loop(fs, channel, sig).await?;
-    Ok(())
-}
-
-/// Create a signal future that captures some kind of signals.
-pub fn default_shutdown_signal() -> io::Result<impl Future<Output = c_int> + Unpin> {
-    let mut sighup = signal(SignalKind::hangup())?.into_future();
-    let mut sigint = signal(SignalKind::interrupt())?.into_future();
-    let mut sigterm = signal(SignalKind::terminate())?.into_future();
-    let mut sigpipe = signal(SignalKind::pipe())?.into_future();
-
-    Ok(Box::pin(async move {
-        loop {
-            select! {
-                _ = sighup => {
-                    log::debug!("Got SIGHUP");
-                    return libc::SIGHUP;
-                },
-                _ = sigint => {
-                    log::debug!("Got SIGINT");
-                    return libc::SIGINT;
-                },
-                _ = sigterm => {
-                    log::debug!("Got SIGTERM");
-                    return libc::SIGTERM;
-                },
-                _ = sigpipe => {
-                    log::debug!("Got SIGPIPE (and ignored)");
-                    continue
-                }
-            }
-        }
-    }))
-}
 
 /// Asynchronous I/O object that communicates with the FUSE kernel driver.
 #[derive(Debug)]
@@ -116,11 +59,6 @@ impl Channel {
             }),
             permit: Permit::new(),
         })
-    }
-
-    /// Return the mountpoint path.
-    pub fn mountpoint(&self) -> &Path {
-        &self.inner.mountpoint
     }
 
     fn poll_lock_with<F, R>(&mut self, cx: &mut task::Context, f: F) -> Poll<R>

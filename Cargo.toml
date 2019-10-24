@@ -6,9 +6,6 @@ publish = false
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
 
-[package.metadata.docs.rs]
-features = ["docs"]
-
 [dependencies]
 async-trait = "0.1"
 futures-channel-preview = "0.3.0-alpha.19"
@@ -25,12 +22,10 @@ features = ["unstable", "io", "select-macro"]
 
 [dependencies.tokio-net]
 version = "0.2.0-alpha.1"
-optional = true
 features = ["signal"]
 
 [dependencies.tokio-sync]
 version = "0.2.0-alpha.6"
-optional = true
 
 [dependencies.polyfuse-sys]
 version = "0.1.0"
@@ -43,11 +38,6 @@ path = "polyfuse-abi"
 [dev-dependencies]
 pretty_env_logger = "0.3"
 tokio = "0.2.0-alpha.6"
-
-[features]
-default = ["with-tokio"]
-docs = []
-with-tokio = ["tokio-net", "tokio-sync"]
 
 [workspace]
 members = [
