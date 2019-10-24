@@ -2,13 +2,10 @@
 #![allow(clippy::needless_lifetimes)]
 
 use polyfuse::{
-    reply::{ReplyAttr, ReplyData, ReplyEmpty, ReplyOpen, ReplyWrite},
-    AttrSet, //
-    Context,
+    fs::{Context, Filesystem, Operation}, //
     FileAttr,
     MountOptions,
     Nodeid,
-    Operations,
 };
 use std::{
     convert::TryInto, //
@@ -46,108 +43,53 @@ async fn main() -> io::Result<()> {
 
 struct Null {}
 
-impl<T> Operations<T> for Null {
-    fn getattr<'a>(
+impl<T> Filesystem<T> for Null {
+    fn call(
         &mut self,
         _cx: &Context,
-        ino: Nodeid,
-        _fh: Option<u64>,
-        reply: ReplyAttr<'a>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
-        Box::pin(async move {
-            match ino {
-                Nodeid::ROOT => reply.attr(root_attr()).await,
-                _ => reply.err(libc::ENOENT).await,
-            }
-        })
-    }
-
-    fn setattr<'a>(
-        &mut self,
-        _cx: &Context,
-        ino: Nodeid,
-        _fh: Option<u64>,
-        _attr: AttrSet,
-        reply: ReplyAttr<'a>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
-        Box::pin(async move {
-            match ino {
-                Nodeid::ROOT => reply.attr(root_attr()).await,
-                _ => reply.err(libc::ENOENT).await,
-            }
-        })
-    }
-
-    fn open<'a>(
-        &mut self,
-        _cx: &Context,
-        ino: Nodeid,
-        _flags: u32,
-        reply: ReplyOpen<'a>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
-        Box::pin(async move {
-            match ino {
-                Nodeid::ROOT => reply.open(0).await,
-                _ => reply.err(libc::ENOENT).await,
-            }
-        })
-    }
-
-    fn read<'a>(
-        &mut self,
-        _cx: &Context,
-        ino: Nodeid,
-        _fh: u64,
-        _offset: u64,
-        _flags: u32,
-        _lock_owner: Option<u64>,
-        reply: ReplyData<'a>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
-        Box::pin(async move {
-            match ino {
-                Nodeid::ROOT => reply.data(&[]).await,
-                _ => reply.err(libc::ENOENT).await,
-            }
-        })
-    }
-
-    fn write<'a>(
-        &mut self,
-        _cx: &Context,
-        ino: Nodeid,
-        _fh: u64,
-        _offset: u64,
-        _data: T,
-        size: u32,
-        _flags: u32,
-        _lock_owner: Option<u64>,
-        reply: ReplyWrite<'a>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
-        Box::pin(async move {
-            match ino {
-                Nodeid::ROOT => reply.write(size).await,
-                _ => reply.err(libc::ENOENT).await,
-            }
-        })
-    }
-
-    fn release<'a>(
-        &mut self,
-        _cx: &Context,
-        ino: Nodeid,
-        _fh: u64,
-        _flags: u32,
-        _lock_owner: Option<u64>,
-        _flush: bool,
-        _flock_release: bool,
-        reply: ReplyEmpty<'a>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>> {
-        Box::pin(async move {
-            match ino {
-                Nodeid::ROOT => reply.ok().await,
-                _ => reply.err(libc::ENOENT).await,
-            }
-        })
+        op: Operation<'_, T>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>>>> {
+        match op {
+            Operation::Getattr { ino, reply, .. } => Box::pin(async move {
+                match ino {
+                    Nodeid::ROOT => reply.attr(root_attr()).await,
+                    _ => reply.err(libc::ENOENT).await,
+                }
+            }),
+            Operation::Setattr { ino, reply, .. } => Box::pin(async move {
+                match ino {
+                    Nodeid::ROOT => reply.attr(root_attr()).await,
+                    _ => reply.err(libc::ENOENT).await,
+                }
+            }),
+            Operation::Open { ino, reply, .. } => Box::pin(async move {
+                match ino {
+                    Nodeid::ROOT => reply.open(0).await,
+                    _ => reply.err(libc::ENOENT).await,
+                }
+            }),
+            Operation::Read { ino, reply, .. } => Box::pin(async move {
+                match ino {
+                    Nodeid::ROOT => reply.data(&[]).await,
+                    _ => reply.err(libc::ENOENT).await,
+                }
+            }),
+            Operation::Write {
+                ino, size, reply, ..
+            } => Box::pin(async move {
+                match ino {
+                    Nodeid::ROOT => reply.write(size).await,
+                    _ => reply.err(libc::ENOENT).await,
+                }
+            }),
+            Operation::Release { ino, reply, .. } => Box::pin(async move {
+                match ino {
+                    Nodeid::ROOT => reply.ok().await,
+                    _ => reply.err(libc::ENOENT).await,
+                }
+            }),
+            op => op.reply_default(),
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 
 use crate::{
     conn::{Connection, MountOptions},
-    op::Operations,
+    fs::Filesystem,
 };
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{future::Future, ready, select, stream::StreamExt};
@@ -25,17 +25,17 @@ use tokio_sync::semaphore::{Permit, Semaphore};
 
 /// Run a FUSE filesystem mounted on the specified path.
 pub async fn mount<T>(
-    ops: T,
+    fs: T,
     mointpoint: impl AsRef<Path>,
     mountopts: MountOptions,
 ) -> io::Result<()>
 where
-    T: for<'a> Operations<&'a [u8]>,
+    T: for<'a> Filesystem<&'a [u8]>,
 {
     let channel = Channel::open(mointpoint, mountopts)?;
     let sig = default_shutdown_signal()?;
 
-    crate::main_loop(ops, channel, sig).await?;
+    crate::main_loop(fs, channel, sig).await?;
     Ok(())
 }
 

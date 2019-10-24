@@ -1,6 +1,6 @@
 use crate::{
     buf::Buffer,
-    op::Operations,
+    fs::Filesystem,
     session::{Background, Session},
 };
 use futures_io::{AsyncRead, AsyncWrite};
@@ -15,15 +15,15 @@ use std::{
 };
 
 /// Run a main loop of FUSE filesystem.
-pub async fn main_loop<T, I, S>(ops: T, channel: I, sig: S) -> io::Result<Option<S::Output>>
+pub async fn main_loop<T, I, S>(fs: T, channel: I, sig: S) -> io::Result<Option<S::Output>>
 where
-    T: for<'a> Operations<&'a [u8]>,
+    T: for<'a> Filesystem<&'a [u8]>,
     I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
     S: Future + Unpin,
 {
     let mut channel = channel;
     let mut sig = sig.fuse();
-    let mut ops = ops;
+    let mut fs = fs;
 
     let mut buf = Buffer::default();
 
@@ -38,7 +38,7 @@ where
         background: &mut background,
         channel: &mut channel,
         buf: &mut buf,
-        ops: &mut ops,
+        fs: &mut fs,
     }
     .fuse();
 
@@ -55,13 +55,13 @@ struct MainLoop<'a, I, T> {
     background: &'a mut Background,
     channel: &'a mut I,
     buf: &'a mut Buffer,
-    ops: &'a mut T,
+    fs: &'a mut T,
 }
 
 impl<'a, I, T> Future for MainLoop<'a, I, T>
 where
     I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
-    T: for<'s> Operations<&'s [u8]>,
+    T: for<'s> Filesystem<&'s [u8]>,
 {
     type Output = io::Result<()>;
 
@@ -93,7 +93,7 @@ where
             this.session.dispatch(
                 &mut *this.buf,
                 &*this.channel,
-                &mut *this.ops,
+                &mut *this.fs,
                 &mut this.background,
             )?;
         }

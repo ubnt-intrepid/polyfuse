@@ -16,9 +16,9 @@
 mod conn;
 mod dir;
 mod main_loop;
-mod op;
 
 pub mod buf;
+pub mod fs;
 pub mod reply;
 pub mod session;
 pub mod tokio;
@@ -26,7 +26,6 @@ pub mod tokio;
 pub use crate::conn::MountOptions;
 pub use crate::dir::DirEntry;
 pub use crate::main_loop::main_loop;
-pub use crate::op::{AttrSet, Context, Operations};
 
 // re-exports from polyfuse-abi
 pub use polyfuse_abi::{FileAttr, FileLock, FileMode, Gid, Nodeid, Pid, Statfs, Uid};
