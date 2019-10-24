@@ -1,0 +1,7 @@
+#!/bin/bash
+
+set -ex
+
+if cargo fmt --version >/dev/null; then
+   cargo fmt -- --check
+fi

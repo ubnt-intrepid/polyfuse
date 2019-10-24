@@ -25,7 +25,7 @@ async fn main() -> io::Result<()> {
         ));
     }
 
-    polyfuse::tokio::mount(
+    polyfuse::mount(
         Null {}, //
         mountpoint,
         MountOptions::default(),
