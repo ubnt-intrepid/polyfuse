@@ -5,22 +5,13 @@ use crate::{
     fs::{Context, Filesystem, Operation},
     reply::{ReplyData, ReplyRaw},
 };
+use futures_channel::oneshot;
 use futures_io::{AsyncRead, AsyncWrite};
-use futures_util::{
-    ready,
-    stream::{FuturesUnordered, StreamExt},
-};
 use polyfuse_abi::{
     parse::{Arg, Request},
     InitOut, LkFlags, LockType, ReleaseFlags, Unique,
 };
-use std::{
-    fmt,
-    future::Future,
-    io,
-    pin::Pin,
-    task::{self, Poll},
-};
+use std::{collections::HashMap, io};
 
 /// A FUSE filesystem driver.
 ///
@@ -64,7 +55,7 @@ impl Session {
 
     /// Dispatch an incoming request to the provided operations.
     #[allow(clippy::cognitive_complexity)]
-    pub fn dispatch<I, T>(
+    pub async fn process<I, T>(
         &mut self,
         buffer: &mut Buffer,
         channel: &I,
@@ -91,60 +82,59 @@ impl Session {
 
         let ino = header.nodeid;
         let unique = header.unique;
-        let cx = Context {
+        let mut cx = Context {
             uid: header.uid,
             gid: header.gid,
             pid: header.pid,
+            background: &mut *background,
+            unique,
         };
         let reply = ReplyRaw::new(unique, channel.clone());
 
         match arg {
             Arg::Init { .. } => {
                 log::warn!("");
-                background.spawn_task(unique, reply.reply_err(libc::EIO));
+                reply.reply_err(libc::EIO).await?;
             }
             Arg::Destroy => {
                 self.exit();
-                background.spawn_task(unique, reply.reply(0, &[]));
+                reply.reply(0, &[]).await?;
             }
-            Arg::Lookup { name } => background.spawn_task(
-                unique,
+            Arg::Lookup { name } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Lookup {
                         parent: ino,
                         name,
                         reply: reply.into(),
                     },
-                ),
-            ),
+                )
+                .await?;
+            }
             Arg::Forget { arg } => {
                 // no reply.
-                background.spawn_task(
-                    unique,
-                    fs.call(
-                        &cx,
-                        Operation::Forget {
-                            nlookups: &[(ino, arg.nlookup)],
-                        },
-                    ),
-                );
-            }
-            Arg::Getattr { arg } => background.spawn_task(
-                unique,
                 fs.call(
-                    &cx,
+                    &mut cx,
+                    Operation::Forget {
+                        nlookups: &[(ino, arg.nlookup)],
+                    },
+                )
+                .await?;
+            }
+            Arg::Getattr { arg } => {
+                fs.call(
+                    &mut cx,
                     Operation::Getattr {
                         ino,
                         fh: arg.fh(),
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Setattr { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Setattr { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Setattr {
                         ino,
                         fh: arg.fh(),
@@ -158,34 +148,34 @@ impl Session {
                         lock_owner: arg.lock_owner(),
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Readlink => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Readlink => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Readlink {
                         ino,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Symlink { name, link } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Symlink { name, link } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Symlink {
                         parent: ino,
                         name,
                         link,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Mknod { arg, name } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Mknod { arg, name } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Mknod {
                         parent: ino,
                         name,
@@ -194,12 +184,12 @@ impl Session {
                         umask: Some(arg.umask),
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Mkdir { arg, name } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Mkdir { arg, name } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Mkdir {
                         parent: ino,
                         name,
@@ -207,34 +197,34 @@ impl Session {
                         umask: Some(arg.umask),
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Unlink { name } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Unlink { name } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Unlink {
                         parent: ino,
                         name,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Rmdir { name } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Rmdir { name } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Rmdir {
                         parent: ino,
                         name,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Rename { arg, name, newname } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Rename { arg, name, newname } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Rename {
                         parent: ino,
                         name,
@@ -243,35 +233,35 @@ impl Session {
                         flags: 0,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Link { arg, newname } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Link { arg, newname } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Link {
                         ino: arg.oldnodeid,
                         newparent: ino,
                         newname,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Open { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Open { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Open {
                         ino,
                         flags: arg.flags,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Read { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Read { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Read {
                         ino,
                         fh: arg.fh,
@@ -280,13 +270,13 @@ impl Session {
                         lock_owner: arg.lock_owner(),
                         reply: ReplyData::new(reply, arg.size),
                     },
-                ),
-            ),
+                )
+                .await?;
+            }
             Arg::Write { arg } => match data {
-                Some(data) => background.spawn_task(
-                    unique,
+                Some(data) => {
                     fs.call(
-                        &cx,
+                        &mut cx,
                         Operation::Write {
                             ino,
                             fh: arg.fh,
@@ -297,8 +287,9 @@ impl Session {
                             lock_owner: arg.lock_owner(),
                             reply: reply.into(),
                         },
-                    ),
-                ),
+                    )
+                    .await?;
+                }
                 None => panic!("unexpected condition"),
             },
             Arg::Release { arg } => {
@@ -313,48 +304,45 @@ impl Session {
                     flock_release = true;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
-                background.spawn_task(
-                    unique,
-                    fs.call(
-                        &cx,
-                        Operation::Release {
-                            ino,
-                            fh: arg.fh,
-                            flags: arg.flags,
-                            lock_owner,
-                            flush,
-                            flock_release,
-                            reply: reply.into(),
-                        },
-                    ),
-                )
-            }
-            Arg::Statfs => background.spawn_task(
-                unique,
                 fs.call(
-                    &cx,
+                    &mut cx,
+                    Operation::Release {
+                        ino,
+                        fh: arg.fh,
+                        flags: arg.flags,
+                        lock_owner,
+                        flush,
+                        flock_release,
+                        reply: reply.into(),
+                    },
+                )
+                .await?;
+            }
+            Arg::Statfs => {
+                fs.call(
+                    &mut cx,
                     Operation::Statfs {
                         ino,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Fsync { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Fsync { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Fsync {
                         ino,
                         fh: arg.fh,
                         datasync: arg.datasync(),
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Setxattr { arg, name, value } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Setxattr { arg, name, value } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Setxattr {
                         ino,
                         name,
@@ -362,105 +350,105 @@ impl Session {
                         flags: arg.flags,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Getxattr { arg, name } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Getxattr { arg, name } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Getxattr {
                         ino,
                         name,
                         size: arg.size,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Listxattr { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Listxattr { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Listxattr {
                         ino,
                         size: arg.size,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Removexattr { name } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Removexattr { name } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Removexattr {
                         ino,
                         name,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Flush { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Flush { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Flush {
                         ino,
                         fh: arg.fh,
                         lock_owner: arg.lock_owner,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Opendir { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Opendir { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Opendir {
                         ino,
                         flags: arg.flags,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Readdir { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Readdir { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Readdir {
                         ino,
                         fh: arg.fh,
                         offset: arg.offset,
                         reply: ReplyData::new(reply, arg.size),
                     },
-                ),
-            ),
-            Arg::Releasedir { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Releasedir { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Releasedir {
                         ino,
                         fh: arg.fh,
                         flags: arg.flags,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Fsyncdir { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Fsyncdir { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Fsyncdir {
                         ino,
                         fh: arg.fh,
                         datasync: arg.datasync(),
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Getlk { arg } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Getlk { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Getlk {
                         ino,
                         fh: arg.fh,
@@ -468,8 +456,9 @@ impl Session {
                         lk: &arg.lk,
                         reply: reply.into(),
                     },
-                ),
-            ),
+                )
+                .await?;
+            }
             Arg::Setlk { arg, sleep } => {
                 if arg.lk_flags.contains(LkFlags::FLOCK) {
                     #[allow(clippy::cast_possible_wrap)]
@@ -481,51 +470,46 @@ impl Session {
                     if !sleep {
                         op |= libc::LOCK_NB as u32;
                     }
-                    background.spawn_task(
-                        unique,
-                        fs.call(
-                            &cx,
-                            Operation::Flock {
-                                ino,
-                                fh: arg.fh,
-                                owner: arg.owner,
-                                op,
-                                reply: reply.into(),
-                            },
-                        ),
+                    fs.call(
+                        &mut cx,
+                        Operation::Flock {
+                            ino,
+                            fh: arg.fh,
+                            owner: arg.owner,
+                            op,
+                            reply: reply.into(),
+                        },
                     )
+                    .await?;
                 } else {
-                    background.spawn_task(
-                        unique,
-                        fs.call(
-                            &cx,
-                            Operation::Setlk {
-                                ino,
-                                fh: arg.fh,
-                                owner: arg.owner,
-                                lk: &arg.lk,
-                                sleep,
-                                reply: reply.into(),
-                            },
-                        ),
+                    fs.call(
+                        &mut cx,
+                        Operation::Setlk {
+                            ino,
+                            fh: arg.fh,
+                            owner: arg.owner,
+                            lk: &arg.lk,
+                            sleep,
+                            reply: reply.into(),
+                        },
                     )
+                    .await?;
                 }
             }
-            Arg::Access { arg } => background.spawn_task(
-                unique,
+            Arg::Access { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Access {
                         ino,
                         mask: arg.mask,
                         reply: reply.into(),
                     },
-                ),
-            ),
-            Arg::Create { arg, name } => background.spawn_task(
-                unique,
+                )
+                .await?;
+            }
+            Arg::Create { arg, name } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Create {
                         parent: ino,
                         name,
@@ -534,24 +518,25 @@ impl Session {
                         open_flags: arg.flags,
                         reply: reply.into(),
                     },
-                ),
-            ),
+                )
+                .await?;
+            }
             Arg::Interrupt { arg } => {
                 log::debug!("INTERRUPT (unique = {:?})", arg.unique);
-                background.cancel_task(arg.unique);
+                background.cancel(arg.unique);
             }
-            Arg::Bmap { arg } => background.spawn_task(
-                unique,
+            Arg::Bmap { arg } => {
                 fs.call(
-                    &cx,
+                    &mut cx,
                     Operation::Bmap {
                         ino,
                         block: arg.block,
                         blocksize: arg.blocksize,
                         reply: reply.into(),
                     },
-                ),
-            ),
+                )
+                .await?;
+            }
 
             // Ioctl,
             // Poll,
@@ -564,7 +549,7 @@ impl Session {
             // CopyFileRange,
             Arg::Unknown => {
                 log::warn!("unsupported opcode: {:?}", header.opcode);
-                background.spawn_task(unique, reply.reply_err(libc::ENOSYS));
+                reply.reply_err(libc::ENOSYS).await?;
             }
         }
 
@@ -648,7 +633,7 @@ impl InitSession {
 /// A pool for tracking the execution of tasks spawned for each FUSE request.
 #[derive(Debug)]
 pub struct Background {
-    tasks: FuturesUnordered<BackgroundTask>,
+    remains: HashMap<Unique, oneshot::Sender<()>>,
 }
 
 impl Default for Background {
@@ -660,72 +645,19 @@ impl Default for Background {
 impl Background {
     pub fn new() -> Self {
         Self {
-            tasks: FuturesUnordered::new(),
+            remains: HashMap::new(),
         }
     }
 
-    pub fn num_remains(&self) -> usize {
-        self.tasks.len()
+    pub fn register(&mut self, unique: Unique) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        self.remains.insert(unique, tx);
+        rx
     }
 
-    pub fn spawn_task<T>(&mut self, unique: Unique, fut: T)
-    where
-        T: Future<Output = io::Result<()>> + 'static,
-    {
-        self.tasks.push(BackgroundTask {
-            unique,
-            fut: Some(Box::pin(fut)),
-        });
-    }
-
-    pub fn cancel_task(&mut self, unique: Unique) {
-        if let Some(task) = self.tasks.iter_mut().find(|task| task.unique() == unique) {
-            task.cancel();
-        }
-    }
-
-    pub fn poll_tasks(&mut self, cx: &mut task::Context) -> Poll<io::Result<()>> {
-        while let Some(res) = ready!(self.tasks.poll_next_unpin(cx)) {
-            if let Err(e) = res {
-                return Poll::Ready(Err(e));
-            }
-        }
-        Poll::Ready(Ok(()))
-    }
-}
-
-pub struct BackgroundTask {
-    fut: Option<Pin<Box<dyn Future<Output = io::Result<()>> + 'static>>>,
-    unique: Unique,
-}
-
-impl fmt::Debug for BackgroundTask {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("BackgroundTask")
-            .field("unique", &self.unique)
-            .field("canceled", &self.fut.is_none())
-            .finish()
-    }
-}
-
-impl BackgroundTask {
-    pub fn unique(&self) -> Unique {
-        self.unique
-    }
-
-    pub fn cancel(&mut self) {
-        drop(self.fut.take());
-    }
-}
-
-impl Future for BackgroundTask {
-    type Output = io::Result<()>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
-        let this = &mut *self;
-        match &mut this.fut {
-            Some(fut) => fut.as_mut().poll(cx),
-            None => Poll::Ready(Ok(())),
+    pub fn cancel(&mut self, unique: Unique) {
+        if let Some(tx) = self.remains.remove(&unique) {
+            let _ = tx.send(());
         }
     }
 }

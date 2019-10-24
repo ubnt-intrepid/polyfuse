@@ -6,13 +6,9 @@ use crate::{
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{
     future::{Future, FutureExt},
-    ready, select,
+    select,
 };
-use std::{
-    io,
-    pin::Pin,
-    task::{self, Poll},
-};
+use std::io;
 
 /// Run a main loop of FUSE filesystem.
 pub async fn main_loop<T, I, S>(fs: T, channel: I, sig: S) -> io::Result<Option<S::Output>>
@@ -33,69 +29,31 @@ where
 
     let mut background = Background::new();
 
-    let mut main_loop = MainLoop {
-        session: &mut session,
-        background: &mut background,
-        channel: &mut channel,
-        buf: &mut buf,
-        fs: &mut fs,
-    }
+    let mut main_loop = Box::pin({
+        let session = &mut session;
+        let buf = &mut buf;
+        let channel = &mut channel;
+        let fs = &mut fs;
+        let background = &mut background;
+        async move {
+            loop {
+                let terminated = buf.receive(&mut *channel).await?;
+                if terminated {
+                    log::debug!("connection was closed by the kernel");
+                    return Ok::<_, io::Error>(());
+                }
+
+                session
+                    .process(&mut *buf, &*channel, &mut *fs, &mut *background)
+                    .await?;
+            }
+        }
+    })
     .fuse();
 
     // FIXME: graceful shutdown the background tasks.
     select! {
         _ = main_loop => Ok(None),
         sig = sig => Ok(Some(sig)),
-    }
-}
-
-#[allow(missing_debug_implementations)]
-struct MainLoop<'a, I, T> {
-    session: &'a mut Session,
-    background: &'a mut Background,
-    channel: &'a mut I,
-    buf: &'a mut Buffer,
-    fs: &'a mut T,
-}
-
-impl<'a, I, T> Future for MainLoop<'a, I, T>
-where
-    I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
-    T: for<'s> Filesystem<&'s [u8]>,
-{
-    type Output = io::Result<()>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
-        let this = &mut *self;
-
-        loop {
-            if this.session.exited() {
-                log::debug!("Got a DESTROY request and session was exited");
-                return Poll::Ready(Ok(()));
-            }
-
-            log::trace!(
-                "run background tasks (num = {})",
-                this.background.num_remains()
-            );
-            let _ = this.background.poll_tasks(cx)?;
-
-            let terminated = ready!(this.buf.poll_receive(cx, &mut this.channel))?;
-            if terminated {
-                log::debug!("connection was closed by the kernel");
-                log::trace!(
-                    "remaining background tasks (num = {})",
-                    this.background.num_remains()
-                );
-                return Poll::Ready(Ok(()));
-            }
-
-            this.session.dispatch(
-                &mut *this.buf,
-                &*this.channel,
-                &mut *this.fs,
-                &mut this.background,
-            )?;
-        }
     }
 }

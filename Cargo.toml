@@ -10,6 +10,8 @@ edition = "2018"
 features = ["docs"]
 
 [dependencies]
+async-trait = "0.1"
+futures-channel-preview = "0.3.0-alpha.19"
 futures-io-preview = "0.3.0-alpha.19"
 libc = "0.2"
 log = "0.4"

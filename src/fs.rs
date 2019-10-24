@@ -1,41 +1,48 @@
 #![allow(clippy::needless_lifetimes)]
 
-use crate::reply::{
-    ReplyAttr, //
-    ReplyBmap,
-    ReplyCreate,
-    ReplyData,
-    ReplyEmpty,
-    ReplyEntry,
-    ReplyLk,
-    ReplyOpen,
-    ReplyOpendir,
-    ReplyReadlink,
-    ReplyStatfs,
-    ReplyWrite,
-    ReplyXattr,
+use crate::{
+    reply::{
+        ReplyAttr, //
+        ReplyBmap,
+        ReplyCreate,
+        ReplyData,
+        ReplyEmpty,
+        ReplyEntry,
+        ReplyLk,
+        ReplyOpen,
+        ReplyOpendir,
+        ReplyReadlink,
+        ReplyStatfs,
+        ReplyWrite,
+        ReplyXattr,
+    },
+    session::Background,
 };
-use polyfuse_abi::{FileLock, FileMode, Gid, Nodeid, Pid, Uid};
-use std::{ffi::OsStr, future::Future, io, pin::Pin};
+use polyfuse_abi::{FileLock, FileMode, Gid, Nodeid, Pid, Uid, Unique};
+use std::{ffi::OsStr, future::Future, io};
 
-type ImplFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
-
+#[async_trait::async_trait(?Send)]
 pub trait Filesystem<T> {
     #[allow(unused_variables)]
-    fn call(&mut self, cx: &Context, op: Operation<'_, T>) -> ImplFuture<'static, io::Result<()>> {
-        op.reply_default()
+    async fn call(&mut self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
+    where
+        T: 'async_trait, // https://github.com/dtolnay/async-trait/issues/8
+    {
+        op.reply_default().await
     }
 }
 
 /// Contextural information about an incoming request.
-#[derive(Debug, Copy, Clone)]
-pub struct Context {
+#[derive(Debug)]
+pub struct Context<'a> {
     pub(crate) uid: Uid,
     pub(crate) gid: Gid,
     pub(crate) pid: Pid,
+    pub(crate) background: &'a mut Background,
+    pub(crate) unique: Unique,
 }
 
-impl Context {
+impl Context<'_> {
     /// Return the user ID of the calling process.
     pub fn uid(&self) -> Uid {
         self.uid
@@ -49,6 +56,13 @@ impl Context {
     /// Return the process ID of the calling process.
     pub fn pid(&self) -> Pid {
         self.pid
+    }
+
+    pub fn register(&mut self) -> impl Future<Output = ()> {
+        let rx = self.background.register(self.unique);
+        async move {
+            let _ = rx.await;
+        }
     }
 }
 
@@ -362,18 +376,18 @@ pub enum Operation<'a, T> {
 }
 
 impl<T> Operation<'_, T> {
-    pub fn reply_default(self) -> ImplFuture<'static, io::Result<()>> {
+    pub async fn reply_default(self) -> io::Result<()> {
         match self {
-            Self::Forget { .. } => Box::pin(async { Ok(()) }),
+            Self::Forget { .. } => Ok(()),
             Self::Lookup { reply, .. }
             | Self::Symlink { reply, .. }
             | Self::Mknod { reply, .. }
             | Self::Mkdir { reply, .. }
-            | Self::Link { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
+            | Self::Link { reply, .. } => reply.err(libc::ENOSYS).await,
             Self::Getattr { reply, .. } | Self::Setattr { reply, .. } => {
-                Box::pin(reply.err(libc::ENOSYS))
+                reply.err(libc::ENOSYS).await
             }
-            Self::Readlink { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
+            Self::Readlink { reply, .. } => reply.err(libc::ENOSYS).await,
             Self::Unlink { reply, .. }
             | Self::Rmdir { reply, .. }
             | Self::Rename { reply, .. }
@@ -386,20 +400,18 @@ impl<T> Operation<'_, T> {
             | Self::Fsyncdir { reply, .. }
             | Self::Setlk { reply, .. }
             | Self::Flock { reply, .. }
-            | Self::Access { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
-            Self::Open { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
-            Self::Read { reply, .. } | Self::Readdir { reply, .. } => {
-                Box::pin(reply.err(libc::ENOSYS))
-            }
-            Self::Write { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
-            Self::Statfs { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
+            | Self::Access { reply, .. } => reply.err(libc::ENOSYS).await,
+            Self::Open { reply, .. } => reply.err(libc::ENOSYS).await,
+            Self::Read { reply, .. } | Self::Readdir { reply, .. } => reply.err(libc::ENOSYS).await,
+            Self::Write { reply, .. } => reply.err(libc::ENOSYS).await,
+            Self::Statfs { reply, .. } => reply.err(libc::ENOSYS).await,
             Self::Getxattr { reply, .. } | Self::Listxattr { reply, .. } => {
-                Box::pin(reply.err(libc::ENOSYS))
+                reply.err(libc::ENOSYS).await
             }
-            Self::Getlk { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
-            Self::Opendir { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
-            Self::Create { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
-            Self::Bmap { reply, .. } => Box::pin(reply.err(libc::ENOSYS)),
+            Self::Getlk { reply, .. } => reply.err(libc::ENOSYS).await,
+            Self::Opendir { reply, .. } => reply.err(libc::ENOSYS).await,
+            Self::Create { reply, .. } => reply.err(libc::ENOSYS).await,
+            Self::Bmap { reply, .. } => reply.err(libc::ENOSYS).await,
         }
     }
 }
