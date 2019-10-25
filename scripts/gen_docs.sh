@@ -5,12 +5,12 @@ echo "DIR=${DIR}"
 
 set -ex
 
-cargo fetch --verbose
+cargo fetch
 rm -rfv $DIR/target/doc
 
-timeout -sKILL 900 cargo doc --no-deps -p polyfuse-sys --verbose
-timeout -sKILL 900 cargo doc --no-deps -p polyfuse-abi --verbose
-timeout -sKILL 900 cargo doc --no-deps -p polyfuse --all-features --verbose
+timeout -sKILL 900 cargo doc --no-deps -p polyfuse-sys
+timeout -sKILL 900 cargo doc --no-deps -p polyfuse-abi
+timeout -sKILL 900 cargo doc --no-deps -p polyfuse
 
 rm -rfv $DIR/target/doc/.lock
 

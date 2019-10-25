@@ -6,6 +6,10 @@ on:
       - master
   pull_request:
 
+env:
+  CARGO_HUSKY_DONT_INSTALL_HOOKS: true
+  CARGO_TERM_VERBOSE: true
+
 jobs:
   Test:
     runs-on: ubuntu-18.04
@@ -36,7 +40,7 @@ jobs:
       uses: actions-rs/cargo@v1
       with:
         command: test
-        args: --all --verbose
+        args: --all
 
   Lint:
     runs-on: ubuntu-18.04
@@ -141,7 +145,7 @@ jobs:
       uses: actions-rs/cargo@v1
       with:
         command: test
-        args: --all --verbose
+        args: --all
       env:
         CARGO_INCREMENTAL: 0
         RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Zno-landing-pads"

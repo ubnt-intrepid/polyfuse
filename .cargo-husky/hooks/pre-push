@@ -5,9 +5,9 @@ set -ex
 cargo build --all-targets
 
 if cargo clippy --version >/dev/null; then
-   cargo clippy --all-targets
+   cargo clippy --all --all-targets
 fi
 
 if [[ -n "$CARGO_HUSKY_RUN_TESTS" ]]; then
-   cargo test
+   cargo test --all
 fi
