@@ -10,8 +10,8 @@ rm -rfv ./target/debug/deps/polyfuse-*
 export CARGO_INCREMENTAL=0
 export RUSTFLAGS="-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Zno-landing-pads"
 
-cargo +nightly build --all --verbose
-cargo +nightly test --all --verbose
+cargo +nightly build --all
+cargo +nightly test --all
 
 mkdir -pv target/cov
 rm -rfv target/cov/*

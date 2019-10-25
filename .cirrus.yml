@@ -1,6 +1,9 @@
 regular_task_template: &REGULAR_TASK_TEMPLATE
   only_if: $CIRRUS_BRANCH == 'master' || $CIRRUS_PR != ''
   auto_cancellation: $CIRRUS_PR != ''
+  env:
+    CARGO_HUSKY_DONT_INSTALL_HOOKS: true
+    CARGO_TERM_VERBOSE: true
 
 task:
   << : *REGULAR_TASK_TEMPLATE
@@ -20,9 +23,9 @@ task:
     - sh rustup.sh -y --default-toolchain $RUST_TOOLCHAIN --profile=minimal
   build_script:
     - . $HOME/.cargo/env
-    - cargo build --all --all-targets --verbose
+    - cargo build --all --all-targets
   test_script:
     - . $HOME/.cargo/env
-    - cargo test --all --verbose
+    - cargo test --all
   before_cache_script:
     - rm -rf $HOME/.cargo/registry/index
