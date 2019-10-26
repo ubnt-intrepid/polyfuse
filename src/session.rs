@@ -1,5 +1,3 @@
-//! FUSE session driver.
-
 use crate::{
     buf::{Buffer, MAX_WRITE_SIZE},
     fs::{Context, Filesystem, Operation},
@@ -526,6 +524,7 @@ impl Session {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn register(&mut self, unique: Unique) -> impl Future<Output = ()> {
         let (tx, rx) = oneshot::channel();
         self.remains.insert(unique, tx);

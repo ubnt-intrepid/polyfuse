@@ -29,6 +29,8 @@ use std::{
     pin::Pin,
 };
 
+pub use crate::dir::DirEntry;
+
 /// A base object to send a reply to the kernel.
 pub struct ReplyRaw<'a> {
     unique: Unique,

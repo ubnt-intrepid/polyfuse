@@ -1,4 +1,4 @@
-#![allow(clippy::needless_lifetimes)]
+//! Filesystem abstraction.
 
 use crate::reply::{
     ReplyAttr, //
@@ -15,11 +15,15 @@ use crate::reply::{
     ReplyWrite,
     ReplyXattr,
 };
-use polyfuse_abi::{FileLock, FileMode, Gid, Nodeid, Pid, Uid};
 use std::{ffi::OsStr, io};
 
+// re-exports from polyfuse-abi
+pub use polyfuse_abi::{FileAttr, FileLock, FileMode, Gid, Nodeid, Pid, Statfs, Uid};
+
+/// The filesystem running on the user space.
 #[async_trait::async_trait(?Send)]
 pub trait Filesystem<T> {
+    /// Handle a FUSE request from the kernel and reply its result.
     #[allow(unused_variables)]
     async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where
@@ -55,6 +59,7 @@ impl Context<'_> {
     }
 }
 
+/// The kind of FUSE requests received from the kernel.
 #[derive(Debug)]
 pub enum Operation<'a, T> {
     /// Look up a directory entry by name.

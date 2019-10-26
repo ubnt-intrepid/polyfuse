@@ -13,19 +13,18 @@
     clippy::unimplemented
 )]
 
+mod buf;
 mod channel;
 mod conn;
 mod dir;
-mod run;
+mod session;
 
-pub mod buf;
 pub mod fs;
 pub mod reply;
-pub mod session;
+pub mod server;
 
-pub use crate::conn::MountOptions;
-pub use crate::dir::DirEntry;
-pub use crate::run::{mount, run};
-
-// re-exports from polyfuse-abi
-pub use polyfuse_abi::{FileAttr, FileLock, FileMode, Gid, Nodeid, Pid, Statfs, Uid};
+// re-exports from sub modules.
+#[doc(inline)]
+pub use crate::fs::{Context, Filesystem, Operation};
+#[doc(inline)]
+pub use crate::server::Server;

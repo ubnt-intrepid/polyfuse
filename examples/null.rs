@@ -2,12 +2,18 @@
 #![allow(clippy::needless_lifetimes)]
 
 use polyfuse::{
-    fs::{Context, Filesystem, Operation}, //
-    FileAttr,
-    MountOptions,
-    Nodeid,
+    fs::{FileAttr, Nodeid}, //
+    Context,
+    Filesystem,
+    Operation, //
+    Server,
 };
-use std::{convert::TryInto, env, io, path::PathBuf};
+use std::{
+    convert::TryInto, //
+    env,
+    io,
+    path::PathBuf,
+};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -25,12 +31,10 @@ async fn main() -> io::Result<()> {
         ));
     }
 
-    polyfuse::mount(
-        Null {}, //
-        mountpoint,
-        MountOptions::default(),
-    )
-    .await?;
+    Server::mount(mountpoint, Default::default())?
+        .run(Null {})
+        .await?;
+
     Ok(())
 }
 

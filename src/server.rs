@@ -1,7 +1,5 @@
 use crate::{
     buf::Buffer, //
-    channel::Channel,
-    conn::MountOptions,
     fs::Filesystem,
     session::Session,
 };
@@ -17,28 +15,64 @@ use std::io;
 use std::{path::Path, sync::Arc};
 use tokio_net::signal::unix::{signal, SignalKind};
 
-/// Run a FUSE filesystem.
-pub async fn run<T, I, S>(fs: T, channel: I, sig: S) -> io::Result<Option<S::Output>>
+pub use crate::channel::Channel;
+pub use crate::conn::MountOptions;
+
+/// FUSE filesystem server.
+#[derive(Debug)]
+pub struct Server<I = Channel> {
+    io: I,
+}
+
+impl Server {
+    /// Create a FUSE server mounted on the specified path.
+    pub fn mount(mointpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
+        let io = Channel::open(mointpoint, mountopts)?;
+        Ok(Server::new(io))
+    }
+}
+
+impl<I> Server<I>
 where
-    T: for<'a> Filesystem<&'a [u8]>,
-    I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
-    S: Future + Unpin,
+    I: AsyncRead + AsyncWrite + Clone + Unpin + 'static,
 {
-    let mut channel = channel;
-    let mut sig = sig.fuse();
-    let fs = Arc::new(fs);
+    /// Create a FUSE server.
+    pub fn new(io: I) -> Self {
+        Self { io }
+    }
 
-    let session = Session::initializer() //
-        .start(&mut channel)
-        .await?;
-    let session = Arc::new(Mutex::new(session));
+    /// Run a FUSE filesystem.
+    pub async fn run<T>(self, fs: T) -> io::Result<()>
+    where
+        T: for<'a> Filesystem<&'a [u8]>,
+    {
+        let sig = default_shutdown_signal()?;
+        let _sig = self.run_until(fs, sig).await?;
+        Ok(())
+    }
 
-    let mut main_loop = Box::pin(main_loop(&session, &mut channel, &fs)).fuse();
+    /// Run a FUSE filesystem until the specified signal is received.
+    pub async fn run_until<T, S>(self, fs: T, sig: S) -> io::Result<Option<S::Output>>
+    where
+        T: for<'a> Filesystem<&'a [u8]>,
+        S: Future + Unpin,
+    {
+        let mut io = self.io;
+        let mut sig = sig.fuse();
+        let fs = Arc::new(fs);
 
-    // FIXME: graceful shutdown the background tasks.
-    select! {
-        _ = main_loop => Ok(None),
-        sig = sig => Ok(Some(sig)),
+        let session = Session::initializer() //
+            .start(&mut io)
+            .await?;
+        let session = Arc::new(Mutex::new(session));
+
+        let mut main_loop = Box::pin(main_loop(&session, &mut io, &fs)).fuse();
+
+        // FIXME: graceful shutdown the background tasks.
+        select! {
+            _ = main_loop => Ok(None),
+            sig = sig => Ok(Some(sig)),
+        }
     }
 }
 
@@ -82,22 +116,6 @@ where
 
         req_task.await?;
     }
-}
-
-/// Run a FUSE filesystem mounted on the specified path.
-pub async fn mount<T>(
-    fs: T,
-    mointpoint: impl AsRef<Path>,
-    mountopts: MountOptions,
-) -> io::Result<()>
-where
-    T: for<'a> Filesystem<&'a [u8]>,
-{
-    let channel = Channel::open(mointpoint, mountopts)?;
-    let sig = default_shutdown_signal()?;
-
-    run(fs, channel, sig).await?;
-    Ok(())
 }
 
 fn default_shutdown_signal() -> io::Result<impl Future<Output = c_int> + Unpin> {
