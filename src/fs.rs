@@ -1,30 +1,27 @@
 #![allow(clippy::needless_lifetimes)]
 
-use crate::{
-    reply::{
-        ReplyAttr, //
-        ReplyBmap,
-        ReplyCreate,
-        ReplyData,
-        ReplyEmpty,
-        ReplyEntry,
-        ReplyLk,
-        ReplyOpen,
-        ReplyOpendir,
-        ReplyReadlink,
-        ReplyStatfs,
-        ReplyWrite,
-        ReplyXattr,
-    },
-    session::Background,
+use crate::reply::{
+    ReplyAttr, //
+    ReplyBmap,
+    ReplyCreate,
+    ReplyData,
+    ReplyEmpty,
+    ReplyEntry,
+    ReplyLk,
+    ReplyOpen,
+    ReplyOpendir,
+    ReplyReadlink,
+    ReplyStatfs,
+    ReplyWrite,
+    ReplyXattr,
 };
-use polyfuse_abi::{FileLock, FileMode, Gid, Nodeid, Pid, Uid, Unique};
-use std::{ffi::OsStr, future::Future, io};
+use polyfuse_abi::{FileLock, FileMode, Gid, Nodeid, Pid, Uid};
+use std::{ffi::OsStr, io};
 
 #[async_trait::async_trait(?Send)]
 pub trait Filesystem<T> {
     #[allow(unused_variables)]
-    async fn call(&mut self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
+    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where
         T: 'async_trait, // https://github.com/dtolnay/async-trait/issues/8
     {
@@ -38,8 +35,7 @@ pub struct Context<'a> {
     pub(crate) uid: Uid,
     pub(crate) gid: Gid,
     pub(crate) pid: Pid,
-    pub(crate) background: &'a mut Background,
-    pub(crate) unique: Unique,
+    pub(crate) _anchor: std::marker::PhantomData<fn(&'a ()) -> &'a ()>,
 }
 
 impl Context<'_> {
@@ -56,13 +52,6 @@ impl Context<'_> {
     /// Return the process ID of the calling process.
     pub fn pid(&self) -> Pid {
         self.pid
-    }
-
-    pub fn register(&mut self) -> impl Future<Output = ()> {
-        let rx = self.background.register(self.unique);
-        async move {
-            let _ = rx.await;
-        }
     }
 }
 

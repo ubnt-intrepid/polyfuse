@@ -38,7 +38,7 @@ struct Null {}
 
 #[async_trait::async_trait(?Send)]
 impl<T> Filesystem<T> for Null {
-    async fn call(&mut self, _cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
+    async fn call(&self, _cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where
         T: 'async_trait, // https://github.com/dtolnay/async-trait/issues/8
     {

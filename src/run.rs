@@ -1,19 +1,20 @@
 use crate::{
-    buf::Buffer,
+    buf::Buffer, //
     channel::Channel,
     conn::MountOptions,
     fs::Filesystem,
-    session::{Background, Session},
+    session::Session,
 };
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{
     future::{Future, FutureExt},
+    lock::Mutex,
     select,
     stream::StreamExt,
 };
 use libc::c_int;
 use std::io;
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 use tokio_net::signal::unix::{signal, SignalKind};
 
 /// Run a FUSE filesystem.
@@ -25,24 +26,14 @@ where
 {
     let mut channel = channel;
     let mut sig = sig.fuse();
-    let mut fs = fs;
+    let fs = Arc::new(fs);
 
-    let mut buf = Buffer::default();
-
-    let mut session = Session::initializer() //
-        .start(&mut channel, &mut buf)
+    let session = Session::initializer() //
+        .start(&mut channel)
         .await?;
+    let session = Arc::new(Mutex::new(session));
 
-    let mut background = Background::new();
-
-    let mut main_loop = Box::pin(main_loop(
-        &mut session,
-        &mut buf,
-        &mut channel,
-        &mut fs,
-        &mut background,
-    ))
-    .fuse();
+    let mut main_loop = Box::pin(main_loop(&session, &mut channel, &fs)).fuse();
 
     // FIXME: graceful shutdown the background tasks.
     select! {
@@ -52,26 +43,44 @@ where
 }
 
 async fn main_loop<I, T>(
-    session: &mut Session,
-    buf: &mut Buffer,
+    session: &Arc<Mutex<Session>>,
     channel: &mut I,
-    fs: &mut T,
-    background: &mut Background,
+    fs: &Arc<T>,
 ) -> io::Result<()>
 where
     T: for<'a> Filesystem<&'a [u8]>,
     I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
 {
     loop {
+        let mut buf = Buffer::default();
         let terminated = buf.receive(&mut *channel).await?;
         if terminated {
             log::debug!("connection was closed by the kernel");
             return Ok::<_, io::Error>(());
         }
 
-        session
-            .process(&mut *buf, &*channel, &mut *fs, &mut *background)
-            .await?;
+        let session = Arc::clone(session);
+        let fs = Arc::clone(fs);
+        let channel = channel.clone();
+
+        let req_task = async move {
+            let (request, data) = buf.extract()?;
+            log::debug!(
+                "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
+                request.header.unique,
+                request.header.opcode(),
+                request.arg,
+                data.as_ref().map(|_| "<data>")
+            );
+            session
+                .lock()
+                .await
+                .dispatch(&*fs, request, data, channel)
+                .await?;
+            Ok::<_, io::Error>(())
+        };
+
+        req_task.await?;
     }
 }
 

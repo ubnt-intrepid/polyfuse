@@ -11,18 +11,16 @@ use polyfuse_abi::{
     parse::{Arg, Request},
     InitOut, LkFlags, LockType, ReleaseFlags, Unique,
 };
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, future::Future, io};
 
 /// A FUSE filesystem driver.
-///
-/// This session driver does *not* receive the next request from the kernel,
-/// until the processing result for the previous request has been sent.
 #[derive(Debug)]
 pub struct Session {
     proto_major: u32,
     proto_minor: u32,
     max_readahead: u32,
     exited: bool,
+    remains: HashMap<Unique, oneshot::Sender<()>>,
 }
 
 impl Session {
@@ -31,54 +29,25 @@ impl Session {
         InitSession::default()
     }
 
-    /// Returns the major protocol version from the kernel.
-    pub fn proto_major(&self) -> u32 {
-        self.proto_major
-    }
-
-    /// Returns the minor protocol version from the kernel.
-    pub fn proto_minor(&self) -> u32 {
-        self.proto_minor
-    }
-
-    pub fn max_readahead(&self) -> u32 {
-        self.max_readahead
-    }
-
-    pub fn exit(&mut self) {
-        self.exited = true;
-    }
-
-    pub fn exited(&self) -> bool {
-        self.exited
-    }
-
     /// Dispatch an incoming request to the provided operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<I, T>(
+    pub async fn dispatch<I, T, F>(
         &mut self,
-        buffer: &mut Buffer,
-        channel: &I,
-        fs: &mut T,
-        background: &mut Background,
+        fs: &F,
+        request: Request<'_>,
+        data: Option<T>,
+        channel: I,
     ) -> io::Result<()>
     where
-        I: AsyncWrite + Clone + Unpin + 'static,
-        T: for<'s> Filesystem<&'s [u8]>,
+        I: AsyncWrite + Unpin + 'static,
+        F: Filesystem<T>,
     {
-        if self.exited() {
+        if self.exited {
             log::warn!("The sesson has already been exited");
             return Ok(());
         }
 
-        let (Request { header, arg, .. }, data) = buffer.extract()?;
-        log::debug!(
-            "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
-            header.unique,
-            header.opcode(),
-            arg,
-            data
-        );
+        let Request { header, arg, .. } = request;
 
         let ino = header.nodeid;
         let unique = header.unique;
@@ -86,10 +55,9 @@ impl Session {
             uid: header.uid,
             gid: header.gid,
             pid: header.pid,
-            background: &mut *background,
-            unique,
+            _anchor: std::marker::PhantomData,
         };
-        let reply = ReplyRaw::new(unique, channel.clone());
+        let reply = ReplyRaw::new(unique, channel);
 
         match arg {
             Arg::Init { .. } => {
@@ -97,7 +65,7 @@ impl Session {
                 reply.reply_err(libc::EIO).await?;
             }
             Arg::Destroy => {
-                self.exit();
+                self.exited = true;
                 reply.reply(0, &[]).await?;
             }
             Arg::Lookup { name } => {
@@ -296,7 +264,7 @@ impl Session {
                 let mut flush = false;
                 let mut flock_release = false;
                 let mut lock_owner = None;
-                if self.proto_minor() >= 8 {
+                if self.proto_minor >= 8 {
                     flush = arg.release_flags.contains(ReleaseFlags::FLUSH);
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
@@ -523,7 +491,9 @@ impl Session {
             }
             Arg::Interrupt { arg } => {
                 log::debug!("INTERRUPT (unique = {:?})", arg.unique);
-                background.cancel(arg.unique);
+                if let Some(tx) = self.remains.remove(&unique) {
+                    let _ = tx.send(());
+                }
             }
             Arg::Bmap { arg } => {
                 fs.call(
@@ -555,6 +525,14 @@ impl Session {
 
         Ok(())
     }
+
+    pub async fn register(&mut self, unique: Unique) -> impl Future<Output = ()> {
+        let (tx, rx) = oneshot::channel();
+        self.remains.insert(unique, tx);
+        async move {
+            let _ = rx.await;
+        }
+    }
 }
 
 /// Session initializer.
@@ -568,10 +546,12 @@ impl InitSession {
     ///
     /// This function receives an INIT request from the kernel and replies
     /// after initializing the connection parameters.
-    pub async fn start<'a, I>(self, io: &'a mut I, buf: &'a mut Buffer) -> io::Result<Session>
+    pub async fn start<'a, I>(self, io: &'a mut I) -> io::Result<Session>
     where
         I: AsyncRead + AsyncWrite + Unpin,
     {
+        let mut buf = Buffer::default();
+
         loop {
             let terminated = buf.receive(io).await?;
             if terminated {
@@ -625,39 +605,8 @@ impl InitSession {
                 proto_minor,
                 max_readahead,
                 exited: false,
+                remains: HashMap::new(),
             });
-        }
-    }
-}
-
-/// A pool for tracking the execution of tasks spawned for each FUSE request.
-#[derive(Debug)]
-pub struct Background {
-    remains: HashMap<Unique, oneshot::Sender<()>>,
-}
-
-impl Default for Background {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Background {
-    pub fn new() -> Self {
-        Self {
-            remains: HashMap::new(),
-        }
-    }
-
-    pub fn register(&mut self, unique: Unique) -> oneshot::Receiver<()> {
-        let (tx, rx) = oneshot::channel();
-        self.remains.insert(unique, tx);
-        rx
-    }
-
-    pub fn cancel(&mut self, unique: Unique) {
-        if let Some(tx) = self.remains.remove(&unique) {
-            let _ = tx.send(());
         }
     }
 }
