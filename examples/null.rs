@@ -42,38 +42,38 @@ struct Null {}
 
 #[async_trait::async_trait(?Send)]
 impl<T> Filesystem<T> for Null {
-    async fn call(&self, _cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
+    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where
         T: 'async_trait, // https://github.com/dtolnay/async-trait/issues/8
     {
         match op {
             Operation::Getattr { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.attr(root_attr()).await,
-                _ => reply.err(libc::ENOENT).await,
+                Nodeid::ROOT => reply.attr(cx, root_attr()).await,
+                _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Setattr { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.attr(root_attr()).await,
-                _ => reply.err(libc::ENOENT).await,
+                Nodeid::ROOT => reply.attr(cx, root_attr()).await,
+                _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Open { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.open(0).await,
-                _ => reply.err(libc::ENOENT).await,
+                Nodeid::ROOT => reply.open(cx, 0).await,
+                _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Read { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.data(&[]).await,
-                _ => reply.err(libc::ENOENT).await,
+                Nodeid::ROOT => reply.data(cx, &[]).await,
+                _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Write {
                 ino, size, reply, ..
             } => match ino {
-                Nodeid::ROOT => reply.write(size).await,
-                _ => reply.err(libc::ENOENT).await,
+                Nodeid::ROOT => reply.write(cx, size).await,
+                _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Release { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.ok().await,
-                _ => reply.err(libc::ENOENT).await,
+                Nodeid::ROOT => reply.ok(cx).await,
+                _ => cx.reply_err(libc::ENOENT).await,
             },
-            op => op.reply_default().await,
+            _ => cx.reply_err(libc::ENOSYS).await,
         }
     }
 }

@@ -1,7 +1,6 @@
 //! Replies to the kernel.
 
-use futures_io::AsyncWrite;
-use futures_util::io::AsyncWriteExt;
+use crate::fs::Context;
 use polyfuse_abi::{
     AttrOut, //
     BmapOut,
@@ -12,116 +11,42 @@ use polyfuse_abi::{
     LkOut,
     OpenFlags,
     OpenOut,
-    OutHeader,
     Statfs,
     StatfsOut,
-    Unique,
     WriteOut,
 };
-use smallvec::SmallVec;
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryInto,
     ffi::OsStr,
-    fmt,
-    io::{self, IoSlice},
-    mem,
+    io::{self},
     os::unix::ffi::OsStrExt,
-    pin::Pin,
 };
 
 pub use crate::dir::DirEntry;
 
-/// A base object to send a reply to the kernel.
-pub struct ReplyRaw<'a> {
-    unique: Unique,
-    writer: Pin<Box<dyn AsyncWrite + Unpin + 'a>>,
-}
-
-impl fmt::Debug for ReplyRaw<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ReplyRaw")
-            .field("unique", &self.unique)
-            .finish()
-    }
-}
-
-impl<'a> ReplyRaw<'a> {
-    pub(crate) fn new(unique: Unique, writer: impl AsyncWrite + Unpin + 'a) -> Self {
-        Self {
-            unique,
-            writer: Box::pin(writer),
-        }
-    }
-
-    /// Repy the specified data to the kernel.
-    pub async fn reply(self, error: i32, data: &[&[u8]]) -> io::Result<()> {
-        let mut this = self;
-
-        let data_len: usize = data.iter().map(|t| t.len()).sum();
-
-        let out_header = OutHeader {
-            unique: this.unique,
-            error: -error,
-            len: u32::try_from(mem::size_of::<OutHeader>() + data_len).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("the total length of data is too long: {}", e),
-                )
-            })?,
-        };
-
-        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_ref()))
-            .into_iter()
-            .chain(data.iter().map(|t| IoSlice::new(&*t)))
-            .collect();
-
-        (*this.writer).write_vectored(&*vec).await?;
-
-        Ok(())
-    }
-
-    /// Reply an error code to the kernel.
-    pub async fn reply_err(self, error: i32) -> io::Result<()> {
-        self.reply(error, &[]).await
-    }
-}
-
 /// Reply with an empty output.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyEmpty<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyEmpty {
+    _p: (),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyEmpty<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self { raw }
-    }
-}
-
-impl ReplyEmpty<'_> {
-    /// Reply to the kernel.
-    pub async fn ok(self) -> io::Result<()> {
-        self.raw.reply(0, &[]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+impl ReplyEmpty {
+    pub async fn ok(self, cx: &mut Context<'_>) -> io::Result<()> {
+        cx.send_reply(0, &[]).await
     }
 }
 
 /// Reply with arbitrary binary data.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyData<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyData {
     size: u32,
 }
 
-impl<'a> ReplyData<'a> {
-    pub(crate) fn new(raw: ReplyRaw<'a>, size: u32) -> Self {
-        Self { raw, size }
+impl ReplyData {
+    pub(crate) fn new(size: u32) -> Self {
+        Self { size }
     }
 
     pub fn size(&self) -> u32 {
@@ -129,54 +54,39 @@ impl<'a> ReplyData<'a> {
     }
 
     /// Reply to the kernel with a data.
-    pub async fn data(self, data: impl AsRef<[u8]>) -> io::Result<()> {
-        self.data_vectored(&[data.as_ref()]).await
+    pub async fn data(self, cx: &mut Context<'_>, data: impl AsRef<[u8]>) -> io::Result<()> {
+        self.data_vectored(cx, &[data.as_ref()]).await
     }
 
     /// Reply to the kernel with a *split* data.
     #[allow(clippy::cast_possible_truncation)]
-    pub async fn data_vectored(self, data: &[&[u8]]) -> io::Result<()> {
+    pub async fn data_vectored(self, cx: &mut Context<'_>, data: &[&[u8]]) -> io::Result<()> {
         let len: u32 = data.iter().map(|t| t.len() as u32).sum();
         if len <= self.size {
-            self.raw.reply(0, data).await
+            cx.send_reply(0, data).await
         } else {
-            self.err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 
     // TODO: async fn reader(self, impl AsyncRead) -> io::Result<()>
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
-    }
 }
 
 /// Reply with the inode attributes.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyAttr<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyAttr {
     attr_valid: (u64, u32),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyAttr<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self {
-            raw,
-            attr_valid: (0, 0),
-        }
-    }
-}
-
-impl ReplyAttr<'_> {
+impl ReplyAttr {
     /// Set the validity timeout for attributes.
     pub fn attr_valid(&mut self, secs: u64, nsecs: u32) {
         self.attr_valid = (secs, nsecs);
     }
 
     /// Reply to the kernel with the specified attributes.
-    pub async fn attr<T>(self, attr: T) -> io::Result<()>
+    pub async fn attr<T>(self, cx: &mut Context<'_>, attr: T) -> io::Result<()>
     where
         T: TryInto<FileAttr>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -188,35 +98,19 @@ impl ReplyAttr<'_> {
             attr_valid: self.attr_valid.0,
             ..Default::default()
         };
-        self.raw.reply(0, &[attr_out.as_ref()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+        cx.send_reply(0, &[attr_out.as_ref()]).await
     }
 }
 
 /// Reply with entry params.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyEntry<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyEntry {
     entry_valid: (u64, u32),
     attr_valid: (u64, u32),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyEntry<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self {
-            raw,
-            entry_valid: (0, 0),
-            attr_valid: (0, 0),
-        }
-    }
-}
-
-impl ReplyEntry<'_> {
+impl ReplyEntry {
     /// Set the validity timeout for inode attributes.
     ///
     /// The operations should set this value to very large
@@ -242,7 +136,7 @@ impl ReplyEntry<'_> {
     /// That is, the operations must ensure that the pair of
     /// entry's inode number and `generation` is unique for
     /// the lifetime of filesystem.
-    pub async fn entry<T>(self, attr: T, generation: u64) -> io::Result<()>
+    pub async fn entry<T>(self, cx: &mut Context<'_>, attr: T, generation: u64) -> io::Result<()>
     where
         T: TryInto<FileAttr>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -260,58 +154,40 @@ impl ReplyEntry<'_> {
             attr,
             ..Default::default()
         };
-        self.raw.reply(0, &[entry_out.as_ref()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+        cx.send_reply(0, &[entry_out.as_ref()]).await
     }
 }
 
 /// Reply with the read link value.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyReadlink<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyReadlink {
+    _p: (),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyReadlink<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self { raw }
-    }
-}
-
-impl<'a> ReplyReadlink<'a> {
+impl ReplyReadlink {
     /// Reply to the kernel with the specified link value.
-    pub async fn link(self, value: impl AsRef<OsStr>) -> io::Result<()> {
-        self.raw.reply(0, &[value.as_ref().as_bytes()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+    pub async fn link(self, cx: &mut Context<'_>, value: impl AsRef<OsStr>) -> io::Result<()> {
+        cx.send_reply(0, &[value.as_ref().as_bytes()]).await
     }
 }
 
 /// Reply with an opened file.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyOpen<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyOpen {
     open_flags: OpenFlags,
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyOpen<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
+impl Default for ReplyOpen {
+    fn default() -> Self {
         Self {
-            raw,
             open_flags: OpenFlags::empty(),
         }
     }
 }
 
-impl ReplyOpen<'_> {
+impl ReplyOpen {
     fn set_flag(&mut self, flag: OpenFlags, enabled: bool) {
         if enabled {
             self.open_flags.insert(flag);
@@ -337,68 +213,50 @@ impl ReplyOpen<'_> {
     }
 
     /// Reply to the kernel with the specified file handle and flags.
-    pub async fn open(self, fh: u64) -> io::Result<()> {
+    pub async fn open(self, cx: &mut Context<'_>, fh: u64) -> io::Result<()> {
         let out = OpenOut {
             fh,
             open_flags: self.open_flags,
             ..Default::default()
         };
-        self.raw.reply(0, &[out.as_ref()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+        cx.send_reply(0, &[out.as_ref()]).await
     }
 }
 
 /// Reply with the information about written data.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyWrite<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyWrite {
+    _p: (),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyWrite<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self { raw }
-    }
-}
-
-impl ReplyWrite<'_> {
+impl ReplyWrite {
     /// Reply to the kernel with the total length of written data.
-    pub async fn write(self, size: u32) -> io::Result<()> {
+    pub async fn write(self, cx: &mut Context<'_>, size: u32) -> io::Result<()> {
         let out = WriteOut {
             size,
             ..Default::default()
         };
-        self.raw.reply(0, &[out.as_ref()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+        cx.send_reply(0, &[out.as_ref()]).await
     }
 }
 
 /// Reply with an opened directory.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyOpendir<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyOpendir {
     open_flags: OpenFlags,
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyOpendir<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
+impl Default for ReplyOpendir {
+    fn default() -> Self {
         Self {
-            raw,
             open_flags: OpenFlags::empty(),
         }
     }
 }
 
-impl ReplyOpendir<'_> {
+impl ReplyOpendir {
     fn set_flag(&mut self, flag: OpenFlags, enabled: bool) {
         if enabled {
             self.open_flags.insert(flag);
@@ -415,71 +273,49 @@ impl ReplyOpendir<'_> {
     }
 
     /// Reply to the kernel with the specified file handle and flags.
-    pub async fn open(self, fh: u64) -> io::Result<()> {
+    pub async fn open(self, cx: &mut Context<'_>, fh: u64) -> io::Result<()> {
         let out = OpenOut {
             fh,
             open_flags: self.open_flags,
             ..Default::default()
         };
-        self.raw.reply(0, &[out.as_ref()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+        cx.send_reply(0, &[out.as_ref()]).await
     }
 }
 
 /// Reply to a request about extended attributes.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyXattr<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyXattr {
+    _p: (),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyXattr<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self { raw }
-    }
-}
-
-impl<'a> ReplyXattr<'a> {
+impl ReplyXattr {
     /// Reply to the kernel with the specified size value.
-    pub async fn size(self, size: u32) -> io::Result<()> {
+    pub async fn size(self, cx: &mut Context<'_>, size: u32) -> io::Result<()> {
         let out = GetxattrOut {
             size,
             ..Default::default()
         };
-        self.raw.reply(0, &[out.as_ref()]).await
+        cx.send_reply(0, &[out.as_ref()]).await
     }
 
     /// Reply to the kernel with the specified value.
-    pub async fn value(self, value: impl AsRef<[u8]>) -> io::Result<()> {
-        self.raw.reply(0, &[value.as_ref()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+    pub async fn value(self, cx: &mut Context<'_>, value: impl AsRef<[u8]>) -> io::Result<()> {
+        cx.send_reply(0, &[value.as_ref()]).await
     }
 }
 
 /// Reply with the filesystem staticstics.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyStatfs<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyStatfs {
+    _p: (),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyStatfs<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self { raw }
-    }
-}
-
-impl ReplyStatfs<'_> {
+impl ReplyStatfs {
     /// Reply to the kernel with the specified statistics.
-    pub async fn stat<T>(self, st: T) -> io::Result<()>
+    pub async fn stat<T>(self, cx: &mut Context<'_>, st: T) -> io::Result<()>
     where
         T: TryInto<Statfs>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -490,31 +326,20 @@ impl ReplyStatfs<'_> {
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
             ..Default::default()
         };
-        self.raw.reply(0, &[out.as_ref()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+        cx.send_reply(0, &[out.as_ref()]).await
     }
 }
 
 /// Reply with a file lock.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyLk<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyLk {
+    _p: (),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyLk<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self { raw }
-    }
-}
-
-impl ReplyLk<'_> {
+impl ReplyLk {
     /// Reply to the kernel with the specified file lock.
-    pub async fn lock<T>(self, lk: T) -> io::Result<()>
+    pub async fn lock<T>(self, cx: &mut Context<'_>, lk: T) -> io::Result<()>
     where
         T: TryInto<FileLock>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -525,28 +350,21 @@ impl ReplyLk<'_> {
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
             ..Default::default()
         };
-        self.raw.reply(0, &[out.as_ref()]).await
-    }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+        cx.send_reply(0, &[out.as_ref()]).await
     }
 }
 
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyCreate<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyCreate {
     entry_valid: (u64, u32),
     attr_valid: (u64, u32),
     open_flags: OpenFlags,
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyCreate<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
+impl Default for ReplyCreate {
+    fn default() -> Self {
         Self {
-            raw,
             entry_valid: (0, 0),
             attr_valid: (0, 0),
             open_flags: OpenFlags::empty(),
@@ -554,7 +372,7 @@ impl<'a> From<ReplyRaw<'a>> for ReplyCreate<'a> {
     }
 }
 
-impl ReplyCreate<'_> {
+impl ReplyCreate {
     /// Set the validity timeout for inode attributes.
     ///
     /// The operations should set this value to very large
@@ -598,7 +416,13 @@ impl ReplyCreate<'_> {
     }
 
     /// Reply to the kernel with the specified entry parameters and file handle.
-    pub async fn create<T>(self, attr: T, generation: u64, fh: u64) -> io::Result<()>
+    pub async fn create<T>(
+        self,
+        cx: &mut Context<'_>,
+        attr: T,
+        generation: u64,
+        fh: u64,
+    ) -> io::Result<()>
     where
         T: TryInto<FileAttr>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -624,39 +448,23 @@ impl ReplyCreate<'_> {
             ..Default::default()
         };
 
-        self.raw
-            .reply(0, &[entry_out.as_ref(), open_out.as_ref()])
+        cx.send_reply(0, &[entry_out.as_ref(), open_out.as_ref()])
             .await
     }
-
-    /// Reply to the kernel with the specified error number.
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
-    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
-pub struct ReplyBmap<'a> {
-    raw: ReplyRaw<'a>,
+pub struct ReplyBmap {
+    _p: (),
 }
 
-impl<'a> From<ReplyRaw<'a>> for ReplyBmap<'a> {
-    fn from(raw: ReplyRaw<'a>) -> Self {
-        Self { raw }
-    }
-}
-
-impl ReplyBmap<'_> {
-    pub async fn block(self, block: u64) -> io::Result<()> {
+impl ReplyBmap {
+    pub async fn block(self, cx: &mut Context<'_>, block: u64) -> io::Result<()> {
         let out = BmapOut {
             block,
             ..Default::default()
         };
-        self.raw.reply(0, &[out.as_ref()]).await
-    }
-
-    pub async fn err(self, errno: i32) -> io::Result<()> {
-        self.raw.reply_err(errno).await
+        cx.send_reply(0, &[out.as_ref()]).await
     }
 }

@@ -15,7 +15,11 @@ use crate::reply::{
     ReplyWrite,
     ReplyXattr,
 };
-use std::{ffi::OsStr, io};
+use futures_io::AsyncWrite;
+use futures_util::io::AsyncWriteExt;
+use polyfuse_abi::{InHeader, OutHeader};
+use smallvec::SmallVec;
+use std::{convert::TryFrom, ffi::OsStr, fmt, io, io::IoSlice};
 
 // re-exports from polyfuse-abi
 pub use polyfuse_abi::{FileAttr, FileLock, FileMode, Gid, Nodeid, Pid, Statfs, Uid};
@@ -23,39 +27,76 @@ pub use polyfuse_abi::{FileAttr, FileLock, FileMode, Gid, Nodeid, Pid, Statfs, U
 /// The filesystem running on the user space.
 #[async_trait::async_trait(?Send)]
 pub trait Filesystem<T> {
-    /// Handle a FUSE request from the kernel and reply its result.
-    #[allow(unused_variables)]
+    /// Handle a FUSE request from the kernel and reply with its result.
     async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where
         T: 'async_trait, // https://github.com/dtolnay/async-trait/issues/8
     {
-        op.reply_default().await
+        drop(op);
+        cx.reply_err(libc::ENOSYS).await
     }
 }
 
 /// Contextural information about an incoming request.
-#[derive(Debug)]
 pub struct Context<'a> {
-    pub(crate) uid: Uid,
-    pub(crate) gid: Gid,
-    pub(crate) pid: Pid,
-    pub(crate) _anchor: std::marker::PhantomData<fn(&'a ()) -> &'a ()>,
+    header: &'a InHeader,
+    writer: &'a mut (dyn AsyncWrite + Unpin),
 }
 
-impl Context<'_> {
+impl fmt::Debug for Context<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Context").finish()
+    }
+}
+
+impl<'a> Context<'a> {
+    pub(crate) fn new(header: &'a InHeader, writer: &'a mut (impl AsyncWrite + Unpin)) -> Self {
+        Self { header, writer }
+    }
+
     /// Return the user ID of the calling process.
     pub fn uid(&self) -> Uid {
-        self.uid
+        self.header.uid
     }
 
     /// Return the group ID of the calling process.
     pub fn gid(&self) -> Gid {
-        self.gid
+        self.header.gid
     }
 
     /// Return the process ID of the calling process.
     pub fn pid(&self) -> Pid {
-        self.pid
+        self.header.pid
+    }
+
+    /// Reply to the kernel with an error code.
+    pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
+        self.send_reply(error, &[]).await
+    }
+
+    /// Reply to the kernel with the specified data.
+    pub(crate) async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()> {
+        let data_len: usize = data.iter().map(|t| t.len()).sum();
+
+        let out_header = OutHeader {
+            unique: self.header.unique,
+            error: -error,
+            len: u32::try_from(std::mem::size_of::<OutHeader>() + data_len).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("the total length of data is too long: {}", e),
+                )
+            })?,
+        };
+
+        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_ref()))
+            .into_iter()
+            .chain(data.iter().map(|t| IoSlice::new(&*t)))
+            .collect();
+
+        (*self.writer).write_vectored(&*vec).await?;
+
+        Ok(())
     }
 }
 
@@ -66,7 +107,7 @@ pub enum Operation<'a, T> {
     Lookup {
         parent: Nodeid,
         name: &'a OsStr,
-        reply: ReplyEntry<'static>,
+        reply: ReplyEntry,
     },
 
     /// Forget about inodes removed from the kernel's internal caches.
@@ -78,7 +119,7 @@ pub enum Operation<'a, T> {
     Getattr {
         ino: Nodeid,
         fh: Option<u64>,
-        reply: ReplyAttr<'static>,
+        reply: ReplyAttr,
     },
 
     /// Set file attributes.
@@ -93,21 +134,18 @@ pub enum Operation<'a, T> {
         mtime: Option<(u64, u32, bool)>,
         ctime: Option<(u64, u32)>,
         lock_owner: Option<u64>,
-        reply: ReplyAttr<'static>,
+        reply: ReplyAttr,
     },
 
     /// Read a symbolic link.
-    Readlink {
-        ino: Nodeid,
-        reply: ReplyReadlink<'static>,
-    },
+    Readlink { ino: Nodeid, reply: ReplyReadlink },
 
     /// Create a symbolic link
     Symlink {
         parent: Nodeid,
         name: &'a OsStr,
         link: &'a OsStr,
-        reply: ReplyEntry<'static>,
+        reply: ReplyEntry,
     },
 
     /// Create a file node.
@@ -117,7 +155,7 @@ pub enum Operation<'a, T> {
         mode: FileMode,
         rdev: u32,
         umask: Option<u32>,
-        reply: ReplyEntry<'static>,
+        reply: ReplyEntry,
     },
 
     /// Create a directory.
@@ -126,21 +164,21 @@ pub enum Operation<'a, T> {
         name: &'a OsStr,
         mode: FileMode,
         umask: Option<u32>,
-        reply: ReplyEntry<'static>,
+        reply: ReplyEntry,
     },
 
     /// Remove a file.
     Unlink {
         parent: Nodeid,
         name: &'a OsStr,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Remove a directory.
     Rmdir {
         parent: Nodeid,
         name: &'a OsStr,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Rename a file.
@@ -150,7 +188,7 @@ pub enum Operation<'a, T> {
         newparent: Nodeid,
         newname: &'a OsStr,
         flags: u32,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Create a hard link.
@@ -158,14 +196,14 @@ pub enum Operation<'a, T> {
         ino: Nodeid,
         newparent: Nodeid,
         newname: &'a OsStr,
-        reply: ReplyEntry<'static>,
+        reply: ReplyEntry,
     },
 
     /// Open a file.
     Open {
         ino: Nodeid,
         flags: u32,
-        reply: ReplyOpen<'static>,
+        reply: ReplyOpen,
     },
 
     /// Read data from an opened file.
@@ -175,7 +213,7 @@ pub enum Operation<'a, T> {
         offset: u64,
         flags: u32,
         lock_owner: Option<u64>,
-        reply: ReplyData<'static>,
+        reply: ReplyData,
     },
 
     /// Write data to an opened file.
@@ -187,7 +225,7 @@ pub enum Operation<'a, T> {
         size: u32,
         flags: u32,
         lock_owner: Option<u64>,
-        reply: ReplyWrite<'static>,
+        reply: ReplyWrite,
     },
 
     /// Release an opened file.
@@ -198,14 +236,11 @@ pub enum Operation<'a, T> {
         lock_owner: Option<u64>,
         flush: bool,
         flock_release: bool,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Get the filesystem statistics.
-    Statfs {
-        ino: Nodeid,
-        reply: ReplyStatfs<'static>,
-    },
+    Statfs { ino: Nodeid, reply: ReplyStatfs },
 
     /// Synchronize the file contents of an opened file.
     ///
@@ -216,7 +251,7 @@ pub enum Operation<'a, T> {
         ino: Nodeid,
         fh: u64,
         datasync: bool,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Set an extended attribute.
@@ -225,7 +260,7 @@ pub enum Operation<'a, T> {
         name: &'a OsStr,
         value: &'a [u8],
         flags: u32,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Get an extended attribute.
@@ -236,7 +271,7 @@ pub enum Operation<'a, T> {
         ino: Nodeid,
         name: &'a OsStr,
         size: u32,
-        reply: ReplyXattr<'static>,
+        reply: ReplyXattr,
     },
 
     /// List extended attribute names.
@@ -249,14 +284,14 @@ pub enum Operation<'a, T> {
     Listxattr {
         ino: Nodeid,
         size: u32,
-        reply: ReplyXattr<'static>,
+        reply: ReplyXattr,
     },
 
     /// Remove an extended attribute.
     Removexattr {
         ino: Nodeid,
         name: &'a OsStr,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Close a file descriptor.
@@ -264,14 +299,14 @@ pub enum Operation<'a, T> {
         ino: Nodeid,
         fh: u64,
         lock_owner: u64,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Open a directory.
     Opendir {
         ino: Nodeid,
         flags: u32,
-        reply: ReplyOpendir<'static>,
+        reply: ReplyOpendir,
     },
 
     /// Read contents from an opened directory.
@@ -279,7 +314,7 @@ pub enum Operation<'a, T> {
         ino: Nodeid,
         fh: u64,
         offset: u64,
-        reply: ReplyData<'static>,
+        reply: ReplyData,
     },
 
     /// Release an opened directory.
@@ -287,7 +322,7 @@ pub enum Operation<'a, T> {
         ino: Nodeid,
         fh: u64,
         flags: u32,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Synchronize an opened directory contents.
@@ -299,7 +334,7 @@ pub enum Operation<'a, T> {
         ino: Nodeid,
         fh: u64,
         datasync: bool,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Test for a POSIX file lock.
@@ -308,7 +343,7 @@ pub enum Operation<'a, T> {
         fh: u64,
         owner: u64,
         lk: &'a FileLock,
-        reply: ReplyLk<'static>,
+        reply: ReplyLk,
     },
 
     /// Acquire, modify or release a POSIX file lock.
@@ -318,7 +353,7 @@ pub enum Operation<'a, T> {
         owner: u64,
         lk: &'a FileLock,
         sleep: bool,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Acquire, modify or release a BSD file lock.
@@ -327,14 +362,14 @@ pub enum Operation<'a, T> {
         fh: u64,
         owner: u64,
         op: u32,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Check file access permissions.
     Access {
         ino: Nodeid,
         mask: u32,
-        reply: ReplyEmpty<'static>,
+        reply: ReplyEmpty,
     },
 
     /// Create and open a file.
@@ -344,19 +379,19 @@ pub enum Operation<'a, T> {
         mode: FileMode,
         umask: Option<u32>,
         open_flags: u32,
-        reply: ReplyCreate<'static>,
+        reply: ReplyCreate,
     },
 
     /// Map block index within a file to block index within device.
     ///
-    /// This callback makes sense only for filesystems that use
+    /// This operation makes sense only for filesystems that use
     /// block devices, and is called only when the mount options
     /// contains `blkdev`.
     Bmap {
         ino: Nodeid,
         block: u64,
         blocksize: u32,
-        reply: ReplyBmap<'static>,
+        reply: ReplyBmap,
     },
     // ioctl
     // poll
@@ -367,45 +402,4 @@ pub enum Operation<'a, T> {
     // rename2
     // lseek
     // copy_file_range
-}
-
-impl<T> Operation<'_, T> {
-    pub async fn reply_default(self) -> io::Result<()> {
-        match self {
-            Self::Forget { .. } => Ok(()),
-            Self::Lookup { reply, .. }
-            | Self::Symlink { reply, .. }
-            | Self::Mknod { reply, .. }
-            | Self::Mkdir { reply, .. }
-            | Self::Link { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Getattr { reply, .. } | Self::Setattr { reply, .. } => {
-                reply.err(libc::ENOSYS).await
-            }
-            Self::Readlink { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Unlink { reply, .. }
-            | Self::Rmdir { reply, .. }
-            | Self::Rename { reply, .. }
-            | Self::Release { reply, .. }
-            | Self::Fsync { reply, .. }
-            | Self::Setxattr { reply, .. }
-            | Self::Removexattr { reply, .. }
-            | Self::Flush { reply, .. }
-            | Self::Releasedir { reply, .. }
-            | Self::Fsyncdir { reply, .. }
-            | Self::Setlk { reply, .. }
-            | Self::Flock { reply, .. }
-            | Self::Access { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Open { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Read { reply, .. } | Self::Readdir { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Write { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Statfs { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Getxattr { reply, .. } | Self::Listxattr { reply, .. } => {
-                reply.err(libc::ENOSYS).await
-            }
-            Self::Getlk { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Opendir { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Create { reply, .. } => reply.err(libc::ENOSYS).await,
-            Self::Bmap { reply, .. } => reply.err(libc::ENOSYS).await,
-        }
-    }
 }

@@ -1,7 +1,7 @@
 use crate::{
     buf::{Buffer, MAX_WRITE_SIZE},
     fs::{Context, Filesystem, Operation},
-    reply::{ReplyData, ReplyRaw},
+    reply::ReplyData,
 };
 use futures_channel::oneshot;
 use futures_io::{AsyncRead, AsyncWrite};
@@ -29,16 +29,16 @@ impl Session {
 
     /// Dispatch an incoming request to the provided operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn dispatch<I, T, F>(
+    pub async fn dispatch<F, T, W>(
         &mut self,
         fs: &F,
         request: Request<'_>,
         data: Option<T>,
-        channel: I,
+        writer: &mut W,
     ) -> io::Result<()>
     where
-        I: AsyncWrite + Unpin + 'static,
         F: Filesystem<T>,
+        W: AsyncWrite + Unpin + 'static,
     {
         if self.exited {
             log::warn!("The sesson has already been exited");
@@ -46,25 +46,18 @@ impl Session {
         }
 
         let Request { header, arg, .. } = request;
-
         let ino = header.nodeid;
-        let unique = header.unique;
-        let mut cx = Context {
-            uid: header.uid,
-            gid: header.gid,
-            pid: header.pid,
-            _anchor: std::marker::PhantomData,
-        };
-        let reply = ReplyRaw::new(unique, channel);
+
+        let mut cx = Context::new(header, &mut *writer);
 
         match arg {
             Arg::Init { .. } => {
                 log::warn!("");
-                reply.reply_err(libc::EIO).await?;
+                cx.reply_err(libc::EIO).await?;
             }
             Arg::Destroy => {
                 self.exited = true;
-                reply.reply(0, &[]).await?;
+                cx.send_reply(0, &[]).await?;
             }
             Arg::Lookup { name } => {
                 fs.call(
@@ -72,7 +65,7 @@ impl Session {
                     Operation::Lookup {
                         parent: ino,
                         name,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -93,7 +86,7 @@ impl Session {
                     Operation::Getattr {
                         ino,
                         fh: arg.fh(),
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -112,7 +105,7 @@ impl Session {
                         mtime: arg.mtime(),
                         ctime: arg.ctime(),
                         lock_owner: arg.lock_owner(),
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -122,7 +115,7 @@ impl Session {
                     &mut cx,
                     Operation::Readlink {
                         ino,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -134,7 +127,7 @@ impl Session {
                         parent: ino,
                         name,
                         link,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -148,7 +141,7 @@ impl Session {
                         mode: arg.mode,
                         rdev: arg.rdev,
                         umask: Some(arg.umask),
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -161,7 +154,7 @@ impl Session {
                         name,
                         mode: arg.mode,
                         umask: Some(arg.umask),
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -172,7 +165,7 @@ impl Session {
                     Operation::Unlink {
                         parent: ino,
                         name,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -183,7 +176,7 @@ impl Session {
                     Operation::Rmdir {
                         parent: ino,
                         name,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -197,7 +190,7 @@ impl Session {
                         newparent: arg.newdir,
                         newname,
                         flags: 0,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -209,7 +202,7 @@ impl Session {
                         ino: arg.oldnodeid,
                         newparent: ino,
                         newname,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -220,7 +213,7 @@ impl Session {
                     Operation::Open {
                         ino,
                         flags: arg.flags,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -234,7 +227,7 @@ impl Session {
                         offset: arg.offset,
                         flags: arg.flags,
                         lock_owner: arg.lock_owner(),
-                        reply: ReplyData::new(reply, arg.size),
+                        reply: ReplyData::new(arg.size),
                     },
                 )
                 .await?;
@@ -251,7 +244,7 @@ impl Session {
                             size: arg.size,
                             flags: arg.flags,
                             lock_owner: arg.lock_owner(),
-                            reply: reply.into(),
+                            reply: Default::default(),
                         },
                     )
                     .await?;
@@ -279,7 +272,7 @@ impl Session {
                         lock_owner,
                         flush,
                         flock_release,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -289,7 +282,7 @@ impl Session {
                     &mut cx,
                     Operation::Statfs {
                         ino,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -301,7 +294,7 @@ impl Session {
                         ino,
                         fh: arg.fh,
                         datasync: arg.datasync(),
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -314,7 +307,7 @@ impl Session {
                         name,
                         value,
                         flags: arg.flags,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -326,7 +319,7 @@ impl Session {
                         ino,
                         name,
                         size: arg.size,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -337,7 +330,7 @@ impl Session {
                     Operation::Listxattr {
                         ino,
                         size: arg.size,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -348,7 +341,7 @@ impl Session {
                     Operation::Removexattr {
                         ino,
                         name,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -360,7 +353,7 @@ impl Session {
                         ino,
                         fh: arg.fh,
                         lock_owner: arg.lock_owner,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -371,7 +364,7 @@ impl Session {
                     Operation::Opendir {
                         ino,
                         flags: arg.flags,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -383,7 +376,7 @@ impl Session {
                         ino,
                         fh: arg.fh,
                         offset: arg.offset,
-                        reply: ReplyData::new(reply, arg.size),
+                        reply: ReplyData::new(arg.size),
                     },
                 )
                 .await?;
@@ -395,7 +388,7 @@ impl Session {
                         ino,
                         fh: arg.fh,
                         flags: arg.flags,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -407,7 +400,7 @@ impl Session {
                         ino,
                         fh: arg.fh,
                         datasync: arg.datasync(),
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -420,7 +413,7 @@ impl Session {
                         fh: arg.fh,
                         owner: arg.owner,
                         lk: &arg.lk,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -443,7 +436,7 @@ impl Session {
                             fh: arg.fh,
                             owner: arg.owner,
                             op,
-                            reply: reply.into(),
+                            reply: Default::default(),
                         },
                     )
                     .await?;
@@ -456,7 +449,7 @@ impl Session {
                             owner: arg.owner,
                             lk: &arg.lk,
                             sleep,
-                            reply: reply.into(),
+                            reply: Default::default(),
                         },
                     )
                     .await?;
@@ -468,7 +461,7 @@ impl Session {
                     Operation::Access {
                         ino,
                         mask: arg.mask,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -482,14 +475,14 @@ impl Session {
                         mode: arg.mode,
                         umask: Some(arg.umask),
                         open_flags: arg.flags,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
             }
             Arg::Interrupt { arg } => {
                 log::debug!("INTERRUPT (unique = {:?})", arg.unique);
-                if let Some(tx) = self.remains.remove(&unique) {
+                if let Some(tx) = self.remains.remove(&header.unique) {
                     let _ = tx.send(());
                 }
             }
@@ -500,7 +493,7 @@ impl Session {
                         ino,
                         block: arg.block,
                         blocksize: arg.blocksize,
-                        reply: reply.into(),
+                        reply: Default::default(),
                     },
                 )
                 .await?;
@@ -517,7 +510,7 @@ impl Session {
             // CopyFileRange,
             Arg::Unknown => {
                 log::warn!("unsupported opcode: {:?}", header.opcode);
-                reply.reply_err(libc::ENOSYS).await?;
+                cx.reply_err(libc::ENOSYS).await?;
             }
         }
 
@@ -559,7 +552,7 @@ impl InitSession {
             }
 
             let (Request { header, arg, .. }, _data) = buf.extract()?;
-            let reply = ReplyRaw::new(header.unique, &mut *io);
+            let mut cx = Context::new(header, &mut *io);
 
             let (proto_major, proto_minor, max_readahead);
             match arg {
@@ -568,13 +561,13 @@ impl InitSession {
 
                     if arg.major > 7 {
                         log::debug!("wait for a second INIT request with a 7.X version.");
-                        reply.reply(0, &[init_out.as_ref()]).await?;
+                        cx.send_reply(0, &[init_out.as_ref()]).await?;
                         continue;
                     }
 
                     if arg.major < 7 || (arg.major == 7 && arg.minor < 6) {
                         log::warn!("unsupported protocol version: {}.{}", arg.major, arg.minor);
-                        reply.reply_err(libc::EPROTO).await?;
+                        cx.reply_err(libc::EPROTO).await?;
                         return Err(io::Error::from_raw_os_error(libc::EPROTO));
                     }
 
@@ -587,14 +580,14 @@ impl InitSession {
                     init_out.max_readahead = arg.max_readahead;
                     init_out.max_write = MAX_WRITE_SIZE;
 
-                    reply.reply(0, &[init_out.as_ref()]).await?;
+                    cx.send_reply(0, &[init_out.as_ref()]).await?;
                 }
                 _ => {
                     log::warn!(
                         "ignoring an operation before init (opcode={:?})",
                         header.opcode
                     );
-                    reply.reply_err(libc::EIO).await?;
+                    cx.reply_err(libc::EIO).await?;
                     continue;
                 }
             }

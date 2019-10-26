@@ -95,7 +95,7 @@ where
 
         let session = Arc::clone(session);
         let fs = Arc::clone(fs);
-        let channel = channel.clone();
+        let mut channel = channel.clone();
 
         let req_task = async move {
             let (request, data) = buf.extract()?;
@@ -109,7 +109,7 @@ where
             session
                 .lock()
                 .await
-                .dispatch(&*fs, request, data, channel)
+                .dispatch(&*fs, request, data, &mut channel)
                 .await?;
             Ok::<_, io::Error>(())
         };
