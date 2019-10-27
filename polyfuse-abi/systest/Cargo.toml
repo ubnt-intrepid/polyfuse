@@ -1,0 +1,19 @@
+[package]
+name = "polyfuse-abi-systest"
+version = "0.0.0" # never publish
+publish = false
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+build = "build.rs"
+
+[dependencies]
+polyfuse-abi = { path = ".." }
+libc = "0.2"
+
+[build-dependencies]
+ctest = "0.2"
+
+[[test]]
+name = "test_main"
+path = "tests/test_main.rs"
+harness = false 
