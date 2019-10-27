@@ -1,5 +1,5 @@
 use memoffset::offset_of;
-use polyfuse_abi::{DirEntry as DirEntryHeader, Nodeid};
+use polyfuse_abi::fuse_dirent;
 use std::{convert::TryFrom, ffi::OsStr, mem, os::unix::ffi::OsStrExt, ptr};
 
 fn aligned(len: usize) -> usize {
@@ -16,7 +16,7 @@ impl DirEntry {
         let name = name.as_ref().as_bytes();
         let namelen = u32::try_from(name.len()).expect("the length of name is too large.");
 
-        let entlen = mem::size_of::<DirEntryHeader>() + name.len();
+        let entlen = mem::size_of::<fuse_dirent>() + name.len();
         let entsize = aligned(entlen);
         let padlen = entsize - entlen;
 
@@ -25,14 +25,14 @@ impl DirEntry {
             let p = dirent_buf.as_mut_ptr();
 
             #[allow(clippy::cast_ptr_alignment)]
-            let pheader = p as *mut DirEntryHeader;
-            (*pheader).ino = Nodeid::from_raw(0);
+            let pheader = p as *mut fuse_dirent;
+            (*pheader).ino = 0;
             (*pheader).off = 0;
             (*pheader).namelen = namelen;
             (*pheader).typ = 0;
 
             #[allow(clippy::unneeded_field_pattern)]
-            let p = p.add(offset_of!(DirEntryHeader, name));
+            let p = p.add(offset_of!(fuse_dirent, name));
             ptr::copy_nonoverlapping(name.as_ptr(), p, name.len());
 
             let p = p.add(name.len());
@@ -44,23 +44,23 @@ impl DirEntry {
         Self { dirent_buf }
     }
 
-    unsafe fn header(&self) -> &DirEntryHeader {
-        debug_assert!(self.dirent_buf.len() > mem::size_of::<DirEntryHeader>());
+    unsafe fn header(&self) -> &fuse_dirent {
+        debug_assert!(self.dirent_buf.len() > mem::size_of::<fuse_dirent>());
         #[allow(clippy::cast_ptr_alignment)]
-        &*(self.dirent_buf.as_ptr() as *mut DirEntryHeader)
+        &*(self.dirent_buf.as_ptr() as *mut fuse_dirent)
     }
 
-    unsafe fn header_mut(&mut self) -> &mut DirEntryHeader {
-        debug_assert!(self.dirent_buf.len() > mem::size_of::<DirEntryHeader>());
+    unsafe fn header_mut(&mut self) -> &mut fuse_dirent {
+        debug_assert!(self.dirent_buf.len() > mem::size_of::<fuse_dirent>());
         #[allow(clippy::cast_ptr_alignment)]
-        &mut *(self.dirent_buf.as_mut_ptr() as *mut DirEntryHeader)
+        &mut *(self.dirent_buf.as_mut_ptr() as *mut fuse_dirent)
     }
 
-    pub fn nodeid(&self) -> Nodeid {
+    pub fn nodeid(&self) -> u64 {
         unsafe { self.header().ino }
     }
 
-    pub fn nodeid_mut(&mut self) -> &mut Nodeid {
+    pub fn nodeid_mut(&mut self) -> &mut u64 {
         unsafe { &mut self.header_mut().ino }
     }
 
@@ -82,7 +82,7 @@ impl DirEntry {
 
     pub fn name(&self) -> &OsStr {
         #[allow(clippy::unneeded_field_pattern)]
-        let name_offset = offset_of!(DirEntryHeader, name);
+        let name_offset = offset_of!(fuse_dirent, name);
         let namelen = unsafe { self.header().namelen as usize };
         OsStr::from_bytes(&self.dirent_buf[name_offset..name_offset + namelen])
     }
@@ -92,7 +92,7 @@ impl DirEntry {
         let name = name.as_ref().as_bytes();
         let namelen = u32::try_from(name.len()).expect("the length of name is too large");
 
-        let entlen = mem::size_of::<DirEntryHeader>() + name.len();
+        let entlen = mem::size_of::<fuse_dirent>() + name.len();
         let entsize = aligned(entlen);
         let padlen = entsize - entlen;
 
@@ -105,11 +105,11 @@ impl DirEntry {
             let p = self.dirent_buf.as_mut_ptr();
 
             #[allow(clippy::cast_ptr_alignment)]
-            let pheader = p as *mut DirEntryHeader;
+            let pheader = p as *mut fuse_dirent;
             (*pheader).namelen = namelen;
 
             #[allow(clippy::unneeded_field_pattern)]
-            let p = p.add(offset_of!(DirEntryHeader, name));
+            let p = p.add(offset_of!(fuse_dirent, name));
             ptr::copy_nonoverlapping(name.as_ptr(), p, name.len());
 
             let p = p.add(name.len());
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn test_direntry() {
         let dirent = DirEntry::new("hello");
-        assert_eq!(dirent.nodeid(), Nodeid::from_raw(0));
+        assert_eq!(dirent.nodeid(), 0u64);
         assert_eq!(dirent.offset(), 0u64);
         assert_eq!(dirent.type_(), 0u32);
         assert_eq!(dirent.name(), "hello");
@@ -156,7 +156,7 @@ mod tests {
     fn test_direntry_set_long_name() {
         let mut dirent = DirEntry::new("hello");
         dirent.set_name("good evening");
-        assert_eq!(dirent.nodeid(), Nodeid::from_raw(0));
+        assert_eq!(dirent.nodeid(), 0u64);
         assert_eq!(dirent.offset(), 0u64);
         assert_eq!(dirent.type_(), 0u32);
         assert_eq!(dirent.name(), "good evening");
@@ -179,7 +179,7 @@ mod tests {
     fn test_direntry_set_short_name() {
         let mut dirent = DirEntry::new("good morning");
         dirent.set_name("bye");
-        assert_eq!(dirent.nodeid(), Nodeid::from_raw(0));
+        assert_eq!(dirent.nodeid(), 0u64);
         assert_eq!(dirent.offset(), 0u64);
         assert_eq!(dirent.type_(), 0u32);
         assert_eq!(dirent.name(), "bye");

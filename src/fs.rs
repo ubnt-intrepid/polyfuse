@@ -17,12 +17,57 @@ use crate::reply::{
 };
 use futures_io::AsyncWrite;
 use futures_util::io::AsyncWriteExt;
-use polyfuse_abi::{InHeader, OutHeader};
+use polyfuse_abi::{
+    fuse_attr, //
+    fuse_file_lock,
+    fuse_in_header,
+    fuse_kstatfs,
+    fuse_out_header,
+};
 use smallvec::SmallVec;
-use std::{convert::TryFrom, ffi::OsStr, fmt, io, io::IoSlice};
+use std::{convert::TryFrom, ffi::OsStr, fmt, io, io::IoSlice, mem};
 
-// re-exports from polyfuse-abi
-pub use polyfuse_abi::{FileAttr, FileLock, FileMode, Gid, Nodeid, Pid, Statfs, Uid};
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct FileAttr(fuse_attr);
+
+impl TryFrom<libc::stat> for FileAttr {
+    type Error = <fuse_attr as TryFrom<libc::stat>>::Error;
+
+    fn try_from(st: libc::stat) -> Result<Self, Self::Error> {
+        fuse_attr::try_from(st).map(Self)
+    }
+}
+
+impl FileAttr {
+    pub(crate) fn into_inner(self) -> fuse_attr {
+        self.0
+    }
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct FsStatistics(fuse_kstatfs);
+
+impl FsStatistics {
+    pub(crate) fn into_inner(self) -> fuse_kstatfs {
+        self.0
+    }
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct FileLock(fuse_file_lock);
+
+impl FileLock {
+    pub(crate) fn new<'a>(attr: &'a fuse_file_lock) -> &'a Self {
+        unsafe { mem::transmute(attr) }
+    }
+
+    pub(crate) fn into_inner(self) -> fuse_file_lock {
+        self.0
+    }
+}
 
 /// The filesystem running on the user space.
 #[async_trait::async_trait(?Send)]
@@ -39,7 +84,7 @@ pub trait Filesystem<T> {
 
 /// Contextural information about an incoming request.
 pub struct Context<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     writer: &'a mut (dyn AsyncWrite + Unpin),
 }
 
@@ -50,22 +95,25 @@ impl fmt::Debug for Context<'_> {
 }
 
 impl<'a> Context<'a> {
-    pub(crate) fn new(header: &'a InHeader, writer: &'a mut (impl AsyncWrite + Unpin)) -> Self {
+    pub(crate) fn new(
+        header: &'a fuse_in_header,
+        writer: &'a mut (impl AsyncWrite + Unpin),
+    ) -> Self {
         Self { header, writer }
     }
 
     /// Return the user ID of the calling process.
-    pub fn uid(&self) -> Uid {
+    pub fn uid(&self) -> u32 {
         self.header.uid
     }
 
     /// Return the group ID of the calling process.
-    pub fn gid(&self) -> Gid {
+    pub fn gid(&self) -> u32 {
         self.header.gid
     }
 
     /// Return the process ID of the calling process.
-    pub fn pid(&self) -> Pid {
+    pub fn pid(&self) -> u32 {
         self.header.pid
     }
 
@@ -78,10 +126,10 @@ impl<'a> Context<'a> {
     pub(crate) async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()> {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
 
-        let out_header = OutHeader {
+        let out_header = fuse_out_header {
             unique: self.header.unique,
             error: -error,
-            len: u32::try_from(std::mem::size_of::<OutHeader>() + data_len).map_err(|e| {
+            len: u32::try_from(std::mem::size_of::<fuse_out_header>() + data_len).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("the total length of data is too long: {}", e),
@@ -105,30 +153,30 @@ impl<'a> Context<'a> {
 pub enum Operation<'a, T> {
     /// Look up a directory entry by name.
     Lookup {
-        parent: Nodeid,
+        parent: u64,
         name: &'a OsStr,
         reply: ReplyEntry,
     },
 
     /// Forget about inodes removed from the kernel's internal caches.
     Forget {
-        nlookups: &'a [(Nodeid, u64)], //
+        nlookups: &'a [(u64, u64)], //
     },
 
     /// Get file attributes.
     Getattr {
-        ino: Nodeid,
+        ino: u64,
         fh: Option<u64>,
         reply: ReplyAttr,
     },
 
     /// Set file attributes.
     Setattr {
-        ino: Nodeid,
+        ino: u64,
         fh: Option<u64>,
-        mode: Option<FileMode>,
-        uid: Option<Uid>,
-        gid: Option<Gid>,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
         size: Option<u64>,
         atime: Option<(u64, u32, bool)>,
         mtime: Option<(u64, u32, bool)>,
@@ -138,11 +186,11 @@ pub enum Operation<'a, T> {
     },
 
     /// Read a symbolic link.
-    Readlink { ino: Nodeid, reply: ReplyReadlink },
+    Readlink { ino: u64, reply: ReplyReadlink },
 
     /// Create a symbolic link
     Symlink {
-        parent: Nodeid,
+        parent: u64,
         name: &'a OsStr,
         link: &'a OsStr,
         reply: ReplyEntry,
@@ -150,9 +198,9 @@ pub enum Operation<'a, T> {
 
     /// Create a file node.
     Mknod {
-        parent: Nodeid,
+        parent: u64,
         name: &'a OsStr,
-        mode: FileMode,
+        mode: u32,
         rdev: u32,
         umask: Option<u32>,
         reply: ReplyEntry,
@@ -160,32 +208,32 @@ pub enum Operation<'a, T> {
 
     /// Create a directory.
     Mkdir {
-        parent: Nodeid,
+        parent: u64,
         name: &'a OsStr,
-        mode: FileMode,
+        mode: u32,
         umask: Option<u32>,
         reply: ReplyEntry,
     },
 
     /// Remove a file.
     Unlink {
-        parent: Nodeid,
+        parent: u64,
         name: &'a OsStr,
         reply: ReplyEmpty,
     },
 
     /// Remove a directory.
     Rmdir {
-        parent: Nodeid,
+        parent: u64,
         name: &'a OsStr,
         reply: ReplyEmpty,
     },
 
     /// Rename a file.
     Rename {
-        parent: Nodeid,
+        parent: u64,
         name: &'a OsStr,
-        newparent: Nodeid,
+        newparent: u64,
         newname: &'a OsStr,
         flags: u32,
         reply: ReplyEmpty,
@@ -193,22 +241,22 @@ pub enum Operation<'a, T> {
 
     /// Create a hard link.
     Link {
-        ino: Nodeid,
-        newparent: Nodeid,
+        ino: u64,
+        newparent: u64,
         newname: &'a OsStr,
         reply: ReplyEntry,
     },
 
     /// Open a file.
     Open {
-        ino: Nodeid,
+        ino: u64,
         flags: u32,
         reply: ReplyOpen,
     },
 
     /// Read data from an opened file.
     Read {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         offset: u64,
         flags: u32,
@@ -218,7 +266,7 @@ pub enum Operation<'a, T> {
 
     /// Write data to an opened file.
     Write {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         offset: u64,
         data: T,
@@ -230,7 +278,7 @@ pub enum Operation<'a, T> {
 
     /// Release an opened file.
     Release {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         flags: u32,
         lock_owner: Option<u64>,
@@ -240,7 +288,7 @@ pub enum Operation<'a, T> {
     },
 
     /// Get the filesystem statistics.
-    Statfs { ino: Nodeid, reply: ReplyStatfs },
+    Statfs { ino: u64, reply: ReplyStatfs },
 
     /// Synchronize the file contents of an opened file.
     ///
@@ -248,7 +296,7 @@ pub enum Operation<'a, T> {
     /// file contents should be flushed and the metadata
     /// does not have to be flushed.
     Fsync {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         datasync: bool,
         reply: ReplyEmpty,
@@ -256,7 +304,7 @@ pub enum Operation<'a, T> {
 
     /// Set an extended attribute.
     Setxattr {
-        ino: Nodeid,
+        ino: u64,
         name: &'a OsStr,
         value: &'a [u8],
         flags: u32,
@@ -268,7 +316,7 @@ pub enum Operation<'a, T> {
     /// The operation should send the length of attribute's value
     /// with `reply.size(n)` when `size` is equal to zero.
     Getxattr {
-        ino: Nodeid,
+        ino: u64,
         name: &'a OsStr,
         size: u32,
         reply: ReplyXattr,
@@ -282,21 +330,21 @@ pub enum Operation<'a, T> {
     /// The operation should send the length of attribute names
     /// with `reply.size(n)` when `size` is equal to zero.
     Listxattr {
-        ino: Nodeid,
+        ino: u64,
         size: u32,
         reply: ReplyXattr,
     },
 
     /// Remove an extended attribute.
     Removexattr {
-        ino: Nodeid,
+        ino: u64,
         name: &'a OsStr,
         reply: ReplyEmpty,
     },
 
     /// Close a file descriptor.
     Flush {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         lock_owner: u64,
         reply: ReplyEmpty,
@@ -304,14 +352,14 @@ pub enum Operation<'a, T> {
 
     /// Open a directory.
     Opendir {
-        ino: Nodeid,
+        ino: u64,
         flags: u32,
         reply: ReplyOpendir,
     },
 
     /// Read contents from an opened directory.
     Readdir {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         offset: u64,
         reply: ReplyData,
@@ -319,7 +367,7 @@ pub enum Operation<'a, T> {
 
     /// Release an opened directory.
     Releasedir {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         flags: u32,
         reply: ReplyEmpty,
@@ -331,7 +379,7 @@ pub enum Operation<'a, T> {
     /// directory contents should be flushed and the metadata
     /// does not have to be flushed.
     Fsyncdir {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         datasync: bool,
         reply: ReplyEmpty,
@@ -339,7 +387,7 @@ pub enum Operation<'a, T> {
 
     /// Test for a POSIX file lock.
     Getlk {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         owner: u64,
         lk: &'a FileLock,
@@ -348,7 +396,7 @@ pub enum Operation<'a, T> {
 
     /// Acquire, modify or release a POSIX file lock.
     Setlk {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         owner: u64,
         lk: &'a FileLock,
@@ -358,7 +406,7 @@ pub enum Operation<'a, T> {
 
     /// Acquire, modify or release a BSD file lock.
     Flock {
-        ino: Nodeid,
+        ino: u64,
         fh: u64,
         owner: u64,
         op: u32,
@@ -367,16 +415,16 @@ pub enum Operation<'a, T> {
 
     /// Check file access permissions.
     Access {
-        ino: Nodeid,
+        ino: u64,
         mask: u32,
         reply: ReplyEmpty,
     },
 
     /// Create and open a file.
     Create {
-        parent: Nodeid,
+        parent: u64,
         name: &'a OsStr,
-        mode: FileMode,
+        mode: u32,
         umask: Option<u32>,
         open_flags: u32,
         reply: ReplyCreate,
@@ -388,7 +436,7 @@ pub enum Operation<'a, T> {
     /// block devices, and is called only when the mount options
     /// contains `blkdev`.
     Bmap {
-        ino: Nodeid,
+        ino: u64,
         block: u64,
         blocksize: u32,
         reply: ReplyBmap,

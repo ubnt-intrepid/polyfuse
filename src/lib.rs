@@ -17,6 +17,7 @@ mod buf;
 mod channel;
 mod conn;
 mod dir;
+mod parse;
 mod session;
 
 pub mod fs;

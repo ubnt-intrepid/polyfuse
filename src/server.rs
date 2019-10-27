@@ -11,8 +11,9 @@ use futures_util::{
     stream::StreamExt,
 };
 use libc::c_int;
+use polyfuse_abi::fuse_opcode;
 use std::io;
-use std::{path::Path, sync::Arc};
+use std::{convert::TryFrom, path::Path, sync::Arc};
 use tokio_net::signal::unix::{signal, SignalKind};
 
 pub use crate::channel::Channel;
@@ -102,7 +103,7 @@ where
             log::debug!(
                 "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
                 request.header.unique,
-                request.header.opcode(),
+                fuse_opcode::try_from(request.header.opcode),
                 request.arg,
                 data.as_ref().map(|_| "<data>")
             );

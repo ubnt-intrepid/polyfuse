@@ -1,108 +1,113 @@
 //! FUSE application binary interface.
 
-#![allow(clippy::identity_op)]
-#![warn(clippy::checked_conversions)]
-#![deny(
-    missing_debug_implementations,
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::invalid_upcast_comparisons,
-    clippy::unimplemented
-)]
+#![allow(nonstandard_style, clippy::identity_op)]
 
-pub mod parse;
-
-use bitflags::bitflags;
 use std::{convert::TryFrom, error, fmt};
 
-pub mod consts {
-    /// The major version number of FUSE protocol.
-    pub const KERNEL_VERSION: u32 = 7;
+/// The major version number of FUSE protocol.
+pub const FUSE_KERNEL_VERSION: u32 = 7;
 
-    /// The minor version number of FUSE protocol.
-    pub const KERNEL_MINOR_VERSION: u32 = 28;
+/// The minor version number of FUSE protocol.
+pub const FUSE_KERNEL_MINOR_VERSION: u32 = 28;
 
-    /// The minimum length of read buffer.
-    pub const MIN_READ_BUFFER: u32 = 8192;
+/// The minimum length of read buffer.
+pub const FUSE_MIN_READ_BUFFER: u32 = 8192;
 
-    /// Maximum of in_iovecs + out_iovecs
-    pub const IOCTL_MAX_IOV: u32 = 256;
+/// Maximum of in_iovecs + out_iovecs
+pub const FUSE_IOCTL_MAX_IOV: u32 = 256;
 
-    // misc
-    pub const COMPAT_ENTRY_OUT_SIZE: usize = 120;
-    pub const COMPAT_ATTR_OUT_SIZE: usize = 96;
-    pub const COMPAT_MKNOD_IN_SIZE: usize = 8;
-    pub const COMPAT_WRITE_IN_SIZE: usize = 24;
-    pub const COMPAT_STATFS_SIZE: usize = 48;
-    pub const COMPAT_INIT_OUT_SIZE: usize = 8;
-    pub const COMPAT_22_INIT_OUT_SIZE: usize = 24;
+// Bitmasks for fuse_setattr_in.valid
+pub const FATTR_MODE: u32 = 1 << 0;
+pub const FATTR_UID: u32 = 1 << 1;
+pub const FATTR_GID: u32 = 1 << 2;
+pub const FATTR_SIZE: u32 = 1 << 3;
+pub const FATTR_ATIME: u32 = 1 << 4;
+pub const FATTR_MTIME: u32 = 1 << 5;
+pub const FATTR_FH: u32 = 1 << 6;
+pub const FATTR_ATIME_NOW: u32 = 1 << 7;
+pub const FATTR_MTIME_NOW: u32 = 1 << 8;
+pub const FATTR_LOCKOWNER: u32 = 1 << 9;
+pub const FATTR_CTIME: u32 = 1 << 10;
 
-    pub const CUSE_INIT_INFO_MAX: u32 = 4096;
-}
+// Flags returned by the OPEN request.
+pub const FOPEN_DIRECT_IO: u32 = 1 << 0;
+pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
+pub const FOPEN_NONSEEKABLE: u32 = 1 << 2;
+pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
 
-macro_rules! newtype {
-    ($(
-        $(#[$m:meta])*
-        $vis:vis type $Name:ident = $T:ty ;
-    )*) => {$(
-        $(#[$m])*
-        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
-        #[repr(transparent)]
-        $vis struct $Name { raw: $T }
+// INIT request/reply flags.
+pub const FUSE_ASYNC_READ: u32 = 1;
+pub const FUSE_POSIX_LOCKS: u32 = 1 << 1;
+pub const FUSE_FILE_OPS: u32 = 1 << 2;
+pub const FUSE_ATOMIC_O_TRUNC: u32 = 1 << 3;
+pub const FUSE_EXPORT_SUPPORT: u32 = 1 << 4;
+pub const FUSE_BIG_WRITES: u32 = 1 << 5;
+pub const FUSE_DONT_MASK: u32 = 1 << 6;
+pub const FUSE_SPLICE_WRITE: u32 = 1 << 7;
+pub const FUSE_SPLICE_MOVE: u32 = 1 << 8;
+pub const FUSE_SPLICE_READ: u32 = 1 << 9;
+pub const FUSE_FLOCK_LOCKS: u32 = 1 << 10;
+pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11;
+pub const FUSE_AUTO_INVAL_DATA: u32 = 1 << 12;
+pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
+pub const FUSE_READDIRPLUS_AUTO: u32 = 1 << 14;
+pub const FUSE_ASYNC_DIO: u32 = 1 << 15;
+pub const FUSE_WRITEBACK_CACHE: u32 = 1 << 16;
+pub const FUSE_NO_OPEN_SUPPORT: u32 = 1 << 17;
+pub const FUSE_PARALLEL_DIROPS: u32 = 1 << 18;
+pub const FUSE_HANDLE_KILLPRIV: u32 = 1 << 19;
+pub const FUSE_POSIX_ACL: u32 = 1 << 20;
+pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
+pub const FUSE_MAX_PAGES: u32 = 1 << 22;
+pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
 
-        impl $Name {
-            #[inline]
-            pub const fn from_raw(raw: $T) -> Self {
-                Self { raw }
-            }
+// CUSE INIT request/reply flags.
+pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;
 
-            #[inline]
-            pub const fn into_raw(self) -> $T {
-                self.raw
-            }
-        }
-    )*}
-}
+// Release flags.
+pub const FUSE_RELEASE_FLUSH: u32 = 1 << 0;
+pub const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
 
-newtype! {
-    /// The unique identifier of FUSE requests.
-    pub type Unique = u64;
+// Getattr flags.
+pub const FUSE_GETATTR_FH: u32 = 1;
 
-    /// The unique identifier of inode in the filesystem.
-    pub type Nodeid = u64;
-}
+// Lock flags.
+pub const FUSE_LK_FLOCK: u32 = 1 << 0;
 
-impl fmt::Display for Unique {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.raw, f)
-    }
-}
+// WRITE flags.
+pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
+pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
 
-impl Nodeid {
-    /// The node ID of the root inode.
-    pub const ROOT: Self = Self::from_raw(1);
-}
+// Read flags.
+pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
 
-newtype! {
-    pub type Uid = u32;
-    pub type Gid = u32;
-    pub type Pid = u32;
-}
+// Ioctl flags.
+pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
+pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
+pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
+pub const FUSE_IOCTL_USE_32BIT: u32 = 1 << 3;
+pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
 
-newtype! {
-    pub type FileMode = u32;
-}
+// Poll flags.
+pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 
-/// A set of attributes associated with an inode.
-///
-/// This type has ABI compatibility with `fuse_attr`.
+// Fsync flags.
+pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
+
+// misc
+pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
+pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
+pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
+pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
+pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
+pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
+pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
+pub const CUSE_INIT_INFO_MAX: u32 = 4096;
+
 #[derive(Default, Debug, Clone)]
 #[repr(C)]
-pub struct FileAttr {
-    pub ino: Nodeid,
+pub struct fuse_attr {
+    pub ino: u64,
     pub size: u64,
     pub blocks: u64,
     pub atime: u64,
@@ -111,22 +116,21 @@ pub struct FileAttr {
     pub atimensec: u32,
     pub mtimensec: u32,
     pub ctimensec: u32,
-    pub mode: FileMode,
+    pub mode: u32,
     pub nlink: u32,
-    pub uid: Uid,
-    pub gid: Gid,
+    pub uid: u32,
+    pub gid: u32,
     pub rdev: u32,
     pub blksize: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-impl TryFrom<libc::stat> for FileAttr {
+impl TryFrom<libc::stat> for fuse_attr {
     type Error = std::num::TryFromIntError;
 
     fn try_from(attr: libc::stat) -> Result<Self, Self::Error> {
         Ok(Self {
-            ino: Nodeid::from_raw(u64::try_from(attr.st_ino)?),
+            ino: u64::try_from(attr.st_ino)?,
             size: u64::try_from(attr.st_size)?,
             blocks: u64::try_from(attr.st_blocks)?,
             atime: u64::try_from(attr.st_atime)?,
@@ -135,10 +139,10 @@ impl TryFrom<libc::stat> for FileAttr {
             atimensec: u32::try_from(attr.st_atime_nsec)?,
             mtimensec: u32::try_from(attr.st_mtime_nsec)?,
             ctimensec: u32::try_from(attr.st_ctime_nsec)?,
-            mode: FileMode::from_raw(u32::try_from(attr.st_mode)?),
+            mode: u32::try_from(attr.st_mode)?,
             nlink: u32::try_from(attr.st_nlink)?,
-            uid: Uid::from_raw(u32::try_from(attr.st_uid)?),
-            gid: Gid::from_raw(u32::try_from(attr.st_gid)?),
+            uid: u32::try_from(attr.st_uid)?,
+            gid: u32::try_from(attr.st_gid)?,
             rdev: u32::try_from(attr.st_gid)?,
             blksize: u32::try_from(attr.st_blksize)?,
             padding: 0,
@@ -146,45 +150,26 @@ impl TryFrom<libc::stat> for FileAttr {
     }
 }
 
-impl FileAttr {
-    pub fn atime(&self) -> (u64, u32) {
-        (self.atime, self.atimensec)
-    }
-
-    pub fn mtime(&self) -> (u64, u32) {
-        (self.mtime, self.mtimensec)
-    }
-
-    pub fn ctime(&self) -> (u64, u32) {
-        (self.ctime, self.ctimensec)
-    }
-}
-
-/// ABI compatible with `fuse_dirent`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct DirEntry {
-    pub ino: Nodeid,
+pub struct fuse_dirent {
+    pub ino: u64,
     pub off: u64,
     pub namelen: u32,
     pub typ: u32,
     pub name: [u8; 0],
 }
 
-/// ABI compatible with `fuse_direntplus`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct DirEntryPlus {
-    pub entry_out: EntryOut,
-    pub dirent: DirEntry,
+pub struct fuse_direntplus {
+    pub entry_out: fuse_entry_out,
+    pub dirent: fuse_dirent,
 }
 
-/// The filesystem statistics.
-///
-/// This type has ABI compatibility with `fuse_kstatfs`.
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
-pub struct Statfs {
+pub struct fuse_kstatfs {
     pub blocks: u64,
     pub bfree: u64,
     pub bavail: u64,
@@ -193,13 +178,11 @@ pub struct Statfs {
     pub bsize: u32,
     pub namelen: u32,
     pub frsize: u32,
-    #[doc(hidden)]
     pub padding: u32,
-    #[doc(hidden)]
     pub spare: [u32; 6usize],
 }
 
-impl TryFrom<libc::statvfs> for Statfs {
+impl TryFrom<libc::statvfs> for fuse_kstatfs {
     type Error = std::num::TryFromIntError;
 
     fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
@@ -218,100 +201,71 @@ impl TryFrom<libc::statvfs> for Statfs {
     }
 }
 
-/// The information about a POSIX lock.
-///
-/// This type has ABI compatibility with `fuse_file_lock`.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, Default)]
 #[repr(C)]
-pub struct FileLock {
+pub struct fuse_file_lock {
     pub start: u64,
     pub end: u64,
-    pub typ: LockType,
-    pub pid: Pid,
+    pub typ: u32,
+    pub pid: u32,
 }
 
-impl TryFrom<libc::flock> for FileLock {
-    type Error = InvalidLockType;
+impl TryFrom<libc::flock> for fuse_file_lock {
+    type Error = InvalidFileLock;
 
     #[allow(clippy::cast_sign_loss)]
     fn try_from(lk: libc::flock) -> Result<Self, Self::Error> {
-        let mut lock = FileLock::default();
-        lock.pid = Pid::from_raw(lk.l_pid as u32);
-        lock.typ = LockType::try_from(lk.l_type)?;
+        const F_RDLCK: u32 = libc::F_RDLCK as u32;
+        const F_WRLCK: u32 = libc::F_WRLCK as u32;
+        const F_UNLCK: u32 = libc::F_UNLCK as u32;
 
-        match lock.typ {
-            LockType::Unlock => (),
-            LockType::Read | LockType::Write => {
-                lock.start = lk.l_start as u64;
-                if lk.l_len == 0 {
-                    lock.end = std::u64::MAX;
+        let lock_type = lk.l_type as u32;
+        let (start, end) = match lock_type {
+            F_UNLCK => (0, 0),
+            F_RDLCK | F_WRLCK => {
+                let start = lk.l_start as u64;
+                let end = if lk.l_len == 0 {
+                    std::u64::MAX
                 } else {
-                    lock.end = lock.start + (lk.l_len as u64) - 1;
+                    start + (lk.l_len as u64) - 1
                 };
+                (start, end)
             }
-        }
+            _ => return Err(InvalidFileLock(())),
+        };
 
-        Ok(lock)
+        Ok(Self {
+            start,
+            end,
+            typ: lock_type,
+            pid: lk.l_pid as u32,
+        })
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[repr(u32)]
-pub enum LockType {
-    Read = 0,
-    Write = 1,
-    Unlock = 2,
-}
-
-impl Default for LockType {
-    fn default() -> Self {
-        Self::Read
-    }
-}
-
-impl TryFrom<libc::c_int> for LockType {
-    type Error = InvalidLockType;
-
-    fn try_from(typ: libc::c_int) -> Result<Self, Self::Error> {
-        match typ {
-            /* F_RDLCK = */ 0 => Ok(Self::Read),
-            /* F_WRLCK = */ 1 => Ok(Self::Write),
-            /* F_UNLCK = */ 2 => Ok(Self::Unlock),
-            _n => Err(InvalidLockType(())),
-        }
-    }
-}
-
-impl TryFrom<libc::c_short> for LockType {
-    type Error = InvalidLockType;
-
-    fn try_from(typ: libc::c_short) -> Result<Self, Self::Error> {
-        Self::try_from(libc::c_int::try_from(typ)?)
-    }
-}
-
+#[doc(hidden)]
 #[derive(Debug)]
-pub struct InvalidLockType(());
+pub struct InvalidFileLock(());
 
-impl From<std::convert::Infallible> for InvalidLockType {
+impl From<std::convert::Infallible> for InvalidFileLock {
     fn from(infallible: std::convert::Infallible) -> Self {
         match infallible {}
     }
 }
 
-impl From<std::num::TryFromIntError> for InvalidLockType {
+impl From<std::num::TryFromIntError> for InvalidFileLock {
     fn from(_: std::num::TryFromIntError) -> Self {
         Self(())
     }
 }
 
-impl fmt::Display for InvalidLockType {
+impl fmt::Display for InvalidFileLock {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "invalid lock type")
+        write!(f, "invalid file lock")
     }
 }
 
-impl error::Error for InvalidLockType {}
+impl error::Error for InvalidFileLock {}
 
 macro_rules! define_opcode {
     ($(
@@ -320,14 +274,14 @@ macro_rules! define_opcode {
     )*) => {
         #[derive(Debug, Copy, Clone, PartialEq, Hash)]
         #[repr(u32)]
-        pub enum Opcode {
+        pub enum fuse_opcode {
             $(
                 $(#[$m])*
                 $Variant = $val,
             )*
         }
 
-        impl TryFrom<u32> for Opcode {
+        impl TryFrom<u32> for fuse_opcode {
             type Error = UnknownOpcode;
 
             fn try_from(opcode: u32) -> Result<Self, Self::Error> {
@@ -343,57 +297,58 @@ macro_rules! define_opcode {
 }
 
 define_opcode! {
-    Lookup = 1,
-    Forget = 2,
-    Getattr = 3,
-    Setattr = 4,
-    Readlink = 5,
-    Symlink = 6,
+    FUSE_LOOKUP = 1,
+    FUSE_FORGET = 2,
+    FUSE_GETATTR = 3,
+    FUSE_SETATTR = 4,
+    FUSE_READLINK = 5,
+    FUSE_SYMLINK = 6,
     // _ = 7,
-    Mknod = 8,
-    Mkdir = 9,
-    Unlink = 10,
-    Rmdir = 11,
-    Rename = 12,
-    Link = 13,
-    Open = 14,
-    Read = 15,
-    Write = 16,
-    Statfs = 17,
-    Release = 18,
+    FUSE_MKNOD = 8,
+    FUSE_MKDIR = 9,
+    FUSE_UNLINK = 10,
+    FUSE_RMDIR = 11,
+    FUSE_RENAME = 12,
+    FUSE_LINK = 13,
+    FUSE_OPEN = 14,
+    FUSE_READ = 15,
+    FUSE_WRITE = 16,
+    FUSE_STATFS = 17,
+    FUSE_RELEASE = 18,
     // _ = 19,
-    Fsync = 20,
-    Setxattr = 21,
-    Getxattr = 22,
-    Listxattr = 23,
-    Removexattr = 24,
-    Flush = 25,
-    Init = 26,
-    Opendir = 27,
-    Readdir = 28,
-    Releasedir = 29,
-    Fsyncdir = 30,
-    Getlk = 31,
-    Setlk = 32,
-    Setlkw = 33,
-    Access = 34,
-    Create = 35,
-    Interrupt = 36,
-    Bmap = 37,
-    Destroy = 38,
-    Ioctl = 39,
-    Poll = 40,
-    NotifyReply = 41,
-    BatchForget = 42,
-    Fallocate = 43,
-    Readdirplus = 44,
-    Rename2 = 45,
-    Lseek = 46,
-    CopyFileRange = 47,
+    FUSE_FSYNC = 20,
+    FUSE_SETXATTR = 21,
+    FUSE_GETXATTR = 22,
+    FUSE_LISTXATTR = 23,
+    FUSE_REMOVEXATTR = 24,
+    FUSE_FLUSH = 25,
+    FUSE_INIT = 26,
+    FUSE_OPENDIR = 27,
+    FUSE_READDIR = 28,
+    FUSE_RELEASEDIR = 29,
+    FUSE_FSYNCDIR = 30,
+    FUSE_GETLK = 31,
+    FUSE_SETLK = 32,
+    FUSE_SETLKW = 33,
+    FUSE_ACCESS = 34,
+    FUSE_CREATE = 35,
+    FUSE_INTERRUPT = 36,
+    FUSE_BMAP = 37,
+    FUSE_DESTROY = 38,
+    FUSE_IOCTL = 39,
+    FUSE_POLL = 40,
+    FUSE_NOTIFY_REPLY = 41,
+    FUSE_BATCH_FORGET = 42,
+    FUSE_FALLOCATE = 43,
+    FUSE_READDIRPLUS = 44,
+    FUSE_RENAME2 = 45,
+    FUSE_LSEEK = 46,
+    FUSE_COPY_FILE_RANGE = 47,
 
-    CuseInit = 4096,
+    CUSE_INIT = 4096,
 }
 
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct UnknownOpcode(u32);
 
@@ -405,88 +360,45 @@ impl fmt::Display for UnknownOpcode {
 
 impl error::Error for UnknownOpcode {}
 
-/// ABI compatible with `fuse_in_header`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct InHeader {
+pub struct fuse_in_header {
     pub len: u32,
     pub opcode: u32,
-    pub unique: Unique,
-    pub nodeid: Nodeid,
-    pub uid: Uid,
-    pub gid: Gid,
-    pub pid: Pid,
-    #[doc(hidden)]
+    pub unique: u64,
+    pub nodeid: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub pid: u32,
     pub padding: u32,
 }
 
-impl InHeader {
-    pub fn opcode(&self) -> Option<Opcode> {
-        Opcode::try_from(self.opcode).ok()
-    }
-}
-
-/// ABI compatible with `fuse_init_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct InitIn {
+pub struct fuse_init_in {
     pub major: u32,
     pub minor: u32,
     pub max_readahead: u32,
-    pub flags: CapFlags,
+    pub flags: u32,
 }
 
-bitflags! {
-    /// Capability flags.
-    #[repr(transparent)]
-    pub struct CapFlags: u32 {
-        const ASYNC_READ = 1;
-        const POSIX_LOCKS = 1 << 1;
-        const FILE_OPS = 1 << 2;
-        const ATOMIC_O_TRUNC = 1 << 3;
-        const EXPORT_SUPPORT = 1 << 4;
-        const BIG_WRITES = 1 << 5;
-        const DONT_MASK = 1 << 6;
-        const SPLICE_WRITE = 1 << 7;
-        const SPLICE_MOVE = 1 << 8;
-        const SPLICE_READ = 1 << 9;
-        const FLOCK_LOCKS = 1 << 10;
-        const HAS_IOCTL_DIR = 1 << 11;
-        const AUTO_INVAL_DATA = 1 << 12;
-        const DO_READDIRPLUS = 1 << 13;
-        const READDIRPLUS_AUTO = 1 << 14;
-        const ASYNC_DIO = 1 << 15;
-        const WRITEBACK_CACHE = 1 << 16;
-        const NO_OPEN_SUPPORT = 1 << 17;
-        const PARALLEL_DIROPS = 1 << 18;
-        const HANDLE_KILLPRIV = 1 << 19;
-        const POSIX_ACL = 1 << 20;
-        const ABORT_ERROR = 1 << 21;
-        const MAX_PAGES = 1 << 22;
-        const CACHE_SYMLINKS = 1 << 23;
-    }
-}
-
-/// ABI compatible with `fuse_forget_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct ForgetIn {
+pub struct fuse_forget_in {
     pub nlookup: u64,
 }
 
-/// ABI compatible with `fuse_getattr_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct GetattrIn {
-    pub getattr_flags: GetattrFlags,
-    #[doc(hidden)]
+pub struct fuse_getattr_in {
+    pub getattr_flags: u32,
     pub dummy: u32,
     pub fh: u64,
 }
 
-impl GetattrIn {
+impl fuse_getattr_in {
     pub fn fh(&self) -> Option<u64> {
-        if self.getattr_flags.contains(GetattrFlags::FH) {
+        if self.getattr_flags & FUSE_GETATTR_FH != 0 {
             Some(self.fh)
         } else {
             None
@@ -494,20 +406,10 @@ impl GetattrIn {
     }
 }
 
-bitflags! {
-    /// Getattr flags.
-    #[repr(transparent)]
-    pub struct GetattrFlags: u32 {
-        const FH = 1 << 0;
-    }
-}
-
-/// ABI compatible with `fuse_setattr_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct SetattrIn {
-    pub valid: SetattrFlags,
-    #[doc(hidden)]
+pub struct fuse_setattr_in {
+    pub valid: u32,
     pub padding: u32,
     pub fh: u64,
     pub size: u64,
@@ -518,19 +420,17 @@ pub struct SetattrIn {
     pub atimensec: u32,
     pub mtimensec: u32,
     pub ctimensec: u32,
-    pub mode: FileMode,
-    #[doc(hidden)]
+    pub mode: u32,
     pub unused4: u32,
-    pub uid: Uid,
-    pub gid: Gid,
-    #[doc(hidden)]
+    pub uid: u32,
+    pub gid: u32,
     pub unused5: u32,
 }
 
-impl SetattrIn {
+impl fuse_setattr_in {
     #[inline]
-    fn get<R>(&self, flag: SetattrFlags, f: impl FnOnce(&Self) -> R) -> Option<R> {
-        if self.valid.contains(flag) {
+    fn get<R>(&self, flag: u32, f: impl FnOnce(&Self) -> R) -> Option<R> {
+        if self.valid & flag != 0 {
             Some(f(self))
         } else {
             None
@@ -538,134 +438,107 @@ impl SetattrIn {
     }
 
     pub fn fh(&self) -> Option<u64> {
-        self.get(SetattrFlags::FH, |this| this.fh)
+        self.get(FATTR_FH, |this| this.fh)
     }
 
     pub fn size(&self) -> Option<u64> {
-        self.get(SetattrFlags::SIZE, |this| this.size)
+        self.get(FATTR_SIZE, |this| this.size)
     }
 
     pub fn lock_owner(&self) -> Option<u64> {
-        self.get(SetattrFlags::LOCKOWNER, |this| this.lock_owner)
+        self.get(FATTR_LOCKOWNER, |this| this.lock_owner)
     }
 
     pub fn atime(&self) -> Option<(u64, u32, bool)> {
-        self.get(SetattrFlags::ATIME, |this| {
+        self.get(FATTR_ATIME, |this| {
             (
                 this.atime,
                 this.atimensec,
-                this.valid.contains(SetattrFlags::ATIME_NOW),
+                this.valid & FATTR_ATIME_NOW != 0,
             )
         })
     }
 
     pub fn mtime(&self) -> Option<(u64, u32, bool)> {
-        self.get(SetattrFlags::CTIME, |this| {
+        self.get(FATTR_CTIME, |this| {
             (
                 this.mtime,
                 this.mtimensec,
-                this.valid.contains(SetattrFlags::MTIME_NOW),
+                this.valid & FATTR_MTIME_NOW != 0,
             )
         })
     }
 
     pub fn ctime(&self) -> Option<(u64, u32)> {
-        self.get(SetattrFlags::CTIME, |this| (this.ctime, this.ctimensec))
+        self.get(FATTR_CTIME, |this| (this.ctime, this.ctimensec))
     }
 
     /// Returns the new file if specified.
-    pub fn mode(&self) -> Option<FileMode> {
-        self.get(SetattrFlags::MODE, |this| this.mode)
+    pub fn mode(&self) -> Option<u32> {
+        self.get(FATTR_MODE, |this| this.mode)
     }
 
     /// Returns the new UID if specified.
-    pub fn uid(&self) -> Option<Uid> {
-        self.get(SetattrFlags::UID, |this| this.uid)
+    pub fn uid(&self) -> Option<u32> {
+        self.get(FATTR_UID, |this| this.uid)
     }
 
     /// Returns the new GID if specified.
-    pub fn gid(&self) -> Option<Gid> {
-        self.get(SetattrFlags::GID, |this| this.gid)
+    pub fn gid(&self) -> Option<u32> {
+        self.get(FATTR_GID, |this| this.gid)
     }
 }
 
-bitflags! {
-    /// Setattr flags.
-    #[repr(transparent)]
-    pub struct SetattrFlags: u32 {
-        const MODE = 1 << 0;
-        const UID = 1 << 1;
-        const GID = 1 << 2;
-        const SIZE = 1 << 3;
-        const ATIME = 1 << 4;
-        const MTIME = 1 << 5;
-        const FH = 1 << 6;
-        const ATIME_NOW = 1 << 7;
-        const MTIME_NOW = 1 << 8;
-        const LOCKOWNER = 1 << 9;
-        const CTIME = 1 << 10;
-    }
-}
-
-/// ABI compatible with `fuse_mknod_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct MknodIn {
-    pub mode: FileMode,
+pub struct fuse_mknod_in {
+    pub mode: u32,
     pub rdev: u32,
     pub umask: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_mknod_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct MkdirIn {
-    pub mode: FileMode,
+pub struct fuse_mkdir_in {
+    pub mode: u32,
     pub umask: u32,
 }
 
-/// ABI compatible with `fuse_rename_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct RenameIn {
-    pub newdir: Nodeid,
+pub struct fuse_rename_in {
+    pub newdir: u64,
 }
 
-/// ABI compatible with `fuse_link_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct LinkIn {
-    pub oldnodeid: Nodeid,
+pub struct fuse_link_in {
+    pub oldnodeid: u64,
 }
 
-/// ABI compatible with `fuse_open_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct OpenIn {
+pub struct fuse_open_in {
     pub flags: u32,
-    #[doc(hidden)]
     pub unused: u32,
 }
 
-/// ABI compatible with `fuse_read_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct ReadIn {
+pub struct fuse_read_in {
     pub fh: u64,
     pub offset: u64,
     pub size: u32,
-    pub read_flags: ReadFlags,
+    pub read_flags: u32,
     pub lock_owner: u64,
     pub flags: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-impl ReadIn {
+impl fuse_read_in {
     pub fn lock_owner(&self) -> Option<u64> {
-        if self.read_flags.contains(ReadFlags::LOCKOWNER) {
+        if self.read_flags & FUSE_READ_LOCKOWNER != 0 {
             Some(self.lock_owner)
         } else {
             None
@@ -673,32 +546,21 @@ impl ReadIn {
     }
 }
 
-bitflags! {
-    /// Read flags.
-    #[repr(transparent)]
-    pub struct ReadFlags: u32 {
-        /// The field `lock_owner` is valid.
-        const LOCKOWNER = 1 << 1;
-    }
-}
-
-/// ABI compatible with `fuse_write_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct WriteIn {
+pub struct fuse_write_in {
     pub fh: u64,
     pub offset: u64,
     pub size: u32,
-    pub write_flags: WriteFlags,
+    pub write_flags: u32,
     pub lock_owner: u64,
     pub flags: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-impl WriteIn {
+impl fuse_write_in {
     pub fn lock_owner(&self) -> Option<u64> {
-        if self.write_flags.contains(WriteFlags::LOCKOWNER) {
+        if self.write_flags & FUSE_WRITE_LOCKOWNER != 0 {
             Some(self.lock_owner)
         } else {
             None
@@ -706,251 +568,145 @@ impl WriteIn {
     }
 }
 
-bitflags! {
-    /// Write flags.
-    #[repr(transparent)]
-    pub struct WriteFlags: u32 {
-        /// Delayed write from page cache, file handle is guessed.
-        const CACHE = 1 << 0;
-
-        /// The field `lock_owner` is valid.
-        const LOCKOWNER = 1 << 1;
-    }
-}
-
-/// ABI compatible with `fuse_flush_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct FlushIn {
+pub struct fuse_flush_in {
     pub fh: u64,
-    #[doc(hidden)]
     pub unused: u32,
-    #[doc(hidden)]
     pub padding: u32,
     pub lock_owner: u64,
 }
 
-/// ABI compatible with `fuse_release_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct ReleaseIn {
+pub struct fuse_release_in {
     pub fh: u64,
     pub flags: u32,
-    pub release_flags: ReleaseFlags,
+    pub release_flags: u32,
     pub lock_owner: u64,
 }
 
-impl ReleaseIn {
+impl fuse_release_in {
     pub fn flush(&self) -> bool {
-        self.release_flags.contains(ReleaseFlags::FLUSH)
+        self.release_flags & FUSE_RELEASE_FLUSH != 0
     }
 }
 
-bitflags! {
-    /// Release flags.
-    #[repr(transparent)]
-    pub struct ReleaseFlags: u32 {
-        const FLUSH = 1 << 0;
-        const FLOCK_UNLOCK = 1 << 1;
-    }
-}
-
-/// ABI compatible with `fuse_fsync_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct FsyncIn {
+pub struct fuse_fsync_in {
     pub fh: u64,
-    pub fsync_flags: FsyncFlags,
-    #[doc(hidden)]
+    pub fsync_flags: u32,
     pub padding: u32,
 }
 
-impl FsyncIn {
+impl fuse_fsync_in {
     pub fn datasync(&self) -> bool {
-        self.fsync_flags.contains(FsyncFlags::DATASYNC)
+        self.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
     }
 }
 
-bitflags! {
-    #[repr(transparent)]
-    pub struct FsyncFlags: u32 {
-        const DATASYNC = 1 << 0;
-    }
-}
-
-/// ABI compatible with `fuse_getxattr_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct GetxattrIn {
+pub struct fuse_getxattr_in {
     pub size: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_setxattr_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct SetxattrIn {
+pub struct fuse_setxattr_in {
     pub size: u32,
     pub flags: u32,
 }
 
-/// ABI compatible with `fuse_lk_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct LkIn {
+pub struct fuse_lk_in {
     pub fh: u64,
     pub owner: u64,
-    pub lk: FileLock,
-    pub lk_flags: LkFlags,
-    #[doc(hidden)]
+    pub lk: fuse_file_lock,
+    pub lk_flags: u32,
     pub padding: u32,
 }
 
-bitflags! {
-    /// Lk flags.
-    #[repr(transparent)]
-    pub struct LkFlags: u32 {
-        const FLOCK = 1 << 0;
-    }
-}
-
-/// ABI compatible with `fuse_access_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct AccessIn {
+pub struct fuse_access_in {
     pub mask: u32,
     #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_create_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct CreateIn {
+pub struct fuse_create_in {
     pub flags: u32,
-    pub mode: FileMode,
+    pub mode: u32,
     pub umask: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_bmap_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct BmapIn {
+pub struct fuse_bmap_in {
     pub block: u64,
     pub blocksize: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_out_header`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct OutHeader {
+pub struct fuse_out_header {
     pub len: u32,
     pub error: i32,
-    pub unique: Unique,
+    pub unique: u64,
 }
 
-/// ABI compatible with `fuse_attr_out`.
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
-pub struct AttrOut {
+pub struct fuse_attr_out {
     pub attr_valid: u64,
     pub attr_valid_nsec: u32,
-    #[doc(hidden)]
     pub dummy: u32,
-    pub attr: FileAttr,
+    pub attr: fuse_attr,
 }
 
-impl From<FileAttr> for AttrOut {
-    fn from(attr: FileAttr) -> Self {
-        let mut attr_out = Self::default();
-        attr_out.attr = attr;
-        attr_out
-    }
-}
-
-impl TryFrom<libc::stat> for AttrOut {
-    type Error = std::num::TryFromIntError;
-
-    fn try_from(attr: libc::stat) -> Result<Self, Self::Error> {
-        FileAttr::try_from(attr).map(Self::from)
-    }
-}
-
-impl AttrOut {
-    pub fn attr_valid(&self) -> (u64, u32) {
-        (self.attr_valid, self.attr_valid_nsec)
-    }
-
-    pub fn set_attr_valid(&mut self, sec: u64, nsec: u32) {
-        self.attr_valid = sec;
-        self.attr_valid_nsec = nsec;
-    }
-}
-
-/// ABI compatible with `fuse_entry_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct EntryOut {
-    pub nodeid: Nodeid,
+pub struct fuse_entry_out {
+    pub nodeid: u64,
     pub generation: u64,
     pub entry_valid: u64,
     pub attr_valid: u64,
     pub entry_valid_nsec: u32,
     pub attr_valid_nsec: u32,
-    pub attr: FileAttr,
+    pub attr: fuse_attr,
 }
 
-impl EntryOut {
-    pub fn entry_valid(&self) -> (u64, u32) {
-        (self.entry_valid, self.entry_valid_nsec)
-    }
-
-    pub fn set_entry_valid(&mut self, sec: u64, nsec: u32) {
-        self.entry_valid = sec;
-        self.entry_valid_nsec = nsec;
-    }
-
-    pub fn attr_valid(&self) -> (u64, u32) {
-        (self.attr_valid, self.attr_valid_nsec)
-    }
-
-    pub fn set_attr_valid(&mut self, sec: u64, nsec: u32) {
-        self.attr_valid = sec;
-        self.attr_valid_nsec = nsec;
-    }
-}
-
-/// ABI compatible with `fuse_init_out`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct InitOut {
+pub struct fuse_init_out {
     pub major: u32,
     pub minor: u32,
     pub max_readahead: u32,
-    pub flags: CapFlags,
+    pub flags: u32,
     pub max_background: u16,
     pub congestion_threshold: u16,
     pub max_write: u32,
     pub time_gran: u32,
     pub max_pages: u16,
-    #[doc(hidden)]
     pub padding: u16,
-    #[doc(hidden)]
     pub unused: [u32; 8],
 }
 
-impl Default for InitOut {
+impl Default for fuse_init_out {
     fn default() -> Self {
         Self {
-            major: consts::KERNEL_VERSION,
-            minor: consts::KERNEL_MINOR_VERSION,
+            major: FUSE_KERNEL_VERSION,
+            minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 0,
-            flags: CapFlags::empty(),
+            flags: 0,
             max_background: 0,
             congestion_threshold: 0,
             max_write: 0,
@@ -962,213 +718,146 @@ impl Default for InitOut {
     }
 }
 
-/// ABI compatible with `fuse_getxattr_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct GetxattrOut {
+pub struct fuse_getxattr_out {
     pub size: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_open_out`.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[repr(C)]
-pub struct OpenOut {
+pub struct fuse_open_out {
     pub fh: u64,
-    pub open_flags: OpenFlags,
-    #[doc(hidden)]
+    pub open_flags: u32,
     pub padding: u32,
 }
 
-impl Default for OpenOut {
-    fn default() -> Self {
-        Self {
-            fh: 0,
-            open_flags: OpenFlags::empty(),
-            padding: 0,
-        }
-    }
-}
-
-bitflags! {
-    /// Open flags.
-    #[repr(transparent)]
-    pub struct OpenFlags: u32 {
-        const DIRECT_IO = 1 << 0;
-        const KEEP_CACHE = 1 << 1;
-        const NONSEEKABLE = 1 << 2;
-        const CACHE_DIR = 1 << 3;
-    }
-}
-
-/// ABI compatible with `fuse_write_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct WriteOut {
+pub struct fuse_write_out {
     pub size: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_statfs_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct StatfsOut {
-    pub st: Statfs,
+pub struct fuse_statfs_out {
+    pub st: fuse_kstatfs,
 }
 
-/// ABI compatible with `fuse_lk_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct LkOut {
-    pub lk: FileLock,
+pub struct fuse_lk_out {
+    pub lk: fuse_file_lock,
 }
 
-/// ABI compatible with `fuse_bmap_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct BmapOut {
+pub struct fuse_bmap_out {
     pub block: u64,
 }
 
-/// ABI compatible with `fuse_ioctl_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct IoctlIn {
+pub struct fuse_ioctl_in {
     pub fh: u64,
-    pub flags: IoctlFlags,
+    pub flags: u32,
     pub cmd: u32,
     pub arg: u64,
     pub in_size: u32,
     pub out_size: u32,
 }
 
-/// ABI compatible with `fuse_ioctl_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct IoctlOut {
+pub struct fuse_ioctl_out {
     pub result: i32,
     pub flags: u32,
     pub in_iovs: u32,
     pub out_iovs: u32,
 }
 
-bitflags! {
-    /// Ioctl flags.
-    #[repr(transparent)]
-    pub struct IoctlFlags: u32 {
-        const COMPAT = 1 << 0;
-        const UNRESTRICTED = 1 << 1;
-        const RETRY = 1 << 2;
-        const USE_32BIT = 1 << 3;
-        const DIR = 1 << 4;
-    }
-}
-
-/// ABI compatible with `fuse_ioctl_iovec`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct IoctlIovec {
+pub struct fuse_ioctl_iovec {
     pub base: u64,
     pub len: u64,
 }
 
-/// ABI compatible with `fuse_poll_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct PollIn {
+pub struct fuse_poll_in {
     pub fh: u64,
     pub kh: u64,
     pub flags: u32,
     pub events: u32,
 }
 
-/// ABI compatible with `fuse_poll_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct PollOut {
+pub struct fuse_poll_out {
     pub revents: u32,
     #[doc(hidden)]
     pub padding: u32,
 }
 
-bitflags! {
-    /// Poll flags.
-    #[repr(transparent)]
-    pub struct PollFlags: u32 {
-        const SCHEDULE_NOTIFY = 1 << 0;
-    }
-}
-
-/// ABI compatible with `fuse_interrupt_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct InterruptIn {
-    pub unique: Unique,
+pub struct fuse_interrupt_in {
+    pub unique: u64,
 }
 
-/// ABI compatible with `fuse_fallocate_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct FallocateIn {
+pub struct fuse_fallocate_in {
     pub fh: u64,
     pub offset: u64,
     pub length: u64,
     pub mode: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_batch_forget_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct BatchForgetIn {
+pub struct fuse_batch_forget_in {
     pub count: u32,
-    #[doc(hidden)]
     pub dummy: u32,
 }
 
-/// ABI compatible with `fuse_forget_one`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct ForgetOne {
-    pub nodeid: Nodeid,
+pub struct fuse_forget_one {
+    pub nodeid: u64,
     pub nlookup: u64,
 }
 
-/// ABI compatible with `fuse_rename2_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct Rename2In {
+pub struct fuse_rename2_in {
     pub newdir: u64,
     pub flags: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_lseek_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct LseekIn {
+pub struct fuse_lseek_in {
     pub fh: u64,
     pub offset: u64,
     pub whence: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
-/// ABI compatible with `fuse_lseek_out`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct LseekOut {
+pub struct fuse_lseek_out {
     pub offset: u64,
 }
 
-/// ABI compatible with `fuse_copy_file_range_in`.
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct CopyFileRangeIn {
+pub struct fuse_copy_file_range_in {
     pub fh_in: u64,
     pub off_in: u64,
     pub nodeid_out: u64,
@@ -1178,135 +867,100 @@ pub struct CopyFileRangeIn {
     pub flags: u64,
 }
 
-pub mod notify {
-    use crate::{Nodeid, Unique};
-
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-    #[repr(u32)]
-    pub enum NotifyCode {
-        Poll = 1,
-        InvalInode = 2,
-        InvalEntry = 3,
-        Store = 4,
-        Retrieve = 5,
-        Delete = 6,
-    }
-
-    impl NotifyCode {
-        pub const MAX: u32 = FUSE_NOTIFY_CODE_MAX;
-    }
-
-    pub const FUSE_NOTIFY_CODE_MAX: u32 = 7;
-
-    #[derive(Debug, Default)]
-    #[repr(C)]
-    pub struct PollWakeupOut {
-        pub kh: u64,
-    }
-
-    #[derive(Debug, Default)]
-    #[repr(C)]
-    pub struct InvalInodeOut {
-        pub ino: Nodeid,
-        pub off: i64,
-        pub len: i64,
-    }
-
-    #[derive(Debug, Default)]
-    #[repr(C)]
-    pub struct InvalEntryOut {
-        pub parent: Nodeid,
-        pub namelen: u32,
-        #[doc(hidden)]
-        pub padding: u32,
-    }
-
-    #[derive(Debug, Default)]
-    #[repr(C)]
-    pub struct DeleteOut {
-        pub parent: Nodeid,
-        pub child: Nodeid,
-        pub namelen: u32,
-        #[doc(hidden)]
-        pub padding: u32,
-    }
-
-    #[derive(Debug, Default)]
-    #[repr(C)]
-    pub struct StoreOut {
-        pub nodeid: Nodeid,
-        pub offset: u64,
-        pub size: u32,
-        #[doc(hidden)]
-        pub padding: u32,
-    }
-
-    #[derive(Debug, Default)]
-    #[repr(C)]
-    pub struct RetrieveOut {
-        pub notify_unique: Unique,
-        pub nodeid: Nodeid,
-        pub offset: u64,
-        pub size: u32,
-        #[doc(hidden)]
-        pub padding: u32,
-    }
-
-    #[derive(Debug, Clone)]
-    #[repr(C)]
-    pub struct RetrieveIn {
-        #[doc(hidden)]
-        pub dummy1: u64,
-        pub offset: u64,
-        pub size: u32,
-        #[doc(hidden)]
-        pub dummy2: u32,
-        #[doc(hidden)]
-        pub dummy3: u64,
-        #[doc(hidden)]
-        pub dummy4: u64,
-    }
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum fuse_notify_code {
+    FUSE_NOTIFY_POLL = 1,
+    FUSE_NOTIFY_INVAL_INODE = 2,
+    FUSE_NOTIFY_INVAL_ENTRY = 3,
+    FUSE_NOTIFY_STORE = 4,
+    FUSE_NOTIFY_RETRIEVE = 5,
+    FUSE_NOTIFY_DELETE = 6,
+    FUSE_NOTIFY_CODE_MAX,
 }
 
-/// CUSE
-pub mod cuse {
-    use bitflags::bitflags;
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct fuse_notify_poll_wake_out {
+    pub kh: u64,
+}
 
-    /// ABI compatible with `cuse_init_in`.
-    #[derive(Debug, Clone)]
-    #[repr(C)]
-    pub struct InitIn {
-        pub major: u32,
-        pub minor: u32,
-        #[doc(hidden)]
-        pub unused: u32,
-        pub flags: CuseFlags,
-    }
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct fuse_notify_inval_inode_out {
+    pub ino: u64,
+    pub off: i64,
+    pub len: i64,
+}
 
-    /// ABI compatible with `cuse_init_out`.
-    #[derive(Debug, Clone)]
-    #[repr(C)]
-    pub struct InitOut {
-        pub major: u32,
-        pub minor: u32,
-        #[doc(hidden)]
-        pub unused: u32,
-        pub flags: CuseFlags,
-        pub max_read: u32,
-        pub max_write: u32,
-        pub dev_major: u32,
-        pub dev_minor: u32,
-        #[doc(hidden)]
-        pub spare: [u32; 10],
-    }
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct fuse_notify_inval_entry_out {
+    pub parent: u64,
+    pub namelen: u32,
+    pub padding: u32,
+}
 
-    bitflags! {
-        /// CUSE init flags.
-        pub struct CuseFlags: u32 {
-            /// use unrestricted ioctl.
-            const UNRESTRICTED_IOCTL = 1 << 0;
-        }
-    }
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct fuse_notify_delete_out {
+    pub parent: u64,
+    pub child: u64,
+    pub namelen: u32,
+    pub padding: u32,
+}
+
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct fuse_notify_store_out {
+    pub nodeid: u64,
+    pub offset: u64,
+    pub size: u32,
+    pub padding: u32,
+}
+
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct fuse_notify_retrieve_out {
+    pub notify_unique: u64,
+    pub nodeid: u64,
+    pub offset: u64,
+    pub size: u32,
+    pub padding: u32,
+}
+
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct fuse_notify_retrieve_in {
+    pub dummy1: u64,
+    pub offset: u64,
+    pub size: u32,
+    pub dummy2: u32,
+    pub dummy3: u64,
+    pub dummy4: u64,
+}
+
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct cuse_init_in {
+    pub major: u32,
+    pub minor: u32,
+    pub unused: u32,
+    pub flags: u32,
+}
+
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct cuse_init_out {
+    pub major: u32,
+    pub minor: u32,
+    pub unused: u32,
+    pub flags: u32,
+    pub max_read: u32,
+    pub max_write: u32,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+    pub spare: [u32; 10],
 }
 
 macro_rules! impl_as_ref_for_abi {
@@ -1326,14 +980,14 @@ macro_rules! impl_as_ref_for_abi {
 }
 
 impl_as_ref_for_abi! {
-    OutHeader,
-    InitOut,
-    OpenOut,
-    AttrOut,
-    EntryOut,
-    GetxattrOut,
-    WriteOut,
-    StatfsOut,
-    LkOut,
-    BmapOut,
+    fuse_out_header,
+    fuse_init_out,
+    fuse_open_out,
+    fuse_attr_out,
+    fuse_entry_out,
+    fuse_getxattr_out,
+    fuse_write_out,
+    fuse_statfs_out,
+    fuse_lk_out,
+    fuse_bmap_out,
 }
