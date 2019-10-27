@@ -9,7 +9,6 @@ cargo fetch
 rm -rfv $DIR/target/doc
 
 timeout -sKILL 900 cargo doc --no-deps -p polyfuse-sys
-timeout -sKILL 900 cargo doc --no-deps -p polyfuse-abi
 timeout -sKILL 900 cargo doc --no-deps -p polyfuse
 
 rm -rfv $DIR/target/doc/.lock

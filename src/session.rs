@@ -6,7 +6,7 @@ use crate::{
 };
 use futures_channel::oneshot;
 use futures_io::{AsyncRead, AsyncWrite};
-use polyfuse_abi::fuse_init_out;
+use polyfuse_sys::abi::fuse_init_out;
 use std::{collections::HashMap, future::Future, io};
 
 /// A FUSE filesystem driver.
@@ -254,10 +254,10 @@ impl Session {
                 let mut flock_release = false;
                 let mut lock_owner = None;
                 if self.proto_minor >= 8 {
-                    flush = arg.release_flags & polyfuse_abi::FUSE_RELEASE_FLUSH != 0;
+                    flush = arg.release_flags & polyfuse_sys::abi::FUSE_RELEASE_FLUSH != 0;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
-                if arg.release_flags & polyfuse_abi::FUSE_RELEASE_FLOCK_UNLOCK != 0 {
+                if arg.release_flags & polyfuse_sys::abi::FUSE_RELEASE_FLOCK_UNLOCK != 0 {
                     flock_release = true;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
@@ -417,7 +417,7 @@ impl Session {
                 .await?;
             }
             Arg::Setlk { arg, sleep } => {
-                if arg.lk_flags & polyfuse_abi::FUSE_LK_FLOCK != 0 {
+                if arg.lk_flags & polyfuse_sys::abi::FUSE_LK_FLOCK != 0 {
                     const F_RDLCK: u32 = libc::F_RDLCK as u32;
                     const F_WRLCK: u32 = libc::F_WRLCK as u32;
                     const F_UNLCK: u32 = libc::F_UNLCK as u32;

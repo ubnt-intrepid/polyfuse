@@ -17,7 +17,7 @@ use crate::reply::{
 };
 use futures_io::AsyncWrite;
 use futures_util::io::AsyncWriteExt;
-use polyfuse_abi::{
+use polyfuse_sys::abi::{
     fuse_attr, //
     fuse_file_lock,
     fuse_in_header,

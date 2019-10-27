@@ -11,7 +11,7 @@ use futures_util::{
     stream::StreamExt,
 };
 use libc::c_int;
-use polyfuse_abi::fuse_opcode;
+use polyfuse_sys::abi::fuse_opcode;
 use std::io;
 use std::{convert::TryFrom, path::Path, sync::Arc};
 use tokio_net::signal::unix::{signal, SignalKind};

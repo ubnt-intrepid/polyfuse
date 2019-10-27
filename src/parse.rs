@@ -1,4 +1,4 @@
-use polyfuse_abi::{
+use polyfuse_sys::abi::{
     fuse_access_in, //
     fuse_bmap_in,
     fuse_create_in,

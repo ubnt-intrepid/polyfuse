@@ -63,7 +63,11 @@ impl Connection {
             .collect::<Result<_, _>>()?;
         let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
 
-        let mut f_args = fuse_args::new(c_args.len() as c_int, c_args.as_ptr());
+        let mut f_args = fuse_args {
+            argc: c_args.len() as c_int,
+            argv: c_args.as_ptr(),
+            allocated: 0,
+        };
 
         let fd = unsafe { fuse_mount_compat25(c_mountpoint.as_ptr(), &mut f_args) };
         unsafe {

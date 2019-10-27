@@ -2,6 +2,7 @@
 name = "polyfuse-sys"
 version = "0.1.0"
 publish = false
+description = "A collection of FFI bindings for polyfuse"
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
 build = "build.rs"

@@ -31,10 +31,6 @@ version = "0.2.0-alpha.6"
 version = "0.1.0"
 path = "polyfuse-sys"
 
-[dependencies.polyfuse-abi]
-version = "0.1.0"
-path = "polyfuse-abi"
-
 [dev-dependencies]
 pretty_env_logger = "0.3"
 tokio = "0.2.0-alpha.6"
@@ -47,7 +43,6 @@ features = [ "user-hooks" ]
 [workspace]
 members = [
   ".",
-  "polyfuse-abi",
-  "polyfuse-abi/systest",
   "polyfuse-sys",
+  "systest",
 ]
