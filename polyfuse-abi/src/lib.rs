@@ -272,14 +272,19 @@ impl error::Error for InvalidFileLock {}
 macro_rules! define_opcode {
     ($(
         $(#[$m:meta])*
-        $Variant:ident = $val:expr,
+        $VARIANT:ident = $val:expr,
     )*) => {
+        $(
+            #[doc(hidden)]
+            pub const $VARIANT: u32 = $val;
+        )*
+
         #[derive(Debug, Copy, Clone, PartialEq, Hash)]
         #[repr(u32)]
         pub enum fuse_opcode {
             $(
                 $(#[$m])*
-                $Variant = $val,
+                $VARIANT = self::$VARIANT,
             )*
         }
 
@@ -289,7 +294,7 @@ macro_rules! define_opcode {
             fn try_from(opcode: u32) -> Result<Self, Self::Error> {
                 match opcode {
                     $(
-                        $val => Ok(Self::$Variant),
+                        $val => Ok(Self::$VARIANT),
                     )*
                     opcode => Err(UnknownOpcode(opcode)),
                 }
@@ -872,16 +877,35 @@ pub struct fuse_copy_file_range_in {
     pub flags: u64,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[repr(u32)]
-pub enum fuse_notify_code {
+macro_rules! define_notify_code {
+    ($(
+        $(#[$m:meta])*
+        $VARIANT:ident = $val:expr,
+    )*) => {
+        $(
+            #[doc(hidden)]
+            pub const $VARIANT: u32 = $val;
+        )*
+
+        #[derive(Debug, Copy, Clone, PartialEq, Hash)]
+        #[repr(u32)]
+        pub enum fuse_notify_code {
+            $(
+                $(#[$m])*
+                $VARIANT = self::$VARIANT,
+            )*
+        }
+    };
+}
+
+define_notify_code! {
     FUSE_NOTIFY_POLL = 1,
     FUSE_NOTIFY_INVAL_INODE = 2,
     FUSE_NOTIFY_INVAL_ENTRY = 3,
     FUSE_NOTIFY_STORE = 4,
     FUSE_NOTIFY_RETRIEVE = 5,
     FUSE_NOTIFY_DELETE = 6,
-    FUSE_NOTIFY_CODE_MAX,
+    FUSE_NOTIFY_CODE_MAX = 7,
 }
 
 #[derive(Debug, Default)]
