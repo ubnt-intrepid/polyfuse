@@ -1,19 +1,15 @@
 //! Replies to the kernel.
 
-use crate::fs::Context;
+use crate::fs::{Context, FileAttr, FileLock, FsStatistics};
 use polyfuse_abi::{
-    AttrOut, //
-    BmapOut,
-    EntryOut,
-    FileAttr,
-    FileLock,
-    GetxattrOut,
-    LkOut,
-    OpenFlags,
-    OpenOut,
-    Statfs,
-    StatfsOut,
-    WriteOut,
+    fuse_attr_out, //
+    fuse_bmap_out,
+    fuse_entry_out,
+    fuse_getxattr_out,
+    fuse_lk_out,
+    fuse_open_out,
+    fuse_statfs_out,
+    fuse_write_out,
 };
 use std::{
     convert::TryInto,
@@ -91,10 +87,11 @@ impl ReplyAttr {
         T: TryInto<FileAttr>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let attr_out = AttrOut {
+        let attr_out = fuse_attr_out {
             attr: attr
                 .try_into()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                .into_inner(),
             attr_valid: self.attr_valid.0,
             ..Default::default()
         };
@@ -143,8 +140,9 @@ impl ReplyEntry {
     {
         let attr = attr
             .try_into()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        let entry_out = EntryOut {
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+            .into_inner();
+        let entry_out = fuse_entry_out {
             nodeid: attr.ino,
             generation,
             entry_valid: self.entry_valid.0,
@@ -176,45 +174,43 @@ impl ReplyReadlink {
 #[derive(Debug)]
 #[must_use]
 pub struct ReplyOpen {
-    open_flags: OpenFlags,
+    open_flags: u32,
 }
 
 impl Default for ReplyOpen {
     fn default() -> Self {
-        Self {
-            open_flags: OpenFlags::empty(),
-        }
+        Self { open_flags: 0 }
     }
 }
 
 impl ReplyOpen {
-    fn set_flag(&mut self, flag: OpenFlags, enabled: bool) {
+    fn set_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
-            self.open_flags.insert(flag);
+            self.open_flags |= flag;
         } else {
-            self.open_flags.remove(flag);
+            self.open_flags &= !flag;
         }
     }
 
     /// Indicates that the direct I/O is used on this file.
     pub fn direct_io(&mut self, enabled: bool) {
-        self.set_flag(OpenFlags::DIRECT_IO, enabled);
+        self.set_flag(polyfuse_abi::FOPEN_DIRECT_IO, enabled);
     }
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
     pub fn keep_cache(&mut self, enabled: bool) {
-        self.set_flag(OpenFlags::KEEP_CACHE, enabled);
+        self.set_flag(polyfuse_abi::FOPEN_KEEP_CACHE, enabled);
     }
 
     /// Indicates that the opened file is not seekable.
     pub fn nonseekable(&mut self, enabled: bool) {
-        self.set_flag(OpenFlags::NONSEEKABLE, enabled);
+        self.set_flag(polyfuse_abi::FOPEN_NONSEEKABLE, enabled);
     }
 
     /// Reply to the kernel with the specified file handle and flags.
     pub async fn open(self, cx: &mut Context<'_>, fh: u64) -> io::Result<()> {
-        let out = OpenOut {
+        let out = fuse_open_out {
             fh,
             open_flags: self.open_flags,
             ..Default::default()
@@ -233,7 +229,7 @@ pub struct ReplyWrite {
 impl ReplyWrite {
     /// Reply to the kernel with the total length of written data.
     pub async fn write(self, cx: &mut Context<'_>, size: u32) -> io::Result<()> {
-        let out = WriteOut {
+        let out = fuse_write_out {
             size,
             ..Default::default()
         };
@@ -242,26 +238,18 @@ impl ReplyWrite {
 }
 
 /// Reply with an opened directory.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
 pub struct ReplyOpendir {
-    open_flags: OpenFlags,
-}
-
-impl Default for ReplyOpendir {
-    fn default() -> Self {
-        Self {
-            open_flags: OpenFlags::empty(),
-        }
-    }
+    open_flags: u32,
 }
 
 impl ReplyOpendir {
-    fn set_flag(&mut self, flag: OpenFlags, enabled: bool) {
+    fn set_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
-            self.open_flags.insert(flag);
+            self.open_flags |= flag;
         } else {
-            self.open_flags.remove(flag);
+            self.open_flags &= !flag;
         }
     }
 
@@ -269,12 +257,12 @@ impl ReplyOpendir {
 
     /// Enable caching of entries returned by `readdir`.
     pub fn cache_dir(&mut self, enabled: bool) {
-        self.set_flag(OpenFlags::CACHE_DIR, enabled);
+        self.set_flag(polyfuse_abi::FOPEN_CACHE_DIR, enabled);
     }
 
     /// Reply to the kernel with the specified file handle and flags.
     pub async fn open(self, cx: &mut Context<'_>, fh: u64) -> io::Result<()> {
-        let out = OpenOut {
+        let out = fuse_open_out {
             fh,
             open_flags: self.open_flags,
             ..Default::default()
@@ -293,7 +281,7 @@ pub struct ReplyXattr {
 impl ReplyXattr {
     /// Reply to the kernel with the specified size value.
     pub async fn size(self, cx: &mut Context<'_>, size: u32) -> io::Result<()> {
-        let out = GetxattrOut {
+        let out = fuse_getxattr_out {
             size,
             ..Default::default()
         };
@@ -317,13 +305,14 @@ impl ReplyStatfs {
     /// Reply to the kernel with the specified statistics.
     pub async fn stat<T>(self, cx: &mut Context<'_>, st: T) -> io::Result<()>
     where
-        T: TryInto<Statfs>,
+        T: TryInto<FsStatistics>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let out = StatfsOut {
+        let out = fuse_statfs_out {
             st: st
                 .try_into()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                .into_inner(),
             ..Default::default()
         };
         cx.send_reply(0, &[out.as_ref()]).await
@@ -344,32 +333,23 @@ impl ReplyLk {
         T: TryInto<FileLock>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let out = LkOut {
+        let out = fuse_lk_out {
             lk: lk
                 .try_into()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                .into_inner(),
             ..Default::default()
         };
         cx.send_reply(0, &[out.as_ref()]).await
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[must_use]
 pub struct ReplyCreate {
     entry_valid: (u64, u32),
     attr_valid: (u64, u32),
-    open_flags: OpenFlags,
-}
-
-impl Default for ReplyCreate {
-    fn default() -> Self {
-        Self {
-            entry_valid: (0, 0),
-            attr_valid: (0, 0),
-            open_flags: OpenFlags::empty(),
-        }
-    }
+    open_flags: u32,
 }
 
 impl ReplyCreate {
@@ -391,28 +371,28 @@ impl ReplyCreate {
         self.entry_valid = (sec, nsec);
     }
 
-    fn set_flag(&mut self, flag: OpenFlags, enabled: bool) {
+    fn set_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
-            self.open_flags.insert(flag);
+            self.open_flags |= flag;
         } else {
-            self.open_flags.remove(flag);
+            self.open_flags &= !flag;
         }
     }
 
     /// Indicates that the direct I/O is used on this file.
     pub fn direct_io(&mut self, enabled: bool) {
-        self.set_flag(OpenFlags::DIRECT_IO, enabled);
+        self.set_flag(polyfuse_abi::FOPEN_DIRECT_IO, enabled);
     }
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
     pub fn keep_cache(&mut self, enabled: bool) {
-        self.set_flag(OpenFlags::KEEP_CACHE, enabled);
+        self.set_flag(polyfuse_abi::FOPEN_KEEP_CACHE, enabled);
     }
 
     /// Indicates that the opened file is not seekable.
     pub fn nonseekable(&mut self, enabled: bool) {
-        self.set_flag(OpenFlags::NONSEEKABLE, enabled);
+        self.set_flag(polyfuse_abi::FOPEN_NONSEEKABLE, enabled);
     }
 
     /// Reply to the kernel with the specified entry parameters and file handle.
@@ -429,9 +409,10 @@ impl ReplyCreate {
     {
         let attr = attr
             .try_into()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+            .into_inner();
 
-        let entry_out = EntryOut {
+        let entry_out = fuse_entry_out {
             nodeid: attr.ino,
             generation,
             entry_valid: self.entry_valid.0,
@@ -442,7 +423,7 @@ impl ReplyCreate {
             ..Default::default()
         };
 
-        let open_out = OpenOut {
+        let open_out = fuse_open_out {
             fh,
             open_flags: self.open_flags,
             ..Default::default()
@@ -461,7 +442,7 @@ pub struct ReplyBmap {
 
 impl ReplyBmap {
     pub async fn block(self, cx: &mut Context<'_>, block: u64) -> io::Result<()> {
-        let out = BmapOut {
+        let out = fuse_bmap_out {
             block,
             ..Default::default()
         };

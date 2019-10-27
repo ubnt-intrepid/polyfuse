@@ -1,8 +1,8 @@
 //! Requests from the kernel.
 
+use crate::parse::{Arg, Parser, Request};
 use futures_io::AsyncRead;
 use futures_util::future::poll_fn;
-use polyfuse_abi::parse::{Arg, Parser, Request};
 use std::{
     io,
     pin::Pin,

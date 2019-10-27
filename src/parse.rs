@@ -1,33 +1,33 @@
-use super::{
-    AccessIn, //
-    BmapIn,
-    CreateIn,
-    FlushIn,
-    ForgetIn,
-    FsyncIn,
-    GetattrIn,
-    GetxattrIn,
-    InHeader,
-    InitIn,
-    InterruptIn,
-    LinkIn,
-    LkIn,
-    MkdirIn,
-    MknodIn,
-    Opcode,
-    OpenIn,
-    ReadIn,
-    ReleaseIn,
-    RenameIn,
-    SetattrIn,
-    SetxattrIn,
-    WriteIn,
+use polyfuse_abi::{
+    fuse_access_in, //
+    fuse_bmap_in,
+    fuse_create_in,
+    fuse_flush_in,
+    fuse_forget_in,
+    fuse_fsync_in,
+    fuse_getattr_in,
+    fuse_getxattr_in,
+    fuse_in_header,
+    fuse_init_in,
+    fuse_interrupt_in,
+    fuse_link_in,
+    fuse_lk_in,
+    fuse_mkdir_in,
+    fuse_mknod_in,
+    fuse_opcode,
+    fuse_open_in,
+    fuse_read_in,
+    fuse_release_in,
+    fuse_rename_in,
+    fuse_setattr_in,
+    fuse_setxattr_in,
+    fuse_write_in,
 };
-use std::{ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
+use std::{convert::TryFrom, ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
 
 #[derive(Debug)]
 pub struct Request<'a> {
-    pub header: &'a InHeader,
+    pub header: &'a fuse_in_header,
     pub arg: Arg<'a>,
     _p: (),
 }
@@ -35,20 +35,20 @@ pub struct Request<'a> {
 #[derive(Debug)]
 pub enum Arg<'a> {
     Init {
-        arg: &'a InitIn,
+        arg: &'a fuse_init_in,
     },
     Destroy,
     Lookup {
         name: &'a OsStr,
     },
     Forget {
-        arg: &'a ForgetIn,
+        arg: &'a fuse_forget_in,
     },
     Getattr {
-        arg: &'a GetattrIn,
+        arg: &'a fuse_getattr_in,
     },
     Setattr {
-        arg: &'a SetattrIn,
+        arg: &'a fuse_setattr_in,
     },
     Readlink,
     Symlink {
@@ -56,11 +56,11 @@ pub enum Arg<'a> {
         link: &'a OsStr,
     },
     Mknod {
-        arg: &'a MknodIn,
+        arg: &'a fuse_mknod_in,
         name: &'a OsStr,
     },
     Mkdir {
-        arg: &'a MkdirIn,
+        arg: &'a fuse_mkdir_in,
         name: &'a OsStr,
     },
     Unlink {
@@ -70,79 +70,79 @@ pub enum Arg<'a> {
         name: &'a OsStr,
     },
     Rename {
-        arg: &'a RenameIn,
+        arg: &'a fuse_rename_in,
         name: &'a OsStr,
         newname: &'a OsStr,
     },
     Link {
-        arg: &'a LinkIn,
+        arg: &'a fuse_link_in,
         newname: &'a OsStr,
     },
     Open {
-        arg: &'a OpenIn,
+        arg: &'a fuse_open_in,
     },
     Read {
-        arg: &'a ReadIn,
+        arg: &'a fuse_read_in,
     },
     Write {
-        arg: &'a WriteIn,
+        arg: &'a fuse_write_in,
     },
     Release {
-        arg: &'a ReleaseIn,
+        arg: &'a fuse_release_in,
     },
     Statfs,
     Fsync {
-        arg: &'a FsyncIn,
+        arg: &'a fuse_fsync_in,
     },
     Setxattr {
-        arg: &'a SetxattrIn,
+        arg: &'a fuse_setxattr_in,
         name: &'a OsStr,
         value: &'a [u8],
     },
     Getxattr {
-        arg: &'a GetxattrIn,
+        arg: &'a fuse_getxattr_in,
         name: &'a OsStr,
     },
     Listxattr {
-        arg: &'a GetxattrIn,
+        arg: &'a fuse_getxattr_in,
     },
     Removexattr {
         name: &'a OsStr,
     },
     Flush {
-        arg: &'a FlushIn,
+        arg: &'a fuse_flush_in,
     },
     Opendir {
-        arg: &'a OpenIn,
+        arg: &'a fuse_open_in,
     },
     Readdir {
-        arg: &'a ReadIn,
+        arg: &'a fuse_read_in,
     },
     Releasedir {
-        arg: &'a ReleaseIn,
+        arg: &'a fuse_release_in,
     },
     Fsyncdir {
-        arg: &'a FsyncIn,
+        arg: &'a fuse_fsync_in,
     },
     Getlk {
-        arg: &'a LkIn,
+        arg: &'a fuse_lk_in,
     },
     Setlk {
-        arg: &'a LkIn,
+        arg: &'a fuse_lk_in,
         sleep: bool,
     },
     Access {
-        arg: &'a AccessIn,
+        arg: &'a fuse_access_in,
     },
     Create {
-        arg: &'a CreateIn,
+        arg: &'a fuse_create_in,
         name: &'a OsStr,
     },
     Interrupt {
-        arg: &'a InterruptIn,
+        arg: &'a fuse_interrupt_in,
     },
     Bmap {
-        arg: &'a BmapIn,
+        arg: &'a fuse_bmap_in,
     },
     // Ioctl,
     // Poll,
@@ -176,28 +176,28 @@ macro_rules! impl_from_bytes {
 }
 
 impl_from_bytes! {
-    InHeader,
-    InitIn,
-    ForgetIn,
-    GetattrIn,
-    SetattrIn,
-    MknodIn,
-    MkdirIn,
-    RenameIn,
-    LinkIn,
-    OpenIn,
-    ReadIn,
-    WriteIn,
-    ReleaseIn,
-    FsyncIn,
-    SetxattrIn,
-    GetxattrIn,
-    FlushIn,
-    LkIn,
-    AccessIn,
-    CreateIn,
-    InterruptIn,
-    BmapIn,
+    fuse_in_header,
+    fuse_init_in,
+    fuse_forget_in,
+    fuse_getattr_in,
+    fuse_setattr_in,
+    fuse_mknod_in,
+    fuse_mkdir_in,
+    fuse_rename_in,
+    fuse_link_in,
+    fuse_open_in,
+    fuse_read_in,
+    fuse_write_in,
+    fuse_release_in,
+    fuse_fsync_in,
+    fuse_setxattr_in,
+    fuse_getxattr_in,
+    fuse_flush_in,
+    fuse_lk_in,
+    fuse_access_in,
+    fuse_create_in,
+    fuse_interrupt_in,
+    fuse_bmap_in,
 }
 
 #[derive(Debug)]
@@ -253,8 +253,8 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(clippy::cast_ptr_alignment)]
-    fn parse_header(&mut self) -> io::Result<&'a InHeader> {
-        let header = self.fetch::<InHeader>()?;
+    fn parse_header(&mut self) -> io::Result<&'a fuse_in_header> {
+        let header = self.fetch::<fuse_in_header>()?;
 
         if self.buf.len() < header.len as usize {
             return Err(io::Error::new(
@@ -266,150 +266,150 @@ impl<'a> Parser<'a> {
         Ok(header)
     }
 
-    fn parse_arg(&mut self, header: &'a InHeader) -> io::Result<Arg<'a>> {
-        match header.opcode() {
-            Some(Opcode::Init) => {
+    fn parse_arg(&mut self, header: &'a fuse_in_header) -> io::Result<Arg<'a>> {
+        match fuse_opcode::try_from(header.opcode).ok() {
+            Some(fuse_opcode::FUSE_INIT) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Init { arg })
             }
-            Some(Opcode::Destroy) => Ok(Arg::Destroy),
-            Some(Opcode::Lookup) => {
+            Some(fuse_opcode::FUSE_DESTROY) => Ok(Arg::Destroy),
+            Some(fuse_opcode::FUSE_LOOKUP) => {
                 let name = self.fetch_str()?;
                 Ok(Arg::Lookup { name })
             }
-            Some(Opcode::Forget) => {
+            Some(fuse_opcode::FUSE_FORGET) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Forget { arg })
             }
-            Some(Opcode::Getattr) => {
+            Some(fuse_opcode::FUSE_GETATTR) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Getattr { arg })
             }
-            Some(Opcode::Setattr) => {
+            Some(fuse_opcode::FUSE_SETATTR) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Setattr { arg })
             }
-            Some(Opcode::Readlink) => Ok(Arg::Readlink),
-            Some(Opcode::Symlink) => {
+            Some(fuse_opcode::FUSE_READLINK) => Ok(Arg::Readlink),
+            Some(fuse_opcode::FUSE_SYMLINK) => {
                 let name = self.fetch_str()?;
                 let link = self.fetch_str()?;
                 Ok(Arg::Symlink { name, link })
             }
-            Some(Opcode::Mknod) => {
+            Some(fuse_opcode::FUSE_MKNOD) => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(Arg::Mknod { arg, name })
             }
-            Some(Opcode::Mkdir) => {
+            Some(fuse_opcode::FUSE_MKDIR) => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(Arg::Mkdir { arg, name })
             }
-            Some(Opcode::Unlink) => {
+            Some(fuse_opcode::FUSE_UNLINK) => {
                 let name = self.fetch_str()?;
                 Ok(Arg::Unlink { name })
             }
-            Some(Opcode::Rmdir) => {
+            Some(fuse_opcode::FUSE_RMDIR) => {
                 let name = self.fetch_str()?;
                 Ok(Arg::Rmdir { name })
             }
-            Some(Opcode::Rename) => {
+            Some(fuse_opcode::FUSE_RENAME) => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 let newname = self.fetch_str()?;
                 Ok(Arg::Rename { arg, name, newname })
             }
-            Some(Opcode::Link) => {
+            Some(fuse_opcode::FUSE_LINK) => {
                 let arg = self.fetch()?;
                 let newname = self.fetch_str()?;
                 Ok(Arg::Link { arg, newname })
             }
-            Some(Opcode::Open) => {
+            Some(fuse_opcode::FUSE_OPEN) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Open { arg })
             }
-            Some(Opcode::Read) => {
+            Some(fuse_opcode::FUSE_READ) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Read { arg })
             }
-            Some(Opcode::Write) => {
+            Some(fuse_opcode::FUSE_WRITE) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Write { arg })
             }
-            Some(Opcode::Release) => {
+            Some(fuse_opcode::FUSE_RELEASE) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Release { arg })
             }
-            Some(Opcode::Statfs) => Ok(Arg::Statfs),
-            Some(Opcode::Fsync) => {
+            Some(fuse_opcode::FUSE_STATFS) => Ok(Arg::Statfs),
+            Some(fuse_opcode::FUSE_FSYNC) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Fsync { arg })
             }
-            Some(Opcode::Setxattr) => {
-                let arg: &SetxattrIn = self.fetch()?;
+            Some(fuse_opcode::FUSE_SETXATTR) => {
+                let arg: &fuse_setxattr_in = self.fetch()?;
                 let name = self.fetch_str()?;
                 let value = self.fetch_bytes(arg.size as usize)?;
                 Ok(Arg::Setxattr { arg, name, value })
             }
-            Some(Opcode::Getxattr) => {
+            Some(fuse_opcode::FUSE_GETXATTR) => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(Arg::Getxattr { arg, name })
             }
-            Some(Opcode::Listxattr) => {
+            Some(fuse_opcode::FUSE_LISTXATTR) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Listxattr { arg })
             }
-            Some(Opcode::Removexattr) => {
+            Some(fuse_opcode::FUSE_REMOVEXATTR) => {
                 let name = self.fetch_str()?;
                 Ok(Arg::Removexattr { name })
             }
-            Some(Opcode::Flush) => {
+            Some(fuse_opcode::FUSE_FLUSH) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Flush { arg })
             }
-            Some(Opcode::Opendir) => {
+            Some(fuse_opcode::FUSE_OPENDIR) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Opendir { arg })
             }
-            Some(Opcode::Readdir) => {
+            Some(fuse_opcode::FUSE_READDIR) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Readdir { arg })
             }
-            Some(Opcode::Releasedir) => {
+            Some(fuse_opcode::FUSE_RELEASEDIR) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Releasedir { arg })
             }
-            Some(Opcode::Fsyncdir) => {
+            Some(fuse_opcode::FUSE_FSYNCDIR) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Fsyncdir { arg })
             }
-            Some(Opcode::Getlk) => {
+            Some(fuse_opcode::FUSE_GETLK) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Getlk { arg })
             }
-            Some(Opcode::Setlk) => {
+            Some(fuse_opcode::FUSE_SETLK) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Setlk { arg, sleep: false })
             }
-            Some(Opcode::Setlkw) => {
+            Some(fuse_opcode::FUSE_SETLKW) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Setlk { arg, sleep: true })
             }
-            Some(Opcode::Access) => {
+            Some(fuse_opcode::FUSE_ACCESS) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Access { arg })
             }
-            Some(Opcode::Create) => {
+            Some(fuse_opcode::FUSE_CREATE) => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(Arg::Create { arg, name })
             }
-            Some(Opcode::Interrupt) => {
+            Some(fuse_opcode::FUSE_INTERRUPT) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Interrupt { arg })
             }
-            Some(Opcode::Bmap) => {
+            Some(fuse_opcode::FUSE_BMAP) => {
                 let arg = self.fetch()?;
                 Ok(Arg::Bmap { arg })
             }

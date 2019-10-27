@@ -1,19 +1,8 @@
 #![warn(clippy::unimplemented)]
 #![allow(clippy::needless_lifetimes)]
 
-use polyfuse::{
-    fs::{FileAttr, Nodeid}, //
-    Context,
-    Filesystem,
-    Operation, //
-    Server,
-};
-use std::{
-    convert::TryInto, //
-    env,
-    io,
-    path::PathBuf,
-};
+use polyfuse::{Context, Filesystem, Operation, Server};
+use std::{env, io, path::PathBuf};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -48,29 +37,29 @@ impl<T> Filesystem<T> for Null {
     {
         match op {
             Operation::Getattr { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.attr(cx, root_attr()).await,
+                1 => reply.attr(cx, root_attr()).await,
                 _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Setattr { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.attr(cx, root_attr()).await,
+                1 => reply.attr(cx, root_attr()).await,
                 _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Open { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.open(cx, 0).await,
+                1 => reply.open(cx, 0).await,
                 _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Read { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.data(cx, &[]).await,
+                1 => reply.data(cx, &[]).await,
                 _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Write {
                 ino, size, reply, ..
             } => match ino {
-                Nodeid::ROOT => reply.write(cx, size).await,
+                1 => reply.write(cx, size).await,
                 _ => cx.reply_err(libc::ENOENT).await,
             },
             Operation::Release { ino, reply, .. } => match ino {
-                Nodeid::ROOT => reply.ok(cx).await,
+                1 => reply.ok(cx).await,
                 _ => cx.reply_err(libc::ENOENT).await,
             },
             _ => cx.reply_err(libc::ENOSYS).await,
@@ -78,11 +67,11 @@ impl<T> Filesystem<T> for Null {
     }
 }
 
-fn root_attr() -> FileAttr {
+fn root_attr() -> libc::stat {
     let mut attr: libc::stat = unsafe { std::mem::zeroed() };
     attr.st_mode = libc::S_IFREG | 0o644;
     attr.st_nlink = 1;
     attr.st_uid = unsafe { libc::getuid() };
     attr.st_gid = unsafe { libc::getgid() };
-    attr.try_into().unwrap()
+    attr
 }

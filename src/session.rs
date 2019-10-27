@@ -1,14 +1,12 @@
 use crate::{
     buf::{Buffer, MAX_WRITE_SIZE},
-    fs::{Context, Filesystem, Operation},
+    fs::{Context, FileLock, Filesystem, Operation},
+    parse::{Arg, Request},
     reply::ReplyData,
 };
 use futures_channel::oneshot;
 use futures_io::{AsyncRead, AsyncWrite};
-use polyfuse_abi::{
-    parse::{Arg, Request},
-    InitOut, LkFlags, LockType, ReleaseFlags, Unique,
-};
+use polyfuse_abi::fuse_init_out;
 use std::{collections::HashMap, future::Future, io};
 
 /// A FUSE filesystem driver.
@@ -18,7 +16,7 @@ pub struct Session {
     proto_minor: u32,
     max_readahead: u32,
     exited: bool,
-    remains: HashMap<Unique, oneshot::Sender<()>>,
+    remains: HashMap<u64, oneshot::Sender<()>>,
 }
 
 impl Session {
@@ -256,10 +254,10 @@ impl Session {
                 let mut flock_release = false;
                 let mut lock_owner = None;
                 if self.proto_minor >= 8 {
-                    flush = arg.release_flags.contains(ReleaseFlags::FLUSH);
+                    flush = arg.release_flags & polyfuse_abi::FUSE_RELEASE_FLUSH != 0;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
-                if arg.release_flags.contains(ReleaseFlags::FLOCK_UNLOCK) {
+                if arg.release_flags & polyfuse_abi::FUSE_RELEASE_FLOCK_UNLOCK != 0 {
                     flock_release = true;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
@@ -412,19 +410,23 @@ impl Session {
                         ino,
                         fh: arg.fh,
                         owner: arg.owner,
-                        lk: &arg.lk,
+                        lk: FileLock::new(&arg.lk),
                         reply: Default::default(),
                     },
                 )
                 .await?;
             }
             Arg::Setlk { arg, sleep } => {
-                if arg.lk_flags.contains(LkFlags::FLOCK) {
+                if arg.lk_flags & polyfuse_abi::FUSE_LK_FLOCK != 0 {
+                    const F_RDLCK: u32 = libc::F_RDLCK as u32;
+                    const F_WRLCK: u32 = libc::F_WRLCK as u32;
+                    const F_UNLCK: u32 = libc::F_UNLCK as u32;
                     #[allow(clippy::cast_possible_wrap)]
                     let mut op = match arg.lk.typ {
-                        LockType::Read => libc::LOCK_SH as u32,
-                        LockType::Write => libc::LOCK_EX as u32,
-                        LockType::Unlock => libc::LOCK_UN as u32,
+                        F_RDLCK => libc::LOCK_SH as u32,
+                        F_WRLCK => libc::LOCK_EX as u32,
+                        F_UNLCK => libc::LOCK_UN as u32,
+                        _ => return cx.reply_err(libc::EIO).await,
                     };
                     if !sleep {
                         op |= libc::LOCK_NB as u32;
@@ -447,7 +449,7 @@ impl Session {
                             ino,
                             fh: arg.fh,
                             owner: arg.owner,
-                            lk: &arg.lk,
+                            lk: FileLock::new(&arg.lk),
                             sleep,
                             reply: Default::default(),
                         },
@@ -518,7 +520,7 @@ impl Session {
     }
 
     #[allow(dead_code)]
-    pub async fn register(&mut self, unique: Unique) -> impl Future<Output = ()> {
+    pub async fn register(&mut self, unique: u64) -> impl Future<Output = ()> {
         let (tx, rx) = oneshot::channel();
         self.remains.insert(unique, tx);
         async move {
@@ -557,7 +559,7 @@ impl InitSession {
             let (proto_major, proto_minor, max_readahead);
             match arg {
                 Arg::Init { arg } => {
-                    let mut init_out = InitOut::default();
+                    let mut init_out = fuse_init_out::default();
 
                     if arg.major > 7 {
                         log::debug!("wait for a second INIT request with a 7.X version.");
