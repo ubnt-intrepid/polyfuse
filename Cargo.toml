@@ -48,5 +48,6 @@ features = [ "user-hooks" ]
 members = [
   ".",
   "polyfuse-abi",
+  "polyfuse-abi/systest",
   "polyfuse-sys",
 ]

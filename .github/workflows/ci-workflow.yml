@@ -18,6 +18,8 @@ jobs:
         rust_toolchain: [beta, nightly]
     steps:
     - uses: actions/checkout@v1
+      with:
+        submodules: true
 
     - name: Install APT dependencies
       run: |
@@ -46,6 +48,8 @@ jobs:
     runs-on: ubuntu-18.04
     steps:
     - uses: actions/checkout@v1
+      with:
+        submodules: true
 
     - name: Install APT dependencies
       run: |
@@ -84,6 +88,8 @@ jobs:
       options: --memory 3221225472
     steps:
     - uses: actions/checkout@v1
+      with:
+        submodules: true
 
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1
@@ -116,6 +122,8 @@ jobs:
     runs-on: ubuntu-18.04
     steps:
     - uses: actions/checkout@v1
+      with:
+        submodules: true
 
     - name: Install APT dependencies
       run: |

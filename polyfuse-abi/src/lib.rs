@@ -2,13 +2,15 @@
 
 #![allow(nonstandard_style, clippy::identity_op)]
 
-use std::{convert::TryFrom, error, fmt};
+use std::convert::TryFrom;
+use std::error;
+use std::fmt;
 
 /// The major version number of FUSE protocol.
 pub const FUSE_KERNEL_VERSION: u32 = 7;
 
 /// The minor version number of FUSE protocol.
-pub const FUSE_KERNEL_MINOR_VERSION: u32 = 28;
+pub const FUSE_KERNEL_MINOR_VERSION: u32 = 29;
 
 /// The minimum length of read buffer.
 pub const FUSE_MIN_READ_BUFFER: u32 = 8192;
@@ -85,14 +87,14 @@ pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
 pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
 pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
 pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
-pub const FUSE_IOCTL_USE_32BIT: u32 = 1 << 3;
+pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
 pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
 
 // Poll flags.
 pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 
-// Fsync flags.
-pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
+// // Fsync flags.
+// pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
 // misc
 pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
@@ -602,6 +604,9 @@ pub struct fuse_fsync_in {
 
 impl fuse_fsync_in {
     pub fn datasync(&self) -> bool {
+        // added in Linux 5.2
+        const FUSE_FSYNC_FDATASYNC: u32 = 1;
+
         self.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
     }
 }
@@ -881,7 +886,7 @@ pub enum fuse_notify_code {
 
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct fuse_notify_poll_wake_out {
+pub struct fuse_notify_poll_wakeup_out {
     pub kh: u64,
 }
 

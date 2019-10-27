@@ -18,9 +18,11 @@ task:
     folder: $HOME/.cargo/registry
     fingerprint_script: cat Cargo.lock || echo ""
   setup_script:
-    - pkg install -y pkgconf fusefs-libs
+    - pkg install -y git pkgconf fusefs-libs
     - fetch https://sh.rustup.rs -o rustup.sh
     - sh rustup.sh -y --default-toolchain $RUST_TOOLCHAIN --profile=minimal
+  submodules_script:
+    - git submodule update --init
   build_script:
     - . $HOME/.cargo/env
     - cargo build --all --all-targets
