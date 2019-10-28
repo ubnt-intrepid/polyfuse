@@ -1,4 +1,4 @@
-#![allow(bad_style)]
+#![allow(bad_style, clippy::all)]
 
 use polyfuse_sys::abi::*;
 

@@ -1,6 +1,8 @@
 //! FUSE application binary interface.
+//!
+//! The bindings is compatible with ABI 7.29 (in libfuse 3.6.2).
 
-#![allow(nonstandard_style, clippy::identity_op)]
+#![allow(clippy::identity_op)]
 
 use std::convert::TryFrom;
 use std::error;
@@ -93,8 +95,9 @@ pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
 // Poll flags.
 pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 
-// // Fsync flags.
-// pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
+// Fsync flags.
+// Added in libfuse 3.7.0.
+const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
 // misc
 pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
@@ -106,7 +109,7 @@ pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
 pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug)]
 #[repr(C)]
 pub struct fuse_attr {
     pub ino: u64,
@@ -169,7 +172,7 @@ pub struct fuse_direntplus {
     pub dirent: fuse_dirent,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 #[repr(C)]
 pub struct fuse_kstatfs {
     pub blocks: u64,
@@ -203,7 +206,7 @@ impl TryFrom<libc::statvfs> for fuse_kstatfs {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 #[repr(C)]
 pub struct fuse_file_lock {
     pub start: u64,
@@ -367,7 +370,7 @@ impl fmt::Display for UnknownOpcode {
 
 impl error::Error for UnknownOpcode {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_in_header {
     pub len: u32,
@@ -380,7 +383,7 @@ pub struct fuse_in_header {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_init_in {
     pub major: u32,
@@ -389,13 +392,13 @@ pub struct fuse_init_in {
     pub flags: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_forget_in {
     pub nlookup: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_getattr_in {
     pub getattr_flags: u32,
@@ -413,7 +416,7 @@ impl fuse_getattr_in {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_setattr_in {
     pub valid: u32,
@@ -496,7 +499,7 @@ impl fuse_setattr_in {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_mknod_in {
     pub mode: u32,
@@ -505,33 +508,33 @@ pub struct fuse_mknod_in {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_mkdir_in {
     pub mode: u32,
     pub umask: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_rename_in {
     pub newdir: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_link_in {
     pub oldnodeid: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_open_in {
     pub flags: u32,
     pub unused: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_read_in {
     pub fh: u64,
@@ -553,7 +556,7 @@ impl fuse_read_in {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_write_in {
     pub fh: u64,
@@ -575,7 +578,7 @@ impl fuse_write_in {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_flush_in {
     pub fh: u64,
@@ -584,7 +587,7 @@ pub struct fuse_flush_in {
     pub lock_owner: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_release_in {
     pub fh: u64,
@@ -599,7 +602,7 @@ impl fuse_release_in {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_fsync_in {
     pub fh: u64,
@@ -609,28 +612,25 @@ pub struct fuse_fsync_in {
 
 impl fuse_fsync_in {
     pub fn datasync(&self) -> bool {
-        // added in Linux 5.2
-        const FUSE_FSYNC_FDATASYNC: u32 = 1;
-
         self.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_getxattr_in {
     pub size: u32,
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_setxattr_in {
     pub size: u32,
     pub flags: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_lk_in {
     pub fh: u64,
@@ -640,7 +640,7 @@ pub struct fuse_lk_in {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_access_in {
     pub mask: u32,
@@ -648,7 +648,7 @@ pub struct fuse_access_in {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_create_in {
     pub flags: u32,
@@ -657,7 +657,7 @@ pub struct fuse_create_in {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_bmap_in {
     pub block: u64,
@@ -673,7 +673,7 @@ pub struct fuse_out_header {
     pub unique: u64,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 #[repr(C)]
 pub struct fuse_attr_out {
     pub attr_valid: u64,
@@ -694,7 +694,7 @@ pub struct fuse_entry_out {
     pub attr: fuse_attr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_init_out {
     pub major: u32,
@@ -768,7 +768,7 @@ pub struct fuse_bmap_out {
     pub block: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_ioctl_in {
     pub fh: u64,
@@ -795,7 +795,7 @@ pub struct fuse_ioctl_iovec {
     pub len: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_poll_in {
     pub fh: u64,
@@ -812,13 +812,13 @@ pub struct fuse_poll_out {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_interrupt_in {
     pub unique: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_fallocate_in {
     pub fh: u64,
@@ -828,21 +828,21 @@ pub struct fuse_fallocate_in {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_batch_forget_in {
     pub count: u32,
     pub dummy: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_forget_one {
     pub nodeid: u64,
     pub nlookup: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_rename2_in {
     pub newdir: u64,
@@ -850,7 +850,7 @@ pub struct fuse_rename2_in {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_lseek_in {
     pub fh: u64,
@@ -865,7 +865,7 @@ pub struct fuse_lseek_out {
     pub offset: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_copy_file_range_in {
     pub fh_in: u64,
@@ -958,7 +958,7 @@ pub struct fuse_notify_retrieve_out {
     pub padding: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct fuse_notify_retrieve_in {
     pub dummy1: u64,
@@ -969,7 +969,7 @@ pub struct fuse_notify_retrieve_in {
     pub dummy4: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct cuse_init_in {
     pub major: u32,
@@ -978,7 +978,7 @@ pub struct cuse_init_in {
     pub flags: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct cuse_init_out {
     pub major: u32,
@@ -990,33 +990,4 @@ pub struct cuse_init_out {
     pub dev_major: u32,
     pub dev_minor: u32,
     pub spare: [u32; 10],
-}
-
-macro_rules! impl_as_ref_for_abi {
-    ($($t:ty,)*) => {$(
-        impl AsRef<[u8]> for $t {
-        #[allow(unsafe_code)]
-            fn as_ref(&self) -> &[u8] {
-                unsafe {
-                    std::slice::from_raw_parts(
-                        self as *const Self as *const u8,
-                        std::mem::size_of::<Self>(),
-                    )
-                }
-            }
-        }
-    )*}
-}
-
-impl_as_ref_for_abi! {
-    fuse_out_header,
-    fuse_init_out,
-    fuse_open_out,
-    fuse_attr_out,
-    fuse_entry_out,
-    fuse_getxattr_out,
-    fuse_write_out,
-    fuse_statfs_out,
-    fuse_lk_out,
-    fuse_bmap_out,
 }

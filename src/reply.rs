@@ -1,13 +1,17 @@
 //! Replies to the kernel.
 
+#![allow(clippy::needless_update)]
+
 use crate::fs::{Context, FileAttr, FileLock, FsStatistics};
 use polyfuse_sys::abi::{
     fuse_attr_out, //
     fuse_bmap_out,
     fuse_entry_out,
     fuse_getxattr_out,
+    fuse_init_out,
     fuse_lk_out,
     fuse_open_out,
+    fuse_out_header,
     fuse_statfs_out,
     fuse_write_out,
 };
@@ -19,6 +23,39 @@ use std::{
 };
 
 pub use crate::dir::DirEntry;
+
+pub(crate) trait Payload {
+    fn as_bytes(&self) -> &[u8];
+}
+
+macro_rules! impl_as_ref_for_abi {
+    ($($t:ty,)*) => {$(
+        impl Payload for $t {
+            #[allow(unsafe_code)]
+            fn as_bytes(&self) -> &[u8] {
+                unsafe {
+                    std::slice::from_raw_parts(
+                        self as *const Self as *const u8,
+                        std::mem::size_of::<Self>(),
+                    )
+                }
+            }
+        }
+    )*}
+}
+
+impl_as_ref_for_abi! {
+    fuse_out_header,
+    fuse_init_out,
+    fuse_open_out,
+    fuse_attr_out,
+    fuse_entry_out,
+    fuse_getxattr_out,
+    fuse_write_out,
+    fuse_statfs_out,
+    fuse_lk_out,
+    fuse_bmap_out,
+}
 
 /// Reply with an empty output.
 #[derive(Debug, Default)]
@@ -95,7 +132,7 @@ impl ReplyAttr {
             attr_valid: self.attr_valid.0,
             ..Default::default()
         };
-        cx.send_reply(0, &[attr_out.as_ref()]).await
+        cx.send_reply(0, &[attr_out.as_bytes()]).await
     }
 }
 
@@ -152,7 +189,7 @@ impl ReplyEntry {
             attr,
             ..Default::default()
         };
-        cx.send_reply(0, &[entry_out.as_ref()]).await
+        cx.send_reply(0, &[entry_out.as_bytes()]).await
     }
 }
 
@@ -215,7 +252,7 @@ impl ReplyOpen {
             open_flags: self.open_flags,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_ref()]).await
+        cx.send_reply(0, &[out.as_bytes()]).await
     }
 }
 
@@ -233,7 +270,7 @@ impl ReplyWrite {
             size,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_ref()]).await
+        cx.send_reply(0, &[out.as_bytes()]).await
     }
 }
 
@@ -267,7 +304,7 @@ impl ReplyOpendir {
             open_flags: self.open_flags,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_ref()]).await
+        cx.send_reply(0, &[out.as_bytes()]).await
     }
 }
 
@@ -285,7 +322,7 @@ impl ReplyXattr {
             size,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_ref()]).await
+        cx.send_reply(0, &[out.as_bytes()]).await
     }
 
     /// Reply to the kernel with the specified value.
@@ -315,7 +352,7 @@ impl ReplyStatfs {
                 .into_inner(),
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_ref()]).await
+        cx.send_reply(0, &[out.as_bytes()]).await
     }
 }
 
@@ -340,7 +377,7 @@ impl ReplyLk {
                 .into_inner(),
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_ref()]).await
+        cx.send_reply(0, &[out.as_bytes()]).await
     }
 }
 
@@ -429,7 +466,7 @@ impl ReplyCreate {
             ..Default::default()
         };
 
-        cx.send_reply(0, &[entry_out.as_ref(), open_out.as_ref()])
+        cx.send_reply(0, &[entry_out.as_bytes(), open_out.as_bytes()])
             .await
     }
 }
@@ -446,6 +483,6 @@ impl ReplyBmap {
             block,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_ref()]).await
+        cx.send_reply(0, &[out.as_bytes()]).await
     }
 }

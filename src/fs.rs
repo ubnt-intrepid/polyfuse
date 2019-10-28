@@ -1,7 +1,8 @@
 //! Filesystem abstraction.
 
 use crate::reply::{
-    ReplyAttr, //
+    Payload, //
+    ReplyAttr,
     ReplyBmap,
     ReplyCreate,
     ReplyData,
@@ -25,7 +26,7 @@ use polyfuse_sys::abi::{
     fuse_out_header,
 };
 use smallvec::SmallVec;
-use std::{convert::TryFrom, ffi::OsStr, fmt, io, io::IoSlice, mem};
+use std::{convert::TryFrom, ffi::OsStr, fmt, io, io::IoSlice};
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -60,8 +61,8 @@ impl FsStatistics {
 pub struct FileLock(fuse_file_lock);
 
 impl FileLock {
-    pub(crate) fn new<'a>(attr: &'a fuse_file_lock) -> &'a Self {
-        unsafe { mem::transmute(attr) }
+    pub(crate) fn new(attr: &fuse_file_lock) -> &Self {
+        unsafe { &*(attr as *const fuse_file_lock as *const Self) }
     }
 
     pub(crate) fn into_inner(self) -> fuse_file_lock {
@@ -137,7 +138,7 @@ impl<'a> Context<'a> {
             })?,
         };
 
-        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_ref()))
+        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_bytes()))
             .into_iter()
             .chain(data.iter().map(|t| IoSlice::new(&*t)))
             .collect();

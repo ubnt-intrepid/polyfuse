@@ -2,7 +2,7 @@ use crate::{
     buf::{Buffer, MAX_WRITE_SIZE},
     fs::{Context, FileLock, Filesystem, Operation},
     parse::{Arg, Request},
-    reply::ReplyData,
+    reply::{Payload, ReplyData},
 };
 use futures_channel::oneshot;
 use futures_io::{AsyncRead, AsyncWrite};
@@ -540,7 +540,7 @@ impl InitSession {
     ///
     /// This function receives an INIT request from the kernel and replies
     /// after initializing the connection parameters.
-    pub async fn start<'a, I>(self, io: &'a mut I) -> io::Result<Session>
+    pub async fn start<I>(self, io: &mut I) -> io::Result<Session>
     where
         I: AsyncRead + AsyncWrite + Unpin,
     {
@@ -563,7 +563,7 @@ impl InitSession {
 
                     if arg.major > 7 {
                         log::debug!("wait for a second INIT request with a 7.X version.");
-                        cx.send_reply(0, &[init_out.as_ref()]).await?;
+                        cx.send_reply(0, &[init_out.as_bytes()]).await?;
                         continue;
                     }
 
@@ -582,7 +582,7 @@ impl InitSession {
                     init_out.max_readahead = arg.max_readahead;
                     init_out.max_write = MAX_WRITE_SIZE;
 
-                    cx.send_reply(0, &[init_out.as_ref()]).await?;
+                    cx.send_reply(0, &[init_out.as_bytes()]).await?;
                 }
                 _ => {
                     log::warn!(
