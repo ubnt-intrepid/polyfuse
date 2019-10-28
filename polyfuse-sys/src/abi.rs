@@ -109,6 +109,13 @@ pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
 pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 
+// Device ioctls
+#[cfg(target_os = "linux")]
+pub const FUSE_DEV_IOC_CLONE: u32 = 0x_80_04_e5_00; // = _IOR(229, 0, uint32_t)
+
+#[cfg(target_os = "freebsd")]
+pub const FUSE_DEV_IOC_CLONE: u32 = 0x_40_04_e5_00; // = _IOR(229, 0, uint32_t)
+
 #[derive(Default, Debug)]
 #[repr(C)]
 pub struct fuse_attr {

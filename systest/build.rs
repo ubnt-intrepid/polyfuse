@@ -7,6 +7,7 @@ fn main() {
 fn generate_abi_tests() {
     let mut cfg = TestGenerator::new();
     cfg.header("fuse_kernel.h");
+    cfg.header("sys/ioctl.h");
     cfg.include("libfuse/include");
 
     cfg.field_name(|_s, field| field.replace("typ", "type"));

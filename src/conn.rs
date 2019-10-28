@@ -7,15 +7,18 @@
 
 use libc::{c_char, c_int, c_void, iovec};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
-use polyfuse_sys::v2::{
-    fuse_args, //
-    fuse_mount_compat25,
-    fuse_opt_free_args,
-    fuse_unmount_compat22,
+use polyfuse_sys::{
+    abi::FUSE_DEV_IOC_CLONE,
+    v2::{
+        fuse_args, //
+        fuse_mount_compat25,
+        fuse_opt_free_args,
+        fuse_unmount_compat22,
+    },
 };
 use std::{
     env,
-    ffi::{CString, OsString}, //
+    ffi::{CStr, CString, OsString}, //
     io::{self, IoSlice, IoSliceMut, Read, Write},
     os::unix::{
         ffi::OsStrExt,
@@ -82,6 +85,32 @@ impl Connection {
         Ok(Connection {
             fd,
             mountpoint: Some(c_mountpoint),
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn try_clone(&self) -> io::Result<Self> {
+        let clonefd;
+        unsafe {
+            let devname = CStr::from_bytes_with_nul_unchecked(b"/dev/fuse\0");
+
+            clonefd = libc::open(devname.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+            if clonefd == -1 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut sourcefd = self.fd;
+            let res = libc::ioctl(clonefd, FUSE_DEV_IOC_CLONE.into(), &mut sourcefd);
+            if res == -1 {
+                let err = io::Error::last_os_error();
+                libc::close(clonefd);
+                return Err(err);
+            }
+        }
+
+        Ok(Self {
+            fd: clonefd,
+            mountpoint: None,
         })
     }
 
