@@ -1,6 +1,5 @@
 //! FUSE (Filesystem in userspace) framework for Rust.
 
-#![cfg_attr(feature = "docs", feature(doc_cfg))]
 #![warn(clippy::checked_conversions)]
 #![deny(
     missing_debug_implementations,
@@ -17,15 +16,18 @@ mod buf;
 mod channel;
 mod conn;
 mod dir;
+mod fs;
 mod parse;
 mod session;
 
-pub mod fs;
 pub mod reply;
 pub mod server;
 
 // re-exports from sub modules.
 #[doc(inline)]
-pub use crate::fs::{Context, Filesystem, Operation};
-#[doc(inline)]
-pub use crate::server::Server;
+pub use crate::{
+    dir::DirEntry,
+    fs::{FileAttr, FileLock, Filesystem, FsStatistics, Operation},
+    server::Server,
+    session::Context,
+};

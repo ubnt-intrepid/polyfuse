@@ -2,7 +2,10 @@
 
 #![allow(clippy::needless_update)]
 
-use crate::fs::{Context, FileAttr, FileLock, FsStatistics};
+use crate::{
+    fs::{FileAttr, FileLock, FsStatistics},
+    session::Context,
+};
 use polyfuse_sys::abi::{
     fuse_attr_out, //
     fuse_bmap_out,
@@ -21,8 +24,6 @@ use std::{
     io::{self},
     os::unix::ffi::OsStrExt,
 };
-
-pub use crate::dir::DirEntry;
 
 pub(crate) trait Payload {
     fn as_bytes(&self) -> &[u8];

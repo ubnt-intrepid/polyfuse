@@ -1,13 +1,21 @@
 use crate::{
     buf::{Buffer, MAX_WRITE_SIZE},
-    fs::{Context, FileLock, Filesystem, Operation},
+    fs::{FileLock, Filesystem, Operation},
     parse::{Arg, Request},
     reply::{Payload, ReplyData},
 };
 use futures_channel::oneshot;
 use futures_io::{AsyncRead, AsyncWrite};
-use polyfuse_sys::abi::fuse_init_out;
-use std::{collections::HashMap, future::Future, io};
+use futures_util::{io::AsyncWriteExt, lock::Mutex};
+use polyfuse_sys::abi::{fuse_in_header, fuse_init_out, fuse_out_header};
+use smallvec::SmallVec;
+use std::{
+    collections::HashMap,
+    convert::TryFrom,
+    fmt,
+    future::Future,
+    io::{self, IoSlice},
+};
 
 /// A FUSE filesystem driver.
 #[derive(Debug)]
@@ -15,6 +23,11 @@ pub struct Session {
     proto_major: u32,
     proto_minor: u32,
     max_readahead: u32,
+    inner: Mutex<Inner>,
+}
+
+#[derive(Debug)]
+struct Inner {
     exited: bool,
     remains: HashMap<u64, oneshot::Sender<()>>,
 }
@@ -28,7 +41,7 @@ impl Session {
     /// Dispatch an incoming request to the provided operations.
     #[allow(clippy::cognitive_complexity)]
     pub async fn dispatch<F, T, W>(
-        &mut self,
+        &self,
         fs: &F,
         request: Request<'_>,
         data: Option<T>,
@@ -38,7 +51,7 @@ impl Session {
         F: Filesystem<T>,
         W: AsyncWrite + Unpin + 'static,
     {
-        if self.exited {
+        if self.inner.lock().await.exited {
             log::warn!("The sesson has already been exited");
             return Ok(());
         }
@@ -46,7 +59,11 @@ impl Session {
         let Request { header, arg, .. } = request;
         let ino = header.nodeid;
 
-        let mut cx = Context::new(header, &mut *writer);
+        let mut cx = Context {
+            header,
+            writer: &mut *writer,
+            session: &*self,
+        };
 
         match arg {
             Arg::Init { .. } => {
@@ -54,7 +71,7 @@ impl Session {
                 cx.reply_err(libc::EIO).await?;
             }
             Arg::Destroy => {
-                self.exited = true;
+                self.inner.lock().await.exited = true;
                 cx.send_reply(0, &[]).await?;
             }
             Arg::Lookup { name } => {
@@ -484,7 +501,8 @@ impl Session {
             }
             Arg::Interrupt { arg } => {
                 log::debug!("INTERRUPT (unique = {:?})", arg.unique);
-                if let Some(tx) = self.remains.remove(&header.unique) {
+                let mut inner = self.inner.lock().await;
+                if let Some(tx) = inner.remains.remove(&header.unique) {
                     let _ = tx.send(());
                 }
             }
@@ -520,9 +538,10 @@ impl Session {
     }
 
     #[allow(dead_code)]
-    pub async fn register(&mut self, unique: u64) -> impl Future<Output = ()> {
+    pub async fn register(&self, unique: u64) -> impl Future<Output = ()> {
+        let mut inner = self.inner.lock().await;
         let (tx, rx) = oneshot::channel();
-        self.remains.insert(unique, tx);
+        inner.remains.insert(unique, tx);
         async move {
             let _ = rx.await;
         }
@@ -554,7 +573,6 @@ impl InitSession {
             }
 
             let (Request { header, arg, .. }, _data) = buf.extract()?;
-            let mut cx = Context::new(header, &mut *io);
 
             let (proto_major, proto_minor, max_readahead);
             match arg {
@@ -563,13 +581,13 @@ impl InitSession {
 
                     if arg.major > 7 {
                         log::debug!("wait for a second INIT request with a 7.X version.");
-                        cx.send_reply(0, &[init_out.as_bytes()]).await?;
+                        send_reply(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
                         continue;
                     }
 
                     if arg.major < 7 || (arg.major == 7 && arg.minor < 6) {
                         log::warn!("unsupported protocol version: {}.{}", arg.major, arg.minor);
-                        cx.reply_err(libc::EPROTO).await?;
+                        send_reply(&mut *io, header.unique, libc::EPROTO, &[]).await?;
                         return Err(io::Error::from_raw_os_error(libc::EPROTO));
                     }
 
@@ -582,14 +600,14 @@ impl InitSession {
                     init_out.max_readahead = arg.max_readahead;
                     init_out.max_write = MAX_WRITE_SIZE;
 
-                    cx.send_reply(0, &[init_out.as_bytes()]).await?;
+                    send_reply(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
                 }
                 _ => {
                     log::warn!(
                         "ignoring an operation before init (opcode={:?})",
                         header.opcode
                     );
-                    cx.reply_err(libc::EIO).await?;
+                    send_reply(&mut *io, header.unique, libc::EIO, &[]).await?;
                     continue;
                 }
             }
@@ -598,9 +616,82 @@ impl InitSession {
                 proto_major,
                 proto_minor,
                 max_readahead,
-                exited: false,
-                remains: HashMap::new(),
+                inner: Mutex::new(Inner {
+                    exited: false,
+                    remains: HashMap::new(),
+                }),
             });
         }
     }
+}
+
+/// Contextural information about an incoming request.
+pub struct Context<'a> {
+    header: &'a fuse_in_header,
+    writer: &'a mut (dyn AsyncWrite + Unpin),
+    #[allow(dead_code)]
+    session: &'a Session,
+}
+
+impl fmt::Debug for Context<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Context").finish()
+    }
+}
+
+impl<'a> Context<'a> {
+    /// Return the user ID of the calling process.
+    pub fn uid(&self) -> u32 {
+        self.header.uid
+    }
+
+    /// Return the group ID of the calling process.
+    pub fn gid(&self) -> u32 {
+        self.header.gid
+    }
+
+    /// Return the process ID of the calling process.
+    pub fn pid(&self) -> u32 {
+        self.header.pid
+    }
+
+    /// Reply to the kernel with an error code.
+    pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
+        self.send_reply(error, &[]).await
+    }
+
+    /// Reply to the kernel with the specified data.
+    #[inline]
+    pub(crate) async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()> {
+        send_reply(&mut *self.writer, self.header.unique, error, data).await
+    }
+}
+
+async fn send_reply(
+    writer: &mut (dyn AsyncWrite + Unpin),
+    unique: u64,
+    error: i32,
+    data: &[&[u8]],
+) -> io::Result<()> {
+    let data_len: usize = data.iter().map(|t| t.len()).sum();
+
+    let out_header = fuse_out_header {
+        unique: unique,
+        error: -error,
+        len: u32::try_from(std::mem::size_of::<fuse_out_header>() + data_len).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the total length of data is too long: {}", e),
+            )
+        })?,
+    };
+
+    let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_bytes()))
+        .into_iter()
+        .chain(data.iter().map(|t| IoSlice::new(&*t)))
+        .collect();
+
+    writer.write_vectored(&*vec).await?;
+
+    Ok(())
 }

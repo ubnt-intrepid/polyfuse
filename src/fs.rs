@@ -1,32 +1,29 @@
 //! Filesystem abstraction.
 
-use crate::reply::{
-    Payload, //
-    ReplyAttr,
-    ReplyBmap,
-    ReplyCreate,
-    ReplyData,
-    ReplyEmpty,
-    ReplyEntry,
-    ReplyLk,
-    ReplyOpen,
-    ReplyOpendir,
-    ReplyReadlink,
-    ReplyStatfs,
-    ReplyWrite,
-    ReplyXattr,
+use crate::{
+    reply::{
+        ReplyAttr, //
+        ReplyBmap,
+        ReplyCreate,
+        ReplyData,
+        ReplyEmpty,
+        ReplyEntry,
+        ReplyLk,
+        ReplyOpen,
+        ReplyOpendir,
+        ReplyReadlink,
+        ReplyStatfs,
+        ReplyWrite,
+        ReplyXattr,
+    },
+    session::Context,
 };
-use futures_io::AsyncWrite;
-use futures_util::io::AsyncWriteExt;
 use polyfuse_sys::abi::{
     fuse_attr, //
     fuse_file_lock,
-    fuse_in_header,
     fuse_kstatfs,
-    fuse_out_header,
 };
-use smallvec::SmallVec;
-use std::{convert::TryFrom, ffi::OsStr, fmt, io, io::IoSlice};
+use std::{convert::TryFrom, ffi::OsStr, io};
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -80,72 +77,6 @@ pub trait Filesystem<T> {
     {
         drop(op);
         cx.reply_err(libc::ENOSYS).await
-    }
-}
-
-/// Contextural information about an incoming request.
-pub struct Context<'a> {
-    header: &'a fuse_in_header,
-    writer: &'a mut (dyn AsyncWrite + Unpin),
-}
-
-impl fmt::Debug for Context<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Context").finish()
-    }
-}
-
-impl<'a> Context<'a> {
-    pub(crate) fn new(
-        header: &'a fuse_in_header,
-        writer: &'a mut (impl AsyncWrite + Unpin),
-    ) -> Self {
-        Self { header, writer }
-    }
-
-    /// Return the user ID of the calling process.
-    pub fn uid(&self) -> u32 {
-        self.header.uid
-    }
-
-    /// Return the group ID of the calling process.
-    pub fn gid(&self) -> u32 {
-        self.header.gid
-    }
-
-    /// Return the process ID of the calling process.
-    pub fn pid(&self) -> u32 {
-        self.header.pid
-    }
-
-    /// Reply to the kernel with an error code.
-    pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
-        self.send_reply(error, &[]).await
-    }
-
-    /// Reply to the kernel with the specified data.
-    pub(crate) async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()> {
-        let data_len: usize = data.iter().map(|t| t.len()).sum();
-
-        let out_header = fuse_out_header {
-            unique: self.header.unique,
-            error: -error,
-            len: u32::try_from(std::mem::size_of::<fuse_out_header>() + data_len).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("the total length of data is too long: {}", e),
-                )
-            })?,
-        };
-
-        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_bytes()))
-            .into_iter()
-            .chain(data.iter().map(|t| IoSlice::new(&*t)))
-            .collect();
-
-        (*self.writer).write_vectored(&*vec).await?;
-
-        Ok(())
     }
 }
 

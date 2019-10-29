@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use polyfuse::{reply::DirEntry, Context, Filesystem, Operation, Server};
+use polyfuse::{Context, DirEntry, Filesystem, Operation, Server};
 use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 
 #[tokio::main]
