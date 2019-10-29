@@ -1,22 +1,32 @@
+//! Serve FUSE filesystem.
+
 use crate::{
-    buf::Buffer, //
-    fs::Filesystem,
-    session::Session,
+    conn::Connection,
+    fs::Filesystem, //
+    session::{Buffer, Session},
 };
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{
     future::{Future, FutureExt},
-    lock::Mutex,
-    select,
+    ready, select,
     stream::StreamExt,
 };
 use libc::c_int;
-use polyfuse_sys::abi::fuse_opcode;
-use std::io;
-use std::{convert::TryFrom, path::Path, sync::Arc};
-use tokio_net::signal::unix::{signal, SignalKind};
+use mio::{unix::UnixReady, Ready};
+use std::{
+    cell::UnsafeCell,
+    io::{self, IoSlice, IoSliceMut, Read, Write},
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+    task::{self, Poll},
+};
+use tokio_net::{
+    signal::unix::{signal, SignalKind},
+    util::PollEvented,
+};
+use tokio_sync::semaphore::{Permit, Semaphore};
 
-pub use crate::channel::Channel;
 pub use crate::conn::MountOptions;
 
 /// FUSE filesystem server.
@@ -62,10 +72,9 @@ where
         let mut sig = sig.fuse();
         let fs = Arc::new(fs);
 
-        let session = Session::initializer() //
-            .start(&mut io)
-            .await?;
-        let session = Arc::new(Mutex::new(session));
+        let session = Session::start(&mut io, Default::default())
+            .await
+            .map(Arc::new)?;
 
         let mut main_loop = Box::pin(main_loop(&session, &mut io, &fs)).fuse();
 
@@ -77,11 +86,7 @@ where
     }
 }
 
-async fn main_loop<I, T>(
-    session: &Arc<Mutex<Session>>,
-    channel: &mut I,
-    fs: &Arc<T>,
-) -> io::Result<()>
+async fn main_loop<I, T>(session: &Arc<Session>, channel: &mut I, fs: &Arc<T>) -> io::Result<()>
 where
     T: for<'a> Filesystem<&'a [u8]>,
     I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
@@ -94,28 +99,187 @@ where
             return Ok::<_, io::Error>(());
         }
 
+        let (req, data) = buf.decode()?;
+        log::debug!(
+            "Got a request: unique={}, opcode={:?}, data={:?}",
+            req.unique(),
+            req.opcode(),
+            data.as_ref().map(|_| "<data>")
+        );
+
         let session = Arc::clone(session);
         let fs = Arc::clone(fs);
         let mut channel = channel.clone();
 
         let req_task = async move {
-            let (request, data) = buf.extract()?;
-            log::debug!(
-                "Got a request: unique={}, opcode={:?}, arg={:?}, data={:?}",
-                request.header.unique,
-                fuse_opcode::try_from(request.header.opcode),
-                request.arg,
-                data.as_ref().map(|_| "<data>")
-            );
-            session
-                .lock()
-                .await
-                .dispatch(&*fs, request, data, &mut channel)
-                .await?;
+            session.process(&*fs, req, data, &mut channel).await?;
             Ok::<_, io::Error>(())
         };
 
+        // FIXME: spawn task.
         req_task.await?;
+    }
+}
+
+/// Asynchronous I/O object that communicates with the FUSE kernel driver.
+#[derive(Debug)]
+pub struct Channel {
+    inner: Arc<Inner>,
+    permit: Permit,
+}
+
+#[derive(Debug)]
+struct Inner {
+    conn: UnsafeCell<PollEvented<Connection>>,
+    mountpoint: PathBuf,
+    semaphore: Semaphore,
+}
+
+impl Clone for Channel {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            permit: Permit::new(),
+        }
+    }
+}
+
+impl Drop for Channel {
+    fn drop(&mut self) {
+        self.release_lock();
+    }
+}
+
+unsafe impl Send for Channel {}
+
+impl Channel {
+    /// Open a new communication channel mounted to the specified path.
+    pub fn open(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
+        let mountpoint = mountpoint.as_ref();
+
+        let conn = Connection::open(mountpoint, mountopts)?;
+
+        Ok(Self {
+            inner: Arc::new(Inner {
+                conn: UnsafeCell::new(PollEvented::new(conn)),
+                mountpoint: mountpoint.into(),
+                semaphore: Semaphore::new(1),
+            }),
+            permit: Permit::new(),
+        })
+    }
+
+    fn poll_lock_with<F, R>(&mut self, cx: &mut task::Context, f: F) -> Poll<R>
+    where
+        F: FnOnce(&mut PollEvented<Connection>, &mut task::Context) -> Poll<R>,
+    {
+        ready!(self.poll_acquire_lock(cx));
+
+        let conn = unsafe { &mut (*self.inner.conn.get()) };
+        let ret = ready!(f(conn, cx));
+
+        self.release_lock();
+
+        Poll::Ready(ret)
+    }
+
+    fn poll_acquire_lock(&mut self, cx: &mut task::Context) -> Poll<()> {
+        if self.permit.is_acquired() {
+            return Poll::Ready(());
+        }
+
+        ready!(self.permit.poll_acquire(cx, &self.inner.semaphore))
+            .unwrap_or_else(|e| unreachable!("{}", e));
+
+        Poll::Ready(())
+    }
+
+    fn release_lock(&mut self) {
+        if self.permit.is_acquired() {
+            self.permit.release(&self.inner.semaphore);
+        }
+    }
+
+    fn poll_read_with<F, R>(&mut self, cx: &mut task::Context<'_>, f: F) -> Poll<io::Result<R>>
+    where
+        F: FnOnce(&mut Connection) -> io::Result<R>,
+    {
+        self.poll_lock_with(cx, |conn, cx| {
+            let mut ready = Ready::readable();
+            ready.insert(UnixReady::error());
+            ready!(conn.poll_read_ready(cx, ready))?;
+
+            match f(conn.get_mut()) {
+                Ok(ret) => Poll::Ready(Ok(ret)),
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    conn.clear_read_ready(cx, ready)?;
+                    Poll::Pending
+                }
+                Err(e) => Poll::Ready(Err(e)),
+            }
+        })
+    }
+
+    fn poll_write_with<F, R>(&mut self, cx: &mut task::Context<'_>, f: F) -> Poll<io::Result<R>>
+    where
+        F: FnOnce(&mut Connection) -> io::Result<R>,
+    {
+        self.poll_lock_with(cx, |conn, cx| {
+            ready!(conn.poll_write_ready(cx))?;
+
+            match f(conn.get_mut()) {
+                Ok(ret) => Poll::Ready(Ok(ret)),
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    conn.clear_write_ready(cx)?;
+                    Poll::Pending
+                }
+                Err(e) => Poll::Ready(Err(e)),
+            }
+        })
+    }
+}
+
+impl AsyncRead for Channel {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        dst: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_read_with(cx, |fd| fd.read(dst))
+    }
+
+    fn poll_read_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        dst: &mut [IoSliceMut],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_read_with(cx, |fd| fd.read_vectored(dst))
+    }
+}
+
+impl AsyncWrite for Channel {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        src: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_write_with(cx, |fd| fd.write(src))
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        src: &[IoSlice],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_write_with(cx, |fd| fd.write_vectored(src))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_write_with(cx, |fd| fd.flush())
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
 

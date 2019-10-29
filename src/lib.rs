@@ -12,16 +12,13 @@
     clippy::unimplemented
 )]
 
-mod buf;
-mod channel;
 mod conn;
 mod dir;
 mod fs;
-mod parse;
-mod session;
 
 pub mod reply;
 pub mod server;
+pub mod session;
 
 // re-exports from sub modules.
 #[doc(inline)]
