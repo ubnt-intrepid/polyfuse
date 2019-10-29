@@ -1194,7 +1194,14 @@ impl<'a> Context<'a> {
     /// Reply to the kernel with the specified data.
     #[inline]
     pub(crate) async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()> {
-        send_reply(&mut self.writer, self.header.unique, error, data).await
+        send_reply(&mut self.writer, self.header.unique, error, data).await?;
+        log::debug!(
+            "Reply to unique={}: error={}, data={:?}",
+            self.header.unique,
+            error,
+            data
+        );
+        Ok(())
     }
 }
 
