@@ -45,7 +45,7 @@ impl Server {
 
 impl<I> Server<I>
 where
-    I: AsyncRead + AsyncWrite + Clone + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + Clone + 'static,
 {
     /// Create a FUSE server.
     pub fn new(io: I) -> Self {
@@ -89,7 +89,7 @@ where
 async fn main_loop<I, F>(session: &Arc<Session>, channel: &mut I, fs: &Arc<F>) -> io::Result<()>
 where
     F: for<'a> Filesystem<&'a [u8]>,
-    I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + Clone + 'static,
 {
     loop {
         let mut buf = Buffer::default();
@@ -103,7 +103,7 @@ where
         let fs = Arc::clone(fs);
         let mut channel = channel.clone();
 
-        let req_task = async move {
+        let req_task = assert_send(async move {
             let (req, data) = buf.decode()?;
             log::debug!(
                 "Got a request: unique={}, opcode={:?}, data={:?}",
@@ -113,11 +113,16 @@ where
             );
             session.process(&*fs, req, data, &mut channel).await?;
             Ok::<_, io::Error>(())
-        };
+        });
 
         // FIXME: spawn task.
         req_task.await?;
     }
+}
+
+#[inline]
+fn assert_send<T: Send>(val: T) -> T {
+    val
 }
 
 /// Asynchronous I/O object that communicates with the FUSE kernel driver.

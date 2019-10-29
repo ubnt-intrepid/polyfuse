@@ -84,8 +84,8 @@ impl FileLock {
 }
 
 /// The filesystem running on the user space.
-#[async_trait::async_trait(?Send)]
-pub trait Filesystem<T> {
+#[async_trait::async_trait]
+pub trait Filesystem<T: Send>: Send + Sync {
     /// Handle a FUSE request from the kernel and reply with its result.
     async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where

@@ -67,8 +67,8 @@ impl Hello {
     }
 }
 
-#[async_trait(?Send)]
-impl<T> Filesystem<T> for Hello {
+#[async_trait]
+impl<T: Send> Filesystem<T> for Hello {
     async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where
         T: 'async_trait, // https://github.com/dtolnay/async-trait/issues/8
