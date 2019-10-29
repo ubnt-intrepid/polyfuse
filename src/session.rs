@@ -7,7 +7,7 @@ use crate::{
 use futures::{
     channel::oneshot,
     future::poll_fn,
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite},
     lock::Mutex,
 };
 use polyfuse_sys::abi::{
@@ -651,7 +651,8 @@ impl Session {
     ) -> io::Result<()>
     where
         F: Filesystem<T>,
-        W: AsyncWrite + Unpin,
+        T: Send,
+        W: AsyncWrite + Send + Unpin,
     {
         if self.state.lock().await.exited {
             log::warn!("The sesson has already been exited");
@@ -1158,7 +1159,7 @@ pub struct SessionInitializer {
 /// Contextural information about an incoming request.
 pub struct Context<'a> {
     header: &'a fuse_in_header,
-    writer: &'a mut (dyn AsyncWrite + Unpin),
+    writer: &'a mut (dyn AsyncWrite + Send + Unpin),
     #[allow(dead_code)]
     session: &'a Session,
 }
@@ -1216,12 +1217,16 @@ async fn send_reply(
         })?,
     };
 
-    let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_bytes()))
-        .into_iter()
-        .chain(data.iter().map(|t| IoSlice::new(&*t)))
-        .collect();
-
-    writer.write_vectored(&*vec).await?;
+    // Unfortunately, IoSlice<'_> does not implement Send and
+    // the data vector must be created in `poll` function.
+    poll_fn(move |cx| {
+        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_bytes()))
+            .into_iter()
+            .chain(data.iter().map(|t| IoSlice::new(&*t)))
+            .collect();
+        Pin::new(&mut *writer).poll_write_vectored(cx, &*vec)
+    })
+    .await?;
 
     Ok(())
 }
