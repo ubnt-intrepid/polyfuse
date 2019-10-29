@@ -53,9 +53,9 @@ where
     }
 
     /// Run a FUSE filesystem.
-    pub async fn run<T>(self, fs: T) -> io::Result<()>
+    pub async fn run<F>(self, fs: F) -> io::Result<()>
     where
-        T: for<'a> Filesystem<&'a [u8]>,
+        F: for<'a> Filesystem<&'a [u8]>,
     {
         let sig = default_shutdown_signal()?;
         let _sig = self.run_until(fs, sig).await?;
@@ -63,9 +63,9 @@ where
     }
 
     /// Run a FUSE filesystem until the specified signal is received.
-    pub async fn run_until<T, S>(self, fs: T, sig: S) -> io::Result<Option<S::Output>>
+    pub async fn run_until<F, S>(self, fs: F, sig: S) -> io::Result<Option<S::Output>>
     where
-        T: for<'a> Filesystem<&'a [u8]>,
+        F: for<'a> Filesystem<&'a [u8]>,
         S: Future + Unpin,
     {
         let mut io = self.io;
@@ -86,9 +86,9 @@ where
     }
 }
 
-async fn main_loop<I, T>(session: &Arc<Session>, channel: &mut I, fs: &Arc<T>) -> io::Result<()>
+async fn main_loop<I, F>(session: &Arc<Session>, channel: &mut I, fs: &Arc<F>) -> io::Result<()>
 where
-    T: for<'a> Filesystem<&'a [u8]>,
+    F: for<'a> Filesystem<&'a [u8]>,
     I: AsyncRead + AsyncWrite + Unpin + Clone + 'static,
 {
     loop {
@@ -96,22 +96,21 @@ where
         let terminated = buf.receive(&mut *channel).await?;
         if terminated {
             log::debug!("connection was closed by the kernel");
-            return Ok::<_, io::Error>(());
+            return Ok(());
         }
-
-        let (req, data) = buf.decode()?;
-        log::debug!(
-            "Got a request: unique={}, opcode={:?}, data={:?}",
-            req.unique(),
-            req.opcode(),
-            data.as_ref().map(|_| "<data>")
-        );
 
         let session = Arc::clone(session);
         let fs = Arc::clone(fs);
         let mut channel = channel.clone();
 
         let req_task = async move {
+            let (req, data) = buf.decode()?;
+            log::debug!(
+                "Got a request: unique={}, opcode={:?}, data={:?}",
+                req.unique(),
+                req.opcode(),
+                data.as_ref().map(|_| "<data>")
+            );
             session.process(&*fs, req, data, &mut channel).await?;
             Ok::<_, io::Error>(())
         };

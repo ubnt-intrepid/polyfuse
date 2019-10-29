@@ -638,8 +638,6 @@ impl Session {
     }
 
     /// Process an incoming request using the specified filesystem operations.
-    ///
-    ///
     #[allow(clippy::cognitive_complexity)]
     pub async fn process<F, T, W>(
         &self,
@@ -650,7 +648,7 @@ impl Session {
     ) -> io::Result<()>
     where
         F: Filesystem<T>,
-        W: AsyncWrite + Unpin + 'static,
+        W: AsyncWrite + Unpin,
     {
         if self.state.lock().await.exited {
             log::warn!("The sesson has already been exited");
@@ -1192,12 +1190,12 @@ impl<'a> Context<'a> {
     /// Reply to the kernel with the specified data.
     #[inline]
     pub(crate) async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()> {
-        send_reply(&mut *self.writer, self.header.unique, error, data).await
+        send_reply(&mut self.writer, self.header.unique, error, data).await
     }
 }
 
 async fn send_reply(
-    writer: &mut (dyn AsyncWrite + Unpin),
+    writer: &mut (impl AsyncWrite + Unpin),
     unique: u64,
     error: i32,
     data: &[&[u8]],
