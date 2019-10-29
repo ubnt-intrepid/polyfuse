@@ -47,6 +47,14 @@ impl FileAttr {
 #[repr(transparent)]
 pub struct FsStatistics(fuse_kstatfs);
 
+impl TryFrom<libc::statvfs> for FsStatistics {
+    type Error = <fuse_kstatfs as TryFrom<libc::statvfs>>::Error;
+
+    fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
+        fuse_kstatfs::try_from(st).map(Self)
+    }
+}
+
 impl FsStatistics {
     pub(crate) fn into_inner(self) -> fuse_kstatfs {
         self.0
@@ -56,6 +64,14 @@ impl FsStatistics {
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct FileLock(fuse_file_lock);
+
+impl TryFrom<libc::flock> for FileLock {
+    type Error = <fuse_file_lock as TryFrom<libc::flock>>::Error;
+
+    fn try_from(lk: libc::flock) -> Result<Self, Self::Error> {
+        fuse_file_lock::try_from(lk).map(Self)
+    }
+}
 
 impl FileLock {
     pub(crate) fn new(attr: &fuse_file_lock) -> &Self {
