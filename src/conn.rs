@@ -89,22 +89,29 @@ impl Connection {
     }
 
     #[allow(dead_code)]
-    pub fn try_clone(&self) -> io::Result<Self> {
+    pub fn duplicate(&self, ioc_clone: bool) -> io::Result<Self> {
         let clonefd;
         unsafe {
-            let devname = CStr::from_bytes_with_nul_unchecked(b"/dev/fuse\0");
+            if ioc_clone {
+                let devname = CStr::from_bytes_with_nul_unchecked(b"/dev/fuse\0");
 
-            clonefd = libc::open(devname.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
-            if clonefd == -1 {
-                return Err(io::Error::last_os_error());
-            }
+                clonefd = libc::open(devname.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+                if clonefd == -1 {
+                    return Err(io::Error::last_os_error());
+                }
 
-            let mut sourcefd = self.fd;
-            let res = libc::ioctl(clonefd, FUSE_DEV_IOC_CLONE.into(), &mut sourcefd);
-            if res == -1 {
-                let err = io::Error::last_os_error();
-                libc::close(clonefd);
-                return Err(err);
+                let mut sourcefd = self.fd;
+                let res = libc::ioctl(clonefd, FUSE_DEV_IOC_CLONE.into(), &mut sourcefd);
+                if res == -1 {
+                    let err = io::Error::last_os_error();
+                    libc::close(clonefd);
+                    return Err(err);
+                }
+            } else {
+                clonefd = libc::dup(self.fd);
+                if clonefd == -1 {
+                    return Err(io::Error::last_os_error());
+                }
             }
         }
 
