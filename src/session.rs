@@ -6,9 +6,10 @@ use crate::{
 };
 use futures::{
     channel::oneshot,
-    future::poll_fn,
+    future::{poll_fn, FusedFuture, FutureExt},
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
+    select,
 };
 use polyfuse_sys::abi::{
     fuse_access_in, //
@@ -43,7 +44,6 @@ use std::{
     convert::TryFrom,
     ffi::OsStr,
     fmt,
-    future::Future,
     io::{self, IoSlice},
     mem,
     os::unix::ffi::OsStrExt,
@@ -668,6 +668,28 @@ impl Session {
             session: &*self,
         };
 
+        macro_rules! run_op {
+            ($op:expr) => {
+                let mut intr = {
+                    let mut state = self.state.lock().await;
+                    let (tx, rx) = oneshot::channel();
+                    state.remains.insert(header.unique, tx);
+                    rx.fuse()
+                };
+                let mut task = fs.call(&mut cx, $op).fuse();
+                select! {
+                    _ = intr => {
+                        log::debug!("interrupted (unique = {})", header.unique);
+                    },
+                    res = task => res?,
+                }
+                drop(task);
+                if intr.is_terminated() {
+                    cx.reply_err(libc::EINTR).await?;
+                }
+            };
+        }
+
         match kind {
             RequestKind::Init { .. } => {
                 log::warn!("");
@@ -677,16 +699,20 @@ impl Session {
                 self.state.lock().await.exited = true;
                 cx.send_reply(0, &[]).await?;
             }
+            RequestKind::Interrupt { arg } => {
+                log::debug!("INTERRUPT (unique = {:?})", arg.unique);
+                let mut state = self.state.lock().await;
+                if let Some(tx) = state.remains.remove(&arg.unique) {
+                    let _ = tx.send(());
+                    log::debug!("Sent interrupt signal to unique={}", arg.unique);
+                }
+            }
             RequestKind::Lookup { name } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Lookup {
-                        parent: ino,
-                        name,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Lookup {
+                    parent: ino,
+                    name,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Forget { arg } => {
                 // no reply.
@@ -699,173 +725,121 @@ impl Session {
                 .await?;
             }
             RequestKind::Getattr { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Getattr {
-                        ino,
-                        fh: arg.fh(),
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Getattr {
+                    ino,
+                    fh: arg.fh(),
+                    reply: Default::default(),
+                });
             }
             RequestKind::Setattr { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Setattr {
-                        ino,
-                        fh: arg.fh(),
-                        mode: arg.mode(),
-                        uid: arg.uid(),
-                        gid: arg.gid(),
-                        size: arg.size(),
-                        atime: arg.atime(),
-                        mtime: arg.mtime(),
-                        ctime: arg.ctime(),
-                        lock_owner: arg.lock_owner(),
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Setattr {
+                    ino,
+                    fh: arg.fh(),
+                    mode: arg.mode(),
+                    uid: arg.uid(),
+                    gid: arg.gid(),
+                    size: arg.size(),
+                    atime: arg.atime(),
+                    mtime: arg.mtime(),
+                    ctime: arg.ctime(),
+                    lock_owner: arg.lock_owner(),
+                    reply: Default::default(),
+                });
             }
             RequestKind::Readlink => {
-                fs.call(
-                    &mut cx,
-                    Operation::Readlink {
-                        ino,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Readlink {
+                    ino,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Symlink { name, link } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Symlink {
-                        parent: ino,
-                        name,
-                        link,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Symlink {
+                    parent: ino,
+                    name,
+                    link,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Mknod { arg, name } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Mknod {
-                        parent: ino,
-                        name,
-                        mode: arg.mode,
-                        rdev: arg.rdev,
-                        umask: Some(arg.umask),
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Mknod {
+                    parent: ino,
+                    name,
+                    mode: arg.mode,
+                    rdev: arg.rdev,
+                    umask: Some(arg.umask),
+                    reply: Default::default(),
+                });
             }
             RequestKind::Mkdir { arg, name } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Mkdir {
-                        parent: ino,
-                        name,
-                        mode: arg.mode,
-                        umask: Some(arg.umask),
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Mkdir {
+                    parent: ino,
+                    name,
+                    mode: arg.mode,
+                    umask: Some(arg.umask),
+                    reply: Default::default(),
+                });
             }
             RequestKind::Unlink { name } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Unlink {
-                        parent: ino,
-                        name,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Unlink {
+                    parent: ino,
+                    name,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Rmdir { name } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Rmdir {
-                        parent: ino,
-                        name,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Rmdir {
+                    parent: ino,
+                    name,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Rename { arg, name, newname } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Rename {
-                        parent: ino,
-                        name,
-                        newparent: arg.newdir,
-                        newname,
-                        flags: 0,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Rename {
+                    parent: ino,
+                    name,
+                    newparent: arg.newdir,
+                    newname,
+                    flags: 0,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Link { arg, newname } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Link {
-                        ino: arg.oldnodeid,
-                        newparent: ino,
-                        newname,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Link {
+                    ino: arg.oldnodeid,
+                    newparent: ino,
+                    newname,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Open { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Open {
-                        ino,
-                        flags: arg.flags,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Open {
+                    ino,
+                    flags: arg.flags,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Read { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Read {
-                        ino,
-                        fh: arg.fh,
-                        offset: arg.offset,
-                        flags: arg.flags,
-                        lock_owner: arg.lock_owner(),
-                        reply: ReplyData::new(arg.size),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Read {
+                    ino,
+                    fh: arg.fh,
+                    offset: arg.offset,
+                    flags: arg.flags,
+                    lock_owner: arg.lock_owner(),
+                    reply: ReplyData::new(arg.size),
+                });
             }
             RequestKind::Write { arg } => match data {
                 Some(data) => {
-                    fs.call(
-                        &mut cx,
-                        Operation::Write {
-                            ino,
-                            fh: arg.fh,
-                            offset: arg.offset,
-                            data,
-                            size: arg.size,
-                            flags: arg.flags,
-                            lock_owner: arg.lock_owner(),
-                            reply: Default::default(),
-                        },
-                    )
-                    .await?;
+                    run_op!(Operation::Write {
+                        ino,
+                        fh: arg.fh,
+                        offset: arg.offset,
+                        data,
+                        size: arg.size,
+                        flags: arg.flags,
+                        lock_owner: arg.lock_owner(),
+                        reply: Default::default(),
+                    });
                 }
                 None => panic!("unexpected condition"),
             },
@@ -881,160 +855,108 @@ impl Session {
                     flock_release = true;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
-                fs.call(
-                    &mut cx,
-                    Operation::Release {
-                        ino,
-                        fh: arg.fh,
-                        flags: arg.flags,
-                        lock_owner,
-                        flush,
-                        flock_release,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Release {
+                    ino,
+                    fh: arg.fh,
+                    flags: arg.flags,
+                    lock_owner,
+                    flush,
+                    flock_release,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Statfs => {
-                fs.call(
-                    &mut cx,
-                    Operation::Statfs {
-                        ino,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Statfs {
+                    ino,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Fsync { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Fsync {
-                        ino,
-                        fh: arg.fh,
-                        datasync: arg.datasync(),
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Fsync {
+                    ino,
+                    fh: arg.fh,
+                    datasync: arg.datasync(),
+                    reply: Default::default(),
+                });
             }
             RequestKind::Setxattr { arg, name, value } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Setxattr {
-                        ino,
-                        name,
-                        value,
-                        flags: arg.flags,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Setxattr {
+                    ino,
+                    name,
+                    value,
+                    flags: arg.flags,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Getxattr { arg, name } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Getxattr {
-                        ino,
-                        name,
-                        size: arg.size,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Getxattr {
+                    ino,
+                    name,
+                    size: arg.size,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Listxattr { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Listxattr {
-                        ino,
-                        size: arg.size,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Listxattr {
+                    ino,
+                    size: arg.size,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Removexattr { name } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Removexattr {
-                        ino,
-                        name,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Removexattr {
+                    ino,
+                    name,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Flush { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Flush {
-                        ino,
-                        fh: arg.fh,
-                        lock_owner: arg.lock_owner,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Flush {
+                    ino,
+                    fh: arg.fh,
+                    lock_owner: arg.lock_owner,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Opendir { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Opendir {
-                        ino,
-                        flags: arg.flags,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Opendir {
+                    ino,
+                    flags: arg.flags,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Readdir { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Readdir {
-                        ino,
-                        fh: arg.fh,
-                        offset: arg.offset,
-                        reply: ReplyData::new(arg.size),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Readdir {
+                    ino,
+                    fh: arg.fh,
+                    offset: arg.offset,
+                    reply: ReplyData::new(arg.size),
+                });
             }
             RequestKind::Releasedir { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Releasedir {
-                        ino,
-                        fh: arg.fh,
-                        flags: arg.flags,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Releasedir {
+                    ino,
+                    fh: arg.fh,
+                    flags: arg.flags,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Fsyncdir { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Fsyncdir {
-                        ino,
-                        fh: arg.fh,
-                        datasync: arg.datasync(),
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Fsyncdir {
+                    ino,
+                    fh: arg.fh,
+                    datasync: arg.datasync(),
+                    reply: Default::default(),
+                });
             }
             RequestKind::Getlk { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Getlk {
-                        ino,
-                        fh: arg.fh,
-                        owner: arg.owner,
-                        lk: FileLock::new(&arg.lk),
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Getlk {
+                    ino,
+                    fh: arg.fh,
+                    owner: arg.owner,
+                    lk: FileLock::new(&arg.lk),
+                    reply: Default::default(),
+                });
             }
             RequestKind::Setlk { arg, sleep } => {
                 if arg.lk_flags & polyfuse_sys::abi::FUSE_LK_FLOCK != 0 {
@@ -1051,75 +973,48 @@ impl Session {
                     if !sleep {
                         op |= libc::LOCK_NB as u32;
                     }
-                    fs.call(
-                        &mut cx,
-                        Operation::Flock {
-                            ino,
-                            fh: arg.fh,
-                            owner: arg.owner,
-                            op,
-                            reply: Default::default(),
-                        },
-                    )
-                    .await?;
+                    run_op!(Operation::Flock {
+                        ino,
+                        fh: arg.fh,
+                        owner: arg.owner,
+                        op,
+                        reply: Default::default(),
+                    });
                 } else {
-                    fs.call(
-                        &mut cx,
-                        Operation::Setlk {
-                            ino,
-                            fh: arg.fh,
-                            owner: arg.owner,
-                            lk: FileLock::new(&arg.lk),
-                            sleep,
-                            reply: Default::default(),
-                        },
-                    )
-                    .await?;
+                    run_op!(Operation::Setlk {
+                        ino,
+                        fh: arg.fh,
+                        owner: arg.owner,
+                        lk: FileLock::new(&arg.lk),
+                        sleep,
+                        reply: Default::default(),
+                    });
                 }
             }
             RequestKind::Access { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Access {
-                        ino,
-                        mask: arg.mask,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Access {
+                    ino,
+                    mask: arg.mask,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Create { arg, name } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Create {
-                        parent: ino,
-                        name,
-                        mode: arg.mode,
-                        umask: Some(arg.umask),
-                        open_flags: arg.flags,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
-            }
-            RequestKind::Interrupt { arg } => {
-                log::debug!("INTERRUPT (unique = {:?})", arg.unique);
-                let mut state = self.state.lock().await;
-                if let Some(tx) = state.remains.remove(&header.unique) {
-                    let _ = tx.send(());
-                }
+                run_op!(Operation::Create {
+                    parent: ino,
+                    name,
+                    mode: arg.mode,
+                    umask: Some(arg.umask),
+                    open_flags: arg.flags,
+                    reply: Default::default(),
+                });
             }
             RequestKind::Bmap { arg } => {
-                fs.call(
-                    &mut cx,
-                    Operation::Bmap {
-                        ino,
-                        block: arg.block,
-                        blocksize: arg.blocksize,
-                        reply: Default::default(),
-                    },
-                )
-                .await?;
+                run_op!(Operation::Bmap {
+                    ino,
+                    block: arg.block,
+                    blocksize: arg.blocksize,
+                    reply: Default::default(),
+                });
             }
 
             // Ioctl,
@@ -1138,15 +1033,6 @@ impl Session {
         }
 
         Ok(())
-    }
-
-    pub async fn register(&self, unique: u64) -> impl Future<Output = ()> {
-        let mut state = self.state.lock().await;
-        let (tx, rx) = oneshot::channel();
-        state.remains.insert(unique, tx);
-        async move {
-            let _ = rx.await;
-        }
     }
 }
 
