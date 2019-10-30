@@ -4,9 +4,12 @@ use crate::{
     fs::{FileLock, Filesystem, Operation},
     reply::{Payload, ReplyData},
 };
-use futures_channel::oneshot;
-use futures_io::{AsyncRead, AsyncWrite};
-use futures_util::{future::poll_fn, io::AsyncWriteExt, lock::Mutex};
+use futures::{
+    channel::oneshot,
+    future::poll_fn,
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    lock::Mutex,
+};
 use polyfuse_sys::abi::{
     fuse_access_in, //
     fuse_bmap_in,

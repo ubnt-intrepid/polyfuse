@@ -5,9 +5,9 @@ use crate::{
     fs::Filesystem, //
     session::{Buffer, Session},
 };
-use futures_io::{AsyncRead, AsyncWrite};
-use futures_util::{
+use futures::{
     future::{Future, FutureExt},
+    io::{AsyncRead, AsyncWrite},
     ready, select,
     stream::StreamExt,
 };
@@ -21,11 +21,11 @@ use std::{
     sync::Arc,
     task::{self, Poll},
 };
-use tokio_net::{
+use tokio::{
+    net::util::PollEvented,
     signal::unix::{signal, SignalKind},
-    util::PollEvented,
+    sync::semaphore::{Permit, Semaphore},
 };
-use tokio_sync::semaphore::{Permit, Semaphore};
 
 pub use crate::conn::MountOptions;
 
@@ -160,7 +160,7 @@ impl Channel {
 
         Ok(Self {
             inner: Arc::new(Inner {
-                conn: UnsafeCell::new(PollEvented::new(conn)),
+                conn: UnsafeCell::new(PollEvented::new(conn)?),
                 mountpoint: mountpoint.into(),
                 semaphore: Semaphore::new(1),
             }),
