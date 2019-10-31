@@ -2,10 +2,7 @@
 
 #![allow(clippy::needless_update)]
 
-use crate::{
-    fs::{FileAttr, FileLock, FsStatistics},
-    session::Context,
-};
+use super::{Context, FileAttr, FileLock, FsStatistics};
 use polyfuse_sys::abi::{
     fuse_attr_out, //
     fuse_bmap_out,

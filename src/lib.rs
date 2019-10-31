@@ -14,17 +14,15 @@
 
 mod conn;
 mod dir;
-mod fs;
+mod server;
 
-pub mod reply;
-pub mod server;
 pub mod session;
 
 // re-exports from sub modules.
 #[doc(inline)]
 pub use crate::{
+    conn::MountOptions,
     dir::DirEntry,
-    fs::{FileAttr, FileLock, Filesystem, FsStatistics, Operation},
     server::Server,
-    session::Context,
+    session::{Context, Filesystem, Operation},
 };

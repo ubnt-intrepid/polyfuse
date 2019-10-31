@@ -2,8 +2,7 @@
 
 use crate::{
     conn::Connection,
-    fs::Filesystem, //
-    session::{Buffer, Session},
+    session::{Buffer, Filesystem, Session},
 };
 use futures::{
     future::{Future, FutureExt},
@@ -31,25 +30,15 @@ pub use crate::conn::MountOptions;
 
 /// FUSE filesystem server.
 #[derive(Debug)]
-pub struct Server<I = Channel> {
-    io: I,
+pub struct Server {
+    io: Channel,
 }
 
 impl Server {
     /// Create a FUSE server mounted on the specified path.
     pub fn mount(mointpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
         let io = Channel::open(mointpoint, mountopts)?;
-        Ok(Server::new(io))
-    }
-}
-
-impl<I> Server<I>
-where
-    I: AsyncRead + AsyncWrite + Send + Unpin + Clone + 'static,
-{
-    /// Create a FUSE server.
-    pub fn new(io: I) -> Self {
-        Self { io }
+        Ok(Server { io })
     }
 
     /// Run a FUSE filesystem.

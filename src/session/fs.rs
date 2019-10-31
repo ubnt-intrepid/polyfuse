@@ -1,6 +1,6 @@
 //! Filesystem abstraction.
 
-use crate::{
+use super::{
     reply::{
         ReplyAttr, //
         ReplyBmap,
@@ -16,7 +16,7 @@ use crate::{
         ReplyWrite,
         ReplyXattr,
     },
-    session::Context,
+    Context,
 };
 use polyfuse_sys::abi::{
     fuse_attr, //
