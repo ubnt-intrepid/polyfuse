@@ -131,7 +131,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_direntry() {
+    fn aligned_cases() {
+        assert_eq!(aligned(1), 8);
+        assert_eq!(aligned(7), 8);
+        assert_eq!(aligned(8), 8);
+        assert_eq!(aligned(9), 16);
+        assert_eq!(aligned(15), 16);
+        assert_eq!(aligned(16), 16);
+        assert_eq!(aligned(17), 24);
+        assert_eq!(aligned(23), 24);
+        assert_eq!(aligned(24), 24);
+        assert_eq!(aligned(25), 32);
+
+        assert_eq!(aligned(5), 8);
+    }
+
+    #[test]
+    fn smoke_debug() {
+        let dirent = DirEntry::new("hello", 1, 42, 0);
+        dbg!(dirent);
+    }
+
+    #[test]
+    fn new_dirent() {
         let dirent = DirEntry::new("hello", 1, 42, 0);
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
@@ -142,18 +164,32 @@ mod tests {
         assert_eq!(
             dirent.as_ref(),
             &*vec![
-                1u8, 0, 0, 0, 0, 0, 0, 0, // ino
-                42, 0, 0, 0, 0, 0, 0, 0, // off
-                5, 0, 0, 0, // namlen
-                0, 0, 0, 0, // typ
-                104, 101, 108, 108, 111, // name
-                0, 0, 0 // padding
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ino
+                0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // off
+                0x05, 0x00, 0x00, 0x00, // namlen
+                0x00, 0x00, 0x00, 0x00, // typ
+                0x68, 0x65, 0x6c, 0x6c, 0x6f, // name
+                0x00, 0x00, 0x00, // padding
             ]
         );
     }
 
+    #[allow(clippy::cast_lossless)]
     #[test]
-    fn test_direntry_set_long_name() {
+    fn set_attributes() {
+        let mut dirent = DirEntry::new("hello", 1, 42, 0);
+
+        *dirent.nodeid_mut() = 2;
+        *dirent.offset_mut() = 90;
+        *dirent.type_mut() = libc::DT_DIR as u32;
+
+        assert_eq!(dirent.nodeid(), 2u64);
+        assert_eq!(dirent.offset(), 90u64);
+        assert_eq!(dirent.type_(), libc::DT_DIR as u32);
+    }
+
+    #[test]
+    fn set_long_name() {
         let mut dirent = DirEntry::new("hello", 1, 42, 0);
         dirent.set_name("good evening");
         assert_eq!(dirent.nodeid(), 1u64);
@@ -165,18 +201,19 @@ mod tests {
         assert_eq!(
             dirent.as_ref(),
             &*vec![
-                1u8, 0, 0, 0, 0, 0, 0, 0, // ino
-                42, 0, 0, 0, 0, 0, 0, 0, // off
-                12, 0, 0, 0, // namelen
-                0, 0, 0, 0, // typ
-                103, 111, 111, 100, 32, 101, 118, 101, 110, 105, 110, 103, // name
-                0, 0, 0, 0 // padding
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ino
+                0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // off
+                0x0c, 0x00, 0x00, 0x00, // namelen
+                0x00, 0x00, 0x00, 0x00, // typ
+                0x67, 0x6f, 0x6f, 0x64, 0x20, 0x65, 0x76, 0x65, 0x6e, 0x69, 0x6e,
+                0x67, // name
+                0x00, 0x00, 0x00, 0x00, // padding
             ]
         );
     }
 
     #[test]
-    fn test_direntry_set_short_name() {
+    fn set_short_name() {
         let mut dirent = DirEntry::new("good morning", 1, 42, 0);
         dirent.set_name("bye");
         assert_eq!(dirent.nodeid(), 1u64);
@@ -188,12 +225,12 @@ mod tests {
         assert_eq!(
             dirent.as_ref(),
             &*vec![
-                1u8, 0, 0, 0, 0, 0, 0, 0, // ino
-                42, 0, 0, 0, 0, 0, 0, 0, // off
-                3, 0, 0, 0, // namelen
-                0, 0, 0, 0, // off
-                98, 121, 101, // name
-                0, 0, 0, 0, 0 // padding
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ino
+                0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // off
+                0x03, 0x00, 0x00, 0x00, // namelen
+                0x00, 0x00, 0x00, 0x00, // typ
+                0x62, 0x79, 0x65, // name
+                0x00, 0x00, 0x00, 0x00, 0x00, // padding
             ]
         );
     }

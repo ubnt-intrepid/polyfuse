@@ -21,6 +21,7 @@ grcov ./target/debug/deps -s ./ -o ./target/cov/out.lcov \
   --llvm \
   --branch \
   --ignore-not-existing \
-  --ignore '/*'
+  --ignore '/*' \
+  --ignore 'target/*'
 
 genhtml -o ./target/cov ./target/cov/out.lcov
