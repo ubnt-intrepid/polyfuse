@@ -64,7 +64,7 @@ pub struct ReplyEmpty {
 
 impl ReplyEmpty {
     pub async fn ok(self, cx: &mut Context<'_>) -> io::Result<()> {
-        cx.send_reply(0, &[]).await
+        cx.reply(&[]).await
     }
 }
 
@@ -94,7 +94,7 @@ impl ReplyData {
     pub async fn data_vectored(self, cx: &mut Context<'_>, data: &[&[u8]]) -> io::Result<()> {
         let len: u32 = data.iter().map(|t| t.len() as u32).sum();
         if len <= self.size {
-            cx.send_reply(0, data).await
+            cx.reply_vectored(data).await
         } else {
             cx.reply_err(libc::ERANGE).await
         }
@@ -130,7 +130,7 @@ impl ReplyAttr {
             attr_valid: self.attr_valid.0,
             ..Default::default()
         };
-        cx.send_reply(0, &[attr_out.as_bytes()]).await
+        cx.reply(attr_out.as_bytes()).await
     }
 }
 
@@ -187,7 +187,7 @@ impl ReplyEntry {
             attr,
             ..Default::default()
         };
-        cx.send_reply(0, &[entry_out.as_bytes()]).await
+        cx.reply(entry_out.as_bytes()).await
     }
 }
 
@@ -201,7 +201,7 @@ pub struct ReplyReadlink {
 impl ReplyReadlink {
     /// Reply to the kernel with the specified link value.
     pub async fn link(self, cx: &mut Context<'_>, value: impl AsRef<OsStr>) -> io::Result<()> {
-        cx.send_reply(0, &[value.as_ref().as_bytes()]).await
+        cx.reply(value.as_ref().as_bytes()).await
     }
 }
 
@@ -250,7 +250,7 @@ impl ReplyOpen {
             open_flags: self.open_flags,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_bytes()]).await
+        cx.reply(out.as_bytes()).await
     }
 }
 
@@ -268,7 +268,7 @@ impl ReplyWrite {
             size,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_bytes()]).await
+        cx.reply(out.as_bytes()).await
     }
 }
 
@@ -302,7 +302,7 @@ impl ReplyOpendir {
             open_flags: self.open_flags,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_bytes()]).await
+        cx.reply(out.as_bytes()).await
     }
 }
 
@@ -320,12 +320,12 @@ impl ReplyXattr {
             size,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_bytes()]).await
+        cx.reply(out.as_bytes()).await
     }
 
     /// Reply to the kernel with the specified value.
     pub async fn value(self, cx: &mut Context<'_>, value: impl AsRef<[u8]>) -> io::Result<()> {
-        cx.send_reply(0, &[value.as_ref()]).await
+        cx.reply(value.as_ref()).await
     }
 }
 
@@ -350,7 +350,7 @@ impl ReplyStatfs {
                 .into_inner(),
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_bytes()]).await
+        cx.reply(out.as_bytes()).await
     }
 }
 
@@ -375,7 +375,7 @@ impl ReplyLk {
                 .into_inner(),
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_bytes()]).await
+        cx.reply(out.as_bytes()).await
     }
 }
 
@@ -464,7 +464,7 @@ impl ReplyCreate {
             ..Default::default()
         };
 
-        cx.send_reply(0, &[entry_out.as_bytes(), open_out.as_bytes()])
+        cx.reply_vectored(&[entry_out.as_bytes(), open_out.as_bytes()])
             .await
     }
 }
@@ -481,6 +481,6 @@ impl ReplyBmap {
             block,
             ..Default::default()
         };
-        cx.send_reply(0, &[out.as_bytes()]).await
+        cx.reply(out.as_bytes()).await
     }
 }

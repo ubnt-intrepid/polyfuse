@@ -25,6 +25,7 @@ use std::{
     convert::TryFrom,
     fmt,
     io::{self, IoSlice},
+    mem,
     pin::Pin,
     task::{self, Poll},
 };
@@ -76,13 +77,13 @@ impl Session {
 
                     if arg.major > 7 {
                         log::debug!("wait for a second INIT request with a 7.X version.");
-                        send_reply(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
+                        send_msg(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
                         continue;
                     }
 
                     if arg.major < 7 || (arg.major == 7 && arg.minor < 6) {
                         log::warn!("unsupported protocol version: {}.{}", arg.major, arg.minor);
-                        send_reply(&mut *io, header.unique, libc::EPROTO, &[]).await?;
+                        send_msg(&mut *io, header.unique, -libc::EPROTO, &[]).await?;
                         return Err(io::Error::from_raw_os_error(libc::EPROTO));
                     }
 
@@ -95,14 +96,14 @@ impl Session {
                     init_out.max_readahead = arg.max_readahead;
                     init_out.max_write = MAX_WRITE_SIZE;
 
-                    send_reply(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
+                    send_msg(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
                 }
                 _ => {
                     log::warn!(
                         "ignoring an operation before init (opcode={:?})",
                         header.opcode
                     );
-                    send_reply(&mut *io, header.unique, libc::EIO, &[]).await?;
+                    send_msg(&mut *io, header.unique, -libc::EIO, &[]).await?;
                     continue;
                 }
             }
@@ -134,16 +135,17 @@ impl Session {
         T: Send,
         W: AsyncWrite + Send + Unpin,
     {
-        if self.state.lock().await.exited {
-            log::warn!("The sesson has already been exited");
-            return Ok(());
-        }
-
         let Request { header, kind, .. } = req;
         let ino = header.nodeid;
 
         {
             let mut state = self.state.lock().await;
+
+            if state.exited {
+                log::warn!("The sesson has already been exited");
+                return Ok(());
+            }
+
             if state.interrupted.remove(&header.unique) {
                 log::debug!("The request was interrupted (unique={})", header.unique);
                 return Ok(());
@@ -152,7 +154,7 @@ impl Session {
 
         let mut cx = Context {
             header,
-            writer: &mut *writer,
+            writer: Some(&mut *writer),
             session: &*self,
         };
 
@@ -169,7 +171,7 @@ impl Session {
             }
             RequestKind::Destroy => {
                 self.state.lock().await.exited = true;
-                cx.send_reply(0, &[]).await?;
+                cx.reply(&[]).await?;
             }
             RequestKind::Interrupt { arg } => {
                 self.interrupt(arg.unique).await;
@@ -529,7 +531,7 @@ pub struct SessionInitializer {
 /// Contextural information about an incoming request.
 pub struct Context<'a> {
     header: &'a fuse_in_header,
-    writer: &'a mut (dyn AsyncWrite + Send + Unpin),
+    writer: Option<&'a mut (dyn AsyncWrite + Send + Unpin)>,
     session: &'a Session,
 }
 
@@ -555,21 +557,24 @@ impl<'a> Context<'a> {
         self.header.pid
     }
 
-    /// Reply to the kernel with an error code.
-    pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
-        self.send_reply(error, &[]).await
+    #[inline]
+    pub(crate) async fn reply(&mut self, data: &[u8]) -> io::Result<()> {
+        self.reply_vectored(&[data]).await
     }
 
-    /// Reply to the kernel with the specified data.
     #[inline]
-    pub(crate) async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()> {
-        send_reply(&mut self.writer, self.header.unique, error, data).await?;
-        log::debug!(
-            "Reply to unique={}: error={}, data={:?}",
-            self.header.unique,
-            error,
-            data
-        );
+    pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()> {
+        if let Some(ref mut writer) = self.writer {
+            send_msg(writer, self.header.unique, 0, data).await?;
+        }
+        Ok(())
+    }
+
+    /// Reply to the kernel with an error code.
+    pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
+        if let Some(ref mut writer) = self.writer {
+            send_msg(writer, self.header.unique, -error, &[]).await?;
+        }
         Ok(())
     }
 
@@ -598,24 +603,22 @@ impl FusedFuture for Interrupt {
     }
 }
 
-async fn send_reply(
+async fn send_msg(
     writer: &mut (impl AsyncWrite + Unpin),
     unique: u64,
     error: i32,
     data: &[&[u8]],
 ) -> io::Result<()> {
     let data_len: usize = data.iter().map(|t| t.len()).sum();
-
-    let out_header = fuse_out_header {
-        unique,
-        error: -error,
-        len: u32::try_from(std::mem::size_of::<fuse_out_header>() + data_len).map_err(|e| {
+    let len = u32::try_from(mem::size_of::<fuse_out_header>() + data_len) //
+        .map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("the total length of data is too long: {}", e),
+                "the total length of data is too long: {}",
             )
-        })?,
-    };
+        })?;
+
+    let out_header = fuse_out_header { unique, error, len };
 
     // Unfortunately, IoSlice<'_> does not implement Send and
     // the data vector must be created in `poll` function.
@@ -628,5 +631,88 @@ async fn send_reply(
     })
     .await?;
 
+    log::debug!("Reply to kernel: unique={}: error={}", unique, error);
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn send_msg_empty() {
+        let mut dest = Vec::<u8>::new();
+        send_msg(&mut dest, 42, 0, &[]).await.unwrap();
+        assert_eq!(
+            dest,
+            vec![
+                0x10, 0x00, 0x00, 0x00, // len
+                0x00, 0x00, 0x00, 0x00, // error
+                0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unique
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn send_msg_error() {
+        let mut dest = Vec::<u8>::new();
+        send_msg(&mut dest, 42, -libc::EPROTO, &[]).await.unwrap();
+        assert_eq!(
+            dest,
+            vec![
+                0x10, 0x00, 0x00, 0x00, // len
+                0xb9, 0xff, 0xff, 0xff, // error
+                0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unique
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn send_msg_single_data() {
+        let mut dest = Vec::<u8>::new();
+        send_msg(&mut dest, 42, 0, &["hello".as_ref()])
+            .await
+            .unwrap();
+        assert_eq!(
+            dest,
+            vec![
+                0x15, 0x00, 0x00, 0x00, // len
+                0x00, 0x00, 0x00, 0x00, // error
+                0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unique
+                0x68, 0x65, 0x6c, 0x6c, 0x6f, // data
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn send_msg_chunked_data() {
+        let mut dest = Vec::<u8>::new();
+        send_msg(
+            &mut dest,
+            26,
+            0,
+            &[
+                "hello, ".as_ref(), //
+                "this ".as_ref(),
+                "is a ".as_ref(),
+                "message.".as_ref(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            dest,
+            vec![
+                0x29, 0x00, 0x00, 0x00, // len
+                0x00, 0x00, 0x00, 0x00, // error
+                0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unique
+                // data
+                0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x2c, 0x20, 0x74, //
+                0x68, 0x69, 0x73, 0x20, 0x69, 0x73, 0x20, 0x61, //
+                0x20, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, //
+                0x2e,
+            ]
+        );
+    }
 }
