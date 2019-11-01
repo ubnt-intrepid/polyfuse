@@ -1,9 +1,13 @@
 use polyfuse_sys::abi::{
     fuse_access_in, //
+    fuse_batch_forget_in,
     fuse_bmap_in,
+    fuse_copy_file_range_in,
     fuse_create_in,
+    fuse_fallocate_in,
     fuse_flush_in,
     fuse_forget_in,
+    fuse_forget_one,
     fuse_fsync_in,
     fuse_getattr_in,
     fuse_getxattr_in,
@@ -18,6 +22,7 @@ use polyfuse_sys::abi::{
     fuse_open_in,
     fuse_read_in,
     fuse_release_in,
+    fuse_rename2_in,
     fuse_rename_in,
     fuse_setattr_in,
     fuse_setxattr_in,
@@ -128,6 +133,7 @@ pub enum RequestKind<'a> {
     },
     Readdir {
         arg: &'a fuse_read_in,
+        plus: bool,
     },
     Releasedir {
         arg: &'a fuse_release_in,
@@ -155,17 +161,28 @@ pub enum RequestKind<'a> {
     Bmap {
         arg: &'a fuse_bmap_in,
     },
-    // Ioctl,
-    // Poll,
-    // NotifyReply,
-    // BatchForget,
-    // Fallocate,
-    // Readdirplus,
-    // Rename2,
-    // Lseek,
-    // CopyFileRange,
+    Fallocate {
+        arg: &'a fuse_fallocate_in,
+    },
+    Rename2 {
+        arg: &'a fuse_rename2_in,
+        name: &'a OsStr,
+        newname: &'a OsStr,
+    },
+    CopyFileRange {
+        arg: &'a fuse_copy_file_range_in,
+    },
+    BatchForget {
+        arg: &'a fuse_batch_forget_in,
+        forgets: &'a [fuse_forget_one],
+    },
     Unknown,
 }
+
+// TODO: add opcodes:
+// Ioctl,
+// Poll,
+// NotifyReply,
 
 impl Request<'_> {
     pub fn unique(&self) -> u64 {
@@ -219,6 +236,10 @@ impl_from_bytes! {
     fuse_create_in,
     fuse_interrupt_in,
     fuse_bmap_in,
+    fuse_fallocate_in,
+    fuse_rename2_in,
+    fuse_copy_file_range_in,
+    fuse_batch_forget_in,
 }
 
 #[derive(Debug)]
@@ -241,6 +262,16 @@ impl<'a> Parser<'a> {
         self.offset += count;
 
         Ok(data)
+    }
+
+    fn fetch_array<T>(&mut self, count: usize) -> io::Result<&'a [T]> {
+        self.fetch_bytes(mem::size_of::<T>() * count)
+            .map(|bytes| unsafe {
+                std::slice::from_raw_parts(
+                    bytes.as_ptr() as *const T, //
+                    count,
+                )
+            })
     }
 
     fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
@@ -388,7 +419,7 @@ impl<'a> Parser<'a> {
             }
             Some(fuse_opcode::FUSE_READDIR) => {
                 let arg = self.fetch()?;
-                Ok(RequestKind::Readdir { arg })
+                Ok(RequestKind::Readdir { arg, plus: false })
             }
             Some(fuse_opcode::FUSE_RELEASEDIR) => {
                 let arg = self.fetch()?;
@@ -426,6 +457,29 @@ impl<'a> Parser<'a> {
             Some(fuse_opcode::FUSE_BMAP) => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Bmap { arg })
+            }
+            Some(fuse_opcode::FUSE_FALLOCATE) => {
+                let arg = self.fetch()?;
+                Ok(RequestKind::Fallocate { arg })
+            }
+            Some(fuse_opcode::FUSE_READDIRPLUS) => {
+                let arg = self.fetch()?;
+                Ok(RequestKind::Readdir { arg, plus: true })
+            }
+            Some(fuse_opcode::FUSE_RENAME2) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                let newname = self.fetch_str()?;
+                Ok(RequestKind::Rename2 { arg, name, newname })
+            }
+            Some(fuse_opcode::FUSE_COPY_FILE_RANGE) => {
+                let arg = self.fetch()?;
+                Ok(RequestKind::CopyFileRange { arg })
+            }
+            Some(fuse_opcode::FUSE_BATCH_FORGET) => {
+                let arg: &fuse_batch_forget_in = self.fetch()?;
+                let forgets = self.fetch_array(arg.count as usize)?;
+                Ok(RequestKind::BatchForget { arg, forgets })
             }
             _ => Ok(RequestKind::Unknown),
         }

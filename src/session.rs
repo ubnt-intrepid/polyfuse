@@ -7,7 +7,7 @@ mod fs;
 mod request;
 
 pub use buf::Buffer;
-pub use fs::{FileAttr, FileLock, Filesystem, FsStatistics, Operation};
+pub use fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation};
 pub use request::Request;
 
 use futures::{
@@ -16,7 +16,7 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
 };
-use polyfuse_sys::abi::{fuse_in_header, fuse_init_out, fuse_out_header};
+use polyfuse_sys::abi::{fuse_forget_one, fuse_in_header, fuse_init_out, fuse_out_header};
 use reply::{Payload, ReplyData};
 use request::RequestKind;
 use smallvec::SmallVec;
@@ -188,7 +188,25 @@ impl Session {
                 fs.call(
                     &mut cx,
                     Operation::Forget {
-                        nlookups: &[(ino, arg.nlookup)],
+                        forgets: &[Forget::new(ino, arg.nlookup)],
+                    },
+                )
+                .await?;
+            }
+            RequestKind::BatchForget { forgets, .. } => {
+                #[inline(always)]
+                fn make_forgets(forgets: &[fuse_forget_one]) -> &[Forget] {
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            forgets.as_ptr() as *const Forget, //
+                            forgets.len(),
+                        )
+                    }
+                }
+                fs.call(
+                    &mut cx,
+                    Operation::Forget {
+                        forgets: make_forgets(forgets),
                     },
                 )
                 .await?;
@@ -269,6 +287,16 @@ impl Session {
                     newparent: arg.newdir,
                     newname,
                     flags: 0,
+                    reply: Default::default(),
+                });
+            }
+            RequestKind::Rename2 { arg, name, newname } => {
+                run_op!(Operation::Rename {
+                    parent: ino,
+                    name,
+                    newparent: arg.newdir,
+                    newname,
+                    flags: arg.flags,
                     reply: Default::default(),
                 });
             }
@@ -394,11 +422,12 @@ impl Session {
                     reply: Default::default(),
                 });
             }
-            RequestKind::Readdir { arg } => {
+            RequestKind::Readdir { arg, plus } => {
                 run_op!(Operation::Readdir {
                     ino,
                     fh: arg.fh,
                     offset: arg.offset,
+                    plus,
                     reply: ReplyData::new(arg.size),
                 });
             }
@@ -485,16 +514,30 @@ impl Session {
                     reply: Default::default(),
                 });
             }
+            RequestKind::Fallocate { arg } => {
+                run_op!(Operation::Fallocate {
+                    ino,
+                    fh: arg.fh,
+                    offset: arg.offset,
+                    length: arg.length,
+                    mode: arg.mode,
+                    reply: Default::default(),
+                });
+            }
+            RequestKind::CopyFileRange { arg } => {
+                run_op!(Operation::CopyFileRange {
+                    ino_in: ino,
+                    fh_in: arg.fh_in,
+                    off_in: arg.off_in,
+                    ino_out: arg.nodeid_out,
+                    fh_out: arg.fh_out,
+                    off_out: arg.off_out,
+                    len: arg.len,
+                    flags: arg.flags,
+                    reply: Default::default(),
+                });
+            }
 
-            // Ioctl,
-            // Poll,
-            // NotifyReply,
-            // BatchForget,
-            // Fallocate,
-            // Readdirplus,
-            // Rename2,
-            // Lseek,
-            // CopyFileRange,
             RequestKind::Unknown => {
                 log::warn!("unsupported opcode: {:?}", header.opcode);
                 cx.reply_err(libc::ENOSYS).await?;

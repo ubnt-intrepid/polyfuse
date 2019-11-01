@@ -21,6 +21,7 @@ use super::{
 use polyfuse_sys::abi::{
     fuse_attr, //
     fuse_file_lock,
+    fuse_forget_one,
     fuse_kstatfs,
 };
 use std::{convert::TryFrom, ffi::OsStr, io};
@@ -83,6 +84,27 @@ impl FileLock {
     }
 }
 
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct Forget(fuse_forget_one);
+
+impl Forget {
+    pub(crate) const fn new(ino: u64, nlookup: u64) -> Self {
+        Self(fuse_forget_one {
+            nodeid: ino,
+            nlookup,
+        })
+    }
+
+    pub fn ino(&self) -> u64 {
+        self.0.nodeid
+    }
+
+    pub fn nlookup(&self) -> u64 {
+        self.0.nlookup
+    }
+}
+
 /// The filesystem running on the user space.
 #[async_trait::async_trait]
 pub trait Filesystem<T: Send>: Send + Sync {
@@ -107,9 +129,7 @@ pub enum Operation<'a, T> {
     },
 
     /// Forget about inodes removed from the kernel's internal caches.
-    Forget {
-        nlookups: &'a [(u64, u64)], //
-    },
+    Forget { forgets: &'a [Forget] },
 
     /// Get file attributes.
     Getattr {
@@ -310,6 +330,7 @@ pub enum Operation<'a, T> {
         ino: u64,
         fh: u64,
         offset: u64,
+        plus: bool,
         reply: ReplyData,
     },
 
@@ -389,13 +410,31 @@ pub enum Operation<'a, T> {
         blocksize: u32,
         reply: ReplyBmap,
     },
-    // ioctl
-    // poll
-    // notify_reply
-    // batch_forget
-    // fallocate
-    // readdirplus
-    // rename2
-    // lseek
-    // copy_file_range
+
+    /// Allocate requested space to an opened file.
+    Fallocate {
+        ino: u64,
+        fh: u64,
+        offset: u64,
+        length: u64,
+        mode: u32,
+        reply: ReplyEmpty,
+    },
+
+    /// Copy a range of data from an opened file to another.
+    CopyFileRange {
+        ino_in: u64,
+        off_in: u64,
+        fh_in: u64,
+        ino_out: u64,
+        off_out: u64,
+        fh_out: u64,
+        len: u64,
+        flags: u64,
+        reply: ReplyWrite,
+    },
 }
+
+// TODO: add operations:
+// Ioctl
+// Poll
