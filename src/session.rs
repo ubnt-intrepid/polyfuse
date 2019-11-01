@@ -12,21 +12,21 @@ pub use request::Request;
 
 use futures::{
     channel::oneshot,
-    future::{poll_fn, FusedFuture, FutureExt},
+    future::{poll_fn, Fuse, FusedFuture, Future, FutureExt},
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
-    select,
 };
 use polyfuse_sys::abi::{fuse_in_header, fuse_init_out, fuse_out_header};
 use reply::{Payload, ReplyData};
 use request::RequestKind;
 use smallvec::SmallVec;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     convert::TryFrom,
     fmt,
     io::{self, IoSlice},
     pin::Pin,
+    task::{self, Poll},
 };
 
 pub const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
@@ -44,6 +44,7 @@ pub struct Session {
 struct SessionState {
     exited: bool,
     remains: HashMap<u64, oneshot::Sender<()>>,
+    interrupted: HashSet<u64>,
 }
 
 impl Session {
@@ -113,6 +114,7 @@ impl Session {
                 state: Mutex::new(SessionState {
                     exited: false,
                     remains: HashMap::new(),
+                    interrupted: HashSet::new(),
                 }),
             });
         }
@@ -140,6 +142,14 @@ impl Session {
         let Request { header, kind, .. } = req;
         let ino = header.nodeid;
 
+        {
+            let mut state = self.state.lock().await;
+            if state.interrupted.remove(&header.unique) {
+                log::debug!("The request was interrupted (unique={})", header.unique);
+                return Ok(());
+            }
+        }
+
         let mut cx = Context {
             header,
             writer: &mut *writer,
@@ -148,23 +158,7 @@ impl Session {
 
         macro_rules! run_op {
             ($op:expr) => {
-                let mut intr = {
-                    let mut state = self.state.lock().await;
-                    let (tx, rx) = oneshot::channel();
-                    state.remains.insert(header.unique, tx);
-                    rx.fuse()
-                };
-                let mut task = fs.call(&mut cx, $op).fuse();
-                select! {
-                    _ = intr => {
-                        log::debug!("interrupted (unique = {})", header.unique);
-                    },
-                    res = task => res?,
-                }
-                drop(task);
-                if intr.is_terminated() {
-                    cx.reply_err(libc::EINTR).await?;
-                }
+                fs.call(&mut cx, $op).await?;
             };
         }
 
@@ -178,12 +172,7 @@ impl Session {
                 cx.send_reply(0, &[]).await?;
             }
             RequestKind::Interrupt { arg } => {
-                log::debug!("INTERRUPT (unique = {:?})", arg.unique);
-                let mut state = self.state.lock().await;
-                if let Some(tx) = state.remains.remove(&arg.unique) {
-                    let _ = tx.send(());
-                    log::debug!("Sent interrupt signal to unique={}", arg.unique);
-                }
+                self.interrupt(arg.unique).await;
             }
             RequestKind::Lookup { name } => {
                 run_op!(Operation::Lookup {
@@ -512,6 +501,23 @@ impl Session {
 
         Ok(())
     }
+
+    async fn enable_interrupt(&self, unique: u64) -> Interrupt {
+        let mut state = self.state.lock().await;
+        let (tx, rx) = oneshot::channel();
+        state.remains.insert(unique, tx);
+        Interrupt(rx.fuse())
+    }
+
+    async fn interrupt(&self, unique: u64) {
+        log::debug!("INTERRUPT (unique = {:?})", unique);
+        let mut state = self.state.lock().await;
+        if let Some(tx) = state.remains.remove(&unique) {
+            state.interrupted.insert(unique);
+            let _ = tx.send(());
+            log::debug!("Sent interrupt signal to unique={}", unique);
+        }
+    }
 }
 
 /// Session initializer.
@@ -524,7 +530,6 @@ pub struct SessionInitializer {
 pub struct Context<'a> {
     header: &'a fuse_in_header,
     writer: &'a mut (dyn AsyncWrite + Send + Unpin),
-    #[allow(dead_code)]
     session: &'a Session,
 }
 
@@ -566,6 +571,30 @@ impl<'a> Context<'a> {
             data
         );
         Ok(())
+    }
+
+    /// Register the request with the sesssion and get a signal
+    /// that will be notified when the request is canceld by the kernel.
+    pub async fn on_interrupt(&mut self) -> Interrupt {
+        self.session.enable_interrupt(self.header.unique).await
+    }
+}
+
+#[derive(Debug)]
+pub struct Interrupt(Fuse<oneshot::Receiver<()>>);
+
+impl Future for Interrupt {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
+        let _res = futures::ready!(self.0.poll_unpin(cx));
+        Poll::Ready(())
+    }
+}
+
+impl FusedFuture for Interrupt {
+    fn is_terminated(&self) -> bool {
+        self.0.is_terminated()
     }
 }
 

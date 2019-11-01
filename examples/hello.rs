@@ -2,6 +2,10 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use futures::{
+    future::{Future, FutureExt},
+    select,
+};
 use polyfuse::{Context, DirEntry, Filesystem, Operation, Server};
 use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 
@@ -67,6 +71,13 @@ impl Hello {
     }
 }
 
+fn expensive_task() -> impl Future<Output = io::Result<()>> + Unpin {
+    Box::pin(async {
+        tokio::timer::delay_for(std::time::Duration::from_secs(10)).await;
+        Ok(())
+    })
+}
+
 #[async_trait]
 impl<T: Send> Filesystem<T> for Hello {
     async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
@@ -107,6 +118,13 @@ impl<T: Send> Filesystem<T> for Hello {
             } => match ino {
                 1 => cx.reply_err(libc::EISDIR).await,
                 2 => {
+                    let mut task = expensive_task().fuse();
+                    let mut intr = cx.on_interrupt().await;
+                    select! {
+                        res = task => res?,
+                        _ = intr => return cx.reply_err(libc::EINTR).await,
+                    }
+
                     let offset = offset as usize;
                     let size = reply.size() as usize;
                     if offset >= self.content.len() {
