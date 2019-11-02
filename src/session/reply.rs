@@ -11,6 +11,11 @@ use polyfuse_sys::abi::{
     fuse_getxattr_out,
     fuse_init_out,
     fuse_lk_out,
+    fuse_notify_delete_out,
+    fuse_notify_inval_entry_out,
+    fuse_notify_inval_inode_out,
+    fuse_notify_retrieve_out,
+    fuse_notify_store_out,
     fuse_open_out,
     fuse_out_header,
     fuse_statfs_out,
@@ -57,6 +62,11 @@ impl_as_ref_for_abi! {
     fuse_statfs_out,
     fuse_lk_out,
     fuse_bmap_out,
+    fuse_notify_inval_inode_out,
+    fuse_notify_inval_entry_out,
+    fuse_notify_delete_out,
+    fuse_notify_store_out,
+    fuse_notify_retrieve_out,
 }
 
 /// Reply with an empty output.

@@ -2,7 +2,7 @@
 
 use crate::{
     conn::Connection,
-    session::{Buffer, Filesystem, Session},
+    session::{Buffer, Filesystem, NotifyRetrieve, Session},
 };
 use futures::{
     future::{Future, FutureExt},
@@ -14,6 +14,7 @@ use libc::c_int;
 use mio::{unix::UnixReady, Ready};
 use std::{
     cell::UnsafeCell,
+    ffi::OsStr,
     io::{self, IoSlice, IoSliceMut, Read, Write},
     path::{Path, PathBuf},
     pin::Pin,
@@ -32,13 +33,25 @@ pub use crate::conn::MountOptions;
 #[derive(Debug)]
 pub struct Server {
     io: Channel,
+    session: Arc<Session>,
 }
 
 impl Server {
     /// Create a FUSE server mounted on the specified path.
-    pub fn mount(mointpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
-        let io = Channel::open(mointpoint, mountopts)?;
-        Ok(Server { io })
+    pub async fn mount(mointpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
+        let mut io = Channel::open(mointpoint, mountopts)?;
+        let session = Session::start(&mut io, Default::default()).await?;
+        Ok(Server {
+            io,
+            session: Arc::new(session),
+        })
+    }
+
+    pub fn notifier(&self) -> Notifier {
+        Notifier {
+            io: self.io.clone(),
+            session: self.session.clone(),
+        }
     }
 
     /// Run a FUSE filesystem.
@@ -57,15 +70,31 @@ impl Server {
         F: Filesystem + 'static,
         S: Future + Unpin,
     {
+        let session = self.session;
+        let fs = Arc::new(fs);
         let mut io = self.io;
         let mut sig = sig.fuse();
-        let fs = Arc::new(fs);
 
-        let session = Session::start(&mut io, Default::default())
-            .await
-            .map(Arc::new)?;
+        let mut main_loop = Box::pin(async move {
+            loop {
+                let mut buf = Buffer::default();
+                let terminated = buf.receive(&mut io).await?;
+                if terminated {
+                    log::debug!("connection was closed by the kernel");
+                    return Ok::<_, io::Error>(());
+                }
 
-        let mut main_loop = Box::pin(main_loop(&session, &mut io, &fs)).fuse();
+                let session = session.clone();
+                let fs = fs.clone();
+                let mut io = io.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_request(&*session, &*fs, &mut buf, &mut io).await {
+                        log::error!("error during handling a request: {}", e);
+                    }
+                });
+            }
+        })
+        .fuse();
 
         // FIXME: graceful shutdown the background tasks.
         select! {
@@ -75,43 +104,79 @@ impl Server {
     }
 }
 
-async fn main_loop<I, F>(session: &Arc<Session>, channel: &mut I, fs: &Arc<F>) -> io::Result<()>
+#[derive(Debug, Clone)]
+pub struct Notifier {
+    io: Channel,
+    session: Arc<Session>,
+}
+
+impl Notifier {
+    pub async fn notify_inval_inode(&mut self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+        self.session
+            .notify_inval_inode(&mut self.io, ino, off, len)
+            .await
+    }
+
+    pub async fn notify_inval_entry(
+        &mut self,
+        parent: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()> {
+        self.session
+            .notify_inval_entry(&mut self.io, parent, name)
+            .await
+    }
+
+    pub async fn notify_delete(
+        &mut self,
+        parent: u64,
+        child: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()> {
+        self.session
+            .notify_delete(&mut self.io, parent, child, name)
+            .await
+    }
+
+    pub async fn notify_store(&mut self, ino: u64, offset: u64, data: &[&[u8]]) -> io::Result<()> {
+        self.session
+            .notify_store(&mut self.io, ino, offset, data)
+            .await
+    }
+
+    pub async fn notify_retrieve(
+        &mut self,
+        ino: u64,
+        offset: u64,
+        size: u32,
+    ) -> io::Result<NotifyRetrieve> {
+        self.session
+            .notify_retrieve(&mut self.io, ino, offset, size)
+            .await
+    }
+}
+
+async fn handle_request<F, I>(
+    session: &Session,
+    fs: &F,
+    buf: &mut Buffer,
+    io: &mut I,
+) -> io::Result<()>
 where
     F: Filesystem + 'static,
-    I: AsyncRead + AsyncWrite + Send + Unpin + Clone + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin,
 {
-    loop {
-        let mut buf = Buffer::default();
-        let terminated = buf.receive(&mut *channel).await?;
-        if terminated {
-            log::debug!("connection was closed by the kernel");
-            return Ok(());
-        }
+    let (req, data) = buf.decode()?;
+    log::debug!(
+        "Got a request: unique={}, opcode={:?}, data={:?}",
+        req.unique(),
+        req.opcode(),
+        data.as_ref().map(|_| "<data>")
+    );
 
-        let session = Arc::clone(session);
-        let fs = Arc::clone(fs);
-        let mut channel = channel.clone();
+    session.process(fs, req, data, io).await?;
 
-        tokio::spawn(async move {
-            let (req, data) = match buf.decode() {
-                Ok(t) => t,
-                Err(err) => {
-                    log::error!("failed to decode a request: {}", err);
-                    return;
-                }
-            };
-            log::debug!(
-                "Got a request: unique={}, opcode={:?}, data={:?}",
-                req.unique(),
-                req.opcode(),
-                data.as_ref().map(|_| "<data>")
-            );
-
-            if let Err(err) = session.process(&*fs, req, data, &mut channel).await {
-                log::error!("error during processing a request: {}", err);
-            }
-        });
-    }
+    Ok(())
 }
 
 /// Asynchronous I/O object that communicates with the FUSE kernel driver.

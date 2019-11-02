@@ -18,6 +18,7 @@ use polyfuse_sys::abi::{
     fuse_lk_in,
     fuse_mkdir_in,
     fuse_mknod_in,
+    fuse_notify_retrieve_in,
     fuse_opcode,
     fuse_open_in,
     fuse_read_in,
@@ -176,13 +177,15 @@ pub enum RequestKind<'a> {
         arg: &'a fuse_batch_forget_in,
         forgets: &'a [fuse_forget_one],
     },
+    NotifyReply {
+        arg: &'a fuse_notify_retrieve_in,
+    },
     Unknown,
 }
 
 // TODO: add opcodes:
 // Ioctl,
 // Poll,
-// NotifyReply,
 
 impl Request<'_> {
     pub fn unique(&self) -> u64 {
@@ -240,6 +243,7 @@ impl_from_bytes! {
     fuse_rename2_in,
     fuse_copy_file_range_in,
     fuse_batch_forget_in,
+    fuse_notify_retrieve_in,
 }
 
 #[derive(Debug)]
@@ -480,6 +484,10 @@ impl<'a> Parser<'a> {
                 let arg: &fuse_batch_forget_in = self.fetch()?;
                 let forgets = self.fetch_array(arg.count as usize)?;
                 Ok(RequestKind::BatchForget { arg, forgets })
+            }
+            Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
+                let arg = self.fetch()?;
+                Ok(RequestKind::NotifyReply { arg })
             }
             _ => Ok(RequestKind::Unknown),
         }

@@ -35,7 +35,8 @@ async fn main() -> Result<()> {
         dir_entries,
     };
 
-    Server::mount(mountpoint, Default::default())?
+    Server::mount(mountpoint, Default::default())
+        .await?
         .run(hello)
         .await?;
 
