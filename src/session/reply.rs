@@ -3,6 +3,7 @@
 #![allow(clippy::needless_update)]
 
 use super::{Context, FileAttr, FileLock, FsStatistics};
+use futures::{future::poll_fn, io::AsyncWrite};
 use polyfuse_sys::abi::{
     fuse_attr_out, //
     fuse_bmap_out,
@@ -15,11 +16,14 @@ use polyfuse_sys::abi::{
     fuse_statfs_out,
     fuse_write_out,
 };
+use smallvec::SmallVec;
 use std::{
-    convert::TryInto,
+    convert::{TryFrom, TryInto},
     ffi::OsStr,
-    io::{self},
+    io::{self, IoSlice},
+    mem,
     os::unix::ffi::OsStrExt,
+    pin::Pin,
 };
 
 pub(crate) trait Payload {
@@ -482,5 +486,103 @@ impl ReplyBmap {
             ..Default::default()
         };
         cx.reply(out.as_bytes()).await
+    }
+}
+
+pub(crate) async fn send_msg(
+    writer: &mut (impl AsyncWrite + Unpin),
+    unique: u64,
+    error: i32,
+    data: &[&[u8]],
+) -> io::Result<()> {
+    let data_len: usize = data.iter().map(|t| t.len()).sum();
+    let len = u32::try_from(mem::size_of::<fuse_out_header>() + data_len) //
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the total length of data is too long: {}",
+            )
+        })?;
+
+    let out_header = fuse_out_header { unique, error, len };
+
+    // Unfortunately, IoSlice<'_> does not implement Send and
+    // the data vector must be created in `poll` function.
+    poll_fn(move |cx| {
+        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_bytes()))
+            .into_iter()
+            .chain(data.iter().map(|t| IoSlice::new(&*t)))
+            .collect();
+        Pin::new(&mut *writer).poll_write_vectored(cx, &*vec)
+    })
+    .await?;
+
+    log::debug!("Reply to kernel: unique={}: error={}", unique, error);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::executor::block_on;
+
+    #[inline]
+    fn bytes(bytes: &[u8]) -> &[u8] {
+        bytes
+    }
+    macro_rules! b {
+        ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
+    }
+
+    #[test]
+    fn send_msg_empty() {
+        let mut dest = Vec::<u8>::new();
+        block_on(send_msg(&mut dest, 42, 4, &[])).unwrap();
+        assert_eq!(dest[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
+        assert_eq!(dest[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
+        assert_eq!(
+            dest[8..16],
+            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "header.unique"
+        );
+    }
+
+    #[test]
+    fn send_msg_single_data() {
+        let mut dest = Vec::<u8>::new();
+        block_on(send_msg(&mut dest, 42, 0, &["hello".as_ref()])).unwrap();
+        assert_eq!(dest[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
+        assert_eq!(dest[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
+        assert_eq!(
+            dest[8..16],
+            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "header.unique"
+        );
+        assert_eq!(dest[16..], b![0x68, 0x65, 0x6c, 0x6c, 0x6f], "payload");
+    }
+
+    #[test]
+    fn send_msg_chunked_data() {
+        let payload: &[&[u8]] = &[
+            "hello, ".as_ref(), //
+            "this ".as_ref(),
+            "is a ".as_ref(),
+            "message.".as_ref(),
+        ];
+        let mut dest = Vec::<u8>::new();
+        block_on(send_msg(&mut dest, 26, 0, payload)).unwrap();
+        assert_eq!(dest[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
+        assert_eq!(dest[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
+        assert_eq!(
+            dest[8..16],
+            b![0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "header.unique"
+        );
+        assert_eq!(
+            dest[16..],
+            *"hello, this is a message.".as_bytes(),
+            "payload"
+        );
     }
 }
