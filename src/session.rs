@@ -136,16 +136,15 @@ impl Session {
 
     /// Process an incoming request using the specified filesystem operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<F, T, W>(
+    pub async fn process<F, W>(
         &self,
         fs: &F,
         req: Request<'_>,
-        data: Option<T>,
+        data: Option<&[u8]>,
         writer: &mut W,
     ) -> io::Result<()>
     where
-        F: Filesystem<T>,
-        T: Send,
+        F: Filesystem,
         W: AsyncWrite + Send + Unpin,
     {
         let Request { header, kind, .. } = req;
@@ -340,12 +339,12 @@ impl Session {
             }
             RequestKind::Write { arg } => match data {
                 Some(data) => {
+                    debug_assert_eq!(data.len(), arg.size as usize);
                     run_op!(Operation::Write {
                         ino,
                         fh: arg.fh,
                         offset: arg.offset,
                         data,
-                        size: arg.size,
                         flags: arg.flags,
                         lock_owner: arg.lock_owner(),
                         reply: ReplyWrite::new(),

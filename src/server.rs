@@ -44,7 +44,7 @@ impl Server {
     /// Run a FUSE filesystem.
     pub async fn run<F>(self, fs: F) -> io::Result<()>
     where
-        F: for<'a> Filesystem<&'a [u8]> + 'static,
+        F: Filesystem + 'static,
     {
         let sig = default_shutdown_signal()?;
         let _sig = self.run_until(fs, sig).await?;
@@ -54,7 +54,7 @@ impl Server {
     /// Run a FUSE filesystem until the specified signal is received.
     pub async fn run_until<F, S>(self, fs: F, sig: S) -> io::Result<Option<S::Output>>
     where
-        F: for<'a> Filesystem<&'a [u8]> + 'static,
+        F: Filesystem + 'static,
         S: Future + Unpin,
     {
         let mut io = self.io;
@@ -77,7 +77,7 @@ impl Server {
 
 async fn main_loop<I, F>(session: &Arc<Session>, channel: &mut I, fs: &Arc<F>) -> io::Result<()>
 where
-    F: for<'a> Filesystem<&'a [u8]> + 'static,
+    F: Filesystem + 'static,
     I: AsyncRead + AsyncWrite + Send + Unpin + Clone + 'static,
 {
     loop {

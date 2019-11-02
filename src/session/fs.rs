@@ -107,12 +107,9 @@ impl Forget {
 
 /// The filesystem running on the user space.
 #[async_trait::async_trait]
-pub trait Filesystem<T: Send>: Send + Sync {
+pub trait Filesystem: Send + Sync {
     /// Handle a FUSE request from the kernel and reply with its result.
-    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
-    where
-        T: 'async_trait, // https://github.com/dtolnay/async-trait/issues/8
-    {
+    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_>) -> io::Result<()> {
         drop(op);
         cx.reply_err(libc::ENOSYS).await
     }
@@ -120,7 +117,7 @@ pub trait Filesystem<T: Send>: Send + Sync {
 
 /// The kind of FUSE requests received from the kernel.
 #[derive(Debug)]
-pub enum Operation<'a, T> {
+pub enum Operation<'a> {
     /// Look up a directory entry by name.
     Lookup {
         parent: u64,
@@ -237,8 +234,7 @@ pub enum Operation<'a, T> {
         ino: u64,
         fh: u64,
         offset: u64,
-        data: T,
-        size: u32,
+        data: &'a [u8],
         flags: u32,
         lock_owner: Option<u64>,
         reply: ReplyWrite,

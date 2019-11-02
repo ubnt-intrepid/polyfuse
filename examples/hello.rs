@@ -79,11 +79,8 @@ fn expensive_task() -> impl Future<Output = io::Result<()>> + Unpin {
 }
 
 #[async_trait]
-impl<T: Send> Filesystem<T> for Hello {
-    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
-    where
-        T: 'async_trait, // https://github.com/dtolnay/async-trait/issues/8
-    {
+impl Filesystem for Hello {
+    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_>) -> io::Result<()> {
         match op {
             Operation::Lookup {
                 parent,
