@@ -24,7 +24,23 @@ use std::{
     task::{self, Poll},
 };
 
-use reply::{send_msg, Payload, ReplyData};
+use reply::{
+    send_msg, //
+    Payload,
+    ReplyAttr,
+    ReplyBmap,
+    ReplyCreate,
+    ReplyData,
+    ReplyEmpty,
+    ReplyEntry,
+    ReplyLk,
+    ReplyOpen,
+    ReplyOpendir,
+    ReplyReadlink,
+    ReplyStatfs,
+    ReplyWrite,
+    ReplyXattr,
+};
 use request::RequestKind;
 
 pub const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
@@ -177,7 +193,7 @@ impl Session {
                 run_op!(Operation::Lookup {
                     parent: ino,
                     name,
-                    reply: Default::default(),
+                    reply: ReplyEntry::new(),
                 });
             }
             RequestKind::Forget { arg } => {
@@ -212,7 +228,7 @@ impl Session {
                 run_op!(Operation::Getattr {
                     ino,
                     fh: arg.fh(),
-                    reply: Default::default(),
+                    reply: ReplyAttr::new(),
                 });
             }
             RequestKind::Setattr { arg } => {
@@ -227,13 +243,13 @@ impl Session {
                     mtime: arg.mtime(),
                     ctime: arg.ctime(),
                     lock_owner: arg.lock_owner(),
-                    reply: Default::default(),
+                    reply: ReplyAttr::new(),
                 });
             }
             RequestKind::Readlink => {
                 run_op!(Operation::Readlink {
                     ino,
-                    reply: Default::default(),
+                    reply: ReplyReadlink::new(),
                 });
             }
             RequestKind::Symlink { name, link } => {
@@ -241,7 +257,7 @@ impl Session {
                     parent: ino,
                     name,
                     link,
-                    reply: Default::default(),
+                    reply: ReplyEntry::new(),
                 });
             }
             RequestKind::Mknod { arg, name } => {
@@ -251,7 +267,7 @@ impl Session {
                     mode: arg.mode,
                     rdev: arg.rdev,
                     umask: Some(arg.umask),
-                    reply: Default::default(),
+                    reply: ReplyEntry::new(),
                 });
             }
             RequestKind::Mkdir { arg, name } => {
@@ -260,21 +276,21 @@ impl Session {
                     name,
                     mode: arg.mode,
                     umask: Some(arg.umask),
-                    reply: Default::default(),
+                    reply: ReplyEntry::new(),
                 });
             }
             RequestKind::Unlink { name } => {
                 run_op!(Operation::Unlink {
                     parent: ino,
                     name,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Rmdir { name } => {
                 run_op!(Operation::Rmdir {
                     parent: ino,
                     name,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Rename { arg, name, newname } => {
@@ -284,7 +300,7 @@ impl Session {
                     newparent: arg.newdir,
                     newname,
                     flags: 0,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Rename2 { arg, name, newname } => {
@@ -294,7 +310,7 @@ impl Session {
                     newparent: arg.newdir,
                     newname,
                     flags: arg.flags,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Link { arg, newname } => {
@@ -302,14 +318,14 @@ impl Session {
                     ino: arg.oldnodeid,
                     newparent: ino,
                     newname,
-                    reply: Default::default(),
+                    reply: ReplyEntry::new(),
                 });
             }
             RequestKind::Open { arg } => {
                 run_op!(Operation::Open {
                     ino,
                     flags: arg.flags,
-                    reply: Default::default(),
+                    reply: ReplyOpen::new(),
                 });
             }
             RequestKind::Read { arg } => {
@@ -332,7 +348,7 @@ impl Session {
                         size: arg.size,
                         flags: arg.flags,
                         lock_owner: arg.lock_owner(),
-                        reply: Default::default(),
+                        reply: ReplyWrite::new(),
                     });
                 }
                 None => panic!("unexpected condition"),
@@ -356,13 +372,13 @@ impl Session {
                     lock_owner,
                     flush,
                     flock_release,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Statfs => {
                 run_op!(Operation::Statfs {
                     ino,
-                    reply: Default::default(),
+                    reply: ReplyStatfs::new(),
                 });
             }
             RequestKind::Fsync { arg } => {
@@ -370,7 +386,7 @@ impl Session {
                     ino,
                     fh: arg.fh,
                     datasync: arg.datasync(),
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Setxattr { arg, name, value } => {
@@ -379,7 +395,7 @@ impl Session {
                     name,
                     value,
                     flags: arg.flags,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Getxattr { arg, name } => {
@@ -387,21 +403,21 @@ impl Session {
                     ino,
                     name,
                     size: arg.size,
-                    reply: Default::default(),
+                    reply: ReplyXattr::new(),
                 });
             }
             RequestKind::Listxattr { arg } => {
                 run_op!(Operation::Listxattr {
                     ino,
                     size: arg.size,
-                    reply: Default::default(),
+                    reply: ReplyXattr::new(),
                 });
             }
             RequestKind::Removexattr { name } => {
                 run_op!(Operation::Removexattr {
                     ino,
                     name,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Flush { arg } => {
@@ -409,14 +425,14 @@ impl Session {
                     ino,
                     fh: arg.fh,
                     lock_owner: arg.lock_owner,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Opendir { arg } => {
                 run_op!(Operation::Opendir {
                     ino,
                     flags: arg.flags,
-                    reply: Default::default(),
+                    reply: ReplyOpendir::new(),
                 });
             }
             RequestKind::Readdir { arg, plus } => {
@@ -433,7 +449,7 @@ impl Session {
                     ino,
                     fh: arg.fh,
                     flags: arg.flags,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Fsyncdir { arg } => {
@@ -441,7 +457,7 @@ impl Session {
                     ino,
                     fh: arg.fh,
                     datasync: arg.datasync(),
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Getlk { arg } => {
@@ -450,7 +466,7 @@ impl Session {
                     fh: arg.fh,
                     owner: arg.owner,
                     lk: FileLock::new(&arg.lk),
-                    reply: Default::default(),
+                    reply: ReplyLk::new(),
                 });
             }
             RequestKind::Setlk { arg, sleep } => {
@@ -473,7 +489,7 @@ impl Session {
                         fh: arg.fh,
                         owner: arg.owner,
                         op,
-                        reply: Default::default(),
+                        reply: ReplyEmpty::new(),
                     });
                 } else {
                     run_op!(Operation::Setlk {
@@ -482,7 +498,7 @@ impl Session {
                         owner: arg.owner,
                         lk: FileLock::new(&arg.lk),
                         sleep,
-                        reply: Default::default(),
+                        reply: ReplyEmpty::new(),
                     });
                 }
             }
@@ -490,7 +506,7 @@ impl Session {
                 run_op!(Operation::Access {
                     ino,
                     mask: arg.mask,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Create { arg, name } => {
@@ -500,7 +516,7 @@ impl Session {
                     mode: arg.mode,
                     umask: Some(arg.umask),
                     open_flags: arg.flags,
-                    reply: Default::default(),
+                    reply: ReplyCreate::new(),
                 });
             }
             RequestKind::Bmap { arg } => {
@@ -508,7 +524,7 @@ impl Session {
                     ino,
                     block: arg.block,
                     blocksize: arg.blocksize,
-                    reply: Default::default(),
+                    reply: ReplyBmap::new(),
                 });
             }
             RequestKind::Fallocate { arg } => {
@@ -518,7 +534,7 @@ impl Session {
                     offset: arg.offset,
                     length: arg.length,
                     mode: arg.mode,
-                    reply: Default::default(),
+                    reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::CopyFileRange { arg } => {
@@ -531,7 +547,7 @@ impl Session {
                     off_out: arg.off_out,
                     len: arg.len,
                     flags: arg.flags,
-                    reply: Default::default(),
+                    reply: ReplyWrite::new(),
                 });
             }
 

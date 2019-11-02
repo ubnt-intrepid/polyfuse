@@ -60,13 +60,19 @@ impl_as_ref_for_abi! {
 }
 
 /// Reply with an empty output.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyEmpty {
     _p: (),
 }
 
 impl ReplyEmpty {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { _p: () }
+    }
+
+    #[inline]
     pub async fn ok(self, cx: &mut Context<'_>) -> io::Result<()> {
         cx.reply(&[]).await
     }
@@ -80,20 +86,28 @@ pub struct ReplyData {
 }
 
 impl ReplyData {
-    pub(crate) fn new(size: u32) -> Self {
+    #[inline]
+    pub(crate) const fn new(size: u32) -> Self {
         Self { size }
     }
 
+    /// Return the maximum size of data provided by the kernel.
     pub fn size(&self) -> u32 {
         self.size
     }
 
     /// Reply to the kernel with a data.
+    ///
+    /// If the data size is larger than the maximum size provided by the kernel,
+    /// this method replies with the error number ERANGE.
     pub async fn data(self, cx: &mut Context<'_>, data: impl AsRef<[u8]>) -> io::Result<()> {
         self.data_vectored(cx, &[data.as_ref()]).await
     }
 
     /// Reply to the kernel with a *split* data.
+    ///
+    /// If the data size is larger than the maximum size provided by the kernel,
+    /// this method replies with the error number ERANGE.
     #[allow(clippy::cast_possible_truncation)]
     pub async fn data_vectored(self, cx: &mut Context<'_>, data: &[&[u8]]) -> io::Result<()> {
         let len: u32 = data.iter().map(|t| t.len() as u32).sum();
@@ -108,13 +122,18 @@ impl ReplyData {
 }
 
 /// Reply with the inode attributes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyAttr {
     attr_valid: (u64, u32),
 }
 
 impl ReplyAttr {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { attr_valid: (0, 0) }
+    }
+
     /// Set the validity timeout for attributes.
     pub fn attr_valid(&mut self, secs: u64, nsecs: u32) {
         self.attr_valid = (secs, nsecs);
@@ -139,7 +158,7 @@ impl ReplyAttr {
 }
 
 /// Reply with entry params.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyEntry {
     entry_valid: (u64, u32),
@@ -147,6 +166,14 @@ pub struct ReplyEntry {
 }
 
 impl ReplyEntry {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self {
+            entry_valid: (0, 0),
+            attr_valid: (0, 0),
+        }
+    }
+
     /// Set the validity timeout for inode attributes.
     ///
     /// The operations should set this value to very large
@@ -196,13 +223,18 @@ impl ReplyEntry {
 }
 
 /// Reply with the read link value.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyReadlink {
     _p: (),
 }
 
 impl ReplyReadlink {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { _p: () }
+    }
+
     /// Reply to the kernel with the specified link value.
     pub async fn link(self, cx: &mut Context<'_>, value: impl AsRef<OsStr>) -> io::Result<()> {
         cx.reply(value.as_ref().as_bytes()).await
@@ -216,13 +248,12 @@ pub struct ReplyOpen {
     open_flags: u32,
 }
 
-impl Default for ReplyOpen {
-    fn default() -> Self {
+impl ReplyOpen {
+    #[inline]
+    pub(crate) const fn new() -> Self {
         Self { open_flags: 0 }
     }
-}
 
-impl ReplyOpen {
     fn set_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
             self.open_flags |= flag;
@@ -259,13 +290,18 @@ impl ReplyOpen {
 }
 
 /// Reply with the information about written data.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyWrite {
     _p: (),
 }
 
 impl ReplyWrite {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { _p: () }
+    }
+
     /// Reply to the kernel with the total length of written data.
     pub async fn write(self, cx: &mut Context<'_>, size: u32) -> io::Result<()> {
         let out = fuse_write_out {
@@ -277,13 +313,18 @@ impl ReplyWrite {
 }
 
 /// Reply with an opened directory.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyOpendir {
     open_flags: u32,
 }
 
 impl ReplyOpendir {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { open_flags: 0 }
+    }
+
     fn set_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
             self.open_flags |= flag;
@@ -311,13 +352,18 @@ impl ReplyOpendir {
 }
 
 /// Reply to a request about extended attributes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyXattr {
     _p: (),
 }
 
 impl ReplyXattr {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { _p: () }
+    }
+
     /// Reply to the kernel with the specified size value.
     pub async fn size(self, cx: &mut Context<'_>, size: u32) -> io::Result<()> {
         let out = fuse_getxattr_out {
@@ -334,13 +380,18 @@ impl ReplyXattr {
 }
 
 /// Reply with the filesystem staticstics.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyStatfs {
     _p: (),
 }
 
 impl ReplyStatfs {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { _p: () }
+    }
+
     /// Reply to the kernel with the specified statistics.
     pub async fn stat<T>(self, cx: &mut Context<'_>, st: T) -> io::Result<()>
     where
@@ -359,13 +410,18 @@ impl ReplyStatfs {
 }
 
 /// Reply with a file lock.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyLk {
     _p: (),
 }
 
 impl ReplyLk {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { _p: () }
+    }
+
     /// Reply to the kernel with the specified file lock.
     pub async fn lock<T>(self, cx: &mut Context<'_>, lk: T) -> io::Result<()>
     where
@@ -383,7 +439,7 @@ impl ReplyLk {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyCreate {
     entry_valid: (u64, u32),
@@ -392,6 +448,15 @@ pub struct ReplyCreate {
 }
 
 impl ReplyCreate {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self {
+            entry_valid: (0, 0),
+            attr_valid: (0, 0),
+            open_flags: 0,
+        }
+    }
+
     /// Set the validity timeout for inode attributes.
     ///
     /// The operations should set this value to very large
@@ -473,13 +538,20 @@ impl ReplyCreate {
     }
 }
 
-#[derive(Debug, Default)]
+/// Reply with the mapped block index.
+#[derive(Debug)]
 #[must_use]
 pub struct ReplyBmap {
     _p: (),
 }
 
 impl ReplyBmap {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { _p: () }
+    }
+
+    /// Reply to the kernel with a mapped block index.
     pub async fn block(self, cx: &mut Context<'_>, block: u64) -> io::Result<()> {
         let out = fuse_bmap_out {
             block,
@@ -579,10 +651,23 @@ mod tests {
             b![0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             "header.unique"
         );
-        assert_eq!(
-            dest[16..],
-            *"hello, this is a message.".as_bytes(),
-            "payload"
-        );
+        assert_eq!(dest[16..], *b"hello, this is a message.", "payload");
+    }
+
+    #[test]
+    fn smoke_debug() {
+        let _ = dbg!(ReplyEmpty::new());
+        let _ = dbg!(ReplyData::new(42));
+        let _ = dbg!(ReplyAttr::new());
+        let _ = dbg!(ReplyEntry::new());
+        let _ = dbg!(ReplyReadlink::new());
+        let _ = dbg!(ReplyOpen::new());
+        let _ = dbg!(ReplyWrite::new());
+        let _ = dbg!(ReplyOpendir::new());
+        let _ = dbg!(ReplyXattr::new());
+        let _ = dbg!(ReplyStatfs::new());
+        let _ = dbg!(ReplyLk::new());
+        let _ = dbg!(ReplyCreate::new());
+        let _ = dbg!(ReplyBmap::new());
     }
 }
