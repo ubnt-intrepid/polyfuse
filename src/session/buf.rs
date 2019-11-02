@@ -92,7 +92,17 @@ impl Buffer {
             RequestKind::Write { arg: write_in } => {
                 let size = write_in.size as usize;
                 if offset + size < self.recv_buf.len() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "receive_write"));
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "decode: write"));
+                }
+                Some(&self.recv_buf[offset..offset + size])
+            }
+            RequestKind::NotifyReply { arg: retrieve_in } => {
+                let size = retrieve_in.size as usize;
+                if offset + size < self.recv_buf.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "decode: retrieve_in",
+                    ));
                 }
                 Some(&self.recv_buf[offset..offset + size])
             }

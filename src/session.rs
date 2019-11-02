@@ -16,11 +16,26 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
 };
-use polyfuse_sys::abi::{fuse_forget_one, fuse_in_header, fuse_init_out};
+use polyfuse_sys::abi::{
+    fuse_forget_one, //
+    fuse_in_header,
+    fuse_init_out,
+    fuse_notify_code,
+    fuse_notify_delete_out,
+    fuse_notify_inval_entry_out,
+    fuse_notify_inval_inode_out,
+    fuse_notify_retrieve_out,
+    fuse_notify_store_out,
+};
+use smallvec::SmallVec;
 use std::{
     collections::{HashMap, HashSet},
-    fmt, io,
+    convert::TryFrom,
+    ffi::OsStr,
+    fmt, io, mem,
+    os::unix::ffi::OsStrExt,
     pin::Pin,
+    sync::atomic::{AtomicU64, Ordering},
     task::{self, Poll},
 };
 
@@ -52,6 +67,8 @@ pub struct Session {
     proto_minor: u32,
     max_readahead: u32,
     state: Mutex<SessionState>,
+    notify_unique: AtomicU64,
+    notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, Vec<u8>)>>>,
 }
 
 #[derive(Debug)]
@@ -130,6 +147,8 @@ impl Session {
                     remains: HashMap::new(),
                     interrupted: HashSet::new(),
                 }),
+                notify_unique: AtomicU64::new(0),
+                notify_remains: Mutex::new(HashMap::new()),
             });
         }
     }
@@ -186,7 +205,7 @@ impl Session {
                 cx.reply(&[]).await?;
             }
             RequestKind::Interrupt { arg } => {
-                self.interrupt(arg.unique).await;
+                self.send_interrupt(arg.unique).await;
             }
             RequestKind::Lookup { name } => {
                 run_op!(Operation::Lookup {
@@ -550,6 +569,14 @@ impl Session {
                 });
             }
 
+            RequestKind::NotifyReply { arg } => match data {
+                Some(data) => {
+                    self.send_notify_reply(header.unique, arg.offset, data.to_vec())
+                        .await;
+                }
+                None => panic!(),
+            },
+
             RequestKind::Unknown => {
                 log::warn!("unsupported opcode: {:?}", header.opcode);
                 cx.reply_err(libc::ENOSYS).await?;
@@ -559,6 +586,138 @@ impl Session {
         Ok(())
     }
 
+    /// Notify the inode invalidation to the kernel.
+    pub async fn notify_inval_inode<W>(
+        &self,
+        writer: &mut W,
+        ino: u64,
+        off: i64,
+        len: i64,
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let out = fuse_notify_inval_inode_out {
+            ino,
+            off,
+            len,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+            &[out.as_bytes()],
+        )
+        .await
+    }
+
+    /// Notify the invalidation of an entry to the kernel.
+    pub async fn notify_inval_entry<W>(
+        &self,
+        writer: &mut W,
+        parent: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let name = name.as_ref();
+        let namelen = u32::try_from(name.len()).unwrap();
+        let out = fuse_notify_inval_entry_out {
+            parent,
+            namelen,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+            &[out.as_bytes(), name.as_bytes()],
+        )
+        .await
+    }
+
+    pub async fn notify_delete<W>(
+        &self,
+        writer: &mut W,
+        parent: u64,
+        child: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let name = name.as_ref();
+        let namelen = u32::try_from(name.len()).unwrap();
+        let out = fuse_notify_delete_out {
+            parent,
+            child,
+            namelen,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_DELETE,
+            &[out.as_bytes(), name.as_bytes()],
+        )
+        .await
+    }
+
+    pub async fn notify_store<W>(
+        &self,
+        writer: &mut W,
+        ino: u64,
+        offset: u64,
+        data: &[&[u8]],
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let size = u32::try_from(data.iter().map(|t| t.len()).sum::<usize>()).unwrap();
+        let out = fuse_notify_store_out {
+            nodeid: ino,
+            offset,
+            size,
+            ..Default::default()
+        };
+        let data: SmallVec<[_; 4]> = Some(out.as_bytes())
+            .into_iter()
+            .chain(data.into_iter().map(|s| *s))
+            .collect();
+        send_notify(writer, fuse_notify_code::FUSE_NOTIFY_STORE, &*data).await
+    }
+
+    pub async fn notify_retrieve<W>(
+        &self,
+        writer: &mut W,
+        ino: u64,
+        offset: u64,
+        size: u32,
+    ) -> io::Result<NotifyRetrieve>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
+
+        let (tx, rx) = oneshot::channel();
+        self.notify_remains.lock().await.insert(notify_unique, tx);
+
+        let out = fuse_notify_retrieve_out {
+            notify_unique,
+            nodeid: ino,
+            offset,
+            size,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+            &[out.as_bytes()],
+        )
+        .await?;
+
+        Ok(NotifyRetrieve(rx))
+    }
+
     async fn enable_interrupt(&self, unique: u64) -> Interrupt {
         let mut state = self.state.lock().await;
         let (tx, rx) = oneshot::channel();
@@ -566,13 +725,19 @@ impl Session {
         Interrupt(rx.fuse())
     }
 
-    async fn interrupt(&self, unique: u64) {
+    async fn send_interrupt(&self, unique: u64) {
         log::debug!("INTERRUPT (unique = {:?})", unique);
         let mut state = self.state.lock().await;
         if let Some(tx) = state.remains.remove(&unique) {
             state.interrupted.insert(unique);
             let _ = tx.send(());
             log::debug!("Sent interrupt signal to unique={}", unique);
+        }
+    }
+
+    async fn send_notify_reply(&self, unique: u64, offset: u64, data: Vec<u8>) {
+        if let Some(tx) = self.notify_remains.lock().await.remove(&unique) {
+            let _ = tx.send((offset, data));
         }
     }
 }
@@ -656,4 +821,25 @@ impl FusedFuture for Interrupt {
     fn is_terminated(&self) -> bool {
         self.0.is_terminated()
     }
+}
+
+#[derive(Debug)]
+pub struct NotifyRetrieve(oneshot::Receiver<(u64, Vec<u8>)>);
+
+impl Future for NotifyRetrieve {
+    type Output = (u64, Vec<u8>);
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
+        self.0.poll_unpin(cx).map(|res| res.expect("canceled"))
+    }
+}
+
+#[inline]
+async fn send_notify(
+    writer: &mut (impl AsyncWrite + Unpin),
+    code: fuse_notify_code,
+    data: &[&[u8]],
+) -> io::Result<()> {
+    let code = unsafe { mem::transmute::<_, i32>(code) };
+    send_msg(writer, 0, code, data).await
 }

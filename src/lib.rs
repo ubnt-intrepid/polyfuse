@@ -23,6 +23,6 @@ pub mod session;
 pub use crate::{
     conn::MountOptions,
     dir::DirEntry,
-    server::Server,
+    server::{Notifier, Server},
     session::{Context, Filesystem, Operation},
 };
