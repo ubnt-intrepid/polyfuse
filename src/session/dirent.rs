@@ -6,13 +6,39 @@ fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct DirEntryType(u32);
+
+impl Default for DirEntryType {
+    fn default() -> Self {
+        Self::UNKNOWN
+    }
+}
+
+impl DirEntryType {
+    pub const UNKNOWN: Self = Self::from_raw(libc::DT_UNKNOWN);
+    pub const FIFO: Self = Self::from_raw(libc::DT_FIFO);
+    pub const CHR: Self = Self::from_raw(libc::DT_CHR);
+    pub const DIR: Self = Self::from_raw(libc::DT_DIR);
+    pub const BLK: Self = Self::from_raw(libc::DT_BLK);
+    pub const REG: Self = Self::from_raw(libc::DT_REG);
+    pub const LNK: Self = Self::from_raw(libc::DT_LNK);
+    pub const SOCK: Self = Self::from_raw(libc::DT_SOCK);
+
+    const fn from_raw(typ: u8) -> Self {
+        Self(typ as u32)
+    }
+}
+
 #[derive(Debug)]
 pub struct DirEntry {
     dirent_buf: Vec<u8>,
 }
 
 impl DirEntry {
-    pub fn new(name: impl AsRef<OsStr>, ino: u64, off: u64, typ: u32) -> Self {
+    #[allow(clippy::cast_ptr_alignment, clippy::cast_lossless)]
+    pub fn new(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {
         let name = name.as_ref().as_bytes();
         let namelen = u32::try_from(name.len()).expect("the length of name is too large.");
 
@@ -24,12 +50,11 @@ impl DirEntry {
         unsafe {
             let p = dirent_buf.as_mut_ptr();
 
-            #[allow(clippy::cast_ptr_alignment)]
             let pheader = p as *mut fuse_dirent;
             (*pheader).ino = ino;
             (*pheader).off = off;
             (*pheader).namelen = namelen;
-            (*pheader).typ = typ;
+            (*pheader).typ = DirEntryType::default().0;
 
             #[allow(clippy::unneeded_field_pattern)]
             let p = p.add(offset_of!(fuse_dirent, name));
@@ -42,6 +67,18 @@ impl DirEntry {
         }
 
         Self { dirent_buf }
+    }
+
+    pub fn dir(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {
+        let mut ent = Self::new(name, ino, off);
+        ent.set_typ(DirEntryType::DIR);
+        ent
+    }
+
+    pub fn file(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {
+        let mut ent = Self::new(name, ino, off);
+        ent.set_typ(DirEntryType::REG);
+        ent
     }
 
     unsafe fn header(&self) -> &fuse_dirent {
@@ -76,13 +113,13 @@ impl DirEntry {
         }
     }
 
-    pub fn typ(&self) -> u32 {
-        unsafe { self.header().typ }
+    pub fn typ(&self) -> DirEntryType {
+        DirEntryType(unsafe { self.header().typ })
     }
 
-    pub fn set_typ(&mut self, typ: u32) {
+    pub fn set_typ(&mut self, typ: DirEntryType) {
         unsafe {
-            self.header_mut().typ = typ;
+            self.header_mut().typ = typ.0;
         }
     }
 
@@ -154,16 +191,15 @@ mod tests {
 
     #[test]
     fn smoke_debug() {
-        let dirent = DirEntry::new("hello", 1, 42, 0);
-        dbg!(dirent);
+        dbg!(DirEntry::new("hello", 1, 0));
     }
 
     #[test]
     fn new_dirent() {
-        let dirent = DirEntry::new("hello", 1, 42, 0);
+        let dirent = DirEntry::new("hello", 1, 42);
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.typ(), 0u32);
+        assert_eq!(dirent.typ(), DirEntryType::UNKNOWN);
         assert_eq!(dirent.name(), "hello");
 
         assert_eq!(dirent.as_ref().len(), 32usize);
@@ -183,24 +219,24 @@ mod tests {
     #[allow(clippy::cast_lossless)]
     #[test]
     fn set_attributes() {
-        let mut dirent = DirEntry::new("hello", 1, 42, 0);
+        let mut dirent = DirEntry::new("hello", 1, 0);
 
         dirent.set_nodeid(2);
         dirent.set_offset(90);
-        dirent.set_typ(libc::DT_DIR as u32);
+        dirent.set_typ(DirEntryType::DIR);
 
         assert_eq!(dirent.nodeid(), 2u64);
         assert_eq!(dirent.offset(), 90u64);
-        assert_eq!(dirent.typ(), libc::DT_DIR as u32);
+        assert_eq!(dirent.typ(), DirEntryType::DIR);
     }
 
     #[test]
     fn set_long_name() {
-        let mut dirent = DirEntry::new("hello", 1, 42, 0);
+        let mut dirent = DirEntry::new("hello", 1, 42);
         dirent.set_name("good evening");
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.typ(), 0u32);
+        assert_eq!(dirent.typ(), DirEntryType::UNKNOWN);
         assert_eq!(dirent.name(), "good evening");
 
         assert_eq!(dirent.as_ref().len(), 40usize);
@@ -220,11 +256,11 @@ mod tests {
 
     #[test]
     fn set_short_name() {
-        let mut dirent = DirEntry::new("good morning", 1, 42, 0);
+        let mut dirent = DirEntry::new("good morning", 1, 42);
         dirent.set_name("bye");
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.typ(), 0u32);
+        assert_eq!(dirent.typ(), DirEntryType::UNKNOWN);
         assert_eq!(dirent.name(), "bye");
 
         assert_eq!(dirent.as_ref().len(), 32usize);

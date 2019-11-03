@@ -24,9 +24,9 @@ async fn main() -> Result<()> {
     let content = "Hello, World!\n".to_string();
     let dir_entries = {
         let mut entries = Vec::with_capacity(3);
-        entries.push(DirEntry::new(".", 1, 1, libc::DT_DIR.into()));
-        entries.push(DirEntry::new("..", 1, 2, libc::DT_DIR.into()));
-        entries.push(DirEntry::new(&filename, 2, 3, libc::DT_REG.into()));
+        entries.push(DirEntry::dir(".", 1, 1));
+        entries.push(DirEntry::dir("..", 1, 2));
+        entries.push(DirEntry::file(&filename, 2, 3));
         entries
     };
     let hello = Hello {
