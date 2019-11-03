@@ -1,7 +1,8 @@
 //! Serve FUSE filesystem.
 
 use crate::{
-    conn::Connection,
+    io::{Connection, MountOptions},
+    lock::Lock,
     session::{Buffer, Filesystem, NotifyRetrieve, Session},
 };
 use futures::{
@@ -13,7 +14,6 @@ use futures::{
 use libc::c_int;
 use mio::{unix::UnixReady, Ready};
 use std::{
-    cell::UnsafeCell,
     ffi::OsStr,
     io::{self, IoSlice, IoSliceMut, Read, Write},
     path::{Path, PathBuf},
@@ -24,10 +24,7 @@ use std::{
 use tokio::{
     net::util::PollEvented,
     signal::unix::{signal, SignalKind},
-    sync::semaphore::{Permit, Semaphore},
 };
-
-pub use crate::conn::MountOptions;
 
 /// FUSE filesystem server.
 #[derive(Debug)]
@@ -104,6 +101,7 @@ impl Server {
     }
 }
 
+/// Notification sender to the kernel.
 #[derive(Debug, Clone)]
 pub struct Notifier {
     io: Channel,
@@ -111,23 +109,19 @@ pub struct Notifier {
 }
 
 impl Notifier {
-    pub async fn notify_inval_inode(&mut self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+    pub async fn inval_inode(&mut self, ino: u64, off: i64, len: i64) -> io::Result<()> {
         self.session
             .notify_inval_inode(&mut self.io, ino, off, len)
             .await
     }
 
-    pub async fn notify_inval_entry(
-        &mut self,
-        parent: u64,
-        name: impl AsRef<OsStr>,
-    ) -> io::Result<()> {
+    pub async fn inval_entry(&mut self, parent: u64, name: impl AsRef<OsStr>) -> io::Result<()> {
         self.session
             .notify_inval_entry(&mut self.io, parent, name)
             .await
     }
 
-    pub async fn notify_delete(
+    pub async fn delete(
         &mut self,
         parent: u64,
         child: u64,
@@ -138,13 +132,13 @@ impl Notifier {
             .await
     }
 
-    pub async fn notify_store(&mut self, ino: u64, offset: u64, data: &[&[u8]]) -> io::Result<()> {
+    pub async fn store(&mut self, ino: u64, offset: u64, data: &[&[u8]]) -> io::Result<()> {
         self.session
             .notify_store(&mut self.io, ino, offset, data)
             .await
     }
 
-    pub async fn notify_retrieve(
+    pub async fn retrieve(
         &mut self,
         ino: u64,
         offset: u64,
@@ -287,69 +281,6 @@ impl AsyncWrite for Channel {
 
     fn poll_close(self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
-    }
-}
-
-#[derive(Debug)]
-struct Lock<T> {
-    inner: Arc<LockInner<T>>,
-    permit: Permit,
-}
-
-#[derive(Debug)]
-struct LockInner<T> {
-    val: UnsafeCell<T>,
-    semaphore: Semaphore,
-}
-
-impl<T> Clone for Lock<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            permit: Permit::new(),
-        }
-    }
-}
-
-impl<T> Drop for Lock<T> {
-    fn drop(&mut self) {
-        self.release_lock();
-    }
-}
-
-impl<T> Lock<T> {
-    fn new(val: T) -> Self {
-        Self {
-            inner: Arc::new(LockInner {
-                val: UnsafeCell::new(val),
-                semaphore: Semaphore::new(1),
-            }),
-            permit: Permit::new(),
-        }
-    }
-
-    fn poll_lock_with<F, R>(&mut self, cx: &mut task::Context, f: F) -> Poll<R>
-    where
-        F: FnOnce(&mut task::Context, &mut T) -> Poll<R>,
-    {
-        ready!(self.poll_acquire_lock(cx));
-
-        let val = unsafe { &mut (*self.inner.val.get()) };
-        let ret = ready!(f(cx, val));
-
-        self.release_lock();
-
-        Poll::Ready(ret)
-    }
-
-    fn poll_acquire_lock(&mut self, cx: &mut task::Context) -> Poll<()> {
-        ready!(self.permit.poll_acquire(cx, &self.inner.semaphore))
-            .unwrap_or_else(|e| unreachable!("{}", e));
-        Poll::Ready(())
-    }
-
-    fn release_lock(&mut self) {
-        self.permit.release(&self.inner.semaphore);
     }
 }
 

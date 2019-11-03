@@ -60,24 +60,30 @@ impl DirEntry {
         unsafe { self.header().ino }
     }
 
-    pub fn nodeid_mut(&mut self) -> &mut u64 {
-        unsafe { &mut self.header_mut().ino }
+    pub fn set_nodeid(&mut self, ino: u64) {
+        unsafe {
+            self.header_mut().ino = ino;
+        }
     }
 
     pub fn offset(&self) -> u64 {
         unsafe { self.header().off }
     }
 
-    pub fn offset_mut(&mut self) -> &mut u64 {
-        unsafe { &mut self.header_mut().off }
+    pub fn set_offset(&mut self, off: u64) {
+        unsafe {
+            self.header_mut().off = off;
+        }
     }
 
-    pub fn type_(&self) -> u32 {
+    pub fn typ(&self) -> u32 {
         unsafe { self.header().typ }
     }
 
-    pub fn type_mut(&mut self) -> &mut u32 {
-        unsafe { &mut self.header_mut().typ }
+    pub fn set_typ(&mut self, typ: u32) {
+        unsafe {
+            self.header_mut().typ = typ;
+        }
     }
 
     pub fn name(&self) -> &OsStr {
@@ -157,7 +163,7 @@ mod tests {
         let dirent = DirEntry::new("hello", 1, 42, 0);
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.type_(), 0u32);
+        assert_eq!(dirent.typ(), 0u32);
         assert_eq!(dirent.name(), "hello");
 
         assert_eq!(dirent.as_ref().len(), 32usize);
@@ -179,13 +185,13 @@ mod tests {
     fn set_attributes() {
         let mut dirent = DirEntry::new("hello", 1, 42, 0);
 
-        *dirent.nodeid_mut() = 2;
-        *dirent.offset_mut() = 90;
-        *dirent.type_mut() = libc::DT_DIR as u32;
+        dirent.set_nodeid(2);
+        dirent.set_offset(90);
+        dirent.set_typ(libc::DT_DIR as u32);
 
         assert_eq!(dirent.nodeid(), 2u64);
         assert_eq!(dirent.offset(), 90u64);
-        assert_eq!(dirent.type_(), libc::DT_DIR as u32);
+        assert_eq!(dirent.typ(), libc::DT_DIR as u32);
     }
 
     #[test]
@@ -194,7 +200,7 @@ mod tests {
         dirent.set_name("good evening");
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.type_(), 0u32);
+        assert_eq!(dirent.typ(), 0u32);
         assert_eq!(dirent.name(), "good evening");
 
         assert_eq!(dirent.as_ref().len(), 40usize);
@@ -218,7 +224,7 @@ mod tests {
         dirent.set_name("bye");
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.type_(), 0u32);
+        assert_eq!(dirent.typ(), 0u32);
         assert_eq!(dirent.name(), "bye");
 
         assert_eq!(dirent.as_ref().len(), 32usize);

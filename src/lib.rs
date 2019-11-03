@@ -12,17 +12,15 @@
     clippy::unimplemented
 )]
 
-mod conn;
-mod dir;
+mod lock;
 mod server;
 
+pub mod io;
 pub mod session;
 
 // re-exports from sub modules.
 #[doc(inline)]
 pub use crate::{
-    conn::MountOptions,
-    dir::DirEntry,
     server::{Notifier, Server},
     session::{Context, Filesystem, Operation},
 };

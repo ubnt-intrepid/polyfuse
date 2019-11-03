@@ -3,10 +3,12 @@
 pub mod reply;
 
 mod buf;
+mod dirent;
 mod fs;
 mod request;
 
 pub use buf::Buffer;
+pub use dirent::DirEntry;
 pub use fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation};
 pub use request::Request;
 

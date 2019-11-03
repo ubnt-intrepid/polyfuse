@@ -6,7 +6,7 @@ use futures::{
     future::{Future, FutureExt},
     select,
 };
-use polyfuse::{Context, DirEntry, Filesystem, Operation, Server};
+use polyfuse::{session::DirEntry, Context, Filesystem, Operation, Server};
 use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 
 #[tokio::main]
