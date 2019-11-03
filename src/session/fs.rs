@@ -18,13 +18,14 @@ use super::{
     },
     Context,
 };
+use async_trait::async_trait;
 use polyfuse_sys::abi::{
     fuse_attr, //
     fuse_file_lock,
     fuse_forget_one,
     fuse_kstatfs,
 };
-use std::{convert::TryFrom, ffi::OsStr, io};
+use std::{convert::TryFrom, ffi::OsStr, future::Future, io, pin::Pin};
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -106,12 +107,72 @@ impl Forget {
 }
 
 /// The filesystem running on the user space.
-#[async_trait::async_trait]
+#[async_trait]
 pub trait Filesystem: Send + Sync {
     /// Handle a FUSE request from the kernel and reply with its result.
     async fn call(&self, cx: &mut Context<'_>, op: Operation<'_>) -> io::Result<()> {
         drop(op);
         cx.reply_err(libc::ENOSYS).await
+    }
+}
+
+impl<'a, T: ?Sized> Filesystem for &'a T
+where
+    T: Filesystem,
+{
+    #[inline]
+    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
+        &'l1 self,
+        cx: &'l2 mut Context<'l3>,
+        op: Operation<'l4>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
+    where
+        'l1: 'async_trait,
+        'l2: 'async_trait,
+        'l3: 'async_trait,
+        'l4: 'async_trait,
+    {
+        (**self).call(cx, op)
+    }
+}
+
+impl<T: ?Sized> Filesystem for Box<T>
+where
+    T: Filesystem,
+{
+    #[inline]
+    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
+        &'l1 self,
+        cx: &'l2 mut Context<'l3>,
+        op: Operation<'l4>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
+    where
+        'l1: 'async_trait,
+        'l2: 'async_trait,
+        'l3: 'async_trait,
+        'l4: 'async_trait,
+    {
+        (**self).call(cx, op)
+    }
+}
+
+impl<T: ?Sized> Filesystem for std::sync::Arc<T>
+where
+    T: Filesystem,
+{
+    #[inline]
+    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
+        &'l1 self,
+        cx: &'l2 mut Context<'l3>,
+        op: Operation<'l4>,
+    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
+    where
+        'l1: 'async_trait,
+        'l2: 'async_trait,
+        'l3: 'async_trait,
+        'l4: 'async_trait,
+    {
+        (**self).call(cx, op)
     }
 }
 
