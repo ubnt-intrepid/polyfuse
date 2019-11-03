@@ -2,16 +2,15 @@
 
 pub mod reply;
 
-mod buf;
 mod dirent;
 mod fs;
 mod request;
 
-pub use buf::Buffer;
 pub use dirent::{DirEntry, DirEntryType};
 pub use fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation};
-pub use request::Request;
+pub use request::{Request, RequestReader};
 
+use bytes::Bytes;
 use futures::{
     channel::oneshot,
     future::{Fuse, FusedFuture, Future, FutureExt},
@@ -71,7 +70,7 @@ pub struct Session {
     exited: AtomicBool,
     interrupt_state: Mutex<InterruptState>,
     notify_unique: AtomicU64,
-    notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, Vec<u8>)>>>,
+    notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, Bytes)>>>,
 }
 
 #[derive(Debug)]
@@ -90,17 +89,16 @@ impl Session {
         I: AsyncRead + AsyncWrite + Unpin,
     {
         drop(initializer);
-
-        let mut buf = Buffer::default();
+        let reader = RequestReader::default();
 
         loop {
-            let terminated = buf.receive(io).await?;
-            if terminated {
-                log::warn!("the connection is closed");
-                return Err(io::Error::from_raw_os_error(libc::ENODEV));
-            }
-
-            let (Request { header, kind, .. }, _data) = buf.decode()?;
+            let Request { header, kind, .. } = reader
+                .receive(io)
+                .await? //
+                .ok_or_else(|| {
+                    log::warn!("the connection is closed");
+                    io::Error::from_raw_os_error(libc::ENODEV)
+                })?;
 
             let (proto_major, proto_minor, max_readahead);
             match kind {
@@ -165,13 +163,7 @@ impl Session {
 
     /// Process an incoming request using the specified filesystem operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<F, W>(
-        &self,
-        fs: &F,
-        req: Request<'_>,
-        data: Option<&[u8]>,
-        writer: &mut W,
-    ) -> io::Result<()>
+    pub async fn process<F, W>(&self, fs: &F, req: Request, writer: &mut W) -> io::Result<()>
     where
         F: Filesystem,
         W: AsyncWrite + Send + Unpin,
@@ -193,7 +185,7 @@ impl Session {
         }
 
         let mut cx = Context {
-            header,
+            header: &*header,
             writer: Some(&mut *writer),
             session: &*self,
         };
@@ -219,7 +211,7 @@ impl Session {
             RequestKind::Lookup { name } => {
                 run_op!(Operation::Lookup {
                     parent: ino,
-                    name,
+                    name: &*name,
                     reply: ReplyEntry::new(),
                 });
             }
@@ -246,7 +238,7 @@ impl Session {
                 fs.call(
                     &mut cx,
                     Operation::Forget {
-                        forgets: make_forgets(forgets),
+                        forgets: make_forgets(&*forgets),
                     },
                 )
                 .await?;
@@ -282,15 +274,15 @@ impl Session {
             RequestKind::Symlink { name, link } => {
                 run_op!(Operation::Symlink {
                     parent: ino,
-                    name,
-                    link,
+                    name: &*name,
+                    link: &*link,
                     reply: ReplyEntry::new(),
                 });
             }
             RequestKind::Mknod { arg, name } => {
                 run_op!(Operation::Mknod {
                     parent: ino,
-                    name,
+                    name: &*name,
                     mode: arg.mode,
                     rdev: arg.rdev,
                     umask: Some(arg.umask),
@@ -300,7 +292,7 @@ impl Session {
             RequestKind::Mkdir { arg, name } => {
                 run_op!(Operation::Mkdir {
                     parent: ino,
-                    name,
+                    name: &*name,
                     mode: arg.mode,
                     umask: Some(arg.umask),
                     reply: ReplyEntry::new(),
@@ -309,23 +301,23 @@ impl Session {
             RequestKind::Unlink { name } => {
                 run_op!(Operation::Unlink {
                     parent: ino,
-                    name,
+                    name: &*name,
                     reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Rmdir { name } => {
                 run_op!(Operation::Rmdir {
                     parent: ino,
-                    name,
+                    name: &*name,
                     reply: ReplyEmpty::new(),
                 });
             }
             RequestKind::Rename { arg, name, newname } => {
                 run_op!(Operation::Rename {
                     parent: ino,
-                    name,
+                    name: &*name,
                     newparent: arg.newdir,
-                    newname,
+                    newname: &*newname,
                     flags: 0,
                     reply: ReplyEmpty::new(),
                 });
@@ -333,9 +325,9 @@ impl Session {
             RequestKind::Rename2 { arg, name, newname } => {
                 run_op!(Operation::Rename {
                     parent: ino,
-                    name,
+                    name: &*name,
                     newparent: arg.newdir,
-                    newname,
+                    newname: &*newname,
                     flags: arg.flags,
                     reply: ReplyEmpty::new(),
                 });
@@ -344,7 +336,7 @@ impl Session {
                 run_op!(Operation::Link {
                     ino: arg.oldnodeid,
                     newparent: ino,
-                    newname,
+                    newname: &*newname,
                     reply: ReplyEntry::new(),
                 });
             }
@@ -365,21 +357,18 @@ impl Session {
                     reply: ReplyData::new(arg.size),
                 });
             }
-            RequestKind::Write { arg } => match data {
-                Some(data) => {
-                    debug_assert_eq!(data.len(), arg.size as usize);
-                    run_op!(Operation::Write {
-                        ino,
-                        fh: arg.fh,
-                        offset: arg.offset,
-                        data,
-                        flags: arg.flags,
-                        lock_owner: arg.lock_owner(),
-                        reply: ReplyWrite::new(),
-                    });
-                }
-                None => panic!("unexpected condition"),
-            },
+            RequestKind::Write { arg, data } => {
+                debug_assert_eq!(data.len(), arg.size as usize);
+                run_op!(Operation::Write {
+                    ino,
+                    fh: arg.fh,
+                    offset: arg.offset,
+                    data,
+                    flags: arg.flags,
+                    lock_owner: arg.lock_owner(),
+                    reply: ReplyWrite::new(),
+                });
+            }
             RequestKind::Release { arg } => {
                 let mut flush = false;
                 let mut flock_release = false;
@@ -419,8 +408,8 @@ impl Session {
             RequestKind::Setxattr { arg, name, value } => {
                 run_op!(Operation::Setxattr {
                     ino,
-                    name,
-                    value,
+                    name: &*name,
+                    value: &*value,
                     flags: arg.flags,
                     reply: ReplyEmpty::new(),
                 });
@@ -428,7 +417,7 @@ impl Session {
             RequestKind::Getxattr { arg, name } => {
                 run_op!(Operation::Getxattr {
                     ino,
-                    name,
+                    name: &*name,
                     size: arg.size,
                     reply: ReplyXattr::new(),
                 });
@@ -443,7 +432,7 @@ impl Session {
             RequestKind::Removexattr { name } => {
                 run_op!(Operation::Removexattr {
                     ino,
-                    name,
+                    name: &*name,
                     reply: ReplyEmpty::new(),
                 });
             }
@@ -539,7 +528,7 @@ impl Session {
             RequestKind::Create { arg, name } => {
                 run_op!(Operation::Create {
                     parent: ino,
-                    name,
+                    name: &*name,
                     mode: arg.mode,
                     umask: Some(arg.umask),
                     open_flags: arg.flags,
@@ -578,13 +567,10 @@ impl Session {
                 });
             }
 
-            RequestKind::NotifyReply { arg } => match data {
-                Some(data) => {
-                    self.send_notify_reply(header.unique, arg.offset, data.to_vec())
-                        .await;
-                }
-                None => panic!(),
-            },
+            RequestKind::NotifyReply { arg, data } => {
+                self.send_notify_reply(header.unique, arg.offset, data)
+                    .await;
+            }
 
             RequestKind::Unknown => {
                 log::warn!("unsupported opcode: {:?}", header.opcode);
@@ -790,7 +776,7 @@ impl Session {
         }
     }
 
-    async fn send_notify_reply(&self, unique: u64, offset: u64, data: Vec<u8>) {
+    async fn send_notify_reply(&self, unique: u64, offset: u64, data: Bytes) {
         if let Some(tx) = self.notify_remains.lock().await.remove(&unique) {
             let _ = tx.send((offset, data));
         }
@@ -881,7 +867,7 @@ impl FusedFuture for Interrupt {
 #[derive(Debug)]
 pub struct NotifyRetrieve {
     unique: u64,
-    rx: Fuse<oneshot::Receiver<(u64, Vec<u8>)>>,
+    rx: Fuse<oneshot::Receiver<(u64, Bytes)>>,
 }
 
 impl NotifyRetrieve {
@@ -891,7 +877,7 @@ impl NotifyRetrieve {
 }
 
 impl Future for NotifyRetrieve {
-    type Output = (u64, Vec<u8>);
+    type Output = (u64, Bytes);
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
         self.rx.poll_unpin(cx).map(|res| res.expect("canceled"))

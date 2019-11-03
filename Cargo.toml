@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 async-trait = "0.1"
+bytes = "0.4"
 futures-preview = { version = "0.3.0-alpha.19", features = [ "unstable", "async-await" ] }
 libc = "0.2"
 log = "0.4"

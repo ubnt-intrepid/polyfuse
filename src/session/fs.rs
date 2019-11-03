@@ -19,6 +19,7 @@ use super::{
     Context,
 };
 use async_trait::async_trait;
+use bytes::Bytes;
 use polyfuse_sys::abi::{
     fuse_attr, //
     fuse_file_lock,
@@ -295,7 +296,7 @@ pub enum Operation<'a> {
         ino: u64,
         fh: u64,
         offset: u64,
-        data: &'a [u8],
+        data: Bytes,
         flags: u32,
         lock_owner: Option<u64>,
         reply: ReplyWrite,

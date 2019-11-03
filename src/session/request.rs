@@ -1,3 +1,5 @@
+use bytes::{Bytes, BytesMut};
+use futures::io::{AsyncRead, AsyncReadExt};
 use polyfuse_sys::abi::{
     fuse_access_in, //
     fuse_batch_forget_in,
@@ -29,156 +31,166 @@ use polyfuse_sys::abi::{
     fuse_setxattr_in,
     fuse_write_in,
 };
-use std::{convert::TryFrom, ffi::OsStr, io, mem, os::unix::ffi::OsStrExt};
+use std::{
+    convert::TryFrom, //
+    ffi::OsStr,
+    io,
+    marker::PhantomData,
+    mem,
+    ops::Deref,
+    os::unix::ffi::OsStrExt,
+};
 
 /// An incoming FUSE request received from the kernel.
 #[derive(Debug)]
-pub struct Request<'a> {
-    pub(crate) header: &'a fuse_in_header,
-    pub(crate) kind: RequestKind<'a>,
+pub struct Request {
+    pub(crate) header: Shared<fuse_in_header>,
+    pub(crate) kind: RequestKind,
     _p: (),
 }
 
-impl<'a> Request<'a> {
-    pub(crate) const fn new(header: &'a fuse_in_header, kind: RequestKind<'a>) -> Self {
-        Self {
-            header,
-            kind,
-            _p: (),
-        }
+impl Request {
+    pub(crate) fn unique(&self) -> u64 {
+        self.header.unique
+    }
+
+    pub(crate) fn opcode(&self) -> Option<fuse_opcode> {
+        fuse_opcode::try_from(self.header.opcode).ok()
     }
 }
 
 #[derive(Debug)]
-pub enum RequestKind<'a> {
+pub enum RequestKind {
     Init {
-        arg: &'a fuse_init_in,
+        arg: Shared<fuse_init_in>,
     },
     Destroy,
     Lookup {
-        name: &'a OsStr,
+        name: SharedOsStr,
     },
     Forget {
-        arg: &'a fuse_forget_in,
+        arg: Shared<fuse_forget_in>,
     },
     Getattr {
-        arg: &'a fuse_getattr_in,
+        arg: Shared<fuse_getattr_in>,
     },
     Setattr {
-        arg: &'a fuse_setattr_in,
+        arg: Shared<fuse_setattr_in>,
     },
     Readlink,
     Symlink {
-        name: &'a OsStr,
-        link: &'a OsStr,
+        name: SharedOsStr,
+        link: SharedOsStr,
     },
     Mknod {
-        arg: &'a fuse_mknod_in,
-        name: &'a OsStr,
+        arg: Shared<fuse_mknod_in>,
+        name: SharedOsStr,
     },
     Mkdir {
-        arg: &'a fuse_mkdir_in,
-        name: &'a OsStr,
+        arg: Shared<fuse_mkdir_in>,
+        name: SharedOsStr,
     },
     Unlink {
-        name: &'a OsStr,
+        name: SharedOsStr,
     },
     Rmdir {
-        name: &'a OsStr,
+        name: SharedOsStr,
     },
     Rename {
-        arg: &'a fuse_rename_in,
-        name: &'a OsStr,
-        newname: &'a OsStr,
+        arg: Shared<fuse_rename_in>,
+        name: SharedOsStr,
+        newname: SharedOsStr,
     },
     Link {
-        arg: &'a fuse_link_in,
-        newname: &'a OsStr,
+        arg: Shared<fuse_link_in>,
+        newname: SharedOsStr,
     },
     Open {
-        arg: &'a fuse_open_in,
+        arg: Shared<fuse_open_in>,
     },
     Read {
-        arg: &'a fuse_read_in,
+        arg: Shared<fuse_read_in>,
     },
     Write {
-        arg: &'a fuse_write_in,
+        arg: Shared<fuse_write_in>,
+        data: Bytes,
     },
     Release {
-        arg: &'a fuse_release_in,
+        arg: Shared<fuse_release_in>,
     },
     Statfs,
     Fsync {
-        arg: &'a fuse_fsync_in,
+        arg: Shared<fuse_fsync_in>,
     },
     Setxattr {
-        arg: &'a fuse_setxattr_in,
-        name: &'a OsStr,
-        value: &'a [u8],
+        arg: Shared<fuse_setxattr_in>,
+        name: SharedOsStr,
+        value: Bytes,
     },
     Getxattr {
-        arg: &'a fuse_getxattr_in,
-        name: &'a OsStr,
+        arg: Shared<fuse_getxattr_in>,
+        name: SharedOsStr,
     },
     Listxattr {
-        arg: &'a fuse_getxattr_in,
+        arg: Shared<fuse_getxattr_in>,
     },
     Removexattr {
-        name: &'a OsStr,
+        name: SharedOsStr,
     },
     Flush {
-        arg: &'a fuse_flush_in,
+        arg: Shared<fuse_flush_in>,
     },
     Opendir {
-        arg: &'a fuse_open_in,
+        arg: Shared<fuse_open_in>,
     },
     Readdir {
-        arg: &'a fuse_read_in,
+        arg: Shared<fuse_read_in>,
         plus: bool,
     },
     Releasedir {
-        arg: &'a fuse_release_in,
+        arg: Shared<fuse_release_in>,
     },
     Fsyncdir {
-        arg: &'a fuse_fsync_in,
+        arg: Shared<fuse_fsync_in>,
     },
     Getlk {
-        arg: &'a fuse_lk_in,
+        arg: Shared<fuse_lk_in>,
     },
     Setlk {
-        arg: &'a fuse_lk_in,
+        arg: Shared<fuse_lk_in>,
         sleep: bool,
     },
     Access {
-        arg: &'a fuse_access_in,
+        arg: Shared<fuse_access_in>,
     },
     Create {
-        arg: &'a fuse_create_in,
-        name: &'a OsStr,
+        arg: Shared<fuse_create_in>,
+        name: SharedOsStr,
     },
     Interrupt {
-        arg: &'a fuse_interrupt_in,
+        arg: Shared<fuse_interrupt_in>,
     },
     Bmap {
-        arg: &'a fuse_bmap_in,
+        arg: Shared<fuse_bmap_in>,
     },
     Fallocate {
-        arg: &'a fuse_fallocate_in,
+        arg: Shared<fuse_fallocate_in>,
     },
     Rename2 {
-        arg: &'a fuse_rename2_in,
-        name: &'a OsStr,
-        newname: &'a OsStr,
+        arg: Shared<fuse_rename2_in>,
+        name: SharedOsStr,
+        newname: SharedOsStr,
     },
     CopyFileRange {
-        arg: &'a fuse_copy_file_range_in,
+        arg: Shared<fuse_copy_file_range_in>,
     },
     BatchForget {
-        arg: &'a fuse_batch_forget_in,
-        forgets: &'a [fuse_forget_one],
+        arg: Shared<fuse_batch_forget_in>,
+        forgets: SharedSlice<fuse_forget_one>,
     },
     NotifyReply {
-        arg: &'a fuse_notify_retrieve_in,
+        arg: Shared<fuse_notify_retrieve_in>,
+        data: Bytes,
     },
     Unknown,
 }
@@ -186,16 +198,6 @@ pub enum RequestKind<'a> {
 // TODO: add opcodes:
 // Ioctl,
 // Poll,
-
-impl Request<'_> {
-    pub fn unique(&self) -> u64 {
-        self.header.unique
-    }
-
-    pub fn opcode(&self) -> Option<fuse_opcode> {
-        fuse_opcode::try_from(self.header.opcode).ok()
-    }
-}
 
 trait FromBytes<'a> {
     const SIZE: usize;
@@ -248,248 +250,375 @@ impl_from_bytes! {
 
 #[derive(Debug)]
 pub struct Parser<'a> {
-    buf: &'a [u8],
-    offset: usize,
+    buf: &'a mut Bytes,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(buf: &'a [u8]) -> Self {
-        Self { buf, offset: 0 }
+    pub fn new(buf: &'a mut Bytes) -> Self {
+        Self { buf }
     }
 
-    fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
-        if self.buf.len() < self.offset + count {
+    fn fetch_bytes(&mut self, count: usize) -> io::Result<Bytes> {
+        if self.buf.len() < count {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "fetch"));
         }
-
-        let data = &self.buf[self.offset..self.offset + count];
-        self.offset += count;
-
-        Ok(data)
+        Ok(self.buf.split_to(count))
     }
 
-    fn fetch_array<T>(&mut self, count: usize) -> io::Result<&'a [T]> {
+    fn fetch_array<T>(&mut self, count: usize) -> io::Result<SharedSlice<T>> {
         self.fetch_bytes(mem::size_of::<T>() * count)
-            .map(|bytes| unsafe {
-                std::slice::from_raw_parts(
-                    bytes.as_ptr() as *const T, //
-                    count,
-                )
-            })
+            .map(|bytes| unsafe { SharedSlice::from_bytes_unchecked(bytes, count) })
     }
 
-    fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
-        let len = self.buf[self.offset..]
+    fn fetch_str(&mut self) -> io::Result<SharedOsStr> {
+        let len = self
+            .buf
+            .as_ref()
             .iter()
             .position(|&b| b == b'\0')
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fetch_str: missing \\0"))?;
-        self.fetch_bytes(len).map(OsStr::from_bytes)
+        self.fetch_bytes(len).map(SharedOsStr::from_bytes)
     }
 
-    fn fetch<T: FromBytes<'a>>(&mut self) -> io::Result<&'a T> {
-        self.fetch_bytes(T::SIZE)
-            .map(|data| unsafe { T::from_bytes(data) })
+    fn fetch<T>(&mut self) -> io::Result<Shared<T>> {
+        self.fetch_bytes(mem::size_of::<T>())
+            .map(|data| unsafe { Shared::new_unchecked(data) })
     }
 
-    pub fn offset(&self) -> usize {
-        self.offset
-    }
-
-    pub fn parse(&mut self) -> io::Result<(&'a fuse_in_header, RequestKind<'a>, usize)> {
-        let header = self.parse_header()?;
-        let arg = self.parse_arg(header)?;
-        Ok((header, arg, self.offset()))
-    }
-
-    #[allow(clippy::cast_ptr_alignment)]
-    fn parse_header(&mut self) -> io::Result<&'a fuse_in_header> {
-        let header = self.fetch::<fuse_in_header>()?;
-
-        if self.buf.len() < header.len as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "received data is too short",
-            ));
-        }
-
-        Ok(header)
-    }
-
-    fn parse_arg(&mut self, header: &'a fuse_in_header) -> io::Result<RequestKind<'a>> {
-        match fuse_opcode::try_from(header.opcode).ok() {
-            Some(fuse_opcode::FUSE_INIT) => {
+    pub fn parse(&mut self, opcode: fuse_opcode) -> io::Result<RequestKind> {
+        match opcode {
+            fuse_opcode::FUSE_INIT => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Init { arg })
             }
-            Some(fuse_opcode::FUSE_DESTROY) => Ok(RequestKind::Destroy),
-            Some(fuse_opcode::FUSE_LOOKUP) => {
+            fuse_opcode::FUSE_DESTROY => Ok(RequestKind::Destroy),
+            fuse_opcode::FUSE_LOOKUP => {
                 let name = self.fetch_str()?;
                 Ok(RequestKind::Lookup { name })
             }
-            Some(fuse_opcode::FUSE_FORGET) => {
+            fuse_opcode::FUSE_FORGET => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Forget { arg })
             }
-            Some(fuse_opcode::FUSE_GETATTR) => {
+            fuse_opcode::FUSE_GETATTR => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Getattr { arg })
             }
-            Some(fuse_opcode::FUSE_SETATTR) => {
+            fuse_opcode::FUSE_SETATTR => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Setattr { arg })
             }
-            Some(fuse_opcode::FUSE_READLINK) => Ok(RequestKind::Readlink),
-            Some(fuse_opcode::FUSE_SYMLINK) => {
+            fuse_opcode::FUSE_READLINK => Ok(RequestKind::Readlink),
+            fuse_opcode::FUSE_SYMLINK => {
                 let name = self.fetch_str()?;
                 let link = self.fetch_str()?;
                 Ok(RequestKind::Symlink { name, link })
             }
-            Some(fuse_opcode::FUSE_MKNOD) => {
+            fuse_opcode::FUSE_MKNOD => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(RequestKind::Mknod { arg, name })
             }
-            Some(fuse_opcode::FUSE_MKDIR) => {
+            fuse_opcode::FUSE_MKDIR => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(RequestKind::Mkdir { arg, name })
             }
-            Some(fuse_opcode::FUSE_UNLINK) => {
+            fuse_opcode::FUSE_UNLINK => {
                 let name = self.fetch_str()?;
                 Ok(RequestKind::Unlink { name })
             }
-            Some(fuse_opcode::FUSE_RMDIR) => {
+            fuse_opcode::FUSE_RMDIR => {
                 let name = self.fetch_str()?;
                 Ok(RequestKind::Rmdir { name })
             }
-            Some(fuse_opcode::FUSE_RENAME) => {
+            fuse_opcode::FUSE_RENAME => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 let newname = self.fetch_str()?;
                 Ok(RequestKind::Rename { arg, name, newname })
             }
-            Some(fuse_opcode::FUSE_LINK) => {
+            fuse_opcode::FUSE_LINK => {
                 let arg = self.fetch()?;
                 let newname = self.fetch_str()?;
                 Ok(RequestKind::Link { arg, newname })
             }
-            Some(fuse_opcode::FUSE_OPEN) => {
+            fuse_opcode::FUSE_OPEN => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Open { arg })
             }
-            Some(fuse_opcode::FUSE_READ) => {
+            fuse_opcode::FUSE_READ => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Read { arg })
             }
-            Some(fuse_opcode::FUSE_WRITE) => {
-                let arg = self.fetch()?;
-                Ok(RequestKind::Write { arg })
+            fuse_opcode::FUSE_WRITE => {
+                let arg = self.fetch::<fuse_write_in>()?;
+                let data = self.fetch_bytes(arg.size as usize)?;
+                Ok(RequestKind::Write { arg, data })
             }
-            Some(fuse_opcode::FUSE_RELEASE) => {
+            fuse_opcode::FUSE_RELEASE => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Release { arg })
             }
-            Some(fuse_opcode::FUSE_STATFS) => Ok(RequestKind::Statfs),
-            Some(fuse_opcode::FUSE_FSYNC) => {
+            fuse_opcode::FUSE_STATFS => Ok(RequestKind::Statfs),
+            fuse_opcode::FUSE_FSYNC => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Fsync { arg })
             }
-            Some(fuse_opcode::FUSE_SETXATTR) => {
-                let arg: &fuse_setxattr_in = self.fetch()?;
+            fuse_opcode::FUSE_SETXATTR => {
+                let arg = self.fetch::<fuse_setxattr_in>()?;
                 let name = self.fetch_str()?;
                 let value = self.fetch_bytes(arg.size as usize)?;
                 Ok(RequestKind::Setxattr { arg, name, value })
             }
-            Some(fuse_opcode::FUSE_GETXATTR) => {
+            fuse_opcode::FUSE_GETXATTR => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(RequestKind::Getxattr { arg, name })
             }
-            Some(fuse_opcode::FUSE_LISTXATTR) => {
+            fuse_opcode::FUSE_LISTXATTR => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Listxattr { arg })
             }
-            Some(fuse_opcode::FUSE_REMOVEXATTR) => {
+            fuse_opcode::FUSE_REMOVEXATTR => {
                 let name = self.fetch_str()?;
                 Ok(RequestKind::Removexattr { name })
             }
-            Some(fuse_opcode::FUSE_FLUSH) => {
+            fuse_opcode::FUSE_FLUSH => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Flush { arg })
             }
-            Some(fuse_opcode::FUSE_OPENDIR) => {
+            fuse_opcode::FUSE_OPENDIR => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Opendir { arg })
             }
-            Some(fuse_opcode::FUSE_READDIR) => {
+            fuse_opcode::FUSE_READDIR => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Readdir { arg, plus: false })
             }
-            Some(fuse_opcode::FUSE_RELEASEDIR) => {
+            fuse_opcode::FUSE_RELEASEDIR => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Releasedir { arg })
             }
-            Some(fuse_opcode::FUSE_FSYNCDIR) => {
+            fuse_opcode::FUSE_FSYNCDIR => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Fsyncdir { arg })
             }
-            Some(fuse_opcode::FUSE_GETLK) => {
+            fuse_opcode::FUSE_GETLK => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Getlk { arg })
             }
-            Some(fuse_opcode::FUSE_SETLK) => {
+            fuse_opcode::FUSE_SETLK => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Setlk { arg, sleep: false })
             }
-            Some(fuse_opcode::FUSE_SETLKW) => {
+            fuse_opcode::FUSE_SETLKW => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Setlk { arg, sleep: true })
             }
-            Some(fuse_opcode::FUSE_ACCESS) => {
+            fuse_opcode::FUSE_ACCESS => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Access { arg })
             }
-            Some(fuse_opcode::FUSE_CREATE) => {
+            fuse_opcode::FUSE_CREATE => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 Ok(RequestKind::Create { arg, name })
             }
-            Some(fuse_opcode::FUSE_INTERRUPT) => {
+            fuse_opcode::FUSE_INTERRUPT => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Interrupt { arg })
             }
-            Some(fuse_opcode::FUSE_BMAP) => {
+            fuse_opcode::FUSE_BMAP => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Bmap { arg })
             }
-            Some(fuse_opcode::FUSE_FALLOCATE) => {
+            fuse_opcode::FUSE_FALLOCATE => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Fallocate { arg })
             }
-            Some(fuse_opcode::FUSE_READDIRPLUS) => {
+            fuse_opcode::FUSE_READDIRPLUS => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::Readdir { arg, plus: true })
             }
-            Some(fuse_opcode::FUSE_RENAME2) => {
+            fuse_opcode::FUSE_RENAME2 => {
                 let arg = self.fetch()?;
                 let name = self.fetch_str()?;
                 let newname = self.fetch_str()?;
                 Ok(RequestKind::Rename2 { arg, name, newname })
             }
-            Some(fuse_opcode::FUSE_COPY_FILE_RANGE) => {
+            fuse_opcode::FUSE_COPY_FILE_RANGE => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::CopyFileRange { arg })
             }
-            Some(fuse_opcode::FUSE_BATCH_FORGET) => {
-                let arg: &fuse_batch_forget_in = self.fetch()?;
+            fuse_opcode::FUSE_BATCH_FORGET => {
+                let arg = self.fetch::<fuse_batch_forget_in>()?;
                 let forgets = self.fetch_array(arg.count as usize)?;
                 Ok(RequestKind::BatchForget { arg, forgets })
             }
-            Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
-                let arg = self.fetch()?;
-                Ok(RequestKind::NotifyReply { arg })
+            fuse_opcode::FUSE_NOTIFY_REPLY => {
+                let arg = self.fetch::<fuse_notify_retrieve_in>()?;
+                let data = self.fetch_bytes(arg.size as usize)?;
+                Ok(RequestKind::NotifyReply { arg, data })
             }
             _ => Ok(RequestKind::Unknown),
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct Shared<T>(Bytes, PhantomData<T>);
+
+impl<T> Shared<T> {
+    #[inline]
+    unsafe fn new_unchecked(bytes: Bytes) -> Self {
+        debug_assert_eq!(bytes.len(), mem::size_of::<T>());
+        Self(bytes, PhantomData)
+    }
+}
+
+impl<T> Deref for Shared<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(self.0.as_ref().as_ptr() as *const T) }
+    }
+}
+
+#[derive(Debug)]
+pub struct SharedOsStr(Bytes);
+
+impl SharedOsStr {
+    #[inline]
+    fn from_bytes(bytes: Bytes) -> Self {
+        Self(bytes)
+    }
+}
+
+impl Deref for SharedOsStr {
+    type Target = OsStr;
+
+    fn deref(&self) -> &Self::Target {
+        OsStr::from_bytes(self.0.as_ref())
+    }
+}
+
+#[derive(Debug)]
+pub struct SharedSlice<T> {
+    bytes: Bytes,
+    count: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> SharedSlice<T> {
+    #[inline]
+    unsafe fn from_bytes_unchecked(bytes: Bytes, count: usize) -> Self {
+        debug_assert_eq!(bytes.len(), mem::size_of::<T>() * count);
+        Self {
+            bytes,
+            count,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Deref for SharedSlice<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.bytes.as_ref().as_ptr() as *const T, //
+                self.count,
+            )
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RequestReader {
+    bufsize: usize,
+}
+
+impl Default for RequestReader {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_BUF_SIZE)
+    }
+}
+
+impl RequestReader {
+    pub const DEFAULT_BUF_SIZE: usize = super::MAX_WRITE_SIZE as usize + 4096;
+
+    pub fn new(bufsize: usize) -> Self {
+        Self { bufsize }
+    }
+
+    pub async fn receive<I: ?Sized>(&self, io: &mut I) -> io::Result<Option<Request>>
+    where
+        I: AsyncRead + Unpin,
+    {
+        let mut buf = BytesMut::with_capacity(self.bufsize);
+        unsafe {
+            let capacity = buf.capacity();
+            buf.set_len(capacity);
+        }
+
+        let mut buf = loop {
+            match io.read(buf.as_mut()).await {
+                Ok(count) => {
+                    unsafe {
+                        buf.set_len(count);
+                    }
+                    break buf.freeze();
+                }
+                Err(err) => match err.raw_os_error() {
+                    Some(libc::ENOENT) | Some(libc::EINTR) => {
+                        log::debug!("continue reading from the kernel");
+                        continue;
+                    }
+                    Some(libc::ENODEV) => {
+                        unsafe {
+                            buf.set_len(0);
+                        }
+                        return Ok(None);
+                    }
+                    _ => {
+                        unsafe {
+                            buf.set_len(0);
+                        }
+                        return Err(err);
+                    }
+                },
+            }
+        };
+
+        let total_len = buf.len();
+        if total_len < mem::size_of::<fuse_in_header>() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the received data from the kernel is too short",
+            ));
+        }
+
+        let header_bytes = buf.split_to(mem::size_of::<fuse_in_header>());
+        let header: Shared<fuse_in_header> = unsafe { Shared::new_unchecked(header_bytes) };
+
+        if total_len != header.len as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the payload length is mismatched to the header value",
+            ));
+        }
+
+        let opcode = fuse_opcode::try_from(header.opcode)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let kind = Parser::new(&mut buf).parse(opcode)?;
+
+        Ok(Some(Request {
+            header,
+            kind,
+            _p: (),
+        }))
     }
 }

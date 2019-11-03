@@ -3,7 +3,7 @@
 use crate::{
     io::{Connection, MountOptions},
     lock::Lock,
-    session::{Buffer, Filesystem, NotifyRetrieve, Session},
+    session::{Filesystem, NotifyRetrieve, Request, RequestReader, Session},
 };
 use futures::{
     future::{Future, FutureExt},
@@ -67,6 +67,7 @@ impl Server {
         F: Filesystem + 'static,
         S: Future + Unpin,
     {
+        let reader = RequestReader::default();
         let session = self.session;
         let fs = Arc::new(fs);
         let mut io = self.io;
@@ -74,18 +75,19 @@ impl Server {
 
         let mut main_loop = Box::pin(async move {
             loop {
-                let mut buf = Buffer::default();
-                let terminated = buf.receive(&mut io).await?;
-                if terminated {
-                    log::debug!("connection was closed by the kernel");
-                    return Ok::<_, io::Error>(());
-                }
+                let req = match reader.receive(&mut io).await? {
+                    Some(req) => req,
+                    None => {
+                        log::debug!("connection was closed by the kernel");
+                        return Ok::<_, io::Error>(());
+                    }
+                };
 
                 let session = session.clone();
                 let fs = fs.clone();
                 let mut io = io.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_request(&*session, &*fs, &mut buf, &mut io).await {
+                    if let Err(e) = handle_request(&*session, &*fs, req, &mut io).await {
                         log::error!("error during handling a request: {}", e);
                     }
                 });
@@ -150,25 +152,17 @@ impl Notifier {
     }
 }
 
-async fn handle_request<F, I>(
-    session: &Session,
-    fs: &F,
-    buf: &mut Buffer,
-    io: &mut I,
-) -> io::Result<()>
+async fn handle_request<F, I>(session: &Session, fs: &F, req: Request, io: &mut I) -> io::Result<()>
 where
     F: Filesystem + 'static,
     I: AsyncRead + AsyncWrite + Send + Unpin,
 {
-    let (req, data) = buf.decode()?;
     log::debug!(
-        "Got a request: unique={}, opcode={:?}, data={:?}",
+        "Got a request: unique={}, opcode={:?}",
         req.unique(),
         req.opcode(),
-        data.as_ref().map(|_| "<data>")
     );
-
-    session.process(fs, req, data, io).await?;
+    session.process(fs, req, io).await?;
 
     Ok(())
 }
