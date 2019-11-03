@@ -37,7 +37,7 @@ use std::{
     fmt, io, mem,
     os::unix::ffi::OsStrExt,
     pin::Pin,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::{self, Poll},
 };
 
@@ -68,14 +68,14 @@ pub struct Session {
     proto_major: u32,
     proto_minor: u32,
     max_readahead: u32,
-    state: Mutex<SessionState>,
+    exited: AtomicBool,
+    interrupt_state: Mutex<InterruptState>,
     notify_unique: AtomicU64,
     notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, Vec<u8>)>>>,
 }
 
 #[derive(Debug)]
-struct SessionState {
-    exited: bool,
+struct InterruptState {
     remains: HashMap<u64, oneshot::Sender<()>>,
     interrupted: HashSet<u64>,
 }
@@ -144,8 +144,8 @@ impl Session {
                 proto_major,
                 proto_minor,
                 max_readahead,
-                state: Mutex::new(SessionState {
-                    exited: false,
+                exited: AtomicBool::new(false),
+                interrupt_state: Mutex::new(InterruptState {
                     remains: HashMap::new(),
                     interrupted: HashSet::new(),
                 }),
@@ -153,6 +153,14 @@ impl Session {
                 notify_remains: Mutex::new(HashMap::new()),
             });
         }
+    }
+
+    fn exit(&self) {
+        self.exited.store(true, Ordering::SeqCst);
+    }
+
+    fn exited(&self) -> bool {
+        self.exited.load(Ordering::SeqCst)
     }
 
     /// Process an incoming request using the specified filesystem operations.
@@ -168,17 +176,16 @@ impl Session {
         F: Filesystem,
         W: AsyncWrite + Send + Unpin,
     {
+        if self.exited() {
+            log::warn!("The sesson has already been exited");
+            return Ok(());
+        }
+
         let Request { header, kind, .. } = req;
         let ino = header.nodeid;
 
         {
-            let mut state = self.state.lock().await;
-
-            if state.exited {
-                log::warn!("The sesson has already been exited");
-                return Ok(());
-            }
-
+            let mut state = self.interrupt_state.lock().await;
             if state.interrupted.remove(&header.unique) {
                 log::debug!("The request was interrupted (unique={})", header.unique);
                 return Ok(());
@@ -199,12 +206,12 @@ impl Session {
 
         match kind {
             RequestKind::Init { .. } => {
-                log::warn!("");
+                log::warn!("ignore an INIT request after initializing the session");
                 cx.reply_err(libc::EIO).await?;
             }
             RequestKind::Destroy => {
-                self.state.lock().await.exited = true;
-                cx.reply(&[]).await?;
+                self.exit();
+                return Ok(());
             }
             RequestKind::Interrupt { arg } => {
                 self.send_interrupt(arg.unique).await;
@@ -588,7 +595,7 @@ impl Session {
         Ok(())
     }
 
-    /// Notify the inode invalidation to the kernel.
+    /// Notify the cache invalidation about an inode to the kernel.
     pub async fn notify_inval_inode<W>(
         &self,
         writer: &mut W,
@@ -599,6 +606,13 @@ impl Session {
     where
         W: AsyncWrite + Unpin,
     {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
         let out = fuse_notify_inval_inode_out {
             ino,
             off,
@@ -613,7 +627,7 @@ impl Session {
         .await
     }
 
-    /// Notify the invalidation of an entry to the kernel.
+    /// Notify the invalidation about a directory entry to the kernel.
     pub async fn notify_inval_entry<W>(
         &self,
         writer: &mut W,
@@ -623,6 +637,13 @@ impl Session {
     where
         W: AsyncWrite + Unpin,
     {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
         let name = name.as_ref();
         let namelen = u32::try_from(name.len()).unwrap();
         let out = fuse_notify_inval_entry_out {
@@ -638,6 +659,12 @@ impl Session {
         .await
     }
 
+    /// Notify the invalidation about a directory entry to the kernel.
+    ///
+    /// The role of this notification is similar to `notify_inval_entry`.
+    /// Additionally, when the provided `child` inode matches the inode
+    /// in the dentry cache, the inotify will inform the deletion to
+    /// watchers if exists.
     pub async fn notify_delete<W>(
         &self,
         writer: &mut W,
@@ -648,6 +675,13 @@ impl Session {
     where
         W: AsyncWrite + Unpin,
     {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
         let name = name.as_ref();
         let namelen = u32::try_from(name.len()).unwrap();
         let out = fuse_notify_delete_out {
@@ -664,6 +698,7 @@ impl Session {
         .await
     }
 
+    /// Push the data in an inode for updating the kernel cache.
     pub async fn notify_store<W>(
         &self,
         writer: &mut W,
@@ -674,6 +709,13 @@ impl Session {
     where
         W: AsyncWrite + Unpin,
     {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
         let size = u32::try_from(data.iter().map(|t| t.len()).sum::<usize>()).unwrap();
         let out = fuse_notify_store_out {
             nodeid: ino,
@@ -688,6 +730,7 @@ impl Session {
         send_notify(writer, fuse_notify_code::FUSE_NOTIFY_STORE, &*data).await
     }
 
+    /// Retrieve data in an inode from the kernel cache.
     pub async fn notify_retrieve<W>(
         &self,
         writer: &mut W,
@@ -698,6 +741,13 @@ impl Session {
     where
         W: AsyncWrite + Unpin,
     {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
         let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
 
         let (tx, rx) = oneshot::channel();
@@ -717,19 +767,22 @@ impl Session {
         )
         .await?;
 
-        Ok(NotifyRetrieve(rx))
+        Ok(NotifyRetrieve {
+            unique: notify_unique,
+            rx: rx.fuse(),
+        })
     }
 
     async fn enable_interrupt(&self, unique: u64) -> Interrupt {
-        let mut state = self.state.lock().await;
         let (tx, rx) = oneshot::channel();
+        let mut state = self.interrupt_state.lock().await;
         state.remains.insert(unique, tx);
         Interrupt(rx.fuse())
     }
 
     async fn send_interrupt(&self, unique: u64) {
         log::debug!("INTERRUPT (unique = {:?})", unique);
-        let mut state = self.state.lock().await;
+        let mut state = self.interrupt_state.lock().await;
         if let Some(tx) = state.remains.remove(&unique) {
             state.interrupted.insert(unique);
             let _ = tx.send(());
@@ -826,13 +879,28 @@ impl FusedFuture for Interrupt {
 }
 
 #[derive(Debug)]
-pub struct NotifyRetrieve(oneshot::Receiver<(u64, Vec<u8>)>);
+pub struct NotifyRetrieve {
+    unique: u64,
+    rx: Fuse<oneshot::Receiver<(u64, Vec<u8>)>>,
+}
+
+impl NotifyRetrieve {
+    pub fn unique(&self) -> u64 {
+        self.unique
+    }
+}
 
 impl Future for NotifyRetrieve {
     type Output = (u64, Vec<u8>);
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
-        self.0.poll_unpin(cx).map(|res| res.expect("canceled"))
+        self.rx.poll_unpin(cx).map(|res| res.expect("canceled"))
+    }
+}
+
+impl FusedFuture for NotifyRetrieve {
+    fn is_terminated(&self) -> bool {
+        self.rx.is_terminated()
     }
 }
 
