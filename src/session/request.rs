@@ -199,55 +199,6 @@ pub enum RequestKind {
 // Ioctl,
 // Poll,
 
-trait FromBytes<'a> {
-    const SIZE: usize;
-
-    unsafe fn from_bytes(bytes: &'a [u8]) -> &'a Self;
-}
-
-macro_rules! impl_from_bytes {
-    ($($t:ty,)*) => {$(
-        impl<'a> FromBytes<'a> for $t {
-            const SIZE: usize = mem::size_of::<Self>();
-
-            unsafe fn from_bytes(bytes: &'a [u8]) -> &'a Self {
-                debug_assert_eq!(bytes.len(), Self::SIZE);
-                &*(bytes.as_ptr() as *const Self)
-            }
-        }
-    )*};
-}
-
-impl_from_bytes! {
-    fuse_in_header,
-    fuse_init_in,
-    fuse_forget_in,
-    fuse_getattr_in,
-    fuse_setattr_in,
-    fuse_mknod_in,
-    fuse_mkdir_in,
-    fuse_rename_in,
-    fuse_link_in,
-    fuse_open_in,
-    fuse_read_in,
-    fuse_write_in,
-    fuse_release_in,
-    fuse_fsync_in,
-    fuse_setxattr_in,
-    fuse_getxattr_in,
-    fuse_flush_in,
-    fuse_lk_in,
-    fuse_access_in,
-    fuse_create_in,
-    fuse_interrupt_in,
-    fuse_bmap_in,
-    fuse_fallocate_in,
-    fuse_rename2_in,
-    fuse_copy_file_range_in,
-    fuse_batch_forget_in,
-    fuse_notify_retrieve_in,
-}
-
 #[derive(Debug)]
 pub struct Parser<'a> {
     buf: &'a mut Bytes,
