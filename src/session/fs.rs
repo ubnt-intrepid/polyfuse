@@ -20,7 +20,7 @@ use super::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use polyfuse_sys::abi::{
+use polyfuse_sys::kernel::{
     fuse_attr, //
     fuse_file_lock,
     fuse_forget_one,

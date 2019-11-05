@@ -15,5 +15,5 @@ fn generate_abi_tests() {
 
     cfg.skip_struct(|s| s == "UnknownOpcode" || s == "InvalidFileLock");
 
-    cfg.generate("../polyfuse-sys/src/abi.rs", "abi.rs");
+    cfg.generate("../polyfuse-sys/src/kernel.rs", "kernel.rs");
 }

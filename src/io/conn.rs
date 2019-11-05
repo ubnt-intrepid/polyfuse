@@ -8,7 +8,7 @@
 use libc::{c_char, c_int, c_void, iovec};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
 use polyfuse_sys::{
-    abi::FUSE_DEV_IOC_CLONE,
+    kernel::FUSE_DEV_IOC_CLONE,
     v2::{
         fuse_args, //
         fuse_mount_compat25,

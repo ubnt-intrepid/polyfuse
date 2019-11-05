@@ -1,6 +1,6 @@
 use bytes::{Bytes, BytesMut};
 use futures::io::{AsyncRead, AsyncReadExt};
-use polyfuse_sys::abi::{
+use polyfuse_sys::kernel::{
     fuse_access_in, //
     fuse_batch_forget_in,
     fuse_bmap_in,

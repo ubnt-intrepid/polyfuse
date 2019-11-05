@@ -4,7 +4,7 @@
 
 use super::{Context, FileAttr, FileLock, FsStatistics};
 use futures::{future::poll_fn, io::AsyncWrite};
-use polyfuse_sys::abi::{
+use polyfuse_sys::kernel::{
     fuse_attr_out, //
     fuse_bmap_out,
     fuse_entry_out,
@@ -274,18 +274,18 @@ impl ReplyOpen {
 
     /// Indicates that the direct I/O is used on this file.
     pub fn direct_io(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::abi::FOPEN_DIRECT_IO, enabled);
+        self.set_flag(polyfuse_sys::kernel::FOPEN_DIRECT_IO, enabled);
     }
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
     pub fn keep_cache(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::abi::FOPEN_KEEP_CACHE, enabled);
+        self.set_flag(polyfuse_sys::kernel::FOPEN_KEEP_CACHE, enabled);
     }
 
     /// Indicates that the opened file is not seekable.
     pub fn nonseekable(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::abi::FOPEN_NONSEEKABLE, enabled);
+        self.set_flag(polyfuse_sys::kernel::FOPEN_NONSEEKABLE, enabled);
     }
 
     /// Reply to the kernel with the specified file handle and flags.
@@ -347,7 +347,7 @@ impl ReplyOpendir {
 
     /// Enable caching of entries returned by `readdir`.
     pub fn cache_dir(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::abi::FOPEN_CACHE_DIR, enabled);
+        self.set_flag(polyfuse_sys::kernel::FOPEN_CACHE_DIR, enabled);
     }
 
     /// Reply to the kernel with the specified file handle and flags.
@@ -495,18 +495,18 @@ impl ReplyCreate {
 
     /// Indicates that the direct I/O is used on this file.
     pub fn direct_io(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::abi::FOPEN_DIRECT_IO, enabled);
+        self.set_flag(polyfuse_sys::kernel::FOPEN_DIRECT_IO, enabled);
     }
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
     pub fn keep_cache(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::abi::FOPEN_KEEP_CACHE, enabled);
+        self.set_flag(polyfuse_sys::kernel::FOPEN_KEEP_CACHE, enabled);
     }
 
     /// Indicates that the opened file is not seekable.
     pub fn nonseekable(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::abi::FOPEN_NONSEEKABLE, enabled);
+        self.set_flag(polyfuse_sys::kernel::FOPEN_NONSEEKABLE, enabled);
     }
 
     /// Reply to the kernel with the specified entry parameters and file handle.

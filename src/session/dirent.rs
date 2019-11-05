@@ -1,5 +1,5 @@
 use memoffset::offset_of;
-use polyfuse_sys::abi::fuse_dirent;
+use polyfuse_sys::kernel::fuse_dirent;
 use std::{convert::TryFrom, ffi::OsStr, mem, os::unix::ffi::OsStrExt, ptr};
 
 fn aligned(len: usize) -> usize {

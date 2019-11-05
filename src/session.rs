@@ -17,7 +17,7 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
 };
-use polyfuse_sys::abi::{
+use polyfuse_sys::kernel::{
     fuse_forget_one, //
     fuse_in_header,
     fuse_init_out,
@@ -383,10 +383,10 @@ impl Session {
                 let mut flock_release = false;
                 let mut lock_owner = None;
                 if self.proto_minor >= 8 {
-                    flush = arg.release_flags & polyfuse_sys::abi::FUSE_RELEASE_FLUSH != 0;
+                    flush = arg.release_flags & polyfuse_sys::kernel::FUSE_RELEASE_FLUSH != 0;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
-                if arg.release_flags & polyfuse_sys::abi::FUSE_RELEASE_FLOCK_UNLOCK != 0 {
+                if arg.release_flags & polyfuse_sys::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0 {
                     flock_release = true;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
@@ -495,7 +495,7 @@ impl Session {
                 });
             }
             RequestKind::Setlk { arg, sleep } => {
-                if arg.lk_flags & polyfuse_sys::abi::FUSE_LK_FLOCK != 0 {
+                if arg.lk_flags & polyfuse_sys::kernel::FUSE_LK_FLOCK != 0 {
                     const F_RDLCK: u32 = libc::F_RDLCK as u32;
                     const F_WRLCK: u32 = libc::F_WRLCK as u32;
                     const F_UNLCK: u32 = libc::F_UNLCK as u32;

@@ -2,5 +2,5 @@
 
 #![allow(nonstandard_style)]
 
-pub mod abi;
+pub mod kernel;
 pub mod v2;
