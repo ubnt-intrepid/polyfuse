@@ -12,10 +12,12 @@ pub use request::Request;
 
 use bytes::Bytes;
 use futures::{
-    channel::oneshot,
+    channel::{mpsc, oneshot},
     future::{Fuse, FusedFuture, Future, FutureExt},
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
+    sink::SinkExt,
+    stream::StreamExt,
 };
 use polyfuse_sys::kernel::{
     fuse_forget_one, //
@@ -73,6 +75,10 @@ pub struct Session {
     interrupt_state: Mutex<InterruptState>,
     notify_unique: AtomicU64,
     notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, Bytes)>>>,
+
+    // FIXME: more efficient.
+    rx_req: Mutex<mpsc::Receiver<Request>>,
+    tx_req: mpsc::Sender<Request>,
 }
 
 #[derive(Debug)]
@@ -138,6 +144,8 @@ impl Session {
                 }
             }
 
+            let (tx_req, rx_req) = mpsc::channel(1024);
+
             return Ok(Session {
                 proto_major,
                 proto_minor,
@@ -150,6 +158,8 @@ impl Session {
                 }),
                 notify_unique: AtomicU64::new(0),
                 notify_remains: Mutex::new(HashMap::new()),
+                rx_req: Mutex::new(rx_req),
+                tx_req,
             });
         }
     }
@@ -163,16 +173,21 @@ impl Session {
     }
 
     /// Receive an request from the kernel.
-    pub async fn receive<R: ?Sized>(&self, reader: &mut R) -> io::Result<Option<Request>>
+    pub async fn receive<R: ?Sized>(&self, reader: &mut R) -> io::Result<bool>
     where
         R: AsyncRead + Unpin,
     {
-        receive_msg(reader, self.bufsize).await
+        let req = match receive_msg(reader, self.bufsize).await? {
+            Some(req) => req,
+            None => return Ok(true),
+        };
+        self.push_request(req).await;
+        Ok(false)
     }
 
     /// Process an incoming request using the specified filesystem operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<F, W>(&self, fs: &F, req: Request, writer: &mut W) -> io::Result<()>
+    pub async fn process<F, W>(&self, fs: &F, writer: &mut W) -> io::Result<()>
     where
         F: Filesystem,
         W: AsyncWrite + Send + Unpin,
@@ -182,16 +197,29 @@ impl Session {
             return Ok(());
         }
 
-        let Request { header, kind, .. } = req;
-        let ino = header.nodeid;
+        let req = match self.pop_request().await {
+            Some(req) => req,
+            None => {
+                log::warn!("empty request queue");
+                return Ok(());
+            }
+        };
 
         {
             let mut state = self.interrupt_state.lock().await;
-            if state.interrupted.remove(&header.unique) {
-                log::debug!("The request was interrupted (unique={})", header.unique);
+            if state.interrupted.remove(&req.unique()) {
+                log::debug!("The request was interrupted (unique={})", req.unique());
                 return Ok(());
             }
         }
+
+        log::debug!(
+            "Handle a request: unique={}, opcode={:?}",
+            req.unique(),
+            req.opcode(),
+        );
+        let Request { header, kind, .. } = req;
+        let ino = header.nodeid;
 
         let mut cx = Context {
             header: &*header,
@@ -789,6 +817,14 @@ impl Session {
         if let Some(tx) = self.notify_remains.lock().await.remove(&unique) {
             let _ = tx.send((offset, data));
         }
+    }
+
+    async fn push_request(&self, req: Request) {
+        let _ = self.tx_req.clone().send(req).await;
+    }
+
+    async fn pop_request(&self) -> Option<Request> {
+        self.rx_req.lock().await.next().await
     }
 }
 
