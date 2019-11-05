@@ -1,5 +1,5 @@
 use bytes::{Bytes, BytesMut};
-use futures::io::{AsyncRead, AsyncReadExt};
+use futures::{future::poll_fn, io::AsyncRead, ready};
 use polyfuse_sys::kernel::{
     fuse_access_in, //
     fuse_batch_forget_in,
@@ -34,26 +34,24 @@ use polyfuse_sys::kernel::{
 use std::{
     convert::TryFrom, //
     ffi::OsStr,
-    io,
+    io::{self, IoSliceMut},
     marker::PhantomData,
     mem,
     ops::Deref,
     os::unix::ffi::OsStrExt,
+    pin::Pin,
+    task::Poll,
 };
 
 /// An incoming FUSE request received from the kernel.
 #[derive(Debug)]
 pub struct Request {
-    pub(crate) header: Shared<fuse_in_header>,
+    pub(crate) header: fuse_in_header,
     pub(crate) kind: RequestKind,
     _p: (),
 }
 
 impl Request {
-    pub(crate) fn unique(&self) -> u64 {
-        self.header.unique
-    }
-
     pub(crate) fn opcode(&self) -> Option<fuse_opcode> {
         fuse_opcode::try_from(self.header.opcode).ok()
     }
@@ -493,53 +491,58 @@ pub(crate) async fn receive_msg<R: ?Sized>(
 where
     R: AsyncRead + Unpin,
 {
+    let mut header = mem::MaybeUninit::<fuse_in_header>::uninit();
     let mut buf = BytesMut::with_capacity(bufsize);
     unsafe {
-        let capacity = buf.capacity();
-        buf.set_len(capacity);
+        buf.set_len(bufsize);
     }
 
-    let mut buf = loop {
-        match reader.read(buf.as_mut()).await {
-            Ok(count) => {
-                unsafe {
-                    buf.set_len(count);
+    let terminated = poll_fn(|cx| {
+        let mut vec = [
+            IoSliceMut::new(unsafe {
+                std::slice::from_raw_parts_mut(
+                    header.as_mut_ptr() as *mut u8,
+                    mem::size_of::<fuse_in_header>(),
+                )
+            }),
+            IoSliceMut::new(buf.as_mut()),
+        ];
+
+        loop {
+            match ready!(Pin::new(&mut *reader).poll_read_vectored(cx, &mut vec[..])) {
+                Ok(len) => {
+                    if len < mem::size_of::<fuse_in_header>() {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "the received data from the kernel is too short",
+                        )));
+                    }
+                    unsafe {
+                        buf.set_len(len - mem::size_of::<fuse_in_header>());
+                    }
+                    return Poll::Ready(Ok(false));
                 }
-                break buf.freeze();
+                Err(err) => match err.raw_os_error() {
+                    Some(libc::ENOENT) | Some(libc::EINTR) => {
+                        log::debug!("continue reading from the kernel");
+                        continue;
+                    }
+                    Some(libc::ENODEV) => return Poll::Ready(Ok(true)),
+                    _ => return Poll::Ready(Err(err)),
+                },
             }
-            Err(err) => match err.raw_os_error() {
-                Some(libc::ENOENT) | Some(libc::EINTR) => {
-                    log::debug!("continue reading from the kernel");
-                    continue;
-                }
-                Some(libc::ENODEV) => {
-                    unsafe {
-                        buf.set_len(0);
-                    }
-                    return Ok(None);
-                }
-                _ => {
-                    unsafe {
-                        buf.set_len(0);
-                    }
-                    return Err(err);
-                }
-            },
         }
-    };
+    })
+    .await?;
 
-    let total_len = buf.len();
-    if total_len < mem::size_of::<fuse_in_header>() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the received data from the kernel is too short",
-        ));
+    if terminated {
+        return Ok(None);
     }
 
-    let header_bytes = buf.split_to(mem::size_of::<fuse_in_header>());
-    let header: Shared<fuse_in_header> = unsafe { Shared::new_unchecked(header_bytes) };
+    let header = unsafe { header.assume_init() };
+    let mut buf = buf.freeze();
 
-    if total_len != header.len as usize {
+    if header.len as usize != mem::size_of::<fuse_in_header>() + buf.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the payload length is mismatched to the header value",

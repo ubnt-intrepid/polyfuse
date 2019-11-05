@@ -207,22 +207,22 @@ impl Session {
 
         {
             let mut state = self.interrupt_state.lock().await;
-            if state.interrupted.remove(&req.unique()) {
-                log::debug!("The request was interrupted (unique={})", req.unique());
+            if state.interrupted.remove(&req.header.unique) {
+                log::debug!("The request was interrupted (unique={})", req.header.unique);
                 return Ok(());
             }
         }
 
         log::debug!(
             "Handle a request: unique={}, opcode={:?}",
-            req.unique(),
+            req.header.unique,
             req.opcode(),
         );
         let Request { header, kind, .. } = req;
         let ino = header.nodeid;
 
         let mut cx = Context {
-            header: &*header,
+            header: &header,
             writer: Some(&mut *writer),
             session: &*self,
         };
