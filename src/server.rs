@@ -25,8 +25,8 @@ pub struct Server {
 
 impl Server {
     /// Create a FUSE server mounted on the specified path.
-    pub async fn mount(mointpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
-        let mut channel = Channel::open(mointpoint.as_ref(), &mountopts)?;
+    pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
+        let mut channel = Channel::open(mountpoint.as_ref(), &mountopts)?;
         let session = Session::start(
             &mut channel, //
             Default::default(),
