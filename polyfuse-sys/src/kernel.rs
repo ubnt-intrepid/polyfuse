@@ -64,6 +64,7 @@ pub const FUSE_POSIX_ACL: u32 = 1 << 20;
 pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
 pub const FUSE_MAX_PAGES: u32 = 1 << 22;
 pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
+pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
 
 // CUSE INIT request/reply flags.
 pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;

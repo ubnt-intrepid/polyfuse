@@ -2,6 +2,9 @@
 
 #![allow(clippy::needless_update)]
 
+// FIXME: re-enable lints.
+#![allow(clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+
 pub mod reply;
 
 mod dirent;
@@ -12,6 +15,7 @@ pub use dirent::{DirEntry, DirEntryType};
 pub use fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation};
 pub use request::Request;
 
+use bitflags::bitflags;
 use bytes::Bytes;
 use futures::{
     channel::oneshot,
@@ -19,6 +23,7 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
 };
+use lazy_static::lazy_static;
 use polyfuse_sys::kernel::{
     fuse_forget_one, //
     fuse_in_header,
@@ -30,9 +35,16 @@ use polyfuse_sys::kernel::{
     fuse_notify_poll_wakeup_out,
     fuse_notify_retrieve_out,
     fuse_notify_store_out,
+    FUSE_KERNEL_MINOR_VERSION,
+    FUSE_KERNEL_VERSION,
+    FUSE_MAX_PAGES,
+    FUSE_MIN_READ_BUFFER,
+    FUSE_NO_OPENDIR_SUPPORT,
+    FUSE_NO_OPEN_SUPPORT,
 };
 use smallvec::SmallVec;
 use std::{
+    cmp,
     collections::{HashMap, HashSet},
     convert::TryFrom,
     ffi::OsStr,
@@ -63,15 +75,25 @@ use reply::{
 };
 use request::{receive_msg, RequestKind};
 
-const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
-const RECV_BUF_SIZE: usize = MAX_WRITE_SIZE as usize + 4096;
+// The minimum supported ABI minor version by polyfuse.
+const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
+
+const DEFAULT_MAX_WRITE: u32 = 16 * 1024 * 1024;
+const MIN_MAX_WRITE: u32 = FUSE_MIN_READ_BUFFER - BUFFER_HEADER_SIZE as u32;
+
+// copied from fuse_i.h
+const MAX_MAX_PAGES: usize = 256;
+//const DEFAULT_MAX_PAGES_PER_REQ: usize = 32;
+const BUFFER_HEADER_SIZE: usize = 0x1000;
+
+lazy_static! {
+    static ref PAGE_SIZE: usize = { unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize } };
+}
 
 /// FUSE session driver.
 #[derive(Debug)]
 pub struct Session {
-    proto_major: u32,
-    proto_minor: u32,
-    max_readahead: u32,
+    conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
     interrupt_state: Mutex<InterruptState>,
@@ -90,47 +112,112 @@ impl Session {
     ///
     /// This function receives an INIT request from the kernel and replies
     /// after initializing the connection parameters.
+    #[allow(clippy::cognitive_complexity)]
     pub async fn start<I: ?Sized>(io: &mut I, initializer: SessionInitializer) -> io::Result<Self>
     where
         I: AsyncRead + AsyncWrite + Unpin,
     {
-        drop(initializer);
-
         loop {
-            let Request { header, kind, .. } = receive_msg(io, RECV_BUF_SIZE)
+            let init_bufsize = BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES;
+            let Request { header, kind, .. } = receive_msg(io, init_bufsize)
                 .await? //
                 .ok_or_else(|| {
-                    log::warn!("the connection is closed");
+                    log::warn!("connection has already been closed");
                     io::Error::from_raw_os_error(libc::ENODEV)
                 })?;
 
-            let (proto_major, proto_minor, max_readahead);
             match kind {
-                RequestKind::Init { arg } => {
-                    let mut init_out = fuse_init_out::default();
+                RequestKind::Init { arg: init_in } => {
+                    let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
+                    log::debug!("INIT request:");
+                    log::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
+                    log::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
+                    log::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
+                    log::debug!("  max_pages = {}", init_in.flags & FUSE_MAX_PAGES != 0);
+                    log::debug!(
+                        "  no_open_support = {}",
+                        init_in.flags & FUSE_NO_OPEN_SUPPORT != 0
+                    );
+                    log::debug!(
+                        "  no_opendir_support = {}",
+                        init_in.flags & FUSE_NO_OPENDIR_SUPPORT != 0
+                    );
 
-                    if arg.major > 7 {
-                        log::debug!("wait for a second INIT request with a 7.X version.");
+                    let mut init_out = fuse_init_out::default();
+                    init_out.major = FUSE_KERNEL_VERSION;
+                    init_out.minor = FUSE_KERNEL_MINOR_VERSION;
+
+                    if init_in.major > 7 {
+                        log::debug!("wait for a second INIT request with an older version.");
                         send_msg(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
                         continue;
                     }
 
-                    if arg.major < 7 || (arg.major == 7 && arg.minor < 6) {
-                        log::warn!("unsupported protocol version: {}.{}", arg.major, arg.minor);
+                    if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
+                        log::warn!(
+                            "polyfuse supports only ABI 7.{} or later. {}.{} is not supported",
+                            MINIMUM_SUPPORTED_MINOR_VERSION,
+                            init_in.major,
+                            init_in.minor
+                        );
                         send_msg(&mut *io, header.unique, -libc::EPROTO, &[]).await?;
-                        return Err(io::Error::from_raw_os_error(libc::EPROTO));
+                        continue;
                     }
 
-                    // remember the kernel parameters.
-                    proto_major = arg.major;
-                    proto_minor = arg.minor;
-                    max_readahead = arg.max_readahead;
+                    init_out.minor = cmp::min(init_out.minor, init_in.minor);
 
-                    // TODO: max_background, congestion_threshold, time_gran, max_pages
-                    init_out.max_readahead = arg.max_readahead;
-                    init_out.max_write = MAX_WRITE_SIZE;
+                    init_out.flags = (initializer.flags & capable).bits();
+                    init_out.flags |= polyfuse_sys::kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
 
+                    init_out.max_readahead =
+                        cmp::min(initializer.max_readahead, init_in.max_readahead);
+                    init_out.max_write = initializer.max_write;
+                    init_out.max_background = initializer.max_background;
+                    init_out.congestion_threshold = initializer.congestion_threshold;
+                    init_out.time_gran = initializer.time_gran;
+
+                    if init_in.flags & FUSE_MAX_PAGES != 0 {
+                        init_out.flags |= FUSE_MAX_PAGES;
+                        init_out.max_pages = cmp::min(
+                            (init_out.max_write - 1) / (*PAGE_SIZE as u32) + 1,
+                            u16::max_value() as u32,
+                        ) as u16;
+                    }
+
+                    debug_assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+                    debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
+
+                    log::debug!("Reply to INIT:");
+                    log::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
+                    log::debug!(
+                        "  flags = 0x{:08x} ({:?})",
+                        init_out.flags,
+                        CapabilityFlags::from_bits_truncate(init_out.flags)
+                    );
+                    log::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
+                    log::debug!("  max_write = 0x{:08X}", init_out.max_write);
+                    log::debug!("  max_background = 0x{:04X}", init_out.max_background);
+                    log::debug!(
+                        "  congestion_threshold = 0x{:04X}",
+                        init_out.congestion_threshold
+                    );
+                    log::debug!("  time_gran = {}", init_out.time_gran);
                     send_msg(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
+
+                    let conn = ConnectionInfo(init_out);
+                    let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
+
+                    return Ok(Self {
+                        conn,
+                        bufsize,
+                        exited: AtomicBool::new(false),
+                        interrupt_state: Mutex::new(InterruptState {
+                            remains: HashMap::new(),
+                            interrupted: HashSet::new(),
+                        }),
+                        notify_unique: AtomicU64::new(0),
+                        notify_remains: Mutex::new(HashMap::new()),
+                    });
                 }
                 _ => {
                     log::warn!(
@@ -141,20 +228,6 @@ impl Session {
                     continue;
                 }
             }
-
-            return Ok(Session {
-                proto_major,
-                proto_minor,
-                max_readahead,
-                bufsize: RECV_BUF_SIZE,
-                exited: AtomicBool::new(false),
-                interrupt_state: Mutex::new(InterruptState {
-                    remains: HashMap::new(),
-                    interrupted: HashSet::new(),
-                }),
-                notify_unique: AtomicU64::new(0),
-                notify_remains: Mutex::new(HashMap::new()),
-            });
         }
     }
 
@@ -164,6 +237,14 @@ impl Session {
 
     fn exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    pub fn connection_info(&self) -> &ConnectionInfo {
+        &self.conn
+    }
+
+    pub fn buffer_size(&self) -> usize {
+        self.bufsize
     }
 
     /// Receive an request from the kernel.
@@ -410,7 +491,7 @@ impl Session {
                 let mut flush = false;
                 let mut flock_release = false;
                 let mut lock_owner = None;
-                if self.proto_minor >= 8 {
+                if self.conn.proto_minor() >= 8 {
                     flush = arg.release_flags & polyfuse_sys::kernel::FUSE_RELEASE_FLUSH != 0;
                     lock_owner.get_or_insert_with(|| arg.lock_owner);
                 }
@@ -863,12 +944,6 @@ impl Session {
     }
 }
 
-/// Session initializer.
-#[derive(Debug, Default)]
-pub struct SessionInitializer {
-    _p: (),
-}
-
 /// Contextural information about an incoming request.
 pub struct Context<'a> {
     header: &'a fuse_in_header,
@@ -981,4 +1056,247 @@ where
 {
     let code = unsafe { mem::transmute::<_, i32>(code) };
     send_msg(writer, 0, code, data).await
+}
+
+/// Session initializer.
+#[derive(Debug)]
+pub struct SessionInitializer {
+    max_readahead: u32,
+    flags: CapabilityFlags,
+    max_background: u16,
+    congestion_threshold: u16,
+    max_write: u32,
+    time_gran: u32,
+    max_pages: u16,
+}
+
+impl Default for SessionInitializer {
+    fn default() -> Self {
+        Self {
+            max_readahead: u32::max_value(),
+            flags: CapabilityFlags::default(),
+            max_background: 0,
+            congestion_threshold: 0,
+            max_write: DEFAULT_MAX_WRITE,
+            time_gran: 1,
+            max_pages: 0,
+        }
+    }
+}
+
+impl SessionInitializer {
+    /// Return a reference to the capability flags.
+    pub fn flags(&mut self) -> &mut CapabilityFlags {
+        &mut self.flags
+    }
+
+    /// Set the maximum readahead.
+    pub fn max_readahead(&mut self, value: u32) -> &mut Self {
+        self.max_readahead = value;
+        self
+    }
+
+    /// Set the maximum size of the write buffer.
+    ///
+    /// # Panic
+    /// It causes an assertion panic if the setting value is
+    /// less than the absolute minimum.
+    pub fn max_write(&mut self, value: u32) -> &mut Self {
+        assert!(
+            value >= MIN_MAX_WRITE,
+            "max_write must be greater or equal to {}",
+            MIN_MAX_WRITE,
+        );
+        self.max_write = value;
+        self
+    }
+
+    /// Return the maximum number of pending *background* requests.
+    pub fn max_background(&mut self, max_background: u16) -> &mut Self {
+        self.max_background = max_background;
+        self
+    }
+
+    /// Set the threshold number of pending background requests
+    /// that the kernel marks the filesystem as *congested*.
+    ///
+    /// If the setting value is 0, the value is automatically
+    /// calculated by using max_background.
+    ///
+    /// # Panics
+    /// It cause a panic if the setting value is greater than `max_background`.
+    pub fn congestion_threshold(&mut self, mut threshold: u16) -> &mut Self {
+        assert!(
+            threshold <= self.max_background,
+            "The congestion_threshold must be less or equal to max_background"
+        );
+        if threshold == 0 {
+            threshold = self.max_background * 3 / 4;
+            log::debug!("congestion_threshold <- {}", threshold);
+        }
+        self.congestion_threshold = threshold;
+        self
+    }
+
+    /// Set the timestamp resolution supported by the filesystem.
+    ///
+    /// The setting value has the nanosecond unit and should be a power of 10.
+    ///
+    /// The default value is 1.
+    pub fn time_gran(&mut self, time_gran: u32) -> &mut Self {
+        self.time_gran = time_gran;
+        self
+    }
+}
+
+/// Information about the connection associated with a session.
+#[derive(Debug)]
+pub struct ConnectionInfo(fuse_init_out);
+
+impl ConnectionInfo {
+    /// Returns the major version of the protocol.
+    pub fn proto_major(&self) -> u32 {
+        self.0.major
+    }
+
+    /// Returns the minor version of the protocol.
+    pub fn proto_minor(&self) -> u32 {
+        self.0.major
+    }
+
+    /// Return a set of capability flags sent to the kernel driver.
+    pub fn flags(&self) -> CapabilityFlags {
+        CapabilityFlags::from_bits_truncate(self.0.flags)
+    }
+
+    /// Return whether the kernel supports for zero-message opens.
+    ///
+    /// When the returned value is `true`, the kernel treat an `ENOSYS`
+    /// error for a `FUSE_OPEN` request as successful and does not send
+    /// subsequent `open` requests.  Otherwise, the filesystem should
+    /// implement the handler for `open` requests appropriately.
+    pub fn no_open_support(&self) -> bool {
+        self.0.flags & FUSE_NO_OPEN_SUPPORT != 0
+    }
+
+    /// Return whether the kernel supports for zero-message opendirs.
+    ///
+    /// See the documentation of `no_open_support` for details.
+    pub fn no_opendir_support(&self) -> bool {
+        self.0.flags & FUSE_NO_OPENDIR_SUPPORT != 0
+    }
+
+    /// Returns the maximum readahead.
+    pub fn max_readahead(&self) -> u32 {
+        self.0.max_readahead
+    }
+
+    /// Returns the maximum size of the write buffer.
+    pub fn max_write(&self) -> u32 {
+        self.0.max_write
+    }
+
+    pub fn max_background(&self) -> u16 {
+        self.0.max_background
+    }
+
+    pub fn congestion_threshold(&self) -> u16 {
+        self.0.congestion_threshold
+    }
+
+    pub fn time_gran(&self) -> u32 {
+        self.0.time_gran
+    }
+
+    pub fn max_pages(&self) -> Option<u16> {
+        if self.0.flags & FUSE_MAX_PAGES != 0 {
+            Some(self.0.max_pages)
+        } else {
+            None
+        }
+    }
+}
+
+bitflags! {
+    /// Capability flags to control the behavior of the kernel driver.
+    #[repr(transparent)]
+    pub struct CapabilityFlags: u32 {
+        /// The filesystem supports asynchronous read requests.
+        ///
+        /// Enabled by default.
+        const ASYNC_READ = polyfuse_sys::kernel::FUSE_ASYNC_READ;
+
+        /// The filesystem supports the `O_TRUNC` open flag.
+        ///
+        /// Enabled by default.
+        const ATOMIC_O_TRUNC = polyfuse_sys::kernel::FUSE_ATOMIC_O_TRUNC;
+
+        /// The kernel check the validity of attributes on every read.
+        ///
+        /// Enabled by default.
+        const AUTO_INVAL_DATA = polyfuse_sys::kernel::FUSE_AUTO_INVAL_DATA;
+
+        /// The filesystem supports asynchronous direct I/O submission.
+        ///
+        /// Enabled by default.
+        const ASYNC_DIO = polyfuse_sys::kernel::FUSE_ASYNC_DIO;
+
+        /// The kernel supports parallel directory operations.
+        ///
+        /// Enabled by default.
+        const PARALLEL_DIROPS = polyfuse_sys::kernel::FUSE_PARALLEL_DIROPS;
+
+        /// The filesystem is responsible for unsetting setuid and setgid bits
+        /// when a file is written, truncated, or its owner is changed.
+        ///
+        /// Enabled by default.
+        const HANDLE_KILLPRIV = polyfuse_sys::kernel::FUSE_HANDLE_KILLPRIV;
+
+        /// The filesystem supports the POSIX-style file lock.
+        const POSIX_LOCKS = polyfuse_sys::kernel::FUSE_POSIX_LOCKS;
+
+        /// The filesystem supports the `flock` handling.
+        const FLOCK_LOCKS = polyfuse_sys::kernel::FUSE_FLOCK_LOCKS;
+
+        /// The filesystem supports lookups of `"."` and `".."`.
+        const EXPORT_SUPPORT = polyfuse_sys::kernel::FUSE_EXPORT_SUPPORT;
+
+        /// The kernel should not apply the umask to the file mode on create
+        /// operations.
+        const DONT_MASK = polyfuse_sys::kernel::FUSE_DONT_MASK;
+
+        /// The filesystem supports the `FUSE_READDIRPLUS` operation.
+        const READDIRPLUS = polyfuse_sys::kernel::FUSE_DO_READDIRPLUS;
+
+        /// The filesystem supports adaptive readdirplus.
+        ///
+        /// This flag has no effect when `READDIRPLUS` is not set.
+        const READDIRPLUS_AUTO = polyfuse_sys::kernel::FUSE_READDIRPLUS_AUTO;
+
+        /// The writeback caching should be enabled.
+        const WRITEBACK_CACHE = polyfuse_sys::kernel::FUSE_WRITEBACK_CACHE;
+
+        /// The filesystem supports POSIX access control lists.
+        const POSIX_ACL = polyfuse_sys::kernel::FUSE_POSIX_ACL;
+
+        // TODO: splice read/write
+        // const SPLICE_WRITE = polyfuse_sys::kernel::FUSE_SPLICE_WRITE;
+        // const SPLICE_MOVE = polyfuse_sys::kernel::FUSE_SPLICE_MOVE;
+        // const SPLICE_READ = polyfuse_sys::kernel::FUSE_SPLICE_READ;
+
+        // TODO: ioctl
+        // const IOCTL_DIR = polyfuse_sys::kernel::FUSE_IOCTL_DIR;
+    }
+}
+
+impl Default for CapabilityFlags {
+    fn default() -> Self {
+        // TODO: IOCTL_DIR
+        Self::ASYNC_READ
+            | Self::PARALLEL_DIROPS
+            | Self::AUTO_INVAL_DATA
+            | Self::HANDLE_KILLPRIV
+            | Self::ASYNC_DIO
+            | Self::ATOMIC_O_TRUNC
+    }
 }
