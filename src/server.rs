@@ -3,7 +3,7 @@
 use crate::{
     io::{Connection, MountOptions},
     lock::Lock,
-    session::{Filesystem, NotifyRetrieve, Request, RequestReader, Session},
+    session::{Filesystem, NotifyRetrieve, Session},
 };
 use futures::{
     future::{Future, FutureExt},
@@ -67,7 +67,6 @@ impl Server {
         F: Filesystem + 'static,
         S: Future + Unpin,
     {
-        let reader = RequestReader::default();
         let session = self.session;
         let fs = Arc::new(fs);
         let mut io = self.io;
@@ -75,7 +74,7 @@ impl Server {
 
         let mut main_loop = Box::pin(async move {
             loop {
-                let req = match reader.receive(&mut io).await? {
+                let req = match session.receive(&mut io).await? {
                     Some(req) => req,
                     None => {
                         log::debug!("connection was closed by the kernel");
@@ -87,7 +86,12 @@ impl Server {
                 let fs = fs.clone();
                 let mut io = io.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_request(&*session, &*fs, req, &mut io).await {
+                    log::debug!(
+                        "Got a request: unique={}, opcode={:?}",
+                        req.unique(),
+                        req.opcode(),
+                    );
+                    if let Err(e) = session.process(&*fs, req, &mut io).await {
                         log::error!("error during handling a request: {}", e);
                     }
                 });
@@ -150,21 +154,6 @@ impl Notifier {
             .notify_retrieve(&mut self.io, ino, offset, size)
             .await
     }
-}
-
-async fn handle_request<F, I>(session: &Session, fs: &F, req: Request, io: &mut I) -> io::Result<()>
-where
-    F: Filesystem + 'static,
-    I: AsyncRead + AsyncWrite + Send + Unpin,
-{
-    log::debug!(
-        "Got a request: unique={}, opcode={:?}",
-        req.unique(),
-        req.opcode(),
-    );
-    session.process(fs, req, io).await?;
-
-    Ok(())
 }
 
 /// Asynchronous I/O object that communicates with the FUSE kernel driver.

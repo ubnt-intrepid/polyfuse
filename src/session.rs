@@ -8,7 +8,7 @@ mod request;
 
 pub use dirent::{DirEntry, DirEntryType};
 pub use fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation};
-pub use request::{Request, RequestReader};
+pub use request::Request;
 
 use bytes::Bytes;
 use futures::{
@@ -57,9 +57,10 @@ use reply::{
     ReplyWrite,
     ReplyXattr,
 };
-use request::RequestKind;
+use request::{receive_msg, RequestKind};
 
-pub const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
+const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
+const RECV_BUF_SIZE: usize = MAX_WRITE_SIZE as usize + 4096;
 
 /// FUSE session driver.
 #[derive(Debug)]
@@ -67,6 +68,7 @@ pub struct Session {
     proto_major: u32,
     proto_minor: u32,
     max_readahead: u32,
+    bufsize: usize,
     exited: AtomicBool,
     interrupt_state: Mutex<InterruptState>,
     notify_unique: AtomicU64,
@@ -89,11 +91,9 @@ impl Session {
         I: AsyncRead + AsyncWrite + Unpin,
     {
         drop(initializer);
-        let reader = RequestReader::default();
 
         loop {
-            let Request { header, kind, .. } = reader
-                .receive(io)
+            let Request { header, kind, .. } = receive_msg(io, RECV_BUF_SIZE)
                 .await? //
                 .ok_or_else(|| {
                     log::warn!("the connection is closed");
@@ -142,6 +142,7 @@ impl Session {
                 proto_major,
                 proto_minor,
                 max_readahead,
+                bufsize: RECV_BUF_SIZE,
                 exited: AtomicBool::new(false),
                 interrupt_state: Mutex::new(InterruptState {
                     remains: HashMap::new(),
@@ -159,6 +160,14 @@ impl Session {
 
     fn exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    /// Receive an request from the kernel.
+    pub async fn receive<R: ?Sized>(&self, reader: &mut R) -> io::Result<Option<Request>>
+    where
+        R: AsyncRead + Unpin,
+    {
+        receive_msg(reader, self.bufsize).await
     }
 
     /// Process an incoming request using the specified filesystem operations.

@@ -486,90 +486,74 @@ impl<T> Deref for SharedSlice<T> {
     }
 }
 
-#[derive(Debug)]
-pub struct RequestReader {
+pub(crate) async fn receive_msg<R: ?Sized>(
+    reader: &mut R,
     bufsize: usize,
-}
-
-impl Default for RequestReader {
-    fn default() -> Self {
-        Self::new(Self::DEFAULT_BUF_SIZE)
-    }
-}
-
-impl RequestReader {
-    pub const DEFAULT_BUF_SIZE: usize = super::MAX_WRITE_SIZE as usize + 4096;
-
-    pub fn new(bufsize: usize) -> Self {
-        Self { bufsize }
+) -> io::Result<Option<Request>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buf = BytesMut::with_capacity(bufsize);
+    unsafe {
+        let capacity = buf.capacity();
+        buf.set_len(capacity);
     }
 
-    pub async fn receive<I: ?Sized>(&self, io: &mut I) -> io::Result<Option<Request>>
-    where
-        I: AsyncRead + Unpin,
-    {
-        let mut buf = BytesMut::with_capacity(self.bufsize);
-        unsafe {
-            let capacity = buf.capacity();
-            buf.set_len(capacity);
-        }
-
-        let mut buf = loop {
-            match io.read(buf.as_mut()).await {
-                Ok(count) => {
-                    unsafe {
-                        buf.set_len(count);
-                    }
-                    break buf.freeze();
+    let mut buf = loop {
+        match reader.read(buf.as_mut()).await {
+            Ok(count) => {
+                unsafe {
+                    buf.set_len(count);
                 }
-                Err(err) => match err.raw_os_error() {
-                    Some(libc::ENOENT) | Some(libc::EINTR) => {
-                        log::debug!("continue reading from the kernel");
-                        continue;
-                    }
-                    Some(libc::ENODEV) => {
-                        unsafe {
-                            buf.set_len(0);
-                        }
-                        return Ok(None);
-                    }
-                    _ => {
-                        unsafe {
-                            buf.set_len(0);
-                        }
-                        return Err(err);
-                    }
-                },
+                break buf.freeze();
             }
-        };
-
-        let total_len = buf.len();
-        if total_len < mem::size_of::<fuse_in_header>() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the received data from the kernel is too short",
-            ));
+            Err(err) => match err.raw_os_error() {
+                Some(libc::ENOENT) | Some(libc::EINTR) => {
+                    log::debug!("continue reading from the kernel");
+                    continue;
+                }
+                Some(libc::ENODEV) => {
+                    unsafe {
+                        buf.set_len(0);
+                    }
+                    return Ok(None);
+                }
+                _ => {
+                    unsafe {
+                        buf.set_len(0);
+                    }
+                    return Err(err);
+                }
+            },
         }
+    };
 
-        let header_bytes = buf.split_to(mem::size_of::<fuse_in_header>());
-        let header: Shared<fuse_in_header> = unsafe { Shared::new_unchecked(header_bytes) };
-
-        if total_len != header.len as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the payload length is mismatched to the header value",
-            ));
-        }
-
-        let opcode = fuse_opcode::try_from(header.opcode)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        let kind = Parser::new(&mut buf).parse(opcode)?;
-
-        Ok(Some(Request {
-            header,
-            kind,
-            _p: (),
-        }))
+    let total_len = buf.len();
+    if total_len < mem::size_of::<fuse_in_header>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the received data from the kernel is too short",
+        ));
     }
+
+    let header_bytes = buf.split_to(mem::size_of::<fuse_in_header>());
+    let header: Shared<fuse_in_header> = unsafe { Shared::new_unchecked(header_bytes) };
+
+    if total_len != header.len as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the payload length is mismatched to the header value",
+        ));
+    }
+
+    let opcode = fuse_opcode::try_from(header.opcode)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let kind = Parser::new(&mut buf).parse(opcode)?;
+
+    Ok(Some(Request {
+        header,
+        kind,
+        _p: (),
+    }))
 }
