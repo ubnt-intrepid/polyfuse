@@ -13,7 +13,7 @@ mod request;
 
 pub use dirent::{DirEntry, DirEntryType};
 pub use fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation};
-pub use request::Request;
+pub use request::{Request, RequestReader};
 
 use bitflags::bitflags;
 use bytes::Bytes;
@@ -73,7 +73,7 @@ use reply::{
     ReplyWrite,
     ReplyXattr,
 };
-use request::{receive_msg, RequestKind};
+use request::RequestKind;
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -118,13 +118,15 @@ impl Session {
         I: AsyncRead + AsyncWrite + Unpin,
     {
         loop {
-            let init_bufsize = BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES;
-            let Request { header, kind, .. } = receive_msg(io, init_bufsize)
-                .await? //
-                .ok_or_else(|| {
-                    log::warn!("connection has already been closed");
-                    io::Error::from_raw_os_error(libc::ENODEV)
-                })?;
+            let mut req = Request::new(BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES);
+
+            let terminated = req.receive(io).await?;
+            if terminated {
+                log::warn!("connection has already been closed");
+                return Err(io::Error::from_raw_os_error(libc::ENODEV));
+            }
+
+            let (header, kind, _) = req.parse()?;
 
             match kind {
                 RequestKind::Init { arg: init_in } => {
@@ -247,36 +249,29 @@ impl Session {
         self.bufsize
     }
 
-    /// Receive an request from the kernel.
-    pub async fn receive<R: ?Sized>(&self, reader: &mut R) -> io::Result<Option<Request>>
-    where
-        R: AsyncRead + Unpin,
-    {
-        loop {
-            let req = match receive_msg(reader, self.bufsize).await? {
-                Some(req) => req,
-                None => return Ok(None),
-            };
-            match req.kind {
-                RequestKind::Interrupt { arg } => {
-                    log::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
-                    self.send_interrupt(arg.unique).await;
-                    continue;
-                }
-                RequestKind::NotifyReply { arg, data } => {
-                    let unique = req.header.unique;
-                    log::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
-                    self.send_notify_reply(unique, arg.offset, data).await;
-                    continue;
-                }
-                _ => {
-                    // check if the request is already interrupted by the kernel.
-                    let mut state = self.interrupt_state.lock().await;
-                    if state.interrupted.remove(&req.header.unique) {
-                        log::debug!("The request was interrupted (unique={})", req.header.unique);
-                        continue;
-                    }
-                    return Ok(Some(req));
+    async fn handle_incoming_request(&self, req: &mut Request) -> io::Result<bool> {
+        let (header, kind, data) = req.parse()?;
+        match kind {
+            RequestKind::Interrupt { arg } => {
+                log::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
+                self.send_interrupt(arg.unique).await;
+                Ok(true)
+            }
+            RequestKind::NotifyReply { arg } => {
+                let unique = header.unique;
+                let data = data.expect("empty data");
+                log::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
+                self.send_notify_reply(unique, arg.offset, data).await;
+                Ok(true)
+            }
+            _ => {
+                // check if the request is already interrupted by the kernel.
+                let mut state = self.interrupt_state.lock().await;
+                if state.interrupted.remove(&header.unique) {
+                    log::debug!("The request was interrupted (unique={})", header.unique);
+                    Ok(true)
+                } else {
+                    Ok(false)
                 }
             }
         }
@@ -287,7 +282,7 @@ impl Session {
     pub async fn process<F: ?Sized, W: ?Sized>(
         &self,
         fs: &F,
-        req: &Request,
+        req: &mut Request,
         writer: &mut W,
     ) -> io::Result<()>
     where
@@ -303,10 +298,11 @@ impl Session {
 
         log::debug!(
             "Handle a request: unique={}, opcode={:?}",
-            req.header.unique,
+            req.unique(),
             req.opcode(),
         );
-        let Request { header, kind, .. } = req;
+
+        let (header, kind, data) = req.parse()?;
         let ino = header.nodeid;
 
         let mut cx = Context {
@@ -475,8 +471,10 @@ impl Session {
                     reply: ReplyData::new(arg.size),
                 });
             }
-            RequestKind::Write { arg, data } => {
+            RequestKind::Write { arg } => {
+                let data = data.expect("empty data");
                 debug_assert_eq!(data.len(), arg.size as usize);
+
                 run_op!(Operation::Write {
                     ino,
                     fh: arg.fh,
@@ -574,7 +572,7 @@ impl Session {
                     ino,
                     fh: arg.fh,
                     offset: arg.offset,
-                    plus: *plus,
+                    plus,
                     reply: ReplyData::new(arg.size),
                 });
             }
@@ -631,7 +629,7 @@ impl Session {
                         fh: arg.fh,
                         owner: arg.owner,
                         lk: FileLock::new(&arg.lk),
-                        sleep: *sleep,
+                        sleep,
                         reply: ReplyEmpty::new(),
                     });
                 }

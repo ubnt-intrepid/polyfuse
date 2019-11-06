@@ -1,3 +1,4 @@
+use super::Session;
 use bytes::{Bytes, BytesMut};
 use futures::{future::poll_fn, io::AsyncRead, ready};
 use polyfuse_sys::kernel::{
@@ -36,163 +37,336 @@ use std::{
     convert::TryFrom, //
     ffi::OsStr,
     io::{self, IoSliceMut},
-    marker::PhantomData,
     mem,
-    ops::Deref,
     os::unix::ffi::OsStrExt,
     pin::Pin,
     task::Poll,
 };
 
-/// An incoming FUSE request received from the kernel.
-#[derive(Debug)]
-pub struct Request {
-    pub(crate) header: fuse_in_header,
-    pub(crate) kind: RequestKind,
+/// Reader for FUSE requests.
+#[derive(Debug, Default)]
+pub struct RequestReader {
     _p: (),
 }
 
+impl RequestReader {
+    /// Receive some amount of FUSE requests from the kernel,
+    /// and return a `Request` to be processed.
+    pub async fn read<R: ?Sized>(
+        &mut self,
+        reader: &mut R,
+        session: &Session,
+    ) -> io::Result<Option<Request>>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut req = Request::new(session.buffer_size());
+
+        loop {
+            let terminated = req.receive(reader).await?;
+            if terminated {
+                return Ok(None);
+            }
+
+            let handled = session.handle_incoming_request(&mut req).await?;
+            if !handled {
+                return Ok(Some(req));
+            }
+        }
+    }
+}
+
+/// An incoming FUSE request received from the kernel.
+#[derive(Debug)]
+pub struct Request {
+    header: fuse_in_header,
+    payload: RequestPayload,
+    bufsize: usize,
+}
+
+#[derive(Debug)]
+enum RequestPayload {
+    Unique(BytesMut),
+    Shared(Bytes),
+    Empty,
+}
+
+impl RequestPayload {
+    fn make_unique(&mut self, bufsize: usize) -> &mut BytesMut {
+        if let Self::Unique(bytes) = self {
+            return bytes;
+        }
+
+        *self = Self::Unique(BytesMut::with_capacity(bufsize));
+        match self {
+            Self::Unique(bytes) => bytes,
+            _ => unreachable!(),
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Unique(bytes) => bytes.as_ref(),
+            Self::Shared(bytes) => bytes.as_ref(),
+            Self::Empty => unreachable!(),
+        }
+    }
+
+    fn freeze(&mut self) -> &Bytes {
+        loop {
+            match self {
+                Self::Shared(bytes) => return bytes,
+                Self::Unique(..) => match mem::replace(self, Self::Empty) {
+                    Self::Unique(bytes) => {
+                        *self = Self::Shared(bytes.freeze());
+                        continue;
+                    }
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
 impl Request {
+    pub(crate) fn new(bufsize: usize) -> Self {
+        Self {
+            header: unsafe { mem::zeroed() },
+            payload: RequestPayload::Unique(BytesMut::with_capacity(bufsize)),
+            bufsize,
+        }
+    }
+
+    pub(crate) fn unique(&self) -> u64 {
+        self.header.unique
+    }
+
     pub(crate) fn opcode(&self) -> Option<fuse_opcode> {
         fuse_opcode::try_from(self.header.opcode).ok()
+    }
+
+    pub(crate) async fn receive<R: ?Sized>(&mut self, reader: &mut R) -> io::Result<bool>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let header = &mut self.header;
+
+        let payload = self.payload.make_unique(self.bufsize);
+        unsafe {
+            let capacity = payload.capacity();
+            payload.set_len(capacity);
+        }
+
+        poll_fn(|cx| {
+            let mut vec = [
+                IoSliceMut::new(unsafe {
+                    std::slice::from_raw_parts_mut(
+                        header as *mut _ as *mut u8,
+                        mem::size_of::<fuse_in_header>(),
+                    )
+                }),
+                IoSliceMut::new(payload.as_mut()),
+            ];
+
+            loop {
+                match ready!(Pin::new(&mut *reader).poll_read_vectored(cx, &mut vec[..])) {
+                    Ok(len) => {
+                        if len < mem::size_of::<fuse_in_header>() {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "the received data from the kernel is too short",
+                            )));
+                        }
+                        if header.len as usize != len {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "the payload length is mismatched to the header value",
+                            )));
+                        }
+
+                        unsafe {
+                            payload.set_len(len - mem::size_of::<fuse_in_header>());
+                        }
+                        return Poll::Ready(Ok(false));
+                    }
+                    Err(err) => match err.raw_os_error() {
+                        Some(libc::ENOENT) | Some(libc::EINTR) => {
+                            log::debug!("continue reading from the kernel");
+                            continue;
+                        }
+                        Some(libc::ENODEV) => return Poll::Ready(Ok(true)),
+                        _ => return Poll::Ready(Err(err)),
+                    },
+                }
+            }
+        })
+        .await
+    }
+
+    pub(crate) fn parse(
+        &mut self,
+    ) -> io::Result<(&fuse_in_header, RequestKind<'_>, Option<Bytes>)> {
+        let header = &self.header;
+
+        let opcode = fuse_opcode::try_from(header.opcode)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let (kind, data) = match opcode {
+            fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_NOTIFY_REPLY => {
+                let payload = self.payload.freeze();
+                let mut data = Bytes::clone(payload);
+
+                let mut parser = Parser::new(payload);
+                let kind = parser.parse(opcode)?;
+                data.split_to(parser.offset());
+
+                (kind, Some(data))
+            }
+            _ => {
+                let payload = self.payload.as_slice();
+                let kind = Parser::new(payload).parse(opcode)?;
+                (kind, None)
+            }
+        };
+
+        Ok((header, kind, data))
     }
 }
 
 #[derive(Debug)]
-pub enum RequestKind {
+pub enum RequestKind<'a> {
     Init {
-        arg: Shared<fuse_init_in>,
+        arg: &'a fuse_init_in,
     },
     Destroy,
     Lookup {
-        name: SharedOsStr,
+        name: &'a OsStr,
     },
     Forget {
-        arg: Shared<fuse_forget_in>,
+        arg: &'a fuse_forget_in,
     },
     Getattr {
-        arg: Shared<fuse_getattr_in>,
+        arg: &'a fuse_getattr_in,
     },
     Setattr {
-        arg: Shared<fuse_setattr_in>,
+        arg: &'a fuse_setattr_in,
     },
     Readlink,
     Symlink {
-        name: SharedOsStr,
-        link: SharedOsStr,
+        name: &'a OsStr,
+        link: &'a OsStr,
     },
     Mknod {
-        arg: Shared<fuse_mknod_in>,
-        name: SharedOsStr,
+        arg: &'a fuse_mknod_in,
+        name: &'a OsStr,
     },
     Mkdir {
-        arg: Shared<fuse_mkdir_in>,
-        name: SharedOsStr,
+        arg: &'a fuse_mkdir_in,
+        name: &'a OsStr,
     },
     Unlink {
-        name: SharedOsStr,
+        name: &'a OsStr,
     },
     Rmdir {
-        name: SharedOsStr,
+        name: &'a OsStr,
     },
     Rename {
-        arg: Shared<fuse_rename_in>,
-        name: SharedOsStr,
-        newname: SharedOsStr,
+        arg: &'a fuse_rename_in,
+        name: &'a OsStr,
+        newname: &'a OsStr,
     },
     Link {
-        arg: Shared<fuse_link_in>,
-        newname: SharedOsStr,
+        arg: &'a fuse_link_in,
+        newname: &'a OsStr,
     },
     Open {
-        arg: Shared<fuse_open_in>,
+        arg: &'a fuse_open_in,
     },
     Read {
-        arg: Shared<fuse_read_in>,
+        arg: &'a fuse_read_in,
     },
     Write {
-        arg: Shared<fuse_write_in>,
-        data: Bytes,
+        arg: &'a fuse_write_in,
     },
     Release {
-        arg: Shared<fuse_release_in>,
+        arg: &'a fuse_release_in,
     },
     Statfs,
     Fsync {
-        arg: Shared<fuse_fsync_in>,
+        arg: &'a fuse_fsync_in,
     },
     Setxattr {
-        arg: Shared<fuse_setxattr_in>,
-        name: SharedOsStr,
-        value: Bytes,
+        arg: &'a fuse_setxattr_in,
+        name: &'a OsStr,
+        value: &'a [u8],
     },
     Getxattr {
-        arg: Shared<fuse_getxattr_in>,
-        name: SharedOsStr,
+        arg: &'a fuse_getxattr_in,
+        name: &'a OsStr,
     },
     Listxattr {
-        arg: Shared<fuse_getxattr_in>,
+        arg: &'a fuse_getxattr_in,
     },
     Removexattr {
-        name: SharedOsStr,
+        name: &'a OsStr,
     },
     Flush {
-        arg: Shared<fuse_flush_in>,
+        arg: &'a fuse_flush_in,
     },
     Opendir {
-        arg: Shared<fuse_open_in>,
+        arg: &'a fuse_open_in,
     },
     Readdir {
-        arg: Shared<fuse_read_in>,
+        arg: &'a fuse_read_in,
         plus: bool,
     },
     Releasedir {
-        arg: Shared<fuse_release_in>,
+        arg: &'a fuse_release_in,
     },
     Fsyncdir {
-        arg: Shared<fuse_fsync_in>,
+        arg: &'a fuse_fsync_in,
     },
     Getlk {
-        arg: Shared<fuse_lk_in>,
+        arg: &'a fuse_lk_in,
     },
     Setlk {
-        arg: Shared<fuse_lk_in>,
+        arg: &'a fuse_lk_in,
         sleep: bool,
     },
     Access {
-        arg: Shared<fuse_access_in>,
+        arg: &'a fuse_access_in,
     },
     Create {
-        arg: Shared<fuse_create_in>,
-        name: SharedOsStr,
+        arg: &'a fuse_create_in,
+        name: &'a OsStr,
     },
     Interrupt {
-        arg: Shared<fuse_interrupt_in>,
+        arg: &'a fuse_interrupt_in,
     },
     Bmap {
-        arg: Shared<fuse_bmap_in>,
+        arg: &'a fuse_bmap_in,
     },
     Fallocate {
-        arg: Shared<fuse_fallocate_in>,
+        arg: &'a fuse_fallocate_in,
     },
     Rename2 {
-        arg: Shared<fuse_rename2_in>,
-        name: SharedOsStr,
-        newname: SharedOsStr,
+        arg: &'a fuse_rename2_in,
+        name: &'a OsStr,
+        newname: &'a OsStr,
     },
     CopyFileRange {
-        arg: Shared<fuse_copy_file_range_in>,
+        arg: &'a fuse_copy_file_range_in,
     },
     BatchForget {
-        arg: Shared<fuse_batch_forget_in>,
-        forgets: SharedSlice<fuse_forget_one>,
+        arg: &'a fuse_batch_forget_in,
+        forgets: &'a [fuse_forget_one],
     },
     NotifyReply {
-        arg: Shared<fuse_notify_retrieve_in>,
-        data: Bytes,
+        arg: &'a fuse_notify_retrieve_in,
     },
     Poll {
-        arg: Shared<fuse_poll_in>,
+        arg: &'a fuse_poll_in,
     },
     Unknown,
 }
@@ -202,42 +376,47 @@ pub enum RequestKind {
 
 #[derive(Debug)]
 pub struct Parser<'a> {
-    buf: &'a mut Bytes,
+    bytes: &'a [u8],
+    offset: usize,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(buf: &'a mut Bytes) -> Self {
-        Self { buf }
+    pub fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
     }
 
-    fn fetch_bytes(&mut self, count: usize) -> io::Result<Bytes> {
-        if self.buf.len() < count {
+    fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
+        if self.bytes.len() < self.offset + count {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "fetch"));
         }
-        Ok(self.buf.split_to(count))
+        let bytes = &self.bytes[self.offset..self.offset + count];
+        self.offset += count;
+        Ok(bytes)
     }
 
-    fn fetch_array<T>(&mut self, count: usize) -> io::Result<SharedSlice<T>> {
+    fn fetch_array<T>(&mut self, count: usize) -> io::Result<&'a [T]> {
         self.fetch_bytes(mem::size_of::<T>() * count)
-            .map(|bytes| unsafe { SharedSlice::from_bytes_unchecked(bytes, count) })
+            .map(|bytes| unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, count) })
     }
 
-    fn fetch_str(&mut self) -> io::Result<SharedOsStr> {
-        let len = self
-            .buf
-            .as_ref()
+    fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
+        let len = self.bytes[self.offset..]
             .iter()
             .position(|&b| b == b'\0')
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fetch_str: missing \\0"))?;
-        self.fetch_bytes(len).map(SharedOsStr::from_bytes)
+        self.fetch_bytes(len).map(OsStr::from_bytes)
     }
 
-    fn fetch<T>(&mut self) -> io::Result<Shared<T>> {
+    fn fetch<T>(&mut self) -> io::Result<&'a T> {
         self.fetch_bytes(mem::size_of::<T>())
-            .map(|data| unsafe { Shared::new_unchecked(data) })
+            .map(|data| unsafe { &*(data.as_ptr() as *const T) })
     }
 
-    pub fn parse(&mut self, opcode: fuse_opcode) -> io::Result<RequestKind> {
+    fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn parse(&mut self, opcode: fuse_opcode) -> io::Result<RequestKind<'a>> {
         match opcode {
             fuse_opcode::FUSE_INIT => {
                 let arg = self.fetch()?;
@@ -304,9 +483,8 @@ impl<'a> Parser<'a> {
                 Ok(RequestKind::Read { arg })
             }
             fuse_opcode::FUSE_WRITE => {
-                let arg = self.fetch::<fuse_write_in>()?;
-                let data = self.fetch_bytes(arg.size as usize)?;
-                Ok(RequestKind::Write { arg, data })
+                let arg = self.fetch()?;
+                Ok(RequestKind::Write { arg })
             }
             fuse_opcode::FUSE_RELEASE => {
                 let arg = self.fetch()?;
@@ -413,157 +591,10 @@ impl<'a> Parser<'a> {
                 Ok(RequestKind::BatchForget { arg, forgets })
             }
             fuse_opcode::FUSE_NOTIFY_REPLY => {
-                let arg = self.fetch::<fuse_notify_retrieve_in>()?;
-                let data = self.fetch_bytes(arg.size as usize)?;
-                Ok(RequestKind::NotifyReply { arg, data })
+                let arg = self.fetch()?;
+                Ok(RequestKind::NotifyReply { arg })
             }
             _ => Ok(RequestKind::Unknown),
         }
     }
-}
-
-#[derive(Debug)]
-pub struct Shared<T>(Bytes, PhantomData<T>);
-
-impl<T> Shared<T> {
-    #[inline]
-    unsafe fn new_unchecked(bytes: Bytes) -> Self {
-        debug_assert_eq!(bytes.len(), mem::size_of::<T>());
-        Self(bytes, PhantomData)
-    }
-}
-
-impl<T> Deref for Shared<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*(self.0.as_ref().as_ptr() as *const T) }
-    }
-}
-
-#[derive(Debug)]
-pub struct SharedOsStr(Bytes);
-
-impl SharedOsStr {
-    #[inline]
-    fn from_bytes(bytes: Bytes) -> Self {
-        Self(bytes)
-    }
-}
-
-impl Deref for SharedOsStr {
-    type Target = OsStr;
-
-    fn deref(&self) -> &Self::Target {
-        OsStr::from_bytes(self.0.as_ref())
-    }
-}
-
-#[derive(Debug)]
-pub struct SharedSlice<T> {
-    bytes: Bytes,
-    count: usize,
-    _marker: PhantomData<T>,
-}
-
-impl<T> SharedSlice<T> {
-    #[inline]
-    unsafe fn from_bytes_unchecked(bytes: Bytes, count: usize) -> Self {
-        debug_assert_eq!(bytes.len(), mem::size_of::<T>() * count);
-        Self {
-            bytes,
-            count,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T> Deref for SharedSlice<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe {
-            std::slice::from_raw_parts(
-                self.bytes.as_ref().as_ptr() as *const T, //
-                self.count,
-            )
-        }
-    }
-}
-
-pub(crate) async fn receive_msg<R: ?Sized>(
-    reader: &mut R,
-    bufsize: usize,
-) -> io::Result<Option<Request>>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut header = mem::MaybeUninit::<fuse_in_header>::uninit();
-    let mut buf = BytesMut::with_capacity(bufsize);
-    unsafe {
-        buf.set_len(bufsize);
-    }
-
-    let terminated = poll_fn(|cx| {
-        let mut vec = [
-            IoSliceMut::new(unsafe {
-                std::slice::from_raw_parts_mut(
-                    header.as_mut_ptr() as *mut u8,
-                    mem::size_of::<fuse_in_header>(),
-                )
-            }),
-            IoSliceMut::new(buf.as_mut()),
-        ];
-
-        loop {
-            match ready!(Pin::new(&mut *reader).poll_read_vectored(cx, &mut vec[..])) {
-                Ok(len) => {
-                    if len < mem::size_of::<fuse_in_header>() {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "the received data from the kernel is too short",
-                        )));
-                    }
-                    unsafe {
-                        buf.set_len(len - mem::size_of::<fuse_in_header>());
-                    }
-                    return Poll::Ready(Ok(false));
-                }
-                Err(err) => match err.raw_os_error() {
-                    Some(libc::ENOENT) | Some(libc::EINTR) => {
-                        log::debug!("continue reading from the kernel");
-                        continue;
-                    }
-                    Some(libc::ENODEV) => return Poll::Ready(Ok(true)),
-                    _ => return Poll::Ready(Err(err)),
-                },
-            }
-        }
-    })
-    .await?;
-
-    if terminated {
-        return Ok(None);
-    }
-
-    let header = unsafe { header.assume_init() };
-    let mut buf = buf.freeze();
-
-    if header.len as usize != mem::size_of::<fuse_in_header>() + buf.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the payload length is mismatched to the header value",
-        ));
-    }
-
-    let opcode = fuse_opcode::try_from(header.opcode)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    let kind = Parser::new(&mut buf).parse(opcode)?;
-
-    Ok(Some(Request {
-        header,
-        kind,
-        _p: (),
-    }))
 }

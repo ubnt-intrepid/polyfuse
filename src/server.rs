@@ -3,7 +3,7 @@
 use crate::{
     channel::{Channel, MountOptions},
     lock::Lock,
-    session::{Filesystem, NotifyRetrieve, Session},
+    session::{Filesystem, NotifyRetrieve, RequestReader, Session},
 };
 use futures::{
     future::{Future, FutureExt},
@@ -74,6 +74,7 @@ impl Server {
         S: Future + Unpin,
     {
         let session = self.session;
+        let mut req_reader = RequestReader::default();
         let fs = Arc::new(fs);
         let mut channel = self.channel;
         let writer = Lock::new(channel.try_clone(false)?);
@@ -81,7 +82,7 @@ impl Server {
 
         let mut main_loop = Box::pin(async move {
             loop {
-                let req = match session.receive(&mut channel).await? {
+                let mut req = match req_reader.read(&mut channel, &*session).await? {
                     Some(req) => req,
                     None => {
                         log::debug!("connection was closed by the kernel");
@@ -93,7 +94,7 @@ impl Server {
                 let fs = fs.clone();
                 let mut writer = writer.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = session.process(&*fs, &req, &mut writer).await {
+                    if let Err(e) = session.process(&*fs, &mut req, &mut writer).await {
                         log::error!("error during handling a request: {}", e);
                     }
                 });
