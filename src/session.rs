@@ -12,12 +12,10 @@ pub use request::Request;
 
 use bytes::Bytes;
 use futures::{
-    channel::{mpsc, oneshot},
+    channel::oneshot,
     future::{Fuse, FusedFuture, Future, FutureExt},
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
-    sink::SinkExt,
-    stream::StreamExt,
 };
 use polyfuse_sys::kernel::{
     fuse_forget_one, //
@@ -75,10 +73,6 @@ pub struct Session {
     interrupt_state: Mutex<InterruptState>,
     notify_unique: AtomicU64,
     notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, Bytes)>>>,
-
-    // FIXME: more efficient.
-    rx_req: Mutex<mpsc::Receiver<Request>>,
-    tx_req: mpsc::Sender<Request>,
 }
 
 #[derive(Debug)]
@@ -144,8 +138,6 @@ impl Session {
                 }
             }
 
-            let (tx_req, rx_req) = mpsc::channel(1024);
-
             return Ok(Session {
                 proto_major,
                 proto_minor,
@@ -158,8 +150,6 @@ impl Session {
                 }),
                 notify_unique: AtomicU64::new(0),
                 notify_remains: Mutex::new(HashMap::new()),
-                rx_req: Mutex::new(rx_req),
-                tx_req,
             });
         }
     }
@@ -173,21 +163,43 @@ impl Session {
     }
 
     /// Receive an request from the kernel.
-    pub async fn receive<R: ?Sized>(&self, reader: &mut R) -> io::Result<bool>
+    pub async fn receive<R: ?Sized>(&self, reader: &mut R) -> io::Result<Option<Request>>
     where
         R: AsyncRead + Unpin,
     {
-        let req = match receive_msg(reader, self.bufsize).await? {
-            Some(req) => req,
-            None => return Ok(true),
-        };
-        self.push_request(req).await;
-        Ok(false)
+        loop {
+            let req = match receive_msg(reader, self.bufsize).await? {
+                Some(req) => req,
+                None => return Ok(None),
+            };
+            match req.kind {
+                RequestKind::Interrupt { arg } => {
+                    log::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
+                    self.send_interrupt(arg.unique).await;
+                    continue;
+                }
+                RequestKind::NotifyReply { arg, data } => {
+                    let unique = req.header.unique;
+                    log::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
+                    self.send_notify_reply(unique, arg.offset, data).await;
+                    continue;
+                }
+                _ => {
+                    // check if the request is already interrupted by the kernel.
+                    let mut state = self.interrupt_state.lock().await;
+                    if state.interrupted.remove(&req.header.unique) {
+                        log::debug!("The request was interrupted (unique={})", req.header.unique);
+                        continue;
+                    }
+                    return Ok(Some(req));
+                }
+            }
+        }
     }
 
     /// Process an incoming request using the specified filesystem operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<F, W>(&self, fs: &F, writer: &mut W) -> io::Result<()>
+    pub async fn process<F, W>(&self, fs: &F, req: Request, writer: &mut W) -> io::Result<()>
     where
         F: Filesystem,
         W: AsyncWrite + Send + Unpin,
@@ -195,22 +207,6 @@ impl Session {
         if self.exited() {
             log::warn!("The sesson has already been exited");
             return Ok(());
-        }
-
-        let req = match self.pop_request().await {
-            Some(req) => req,
-            None => {
-                log::warn!("empty request queue");
-                return Ok(());
-            }
-        };
-
-        {
-            let mut state = self.interrupt_state.lock().await;
-            if state.interrupted.remove(&req.header.unique) {
-                log::debug!("The request was interrupted (unique={})", req.header.unique);
-                return Ok(());
-            }
         }
 
         log::debug!(
@@ -234,16 +230,9 @@ impl Session {
         }
 
         match kind {
-            RequestKind::Init { .. } => {
-                log::warn!("ignore an INIT request after initializing the session");
-                cx.reply_err(libc::EIO).await?;
-            }
             RequestKind::Destroy => {
                 self.exit();
                 return Ok(());
-            }
-            RequestKind::Interrupt { arg } => {
-                self.send_interrupt(arg.unique).await;
             }
             RequestKind::Lookup { name } => {
                 run_op!(Operation::Lookup {
@@ -604,9 +593,16 @@ impl Session {
                 });
             }
 
-            RequestKind::NotifyReply { arg, data } => {
-                self.send_notify_reply(header.unique, arg.offset, data)
-                    .await;
+            RequestKind::Init { .. } => {
+                log::warn!("ignore an INIT request after initializing the session");
+                cx.reply_err(libc::EIO).await?;
+            }
+
+            RequestKind::Interrupt { .. } | RequestKind::NotifyReply { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unexpected request kind",
+                ));
             }
 
             RequestKind::Unknown => {
@@ -804,7 +800,6 @@ impl Session {
     }
 
     async fn send_interrupt(&self, unique: u64) {
-        log::debug!("INTERRUPT (unique = {:?})", unique);
         let mut state = self.interrupt_state.lock().await;
         if let Some(tx) = state.remains.remove(&unique) {
             state.interrupted.insert(unique);
@@ -817,14 +812,6 @@ impl Session {
         if let Some(tx) = self.notify_remains.lock().await.remove(&unique) {
             let _ = tx.send((offset, data));
         }
-    }
-
-    async fn push_request(&self, req: Request) {
-        let _ = self.tx_req.clone().send(req).await;
-    }
-
-    async fn pop_request(&self) -> Option<Request> {
-        self.rx_req.lock().await.next().await
     }
 }
 

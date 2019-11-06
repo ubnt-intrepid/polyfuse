@@ -74,17 +74,19 @@ impl Server {
 
         let mut main_loop = Box::pin(async move {
             loop {
-                let terminated = session.receive(&mut io).await?;
-                if terminated {
-                    log::debug!("connection was closed by the kernel");
-                    return Ok::<_, io::Error>(());
-                }
+                let req = match session.receive(&mut io).await? {
+                    Some(req) => req,
+                    None => {
+                        log::debug!("connection was closed by the kernel");
+                        return Ok::<_, io::Error>(());
+                    }
+                };
 
                 let session = session.clone();
                 let fs = fs.clone();
                 let mut io = io.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = session.process(&*fs, &mut io).await {
+                    if let Err(e) = session.process(&*fs, req, &mut io).await {
                         log::error!("error during handling a request: {}", e);
                     }
                 });
