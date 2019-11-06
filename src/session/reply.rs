@@ -571,12 +571,15 @@ impl ReplyBmap {
     }
 }
 
-pub(crate) async fn send_msg(
-    writer: &mut (impl AsyncWrite + Unpin),
+pub(crate) async fn send_msg<W: ?Sized>(
+    writer: &mut W,
     unique: u64,
     error: i32,
     data: &[&[u8]],
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     let data_len: usize = data.iter().map(|t| t.len()).sum();
     let len = u32::try_from(mem::size_of::<fuse_out_header>() + data_len) //
         .map_err(|_| {

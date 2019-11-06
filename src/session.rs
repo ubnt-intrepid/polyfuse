@@ -86,7 +86,7 @@ impl Session {
     ///
     /// This function receives an INIT request from the kernel and replies
     /// after initializing the connection parameters.
-    pub async fn start<I>(io: &mut I, initializer: SessionInitializer) -> io::Result<Self>
+    pub async fn start<I: ?Sized>(io: &mut I, initializer: SessionInitializer) -> io::Result<Self>
     where
         I: AsyncRead + AsyncWrite + Unpin,
     {
@@ -199,11 +199,18 @@ impl Session {
 
     /// Process an incoming request using the specified filesystem operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<F, W>(&self, fs: &F, req: Request, writer: &mut W) -> io::Result<()>
+    pub async fn process<F: ?Sized, W: ?Sized>(
+        &self,
+        fs: &F,
+        req: Request,
+        writer: &mut W,
+    ) -> io::Result<()>
     where
         F: Filesystem,
         W: AsyncWrite + Send + Unpin,
     {
+        let mut writer = writer;
+
         if self.exited() {
             log::warn!("The sesson has already been exited");
             return Ok(());
@@ -219,7 +226,7 @@ impl Session {
 
         let mut cx = Context {
             header: &header,
-            writer: Some(&mut *writer),
+            writer: Some(&mut writer),
             session: &*self,
         };
 
@@ -615,7 +622,7 @@ impl Session {
     }
 
     /// Notify the cache invalidation about an inode to the kernel.
-    pub async fn notify_inval_inode<W>(
+    pub async fn notify_inval_inode<W: ?Sized>(
         &self,
         writer: &mut W,
         ino: u64,
@@ -647,7 +654,7 @@ impl Session {
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
-    pub async fn notify_inval_entry<W>(
+    pub async fn notify_inval_entry<W: ?Sized>(
         &self,
         writer: &mut W,
         parent: u64,
@@ -684,7 +691,7 @@ impl Session {
     /// Additionally, when the provided `child` inode matches the inode
     /// in the dentry cache, the inotify will inform the deletion to
     /// watchers if exists.
-    pub async fn notify_delete<W>(
+    pub async fn notify_delete<W: ?Sized>(
         &self,
         writer: &mut W,
         parent: u64,
@@ -718,7 +725,7 @@ impl Session {
     }
 
     /// Push the data in an inode for updating the kernel cache.
-    pub async fn notify_store<W>(
+    pub async fn notify_store<W: ?Sized>(
         &self,
         writer: &mut W,
         ino: u64,
@@ -750,7 +757,7 @@ impl Session {
     }
 
     /// Retrieve data in an inode from the kernel cache.
-    pub async fn notify_retrieve<W>(
+    pub async fn notify_retrieve<W: ?Sized>(
         &self,
         writer: &mut W,
         ino: u64,
@@ -923,11 +930,14 @@ impl FusedFuture for NotifyRetrieve {
 }
 
 #[inline]
-async fn send_notify(
-    writer: &mut (impl AsyncWrite + Unpin),
+async fn send_notify<W: ?Sized>(
+    writer: &mut W,
     code: fuse_notify_code,
     data: &[&[u8]],
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     let code = unsafe { mem::transmute::<_, i32>(code) };
     send_msg(writer, 0, code, data).await
 }
