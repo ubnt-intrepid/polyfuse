@@ -2,23 +2,30 @@
 # vi: set ft=ruby :
 
 Vagrant.configure("2") do |config|
-  config.vm.box = "generic/freebsd12"
-  config.vm.provider "libvirt"
-  config.vm.provider "virtualbox"
+  config.vm.define "fedora", autostart: false do |config|
+    config.vm.box = "fedora/31-cloud-base"
+    config.vm.provision "shell", privileged: false, inline: <<-SHELL
+      sudo dnf install -y gcc pkg-config fuse fuse-devel
+      curl -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal
+    SHELL
+  end
 
-  config.ssh.shell = "sh"
+  config.vm.define "freebsd", autostart: false do |config|
+    config.vm.box = "generic/freebsd12"
+    config.ssh.shell = "sh"
+    config.vm.provision "shell", privileged: false, inline: <<-SHELL
+      sudo pkg install -y pkgconf fusefs-libs
+      fetch https://sh.rustup.rs -o rustup.sh
+     sh rustup.sh -y --profile=minimal
+    SHELL
+  end
 
-  # config.vm.network "forwarded_port", guest: 80, host: 8080
-  # config.vm.network "forwarded_port", guest: 80, host: 8080, host_ip: "127.0.0.1"
-  # config.vm.network "private_network", ip: "192.168.33.10"
-  # config.vm.network "public_network"
+  config.vm.provider :libvirt do |libvirt|
+    libvirt.cpus = 2
+    libvirt.memory = 2048
+  end
 
   config.vm.synced_folder ".", "/vagrant", type: "rsync",
-    rsync__exclude: [".git/", "target/" ]
-
-  config.vm.provision "shell", privileged: false, inline: <<-SHELL
-    sudo pkg install -y pkgconf fusefs-libs
-    fetch https://sh.rustup.rs -o rustup.sh
-    sh rustup.sh -y
-  SHELL
+    rsync__auto: false,
+    rsync__exclude: [ ".git/", "target/" ]
 end
