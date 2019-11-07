@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-18.04
     strategy:
       matrix:
-        rust_toolchain: [beta, nightly]
+        rust_toolchain: [stable, beta, nightly]
     steps:
     - uses: actions/checkout@v1
       with:
@@ -65,7 +65,7 @@ jobs:
       uses: actions-rs/toolchain@v1
       with:
         profile: minimal
-        toolchain: beta
+        toolchain: stable
         components: rustfmt, clippy
         override: true
 

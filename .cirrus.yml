@@ -12,8 +12,10 @@ task:
     image: freebsd-12-0-release-amd64
   env:
     matrix:
+      - RUST_TOOLCHAIN: stable
       - RUST_TOOLCHAIN: beta
       - RUST_TOOLCHAIN: nightly
+  allow_failures: $RUST_TOOLCHAIN == 'nightly'
   cargo_cache:
     folder: $HOME/.cargo/registry
     fingerprint_script: cat Cargo.lock || echo ""
