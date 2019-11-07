@@ -88,8 +88,8 @@ impl Connection {
         })
     }
 
-    #[allow(dead_code)]
-    pub fn duplicate(&self, ioc_clone: bool) -> io::Result<Self> {
+    /// Attempt to get a clone of this connection.
+    pub fn try_clone(&self, ioc_clone: bool) -> io::Result<Self> {
         let clonefd;
         unsafe {
             if ioc_clone {
@@ -100,8 +100,7 @@ impl Connection {
                     return Err(io::Error::last_os_error());
                 }
 
-                let mut sourcefd = self.fd;
-                let res = libc::ioctl(clonefd, FUSE_DEV_IOC_CLONE.into(), &mut sourcefd);
+                let res = libc::ioctl(clonefd, FUSE_DEV_IOC_CLONE.into(), &self.fd);
                 if res == -1 {
                     let err = io::Error::last_os_error();
                     libc::close(clonefd);
