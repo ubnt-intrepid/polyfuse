@@ -17,3 +17,8 @@ ctest = "0.2"
 name = "test_kernel"
 path = "tests/test_kernel.rs"
 harness = false
+
+[[test]]
+name = "test_libfuse"
+path = "tests/test_libfuse.rs"
+harness = false

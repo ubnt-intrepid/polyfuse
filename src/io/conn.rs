@@ -9,11 +9,13 @@ use libc::{c_char, c_int, c_void, iovec};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
 use polyfuse_sys::{
     kernel::FUSE_DEV_IOC_CLONE,
-    v2::{
-        fuse_args, //
-        fuse_mount_compat25,
-        fuse_opt_free_args,
-        fuse_unmount_compat22,
+    libfuse::{
+        fuse_session, //
+        fuse_session_destroy,
+        fuse_session_fd,
+        fuse_session_mount,
+        fuse_session_new_empty,
+        fuse_session_unmount,
     },
 };
 use std::{
@@ -25,6 +27,7 @@ use std::{
         io::{AsRawFd, RawFd},
     },
     path::Path,
+    ptr::NonNull,
 };
 
 #[derive(Debug, Default)]
@@ -43,13 +46,15 @@ impl MountOptions {
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
 pub struct Connection {
+    se: Option<NonNull<fuse_session>>,
     fd: RawFd,
-    mountpoint: Option<CString>,
 }
+
+unsafe impl Send for Connection {}
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        let _e = self.unmount();
+        let _e = self.close();
     }
 }
 
@@ -59,33 +64,35 @@ impl Connection {
         let mountpoint = mountpoint.as_ref();
         let c_mountpoint = CString::new(mountpoint.as_os_str().as_bytes())?;
 
-        let args: Vec<CString> = mountopts
+        let mut args: Vec<CString> = mountopts
             .args
             .into_iter()
             .map(|arg| CString::new(arg.as_bytes()))
             .collect::<Result<_, _>>()?;
+        if args.is_empty() {
+            args.push(CString::new("polyfuse").unwrap());
+        }
         let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
 
-        let mut f_args = fuse_args {
-            argc: c_args.len() as c_int,
-            argv: c_args.as_ptr(),
-            allocated: 0,
-        };
+        let se = NonNull::new(unsafe {
+            fuse_session_new_empty(
+                c_args.len() as c_int, //
+                c_args.as_ptr(),
+            )
+        })
+        .ok_or_else(|| io::Error::last_os_error())?;
 
-        let fd = unsafe { fuse_mount_compat25(c_mountpoint.as_ptr(), &mut f_args) };
-        unsafe {
-            fuse_opt_free_args(&mut f_args);
-        }
-        if fd == -1 {
+        let ret = unsafe { fuse_session_mount(se.as_ptr(), c_mountpoint.as_ptr()) };
+        if ret == -1 {
             return Err(io::Error::last_os_error());
         }
 
+        let fd = unsafe { fuse_session_fd(se.as_ptr()) };
+        debug_assert_ne!(fd, 0);
+
         set_nonblocking(fd)?;
 
-        Ok(Connection {
-            fd,
-            mountpoint: Some(c_mountpoint),
-        })
+        Ok(Connection { se: Some(se), fd })
     }
 
     /// Attempt to get a clone of this connection.
@@ -115,15 +122,16 @@ impl Connection {
         }
 
         Ok(Self {
+            se: None,
             fd: clonefd,
-            mountpoint: None,
         })
     }
 
-    pub fn unmount(&mut self) -> io::Result<()> {
-        if let Some(mountpoint) = self.mountpoint.take() {
+    pub fn close(&mut self) -> io::Result<()> {
+        if let Some(se) = self.se.take() {
             unsafe {
-                fuse_unmount_compat22(mountpoint.as_ptr());
+                fuse_session_unmount(se.as_ptr());
+                fuse_session_destroy(se.as_ptr());
             }
         }
         Ok(())
