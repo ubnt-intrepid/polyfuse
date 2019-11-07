@@ -159,8 +159,6 @@ pub struct Channel {
     mountpoint: Arc<PathBuf>,
 }
 
-unsafe impl Send for Channel {}
-
 impl Channel {
     /// Open a new communication channel mounted to the specified path.
     pub fn open(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {

@@ -33,6 +33,8 @@ impl<T> Drop for Lock<T> {
     }
 }
 
+unsafe impl<T: Send> Send for Lock<T> {}
+
 impl<T> Lock<T> {
     pub fn new(val: T) -> Self {
         Self {
