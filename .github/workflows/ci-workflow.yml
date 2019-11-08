@@ -24,12 +24,7 @@ jobs:
     - name: Install APT dependencies
       run: |
         sudo apt-get update -yqq
-        sudo apt-get install -yqq --no-install-recommends \
-             build-essential \
-             pkg-config \
-             libfuse-dev \
-             udev \
-             libudev-dev
+        sudo apt-get install -yqq --no-install-recommends fuse
 
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1
@@ -54,12 +49,7 @@ jobs:
     - name: Install APT dependencies
       run: |
         sudo apt-get update -yqq
-        sudo apt-get install -yqq --no-install-recommends \
-             build-essential \
-             pkg-config \
-             libfuse-dev \
-             udev \
-             libudev-dev
+        sudo apt-get install -yqq --no-install-recommends fuse
 
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1
@@ -128,12 +118,7 @@ jobs:
     - name: Install APT dependencies
       run: |
         sudo apt-get update -yqq
-        sudo apt-get install -yqq --no-install-recommends \
-             build-essential \
-             pkg-config \
-             libfuse-dev \
-             udev \
-             libudev-dev
+        sudo apt-get install -yqq --no-install-recommends fuse
 
     - name: Install grcov
       run: |
