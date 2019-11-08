@@ -5,41 +5,40 @@
     clippy::cast_sign_loss
 )]
 
-use libc::{c_char, c_int, c_void, iovec};
+use libc::{c_int, c_void, iovec};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
-use polyfuse_sys::{
-    kernel::FUSE_DEV_IOC_CLONE,
-    v2::{
-        fuse_args, //
-        fuse_mount_compat25,
-        fuse_opt_free_args,
-        fuse_unmount_compat22,
-    },
-};
+use polyfuse_sys::kernel::FUSE_DEV_IOC_CLONE;
 use std::{
-    env,
-    ffi::{CStr, CString, OsString}, //
+    ffi::{CStr, OsStr, OsString},
     io::{self, IoSlice, IoSliceMut, Read, Write},
+    mem::{self, MaybeUninit},
     os::unix::{
-        ffi::OsStrExt,
-        io::{AsRawFd, RawFd},
+        io::{AsRawFd, IntoRawFd, RawFd},
+        net::UnixDatagram,
+        process::CommandExt,
     },
-    path::Path,
+    path::{Path, PathBuf},
+    process::Command,
+    ptr,
     sync::Arc,
 };
 
+const FUSERMOUNT_PROG: &str = "fusermount";
+const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
+
 #[derive(Debug, Default)]
 pub struct MountOptions {
-    args: Vec<OsString>,
+    opts: Option<OsString>,
     ioc_clone: bool,
 }
 
 impl MountOptions {
-    pub fn from_env() -> Self {
-        Self {
-            args: env::args_os().collect(),
-            ioc_clone: false,
-        }
+    pub fn options(&self) -> Option<&OsStr> {
+        self.opts.as_ref().map(|opts| &**opts)
+    }
+
+    pub fn set_options(&mut self, opts: impl AsRef<OsStr>) {
+        self.opts.replace(opts.as_ref().into());
     }
 
     pub fn ioc_clone(self, enabled: bool) -> Self {
@@ -54,7 +53,7 @@ impl MountOptions {
 #[derive(Debug)]
 pub struct Connection {
     fd: RawFd,
-    mountpoint: Option<CString>,
+    mountpoint: Option<PathBuf>,
     mountopts: Arc<MountOptions>,
 }
 
@@ -68,34 +67,45 @@ impl Connection {
     /// Establish a new connection with the FUSE kernel driver.
     pub fn open(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
         let mountpoint = mountpoint.as_ref();
-        let c_mountpoint = CString::new(mountpoint.as_os_str().as_bytes())?;
 
-        let args: Vec<CString> = mountopts
-            .args
-            .iter()
-            .map(|arg| CString::new(arg.as_bytes()))
-            .collect::<Result<_, _>>()?;
-        let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
+        let (reader, writer) = UnixDatagram::pair()?;
 
-        let mut f_args = fuse_args {
-            argc: c_args.len() as c_int,
-            argv: c_args.as_ptr(),
-            allocated: 0,
-        };
-
-        let fd = unsafe { fuse_mount_compat25(c_mountpoint.as_ptr(), &mut f_args) };
-        unsafe {
-            fuse_opt_free_args(&mut f_args);
-        }
-        if fd == -1 {
+        let pid = unsafe { libc::fork() };
+        if pid == -1 {
             return Err(io::Error::last_os_error());
         }
 
+        if pid == 0 {
+            drop(reader);
+            let writer = writer.into_raw_fd();
+            unsafe { libc::fcntl(writer, libc::F_SETFD, 0) };
+
+            let mut fusermount = Command::new(FUSERMOUNT_PROG);
+            fusermount.env(FUSE_COMMFD_ENV, writer.to_string());
+            if let Some(opts) = mountopts.options() {
+                fusermount.arg("-o").arg(opts);
+            }
+            fusermount.arg("--").arg(mountpoint);
+            return Err(fusermount.exec());
+        }
+
+        drop(writer);
+
+        let fd = receive_fd(reader.as_raw_fd())?;
         set_nonblocking(fd)?;
 
-        Ok(Connection {
+        // TODO: treat auto_unmount option.
+        // if !auto_unmount {
+        //     drop(rd);
+        //     unsafe {
+        //         libc::waitpid(pid, ptr::null_mut(), 0); // bury zombie.
+        //     }
+        // }
+        let _ = reader.into_raw_fd();
+
+        Ok(Self {
             fd,
-            mountpoint: Some(c_mountpoint),
+            mountpoint: Some(mountpoint.into()),
             mountopts: Arc::new(mountopts),
         })
     }
@@ -135,12 +145,60 @@ impl Connection {
 
     pub fn unmount(&mut self) -> io::Result<()> {
         if let Some(mountpoint) = self.mountpoint.take() {
-            unsafe {
-                fuse_unmount_compat22(mountpoint.as_ptr());
-            }
+            Command::new(FUSERMOUNT_PROG)
+                .args(&["-u", "-q", "-z", "--"])
+                .arg(&mountpoint)
+                .status()?;
         }
         Ok(())
     }
+}
+
+fn receive_fd(fd_in: RawFd) -> io::Result<RawFd> {
+    let mut buf = [0u8; 1];
+    let mut iov = libc::iovec {
+        iov_base: buf.as_mut_ptr() as *mut c_void,
+        iov_len: 1,
+    };
+
+    #[repr(C)]
+    struct Cmsg {
+        header: libc::cmsghdr,
+        fd: c_int,
+    }
+    let mut cmsg = MaybeUninit::<Cmsg>::uninit();
+
+    let mut msg = libc::msghdr {
+        msg_name: ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: cmsg.as_mut_ptr() as *mut c_void,
+        msg_controllen: mem::size_of_val(&cmsg),
+        msg_flags: 0,
+    };
+
+    let ret = unsafe { libc::recvmsg(fd_in, &mut msg, 0) };
+    if ret == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    if msg.msg_controllen < mem::size_of_val(&cmsg) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too short control message length",
+        ));
+    }
+    let cmsg = unsafe { cmsg.assume_init() };
+
+    if cmsg.header.cmsg_type != libc::SCM_RIGHTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "got control message with unknown type",
+        ));
+    }
+
+    Ok(cmsg.fd)
 }
 
 impl AsRawFd for Connection {
