@@ -22,8 +22,7 @@ pub struct Channel(PollEvented<Connection>);
 
 impl Channel {
     /// Establish a connection with the FUSE kernel driver.
-    pub fn open(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
-        let mountpoint = mountpoint.as_ref();
+    pub fn open(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<Self> {
         let conn = Connection::open(mountpoint, mountopts)?;
         let evented = PollEvented::new(conn)?;
         Ok(Self(evented))
@@ -67,8 +66,8 @@ impl Channel {
     }
 
     /// Attempt to create a clone of this channel.
-    pub fn try_clone(&self) -> io::Result<Self> {
-        let conn = self.0.get_ref().try_clone()?;
+    pub fn try_clone(&self, ioc_clone: bool) -> io::Result<Self> {
+        let conn = self.0.get_ref().try_clone(ioc_clone)?;
         Ok(Self(PollEvented::new(conn)?))
     }
 }

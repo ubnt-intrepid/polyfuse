@@ -20,7 +20,6 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     ptr,
-    sync::Arc,
 };
 
 const FUSERMOUNT_PROG: &str = "fusermount";
@@ -29,7 +28,6 @@ const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
 #[derive(Debug, Default)]
 pub struct MountOptions {
     opts: Option<OsString>,
-    ioc_clone: bool,
 }
 
 impl MountOptions {
@@ -40,13 +38,6 @@ impl MountOptions {
     pub fn set_options(&mut self, opts: impl AsRef<OsStr>) {
         self.opts.replace(opts.as_ref().into());
     }
-
-    pub fn ioc_clone(self, enabled: bool) -> Self {
-        Self {
-            ioc_clone: enabled,
-            ..self
-        }
-    }
 }
 
 /// A connection with the FUSE kernel driver.
@@ -54,7 +45,6 @@ impl MountOptions {
 pub struct Connection {
     fd: RawFd,
     mountpoint: Option<PathBuf>,
-    mountopts: Arc<MountOptions>,
 }
 
 impl Drop for Connection {
@@ -65,9 +55,7 @@ impl Drop for Connection {
 
 impl Connection {
     /// Establish a new connection with the FUSE kernel driver.
-    pub fn open(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
-        let mountpoint = mountpoint.as_ref();
-
+    pub fn open(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<Self> {
         let (reader, writer) = UnixDatagram::pair()?;
 
         let pid = unsafe { libc::fork() };
@@ -106,15 +94,14 @@ impl Connection {
         Ok(Self {
             fd,
             mountpoint: Some(mountpoint.into()),
-            mountopts: Arc::new(mountopts),
         })
     }
 
     /// Attempt to get a clone of this connection.
-    pub fn try_clone(&self) -> io::Result<Self> {
+    pub fn try_clone(&self, ioc_clone: bool) -> io::Result<Self> {
         let clonefd;
         unsafe {
-            if self.mountopts.ioc_clone {
+            if ioc_clone {
                 let devname = CStr::from_bytes_with_nul_unchecked(b"/dev/fuse\0");
 
                 clonefd = libc::open(devname.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
@@ -139,7 +126,6 @@ impl Connection {
         Ok(Self {
             fd: clonefd,
             mountpoint: None,
-            mountopts: self.mountopts.clone(),
         })
     }
 
