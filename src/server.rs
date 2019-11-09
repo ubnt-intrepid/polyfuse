@@ -26,7 +26,7 @@ pub struct Server {
 impl Server {
     /// Create a FUSE server mounted on the specified path.
     pub async fn mount(mointpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
-        let mut channel = Channel::open(mointpoint, mountopts)?;
+        let mut channel = Channel::open(mointpoint.as_ref(), &mountopts)?;
         let session = Session::start(
             &mut channel, //
             Default::default(),
@@ -43,7 +43,7 @@ impl Server {
         let writer = match self.notify_writer {
             Some(ref writer) => writer,
             None => {
-                let writer = self.channel.try_clone()?;
+                let writer = self.channel.try_clone(false)?;
                 self.notify_writer
                     .get_or_insert(Arc::new(Mutex::new(writer)))
             }
@@ -74,7 +74,7 @@ impl Server {
         let session = self.session;
         let fs = Arc::new(fs);
         let mut channel = self.channel;
-        let writer = Lock::new(channel.try_clone()?);
+        let writer = Lock::new(channel.try_clone(false)?);
         let mut sig = sig.fuse();
 
         let mut main_loop = Box::pin(async move {
