@@ -1,60 +1,58 @@
 //! Serve FUSE filesystem.
 
 use crate::{
-    io::{unite, Connection, MountOptions},
+    channel::{Channel, MountOptions},
     lock::Lock,
     session::{Filesystem, NotifyRetrieve, Session},
 };
 use futures::{
     future::{Future, FutureExt},
-    io::{AsyncRead, AsyncWrite},
-    ready, select,
+    lock::Mutex,
+    select,
     stream::StreamExt,
 };
 use libc::c_int;
-use mio::{unix::UnixReady, Ready};
-use std::{
-    ffi::OsStr,
-    io::{self, IoSlice, IoSliceMut, Read, Write},
-    path::Path,
-    pin::Pin,
-    sync::Arc,
-    task::{self, Poll},
-};
-use tokio::{
-    net::util::PollEvented,
-    signal::unix::{signal, SignalKind},
-};
+use std::{ffi::OsStr, io, path::Path, sync::Arc};
+use tokio::signal::unix::{signal, SignalKind};
 
 /// FUSE filesystem server.
 #[derive(Debug)]
 pub struct Server {
     session: Arc<Session>,
-    reader: Reader,
-    writer: Writer,
+    channel: Channel,
+    notify_writer: Option<Arc<Mutex<Channel>>>,
 }
 
 impl Server {
     /// Create a FUSE server mounted on the specified path.
     pub async fn mount(mointpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
-        let (mut reader, mut writer) = channel(mointpoint, mountopts, false)?;
+        let mut channel = Channel::open(mointpoint, mountopts)?;
         let session = Session::start(
-            &mut unite(&mut reader, &mut writer), //
+            &mut channel, //
             Default::default(),
         )
         .await?;
         Ok(Server {
             session: Arc::new(session),
-            reader,
-            writer,
+            channel,
+            notify_writer: None,
         })
     }
 
-    pub fn notifier(&self) -> Notifier {
-        Notifier {
+    pub fn notifier(&mut self) -> io::Result<Notifier> {
+        let writer = match self.notify_writer {
+            Some(ref writer) => writer,
+            None => {
+                let writer = self.channel.try_clone()?;
+                self.notify_writer
+                    .get_or_insert(Arc::new(Mutex::new(writer)))
+            }
+        };
+
+        Ok(Notifier {
             session: self.session.clone(),
-            writer: self.writer.clone(),
-        }
+            writer: writer.clone(),
+        })
     }
 
     /// Run a FUSE filesystem.
@@ -75,13 +73,13 @@ impl Server {
     {
         let session = self.session;
         let fs = Arc::new(fs);
-        let mut reader = self.reader;
-        let writer = self.writer;
+        let mut channel = self.channel;
+        let writer = Lock::new(channel.try_clone()?);
         let mut sig = sig.fuse();
 
         let mut main_loop = Box::pin(async move {
             loop {
-                let req = match session.receive(&mut reader).await? {
+                let req = match session.receive(&mut channel).await? {
                     Some(req) => req,
                     None => {
                         log::debug!("connection was closed by the kernel");
@@ -113,157 +111,43 @@ impl Server {
 #[derive(Debug, Clone)]
 pub struct Notifier {
     session: Arc<Session>,
-    writer: Writer,
+    writer: Arc<Mutex<Channel>>,
 }
 
 impl Notifier {
-    pub async fn inval_inode(&mut self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+    pub async fn inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.session
-            .notify_inval_inode(&mut self.writer, ino, off, len)
+            .notify_inval_inode(&mut *writer, ino, off, len)
             .await
     }
 
-    pub async fn inval_entry(&mut self, parent: u64, name: impl AsRef<OsStr>) -> io::Result<()> {
+    pub async fn inval_entry(&self, parent: u64, name: impl AsRef<OsStr>) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.session
-            .notify_inval_entry(&mut self.writer, parent, name)
+            .notify_inval_entry(&mut *writer, parent, name)
             .await
     }
 
-    pub async fn delete(
-        &mut self,
-        parent: u64,
-        child: u64,
-        name: impl AsRef<OsStr>,
-    ) -> io::Result<()> {
+    pub async fn delete(&self, parent: u64, child: u64, name: impl AsRef<OsStr>) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.session
-            .notify_delete(&mut self.writer, parent, child, name)
+            .notify_delete(&mut *writer, parent, child, name)
             .await
     }
 
-    pub async fn store(&mut self, ino: u64, offset: u64, data: &[&[u8]]) -> io::Result<()> {
+    pub async fn store(&self, ino: u64, offset: u64, data: &[&[u8]]) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.session
-            .notify_store(&mut self.writer, ino, offset, data)
+            .notify_store(&mut *writer, ino, offset, data)
             .await
     }
 
-    pub async fn retrieve(
-        &mut self,
-        ino: u64,
-        offset: u64,
-        size: u32,
-    ) -> io::Result<NotifyRetrieve> {
+    pub async fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<NotifyRetrieve> {
+        let mut writer = self.writer.lock().await;
         self.session
-            .notify_retrieve(&mut self.writer, ino, offset, size)
+            .notify_retrieve(&mut *writer, ino, offset, size)
             .await
-    }
-}
-
-fn channel(
-    mountpoint: impl AsRef<Path>,
-    mountopts: MountOptions,
-    ioc_clone: bool,
-) -> io::Result<(Reader, Writer)> {
-    let mountpoint = mountpoint.as_ref();
-
-    let reader = Connection::open(mountpoint, mountopts)?;
-    let writer = reader.try_clone(ioc_clone)?;
-
-    Ok((
-        Reader(PollEvented::new(reader)?),
-        Writer(Lock::new(PollEvented::new(writer)?)),
-    ))
-}
-
-#[derive(Debug)]
-struct Reader(PollEvented<Connection>);
-
-impl Reader {
-    fn poll_read_with<F, R>(&mut self, cx: &mut task::Context<'_>, f: F) -> Poll<io::Result<R>>
-    where
-        F: FnOnce(&mut Connection) -> io::Result<R>,
-    {
-        let mut ready = Ready::readable();
-        ready.insert(UnixReady::error());
-        ready!(self.0.poll_read_ready(cx, ready))?;
-
-        match f(self.0.get_mut()) {
-            Ok(ret) => Poll::Ready(Ok(ret)),
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.0.clear_read_ready(cx, ready)?;
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
-    }
-}
-
-impl AsyncRead for Reader {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        dst: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        self.poll_read_with(cx, |fd| fd.read(dst))
-    }
-
-    fn poll_read_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        dst: &mut [IoSliceMut],
-    ) -> Poll<io::Result<usize>> {
-        self.poll_read_with(cx, |fd| fd.read_vectored(dst))
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Writer(Lock<PollEvented<Connection>>);
-
-impl Writer {
-    fn poll_write_with<F, R>(&mut self, cx: &mut task::Context<'_>, f: F) -> Poll<io::Result<R>>
-    where
-        F: FnOnce(&mut Connection) -> io::Result<R>,
-    {
-        self.0.poll_lock_with(cx, |cx, conn| {
-            ready!(conn.poll_write_ready(cx))?;
-
-            match f(conn.get_mut()) {
-                Ok(ret) => Poll::Ready(Ok(ret)),
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    conn.clear_write_ready(cx)?;
-                    Poll::Pending
-                }
-                Err(e) => {
-                    log::debug!("write error: {}", e);
-                    Poll::Ready(Err(e))
-                }
-            }
-        })
-    }
-}
-
-impl AsyncWrite for Writer {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        src: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        self.poll_write_with(cx, |fd| fd.write(src))
-    }
-
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        src: &[IoSlice],
-    ) -> Poll<io::Result<usize>> {
-        self.poll_write_with(cx, |fd| fd.write_vectored(src))
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_write_with(cx, |fd| fd.flush())
-    }
-
-    fn poll_close(self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
     }
 }
 

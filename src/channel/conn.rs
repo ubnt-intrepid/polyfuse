@@ -25,17 +25,27 @@ use std::{
         io::{AsRawFd, RawFd},
     },
     path::Path,
+    sync::Arc,
 };
 
 #[derive(Debug, Default)]
 pub struct MountOptions {
     args: Vec<OsString>,
+    ioc_clone: bool,
 }
 
 impl MountOptions {
     pub fn from_env() -> Self {
         Self {
             args: env::args_os().collect(),
+            ioc_clone: false,
+        }
+    }
+
+    pub fn ioc_clone(self, enabled: bool) -> Self {
+        Self {
+            ioc_clone: enabled,
+            ..self
         }
     }
 }
@@ -45,6 +55,7 @@ impl MountOptions {
 pub struct Connection {
     fd: RawFd,
     mountpoint: Option<CString>,
+    mountopts: Arc<MountOptions>,
 }
 
 impl Drop for Connection {
@@ -61,7 +72,7 @@ impl Connection {
 
         let args: Vec<CString> = mountopts
             .args
-            .into_iter()
+            .iter()
             .map(|arg| CString::new(arg.as_bytes()))
             .collect::<Result<_, _>>()?;
         let c_args: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).collect();
@@ -85,14 +96,15 @@ impl Connection {
         Ok(Connection {
             fd,
             mountpoint: Some(c_mountpoint),
+            mountopts: Arc::new(mountopts),
         })
     }
 
     /// Attempt to get a clone of this connection.
-    pub fn try_clone(&self, ioc_clone: bool) -> io::Result<Self> {
+    pub fn try_clone(&self) -> io::Result<Self> {
         let clonefd;
         unsafe {
-            if ioc_clone {
+            if self.mountopts.ioc_clone {
                 let devname = CStr::from_bytes_with_nul_unchecked(b"/dev/fuse\0");
 
                 clonefd = libc::open(devname.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
@@ -117,6 +129,7 @@ impl Connection {
         Ok(Self {
             fd: clonefd,
             mountpoint: None,
+            mountopts: self.mountopts.clone(),
         })
     }
 

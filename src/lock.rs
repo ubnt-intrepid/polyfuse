@@ -1,6 +1,11 @@
-use futures::ready;
+use futures::{
+    io::{AsyncRead, AsyncWrite},
+    ready,
+};
 use std::{
     cell::UnsafeCell,
+    io::{self, IoSlice, IoSliceMut},
+    pin::Pin,
     sync::Arc,
     task::{self, Poll},
 };
@@ -46,16 +51,18 @@ impl<T> Lock<T> {
         }
     }
 
-    pub fn poll_lock_with<F, R>(&mut self, cx: &mut task::Context, f: F) -> Poll<R>
+    pub fn poll_lock_with<F, R>(self: Pin<&mut Self>, cx: &mut task::Context, f: F) -> Poll<R>
     where
-        F: FnOnce(&mut task::Context, &mut T) -> Poll<R>,
+        F: FnOnce(&mut task::Context, Pin<&mut T>) -> Poll<R>,
     {
-        ready!(self.poll_acquire_lock(cx));
+        let this = Pin::into_inner(self);
 
-        let val = unsafe { &mut (*self.inner.val.get()) };
+        ready!(this.poll_acquire_lock(cx));
+
+        let val = unsafe { Pin::new_unchecked(&mut (*this.inner.val.get())) };
         let ret = ready!(f(cx, val));
 
-        self.release_lock();
+        this.release_lock();
 
         Poll::Ready(ret)
     }
@@ -68,5 +75,55 @@ impl<T> Lock<T> {
 
     fn release_lock(&mut self) {
         self.permit.release(&self.inner.semaphore);
+    }
+}
+
+impl<T> AsyncRead for Lock<T>
+where
+    T: AsyncRead,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context,
+        dst: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_lock_with(cx, |cx, reader| reader.poll_read(cx, dst))
+    }
+
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context,
+        dst: &mut [IoSliceMut<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_lock_with(cx, |cx, reader| reader.poll_read_vectored(cx, dst))
+    }
+}
+
+impl<T> AsyncWrite for Lock<T>
+where
+    T: AsyncWrite,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context,
+        src: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_lock_with(cx, |cx, writer| writer.poll_write(cx, src))
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context,
+        src: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_lock_with(cx, |cx, writer| writer.poll_write_vectored(cx, src))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<io::Result<()>> {
+        self.poll_lock_with(cx, |cx, writer| writer.poll_flush(cx))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<io::Result<()>> {
+        self.poll_lock_with(cx, |cx, writer| writer.poll_close(cx))
     }
 }
