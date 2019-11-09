@@ -61,21 +61,18 @@ On Debian/Ubuntu or other APT based distributions:
 
 ```shell-session
 $ sudo apt-get install fuse
-$ sudo apt-get install pkg-config libfuse-dev  # for building
 ```
 
 On Fedora/RHEL or other RPM based distributions:
 
 ```shell-session
 $ sudo dnf install fuse
-$ sudo dnf install fuse-devel pkg-config  # for building
 ```
 
 On Arch Linux or other Pacman based distributions:
 
 ```shell-session
 $ sudo pacman -S fuse2
-$ sudo pacman -S pkgconf  # for building, included in base-devel
 ```
 
 ## License
