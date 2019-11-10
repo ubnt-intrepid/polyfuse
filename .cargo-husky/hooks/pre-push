@@ -1,13 +1,9 @@
 #!/bin/bash
 
-set -ex
+set -e
 
-cargo build --all-targets
+(set -x; cargo build --all-targets)
 
 if cargo clippy --version >/dev/null; then
-   cargo clippy --all --all-targets
-fi
-
-if [[ -n "$CARGO_HUSKY_RUN_TESTS" ]]; then
-   cargo test --all
+   (set -x; cargo clippy --all-targets)
 fi
