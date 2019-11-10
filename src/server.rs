@@ -67,6 +67,7 @@ impl Server {
     }
 
     /// Run a FUSE filesystem until the specified signal is received.
+    #[allow(clippy::unnecessary_mut_passed)]
     pub async fn run_until<F, S>(self, fs: F, sig: S) -> io::Result<Option<S::Output>>
     where
         F: Filesystem + 'static,
@@ -157,6 +158,7 @@ impl Notifier {
     }
 }
 
+#[allow(clippy::unnecessary_mut_passed)]
 fn default_shutdown_signal() -> io::Result<impl Future<Output = c_int> + Unpin> {
     let mut sighup = signal(SignalKind::hangup())?.into_future();
     let mut sigint = signal(SignalKind::interrupt())?.into_future();

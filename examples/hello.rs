@@ -1,4 +1,5 @@
-#![warn(clippy::unimplemented)]
+#![allow(clippy::unnecessary_mut_passed)]
+#![deny(clippy::unimplemented)]
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;

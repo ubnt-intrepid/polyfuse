@@ -1,5 +1,7 @@
 //! Lowlevel interface to handle FUSE requests.
 
+#![allow(clippy::needless_update)]
+
 pub mod reply;
 
 mod dirent;
@@ -766,7 +768,7 @@ impl Session {
         };
         let data: SmallVec<[_; 4]> = Some(out.as_bytes())
             .into_iter()
-            .chain(data.into_iter().map(|s| *s))
+            .chain(data.iter().copied())
             .collect();
         send_notify(writer, fuse_notify_code::FUSE_NOTIFY_STORE, &*data).await
     }

@@ -41,6 +41,8 @@ jobs:
 
   Lint:
     runs-on: ubuntu-18.04
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
     - uses: actions/checkout@v1
       with:
