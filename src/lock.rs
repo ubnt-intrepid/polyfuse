@@ -51,16 +51,16 @@ impl<T> Lock<T> {
         }
     }
 
-    pub fn poll_lock_with<F, R>(self: Pin<&mut Self>, cx: &mut task::Context, f: F) -> Poll<R>
+    fn poll_lock_with<F, R>(self: Pin<&mut Self>, cx: &mut task::Context, f: F) -> Poll<R>
     where
-        F: FnOnce(&mut task::Context, Pin<&mut T>) -> Poll<R>,
+        F: FnOnce(Pin<&mut T>, &mut task::Context) -> Poll<R>,
     {
         let this = Pin::into_inner(self);
 
         ready!(this.poll_acquire_lock(cx));
 
-        let val = unsafe { Pin::new_unchecked(&mut (*this.inner.val.get())) };
-        let ret = ready!(f(cx, val));
+        let t = unsafe { Pin::new_unchecked(&mut (*this.inner.val.get())) };
+        let ret = ready!(f(t, cx));
 
         this.release_lock();
 
@@ -87,7 +87,7 @@ where
         cx: &mut task::Context,
         dst: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        self.poll_lock_with(cx, |cx, reader| reader.poll_read(cx, dst))
+        self.poll_lock_with(cx, |reader, cx| reader.poll_read(cx, dst))
     }
 
     fn poll_read_vectored(
@@ -95,7 +95,7 @@ where
         cx: &mut task::Context,
         dst: &mut [IoSliceMut<'_>],
     ) -> Poll<io::Result<usize>> {
-        self.poll_lock_with(cx, |cx, reader| reader.poll_read_vectored(cx, dst))
+        self.poll_lock_with(cx, |reader, cx| reader.poll_read_vectored(cx, dst))
     }
 }
 
@@ -108,7 +108,7 @@ where
         cx: &mut task::Context,
         src: &[u8],
     ) -> Poll<io::Result<usize>> {
-        self.poll_lock_with(cx, |cx, writer| writer.poll_write(cx, src))
+        self.poll_lock_with(cx, |writer, cx| writer.poll_write(cx, src))
     }
 
     fn poll_write_vectored(
@@ -116,14 +116,14 @@ where
         cx: &mut task::Context,
         src: &[IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        self.poll_lock_with(cx, |cx, writer| writer.poll_write_vectored(cx, src))
+        self.poll_lock_with(cx, |writer, cx| writer.poll_write_vectored(cx, src))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<io::Result<()>> {
-        self.poll_lock_with(cx, |cx, writer| writer.poll_flush(cx))
+        self.poll_lock_with(cx, |writer, cx| writer.poll_flush(cx))
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<io::Result<()>> {
-        self.poll_lock_with(cx, |cx, writer| writer.poll_close(cx))
+        self.poll_lock_with(cx, |writer, cx| writer.poll_close(cx))
     }
 }

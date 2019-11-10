@@ -21,7 +21,6 @@ pub mod session;
 // re-exports from sub modules.
 #[doc(inline)]
 pub use crate::{
-    lock::Lock,
     server::{Notifier, Server},
     session::{Context, Filesystem, Operation},
 };
