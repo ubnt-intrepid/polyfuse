@@ -25,6 +25,7 @@ use polyfuse_sys::kernel::{
     fuse_notify_delete_out,
     fuse_notify_inval_entry_out,
     fuse_notify_inval_inode_out,
+    fuse_notify_poll_wakeup_out,
     fuse_notify_retrieve_out,
     fuse_notify_store_out,
 };
@@ -52,6 +53,7 @@ use reply::{
     ReplyLk,
     ReplyOpen,
     ReplyOpendir,
+    ReplyPoll,
     ReplyReadlink,
     ReplyStatfs,
     ReplyWrite,
@@ -599,6 +601,19 @@ impl Session {
                     reply: ReplyWrite::new(),
                 });
             }
+            RequestKind::Poll { arg } => {
+                run_op!(Operation::Poll {
+                    ino,
+                    fh: arg.fh,
+                    events: arg.events,
+                    kh: if arg.flags & polyfuse_sys::kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
+                        Some(arg.kh)
+                    } else {
+                        None
+                    },
+                    reply: ReplyPoll::new(),
+                });
+            }
 
             RequestKind::Init { .. } => {
                 log::warn!("ignore an INIT request after initializing the session");
@@ -797,6 +812,30 @@ impl Session {
             unique: notify_unique,
             rx: rx.fuse(),
         })
+    }
+
+    /// Send I/O readiness to the kernel.
+    pub async fn notify_poll_wakeup<W: ?Sized>(&self, writer: &mut W, kh: u64) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
+        let out = fuse_notify_poll_wakeup_out {
+            kh,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_POLL,
+            &[out.as_bytes()],
+        )
+        .await
     }
 
     async fn enable_interrupt(&self, unique: u64) -> Interrupt {
