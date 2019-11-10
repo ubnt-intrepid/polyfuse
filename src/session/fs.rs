@@ -11,6 +11,7 @@ use super::{
         ReplyLk,
         ReplyOpen,
         ReplyOpendir,
+        ReplyPoll,
         ReplyReadlink,
         ReplyStatfs,
         ReplyWrite,
@@ -491,8 +492,19 @@ pub enum Operation<'a> {
         flags: u64,
         reply: ReplyWrite,
     },
+
+    /// Poll for readiness.
+    ///
+    /// When `kh` is not `None`, the filesystem should send
+    /// the notification about I/O readiness to the kernel.
+    Poll {
+        ino: u64,
+        fh: u64,
+        events: u32,
+        kh: Option<u64>,
+        reply: ReplyPoll,
+    },
 }
 
 // TODO: add operations:
 // Ioctl
-// Poll

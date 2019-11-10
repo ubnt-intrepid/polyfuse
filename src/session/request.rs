@@ -23,6 +23,7 @@ use polyfuse_sys::kernel::{
     fuse_notify_retrieve_in,
     fuse_opcode,
     fuse_open_in,
+    fuse_poll_in,
     fuse_read_in,
     fuse_release_in,
     fuse_rename2_in,
@@ -190,12 +191,14 @@ pub enum RequestKind {
         arg: Shared<fuse_notify_retrieve_in>,
         data: Bytes,
     },
+    Poll {
+        arg: Shared<fuse_poll_in>,
+    },
     Unknown,
 }
 
 // TODO: add opcodes:
 // Ioctl,
-// Poll,
 
 #[derive(Debug)]
 pub struct Parser<'a> {
@@ -399,6 +402,10 @@ impl<'a> Parser<'a> {
             fuse_opcode::FUSE_COPY_FILE_RANGE => {
                 let arg = self.fetch()?;
                 Ok(RequestKind::CopyFileRange { arg })
+            }
+            fuse_opcode::FUSE_POLL => {
+                let arg = self.fetch()?;
+                Ok(RequestKind::Poll { arg })
             }
             fuse_opcode::FUSE_BATCH_FORGET => {
                 let arg = self.fetch::<fuse_batch_forget_in>()?;

@@ -14,10 +14,12 @@ use polyfuse_sys::kernel::{
     fuse_notify_delete_out,
     fuse_notify_inval_entry_out,
     fuse_notify_inval_inode_out,
+    fuse_notify_poll_wakeup_out,
     fuse_notify_retrieve_out,
     fuse_notify_store_out,
     fuse_open_out,
     fuse_out_header,
+    fuse_poll_out,
     fuse_statfs_out,
     fuse_write_out,
 };
@@ -62,11 +64,13 @@ impl_as_ref_for_abi! {
     fuse_statfs_out,
     fuse_lk_out,
     fuse_bmap_out,
+    fuse_poll_out,
     fuse_notify_inval_inode_out,
     fuse_notify_inval_entry_out,
     fuse_notify_delete_out,
     fuse_notify_store_out,
     fuse_notify_retrieve_out,
+    fuse_notify_poll_wakeup_out,
 }
 
 /// Reply with an empty output.
@@ -565,6 +569,29 @@ impl ReplyBmap {
     pub async fn block(self, cx: &mut Context<'_>, block: u64) -> io::Result<()> {
         let out = fuse_bmap_out {
             block,
+            ..Default::default()
+        };
+        cx.reply(out.as_bytes()).await
+    }
+}
+
+/// Reply with the poll result.
+#[derive(Debug)]
+#[must_use]
+pub struct ReplyPoll {
+    _p: (),
+}
+
+impl ReplyPoll {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self { _p: () }
+    }
+
+    /// Reply to the kernel with a poll event mask.
+    pub async fn events(self, cx: &mut Context<'_>, revents: u32) -> io::Result<()> {
+        let out = fuse_poll_out {
+            revents,
             ..Default::default()
         };
         cx.reply(out.as_bytes()).await
