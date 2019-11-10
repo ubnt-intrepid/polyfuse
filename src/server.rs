@@ -39,6 +39,7 @@ impl Server {
         })
     }
 
+    /// Create an instance of `Notifier` associated with this server.
     pub fn notifier(&mut self) -> io::Result<Notifier> {
         let writer = match self.notify_writer {
             Some(ref writer) => writer,
@@ -148,6 +149,11 @@ impl Notifier {
         self.session
             .notify_retrieve(&mut *writer, ino, offset, size)
             .await
+    }
+
+    pub async fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
+        self.session.notify_poll_wakeup(&mut *writer, kh).await
     }
 }
 
