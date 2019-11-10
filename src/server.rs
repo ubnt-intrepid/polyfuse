@@ -93,7 +93,7 @@ impl Server {
                 let fs = fs.clone();
                 let mut writer = writer.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = session.process(&*fs, req, &mut writer).await {
+                    if let Err(e) = session.process(&*fs, &req, &mut writer).await {
                         log::error!("error during handling a request: {}", e);
                     }
                 });

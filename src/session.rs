@@ -206,7 +206,7 @@ impl Session {
     pub async fn process<F: ?Sized, W: ?Sized>(
         &self,
         fs: &F,
-        req: Request,
+        req: &Request,
         writer: &mut W,
     ) -> io::Result<()>
     where
@@ -400,7 +400,7 @@ impl Session {
                     ino,
                     fh: arg.fh,
                     offset: arg.offset,
-                    data,
+                    data: &*data,
                     flags: arg.flags,
                     lock_owner: arg.lock_owner(),
                     reply: ReplyWrite::new(),
@@ -493,7 +493,7 @@ impl Session {
                     ino,
                     fh: arg.fh,
                     offset: arg.offset,
-                    plus,
+                    plus: *plus,
                     reply: ReplyData::new(arg.size),
                 });
             }
@@ -550,7 +550,7 @@ impl Session {
                         fh: arg.fh,
                         owner: arg.owner,
                         lk: FileLock::new(&arg.lk),
-                        sleep,
+                        sleep: *sleep,
                         reply: ReplyEmpty::new(),
                     });
                 }
