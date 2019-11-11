@@ -3,10 +3,7 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use futures::{
-    future::{Future, FutureExt},
-    select,
-};
+use futures::{future::FutureExt, select};
 use polyfuse::{session::DirEntry, Context, Filesystem, Operation, Server};
 use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 
@@ -73,11 +70,9 @@ impl Hello {
     }
 }
 
-fn expensive_task() -> impl Future<Output = io::Result<()>> + Unpin {
-    Box::pin(async {
-        tokio::time::delay_for(std::time::Duration::from_secs(10)).await;
-        Ok(())
-    })
+async fn expensive_task() -> io::Result<()> {
+    tokio::time::delay_for(std::time::Duration::from_secs(10)).await;
+    Ok(())
 }
 
 #[async_trait]
@@ -117,22 +112,24 @@ impl Filesystem for Hello {
             } => match ino {
                 1 => cx.reply_err(libc::EISDIR).await,
                 2 => {
-                    let mut task = expensive_task().fuse();
+                    let mut task = Box::pin(expensive_task()).fuse();
                     let mut intr = cx.on_interrupt().await;
+                    let this = self;
                     select! {
-                        res = task => res?,
-                        _ = intr => return cx.reply_err(libc::EINTR).await,
-                    }
+                        res = task => {
+                            res?;
+                            let offset = offset as usize;
+                            let size = reply.size() as usize;
+                            if offset >= this.content.len() {
+                                return reply.data(cx, &[]).await;
+                            }
 
-                    let offset = offset as usize;
-                    let size = reply.size() as usize;
-                    if offset >= self.content.len() {
-                        return reply.data(cx, &[]).await;
+                            let data = &this.content.as_bytes()[offset..];
+                            let data = &data[..std::cmp::min(data.len(), size)];
+                            reply.data(cx, data).await
+                        },
+                        _ = intr => cx.reply_err(libc::EINTR).await,
                     }
-
-                    let data = &self.content.as_bytes()[offset..];
-                    let data = &data[..std::cmp::min(data.len(), size)];
-                    reply.data(cx, data).await
                 }
                 _ => cx.reply_err(libc::ENOENT).await,
             },
