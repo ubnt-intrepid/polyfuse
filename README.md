@@ -33,29 +33,32 @@
 
 The goal of this project is to provide a Rust FUSE library that has a high affinity with the `async`/`.await` syntax stabilized in Rust 1.39.
 
-## Status
-
-Under development
-
-## Platforms
-
-Currently, `polyfuse` only supports the Linux platforms with the FUSE ABI version is 7.23 or higher.
-The required kernel version is Linux 3.15 or later.
-
-Adding support for other Unix platform running FUSE (FreeBSD, macOS, and so on) is a future work.
-
 ## Installation
 
 Add a dependency to your package using [`cargo-edit`](https://github.com/killercup/cargo-edit) as follows:
 
 ```shell-session
-$ cargo add polyfuse --git https://github.com/ubnt-intrepid/polyfuse.git
-
-$ cargo add async-trait@0.1
-$ cargo add tokio --git https://github.com/tokio-rs/tokio.git
+$ cargo add polyfuse@0.1 async-trait@0.1
 ```
 
-Furthermore, the dependency for `libfuse` is required to establish the connection with the FUSE kernel driver.
+To run FUSE daemon, it is necessary to choose appropriate supporting package according to the asynchronous runtime to be used.
+Currently, `polyfuse` only provides a support for the [`tokio`](https://github.com/tokio-rs/tokio) and adding support for [`async-std`](https://github.com/async-rs/async-std) is a future work).
+
+```
+$ cargo add tokio --git https://github.com/tokio-rs/tokio.git
+$ cargo add polyfuse-tokio --git https://github.com/ubnt-intrepid/polyfuse.git
+```
+
+## Platform Requirements
+
+Currently, `polyfuse` only supports the Linux platforms with the FUSE ABI version is 7.23 or higher.
+The required kernel version is Linux 3.15 or later.
+
+> Adding support for other Unix platform running FUSE (FreeBSD, macOS, and so on) is a future work.
+
+In order to establish the connection with the FUSE kernel driver, the command
+`fusermount` must be installed on the platform where the filesystem runs.
+This binary is typically including in the fuse package provided by the distribution's package system.
 
 On Debian/Ubuntu or other APT based distributions:
 
