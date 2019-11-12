@@ -13,10 +13,9 @@ mod request;
 
 pub use dirent::{DirEntry, DirEntryType};
 pub use fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation};
-pub use request::{Request, RequestReader};
+pub use request::{Request, RequestData};
 
 use bitflags::bitflags;
-use bytes::Bytes;
 use futures::{
     channel::oneshot,
     future::{Fuse, FusedFuture, Future, FutureExt},
@@ -35,6 +34,7 @@ use polyfuse_sys::kernel::{
     fuse_notify_poll_wakeup_out,
     fuse_notify_retrieve_out,
     fuse_notify_store_out,
+    fuse_opcode,
     FUSE_KERNEL_MINOR_VERSION,
     FUSE_KERNEL_VERSION,
     FUSE_MAX_PAGES,
@@ -98,7 +98,7 @@ pub struct Session {
     exited: AtomicBool,
     interrupt_state: Mutex<InterruptState>,
     notify_unique: AtomicU64,
-    notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, Bytes)>>>,
+    notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, RequestData)>>>,
 }
 
 #[derive(Debug)]
@@ -119,14 +119,9 @@ impl Session {
     {
         loop {
             let mut req = Request::new(BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES);
+            req.receive(io).await?;
 
-            let terminated = req.receive(io).await?;
-            if terminated {
-                log::warn!("connection has already been closed");
-                return Err(io::Error::from_raw_os_error(libc::ENODEV));
-            }
-
-            let (header, kind, _) = req.parse()?;
+            let (header, kind, _) = req.extract()?;
 
             match kind {
                 RequestKind::Init { arg: init_in } => {
@@ -241,38 +236,50 @@ impl Session {
         self.exited.load(Ordering::SeqCst)
     }
 
+    /// Returns the information about the FUSE connection.
     pub fn connection_info(&self) -> &ConnectionInfo {
         &self.conn
     }
 
+    /// Returns the buffer size required to receive one request.
     pub fn buffer_size(&self) -> usize {
         self.bufsize
     }
 
-    async fn handle_incoming_request(&self, req: &mut Request) -> io::Result<bool> {
-        let (header, kind, data) = req.parse()?;
-        match kind {
-            RequestKind::Interrupt { arg } => {
-                log::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
-                self.send_interrupt(arg.unique).await;
-                Ok(true)
-            }
-            RequestKind::NotifyReply { arg } => {
-                let unique = header.unique;
-                let data = data.expect("empty data");
-                log::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
-                self.send_notify_reply(unique, arg.offset, data).await;
-                Ok(true)
-            }
-            _ => {
-                // check if the request is already interrupted by the kernel.
-                let mut state = self.interrupt_state.lock().await;
-                if state.interrupted.remove(&header.unique) {
-                    log::debug!("The request was interrupted (unique={})", header.unique);
-                    Ok(true)
-                } else {
-                    Ok(false)
+    /// Receive one or more requests from the kernel.
+    pub async fn receive<R: ?Sized>(&self, reader: &mut R, req: &mut Request) -> io::Result<()>
+    where
+        R: AsyncRead + Unpin,
+    {
+        loop {
+            req.receive(reader).await?;
+
+            match req.opcode() {
+                Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
+                _ => {
+                    // check if the request is already interrupted by the kernel.
+                    let mut state = self.interrupt_state.lock().await;
+                    if state.interrupted.remove(&req.unique()) {
+                        log::debug!("The request was interrupted (unique={})", req.unique());
+                        continue;
+                    }
+
+                    return Ok(());
                 }
+            }
+
+            let (header, kind, data) = req.extract()?;
+            match kind {
+                RequestKind::Interrupt { arg } => {
+                    log::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
+                    self.send_interrupt(arg.unique).await;
+                }
+                RequestKind::NotifyReply { arg } => {
+                    let unique = header.unique;
+                    log::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
+                    self.send_notify_reply(unique, arg.offset, data).await;
+                }
+                _ => unreachable!(),
             }
         }
     }
@@ -302,7 +309,7 @@ impl Session {
             req.opcode(),
         );
 
-        let (header, kind, data) = req.parse()?;
+        let (header, kind, data) = req.extract()?;
         let ino = header.nodeid;
 
         let mut cx = Context {
@@ -472,7 +479,6 @@ impl Session {
                 });
             }
             RequestKind::Write { arg } => {
-                let data = data.expect("empty data");
                 debug_assert_eq!(data.len(), arg.size as usize);
 
                 run_op!(Operation::Write {
@@ -935,7 +941,7 @@ impl Session {
         }
     }
 
-    async fn send_notify_reply(&self, unique: u64, offset: u64, data: Bytes) {
+    async fn send_notify_reply(&self, unique: u64, offset: u64, data: RequestData) {
         if let Some(tx) = self.notify_remains.lock().await.remove(&unique) {
             let _ = tx.send((offset, data));
         }
@@ -1020,7 +1026,7 @@ impl FusedFuture for Interrupt {
 #[derive(Debug)]
 pub struct NotifyRetrieve {
     unique: u64,
-    rx: Fuse<oneshot::Receiver<(u64, Bytes)>>,
+    rx: Fuse<oneshot::Receiver<(u64, RequestData)>>,
 }
 
 impl NotifyRetrieve {
@@ -1030,7 +1036,7 @@ impl NotifyRetrieve {
 }
 
 impl Future for NotifyRetrieve {
-    type Output = (u64, Bytes);
+    type Output = (u64, RequestData);
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
         self.rx.poll_unpin(cx).map(|res| res.expect("canceled"))

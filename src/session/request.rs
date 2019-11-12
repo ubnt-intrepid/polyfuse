@@ -1,4 +1,3 @@
-use super::Session;
 use bytes::{Bytes, BytesMut};
 use futures::{future::poll_fn, io::AsyncRead, ready};
 use polyfuse_sys::kernel::{
@@ -43,40 +42,7 @@ use std::{
     task::Poll,
 };
 
-/// Reader for FUSE requests.
-#[derive(Debug, Default)]
-pub struct RequestReader {
-    _p: (),
-}
-
-impl RequestReader {
-    /// Receive some amount of FUSE requests from the kernel,
-    /// and return a `Request` to be processed.
-    pub async fn read<R: ?Sized>(
-        &mut self,
-        reader: &mut R,
-        session: &Session,
-    ) -> io::Result<Option<Request>>
-    where
-        R: AsyncRead + Unpin,
-    {
-        let mut req = Request::new(session.buffer_size());
-
-        loop {
-            let terminated = req.receive(reader).await?;
-            if terminated {
-                return Ok(None);
-            }
-
-            let handled = session.handle_incoming_request(&mut req).await?;
-            if !handled {
-                return Ok(Some(req));
-            }
-        }
-    }
-}
-
-/// An incoming FUSE request received from the kernel.
+/// A buffer that stores a FUSE request.
 #[derive(Debug)]
 pub struct Request {
     header: fuse_in_header,
@@ -130,7 +96,7 @@ impl RequestPayload {
 }
 
 impl Request {
-    pub(crate) fn new(bufsize: usize) -> Self {
+    pub fn new(bufsize: usize) -> Self {
         Self {
             header: unsafe { mem::zeroed() },
             payload: RequestPayload::Unique(BytesMut::with_capacity(bufsize)),
@@ -146,7 +112,8 @@ impl Request {
         fuse_opcode::try_from(self.header.opcode).ok()
     }
 
-    pub(crate) async fn receive<R: ?Sized>(&mut self, reader: &mut R) -> io::Result<bool>
+    /// Transfer one request queued in the kernel driver into this buffer.
+    pub(crate) async fn receive<R: ?Sized>(&mut self, reader: &mut R) -> io::Result<()>
     where
         R: AsyncRead + Unpin,
     {
@@ -188,14 +155,13 @@ impl Request {
                         unsafe {
                             payload.set_len(len - mem::size_of::<fuse_in_header>());
                         }
-                        return Poll::Ready(Ok(false));
+                        return Poll::Ready(Ok(()));
                     }
                     Err(err) => match err.raw_os_error() {
                         Some(libc::ENOENT) | Some(libc::EINTR) => {
                             log::debug!("continue reading from the kernel");
                             continue;
                         }
-                        Some(libc::ENODEV) => return Poll::Ready(Ok(true)),
                         _ => return Poll::Ready(Err(err)),
                     },
                 }
@@ -204,13 +170,13 @@ impl Request {
         .await
     }
 
-    pub(crate) fn parse(
+    /// Extract the content of request from the buffer.
+    pub(crate) fn extract(
         &mut self,
-    ) -> io::Result<(&fuse_in_header, RequestKind<'_>, Option<Bytes>)> {
-        let header = &self.header;
-
-        let opcode = fuse_opcode::try_from(header.opcode)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    ) -> io::Result<(&fuse_in_header, RequestKind<'_>, RequestData)> {
+        let opcode = self
+            .opcode()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid opcode"))?;
 
         let (kind, data) = match opcode {
             fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_NOTIFY_REPLY => {
@@ -221,16 +187,16 @@ impl Request {
                 let kind = parser.parse(opcode)?;
                 data.split_to(parser.offset());
 
-                (kind, Some(data))
+                (kind, RequestData::new(data))
             }
             _ => {
                 let payload = self.payload.as_slice();
                 let kind = Parser::new(payload).parse(opcode)?;
-                (kind, None)
+                (kind, RequestData::empty())
             }
         };
 
-        Ok((header, kind, data))
+        Ok((&self.header, kind, data))
     }
 }
 
@@ -373,6 +339,51 @@ pub enum RequestKind<'a> {
 
 // TODO: add opcodes:
 // Ioctl,
+
+#[derive(Debug)]
+pub struct RequestData(Option<Bytes>);
+
+impl RequestData {
+    pub fn new(bytes: Bytes) -> Self {
+        Self(Some(bytes))
+    }
+
+    pub fn empty() -> Self {
+        Self(None)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match &self.0 {
+            Some(bytes) => bytes.is_empty(),
+            None => true,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match &self.0 {
+            Some(bytes) => bytes.len(),
+            None => 0,
+        }
+    }
+}
+
+impl AsRef<[u8]> for RequestData {
+    fn as_ref(&self) -> &[u8] {
+        match &self.0 {
+            Some(bytes) => bytes.as_ref(),
+            None => &[],
+        }
+    }
+}
+
+impl std::ops::Deref for RequestData {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
 
 #[derive(Debug)]
 pub struct Parser<'a> {

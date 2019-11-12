@@ -3,7 +3,7 @@
 use crate::{
     channel::{Channel, MountOptions},
     lock::Lock,
-    session::{Filesystem, NotifyRetrieve, RequestReader, Session},
+    session::{Filesystem, NotifyRetrieve, Request, Session},
 };
 use futures::{
     future::{Future, FutureExt},
@@ -74,25 +74,28 @@ impl Server {
         S: Future + Unpin,
     {
         let session = self.session;
-        let mut req_reader = RequestReader::default();
         let fs = Arc::new(fs);
         let mut channel = self.channel;
         let writer = Lock::new(channel.try_clone(false)?);
         let mut sig = sig.fuse();
 
         let mut main_loop = Box::pin(async move {
+            let mut req = Request::new(session.buffer_size());
             loop {
-                let mut req = match req_reader.read(&mut channel, &*session).await? {
-                    Some(req) => req,
-                    None => {
-                        log::debug!("connection was closed by the kernel");
-                        return Ok::<_, io::Error>(());
+                if let Err(err) = session.receive(&mut channel, &mut req).await {
+                    match err.raw_os_error() {
+                        Some(libc::ENODEV) => {
+                            log::debug!("connection was closed by the kernel");
+                            return Ok(());
+                        }
+                        _ => return Err(err),
                     }
-                };
+                }
 
                 let session = session.clone();
                 let fs = fs.clone();
                 let mut writer = writer.clone();
+                let mut req = std::mem::replace(&mut req, Request::new(session.buffer_size()));
                 tokio::spawn(async move {
                     if let Err(e) = session.process(&*fs, &mut req, &mut writer).await {
                         log::error!("error during handling a request: {}", e);
