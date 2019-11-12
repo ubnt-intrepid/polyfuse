@@ -1,21 +1,23 @@
 //! Serve FUSE filesystem.
 
 use crate::{channel::Channel, conn::MountOptions, lock::Lock};
+use bytes::Bytes;
 use futures::{
-    future::{Future, FutureExt},
+    future::{FusedFuture, Future, FutureExt},
     lock::Mutex,
     select,
     stream::StreamExt,
+    task::{self, Poll},
 };
 use libc::c_int;
-use polyfuse::{Filesystem, NotifyRetrieve, Request, Session};
-use std::{ffi::OsStr, io, path::Path, sync::Arc};
+use polyfuse::{BytesBuffer, Filesystem, NotifyRetrieve, Session};
+use std::{ffi::OsStr, io, path::Path, pin::Pin, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
 /// FUSE filesystem server.
 #[derive(Debug)]
 pub struct Server {
-    session: Arc<Session>,
+    session: Arc<Session<BytesBuffer>>,
     channel: Channel,
     notify_writer: Option<Arc<Mutex<Channel>>>,
 }
@@ -56,7 +58,7 @@ impl Server {
     /// Run a FUSE filesystem.
     pub async fn run<F>(self, fs: F) -> io::Result<()>
     where
-        F: Filesystem + 'static,
+        F: Filesystem<BytesBuffer> + 'static,
     {
         let sig = default_shutdown_signal()?;
         let _sig = self.run_until(fs, sig).await?;
@@ -67,7 +69,7 @@ impl Server {
     #[allow(clippy::unnecessary_mut_passed)]
     pub async fn run_until<F, S>(self, fs: F, sig: S) -> io::Result<Option<S::Output>>
     where
-        F: Filesystem + 'static,
+        F: Filesystem<BytesBuffer> + 'static,
         S: Future + Unpin,
     {
         let session = self.session;
@@ -77,7 +79,7 @@ impl Server {
         let mut sig = sig.fuse();
 
         let mut main_loop = Box::pin(async move {
-            let mut req = Request::new(session.buffer_size());
+            let mut req = BytesBuffer::new(session.buffer_size());
             loop {
                 if let Err(err) = session.receive(&mut channel, &mut req).await {
                     match err.raw_os_error() {
@@ -92,7 +94,7 @@ impl Server {
                 let session = session.clone();
                 let fs = fs.clone();
                 let mut writer = writer.clone();
-                let mut req = std::mem::replace(&mut req, Request::new(session.buffer_size()));
+                let mut req = std::mem::replace(&mut req, BytesBuffer::new(session.buffer_size()));
                 tokio::spawn(async move {
                     if let Err(e) = session.process(&*fs, &mut req, &mut writer).await {
                         log::error!("error during handling a request: {}", e);
@@ -113,7 +115,7 @@ impl Server {
 /// Notification sender to the kernel.
 #[derive(Debug, Clone)]
 pub struct Notifier {
-    session: Arc<Session>,
+    session: Arc<Session<BytesBuffer>>,
     writer: Arc<Mutex<Channel>>,
 }
 
@@ -146,16 +148,34 @@ impl Notifier {
             .await
     }
 
-    pub async fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<NotifyRetrieve> {
+    pub async fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<NotifyHandle> {
         let mut writer = self.writer.lock().await;
         self.session
             .notify_retrieve(&mut *writer, ino, offset, size)
             .await
+            .map(NotifyHandle)
     }
 
     pub async fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
         let mut writer = self.writer.lock().await;
         self.session.notify_poll_wakeup(&mut *writer, kh).await
+    }
+}
+
+#[derive(Debug)]
+pub struct NotifyHandle(NotifyRetrieve<BytesBuffer>);
+
+impl Future for NotifyHandle {
+    type Output = (u64, Bytes);
+
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().0).poll(cx)
+    }
+}
+
+impl FusedFuture for NotifyHandle {
+    fn is_terminated(&self) -> bool {
+        self.0.is_terminated()
     }
 }
 

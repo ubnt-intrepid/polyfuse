@@ -4,7 +4,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::{future::FutureExt, select};
-use polyfuse::{Context, DirEntry, Filesystem, Operation};
+use polyfuse::{Buffer, Context, DirEntry, Filesystem, Operation};
 use polyfuse_tokio::Server;
 use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 
@@ -77,8 +77,14 @@ async fn expensive_task() -> io::Result<()> {
 }
 
 #[async_trait]
-impl Filesystem for Hello {
-    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_>) -> io::Result<()> {
+impl<T: ?Sized> Filesystem<T> for Hello
+where
+    T: Buffer,
+{
+    async fn call(&self, cx: &mut Context<'_, T>, op: Operation<'_, T::Data>) -> io::Result<()>
+    where
+        T::Data: Send + 'async_trait,
+    {
         match op {
             Operation::Lookup {
                 parent,

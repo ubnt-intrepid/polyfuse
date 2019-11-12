@@ -1,5 +1,5 @@
 use bytes::{Bytes, BytesMut};
-use futures::{future::poll_fn, io::AsyncRead, ready};
+use futures::{future::Future, io::AsyncRead, ready};
 use polyfuse_sys::kernel::{
     fuse_access_in, //
     fuse_batch_forget_in,
@@ -39,27 +39,218 @@ use std::{
     mem,
     os::unix::ffi::OsStrExt,
     pin::Pin,
-    task::Poll,
+    task::{self, Poll},
 };
 
-/// A buffer that stores a FUSE request.
-#[derive(Debug)]
-pub struct Request {
-    header: fuse_in_header,
-    payload: RequestPayload,
+/// Buffer that stores FUSE requests.
+pub trait Buffer {
+    type Data;
+
+    /// Return a reference to the header part of received request.
+    fn header(&self) -> Option<&RequestHeader>;
+
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        bufsize: usize,
+    ) -> Poll<io::Result<()>>;
+
+    /// Transfer one request queued in the kernel driver into this buffer.
+    fn poll_receive<R: ?Sized>(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        reader: Pin<&mut R>,
+    ) -> Poll<io::Result<()>>
+    where
+        R: AsyncRead;
+
+    /// Extract the content of request from the buffer.
+    fn extract(&mut self) -> io::Result<Request<'_, Self::Data>>;
+}
+
+pub(crate) trait BufferExt: Buffer {
+    fn receive<'a, 'b, R: ?Sized>(
+        &'a mut self,
+        reader: &'b mut R,
+        bufsize: usize,
+    ) -> Receive<'a, 'b, Self, R>
+    where
+        R: AsyncRead,
+    {
+        Receive {
+            buf: self,
+            reader,
+            is_ready: false,
+            bufsize,
+        }
+    }
+}
+
+impl<T: ?Sized> BufferExt for T where T: Buffer {}
+
+#[allow(missing_debug_implementations)]
+pub(crate) struct Receive<'a, 'b, T: ?Sized, R: ?Sized> {
+    buf: &'a mut T,
+    reader: &'b mut R,
+    is_ready: bool,
     bufsize: usize,
 }
 
+impl<T: ?Sized, R: ?Sized> Future for Receive<'_, '_, T, R>
+where
+    T: Buffer,
+    R: AsyncRead,
+{
+    type Output = io::Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
+        let me = self.get_mut();
+        let mut buf = unsafe { Pin::new_unchecked(&mut *me.buf) };
+        let reader = unsafe { Pin::new_unchecked(&mut *me.reader) };
+
+        if !me.is_ready {
+            futures::ready!(buf.as_mut().poll_ready(cx, me.bufsize))?;
+            me.is_ready = true;
+        }
+
+        buf.poll_receive(cx, reader)
+    }
+}
+
+/// A buffer that stores a FUSE request.
 #[derive(Debug)]
-enum RequestPayload {
+pub struct BytesBuffer {
+    header: Option<RequestHeader>,
+    payload: BytesBufferPayload,
+    bufsize: usize,
+}
+
+impl BytesBuffer {
+    pub fn new(bufsize: usize) -> Self {
+        Self {
+            header: None,
+            payload: BytesBufferPayload::Unique(BytesMut::with_capacity(bufsize)),
+            bufsize,
+        }
+    }
+}
+
+impl Buffer for BytesBuffer {
+    type Data = Bytes;
+
+    fn header(&self) -> Option<&RequestHeader> {
+        self.header.as_ref()
+    }
+
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        _: &mut task::Context,
+        bufsize: usize,
+    ) -> Poll<io::Result<()>> {
+        let me = self.get_mut();
+        let payload = me.payload.make_unique(bufsize);
+        unsafe {
+            let capacity = payload.capacity();
+            payload.set_len(capacity);
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_receive<R: ?Sized>(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context,
+        reader: Pin<&mut R>,
+    ) -> Poll<io::Result<()>>
+    where
+        R: AsyncRead,
+    {
+        let me = self.get_mut();
+        let mut reader = reader;
+
+        let mut header = mem::MaybeUninit::<RequestHeader>::uninit();
+        let payload = me.payload.get_unique();
+
+        let mut vec = [
+            IoSliceMut::new(unsafe {
+                std::slice::from_raw_parts_mut(
+                    header.as_mut_ptr() as *mut u8,
+                    mem::size_of::<fuse_in_header>(),
+                )
+            }),
+            IoSliceMut::new(payload.as_mut()),
+        ];
+
+        loop {
+            match ready!(reader.as_mut().poll_read_vectored(cx, &mut vec[..])) {
+                Ok(len) => {
+                    if len < mem::size_of::<fuse_in_header>() {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "the received data from the kernel is too short",
+                        )));
+                    }
+                    let header = unsafe { header.assume_init() };
+
+                    if header.len() as usize != len {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "the payload length is mismatched to the header value",
+                        )));
+                    }
+
+                    me.header = Some(header);
+                    unsafe {
+                        payload.set_len(len - mem::size_of::<fuse_in_header>());
+                    }
+
+                    return Poll::Ready(Ok(()));
+                }
+                Err(err) => match err.raw_os_error() {
+                    Some(libc::ENOENT) | Some(libc::EINTR) => {
+                        log::debug!("continue reading from the kernel");
+                        continue;
+                    }
+                    _ => return Poll::Ready(Err(err)),
+                },
+            }
+        }
+    }
+
+    fn extract(&mut self) -> io::Result<Request<'_, Self::Data>> {
+        let header = self.header.as_ref().expect("the header is not read");
+        let opcode = header
+            .opcode()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid opcode"))?;
+
+        let kind = match opcode {
+            fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_NOTIFY_REPLY => {
+                let payload = self.payload.make_shared();
+                Parser::new(payload).parse(opcode, |parser| payload.slice_from(parser.offset()))?
+            }
+            _ => {
+                let payload = self.payload.as_slice();
+                Parser::new(payload).parse(opcode, |_| Bytes::new())?
+            }
+        };
+
+        Ok(Request::new(header, kind))
+    }
+}
+
+#[derive(Debug)]
+enum BytesBufferPayload {
     Unique(BytesMut),
     Shared(Bytes),
     Empty,
 }
 
-impl RequestPayload {
+impl BytesBufferPayload {
     fn make_unique(&mut self, bufsize: usize) -> &mut BytesMut {
         if let Self::Unique(bytes) = self {
+            let cap = bytes.capacity();
+            if cap < bufsize {
+                bytes.reserve(bufsize - cap);
+            }
             return bytes;
         }
 
@@ -70,15 +261,7 @@ impl RequestPayload {
         }
     }
 
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Unique(bytes) => bytes.as_ref(),
-            Self::Shared(bytes) => bytes.as_ref(),
-            Self::Empty => unreachable!(),
-        }
-    }
-
-    fn freeze(&mut self) -> &Bytes {
+    fn make_shared(&mut self) -> &Bytes {
         loop {
             match self {
                 Self::Shared(bytes) => return bytes,
@@ -93,115 +276,77 @@ impl RequestPayload {
             }
         }
     }
-}
 
-impl Request {
-    pub fn new(bufsize: usize) -> Self {
-        Self {
-            header: unsafe { mem::zeroed() },
-            payload: RequestPayload::Unique(BytesMut::with_capacity(bufsize)),
-            bufsize,
+    fn get_unique(&mut self) -> &mut BytesMut {
+        match self {
+            Self::Unique(bytes) => bytes,
+            Self::Shared(..) => panic!("unexpected get_unique"),
+            _ => unreachable!(),
         }
     }
 
-    pub(crate) fn unique(&self) -> u64 {
-        self.header.unique
-    }
-
-    pub(crate) fn opcode(&self) -> Option<fuse_opcode> {
-        fuse_opcode::try_from(self.header.opcode).ok()
-    }
-
-    /// Transfer one request queued in the kernel driver into this buffer.
-    pub(crate) async fn receive<R: ?Sized>(&mut self, reader: &mut R) -> io::Result<()>
-    where
-        R: AsyncRead + Unpin,
-    {
-        let header = &mut self.header;
-
-        let payload = self.payload.make_unique(self.bufsize);
-        unsafe {
-            let capacity = payload.capacity();
-            payload.set_len(capacity);
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Unique(bytes) => bytes.as_ref(),
+            Self::Shared(bytes) => bytes.as_ref(),
+            Self::Empty => unreachable!(),
         }
-
-        poll_fn(|cx| {
-            let mut vec = [
-                IoSliceMut::new(unsafe {
-                    std::slice::from_raw_parts_mut(
-                        header as *mut _ as *mut u8,
-                        mem::size_of::<fuse_in_header>(),
-                    )
-                }),
-                IoSliceMut::new(payload.as_mut()),
-            ];
-
-            loop {
-                match ready!(Pin::new(&mut *reader).poll_read_vectored(cx, &mut vec[..])) {
-                    Ok(len) => {
-                        if len < mem::size_of::<fuse_in_header>() {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "the received data from the kernel is too short",
-                            )));
-                        }
-                        if header.len as usize != len {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "the payload length is mismatched to the header value",
-                            )));
-                        }
-
-                        unsafe {
-                            payload.set_len(len - mem::size_of::<fuse_in_header>());
-                        }
-                        return Poll::Ready(Ok(()));
-                    }
-                    Err(err) => match err.raw_os_error() {
-                        Some(libc::ENOENT) | Some(libc::EINTR) => {
-                            log::debug!("continue reading from the kernel");
-                            continue;
-                        }
-                        _ => return Poll::Ready(Err(err)),
-                    },
-                }
-            }
-        })
-        .await
-    }
-
-    /// Extract the content of request from the buffer.
-    pub(crate) fn extract(
-        &mut self,
-    ) -> io::Result<(&fuse_in_header, RequestKind<'_>, RequestData)> {
-        let opcode = self
-            .opcode()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid opcode"))?;
-
-        let (kind, data) = match opcode {
-            fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_NOTIFY_REPLY => {
-                let payload = self.payload.freeze();
-                let mut data = Bytes::clone(payload);
-
-                let mut parser = Parser::new(payload);
-                let kind = parser.parse(opcode)?;
-                data.split_to(parser.offset());
-
-                (kind, RequestData::new(data))
-            }
-            _ => {
-                let payload = self.payload.as_slice();
-                let kind = Parser::new(payload).parse(opcode)?;
-                (kind, RequestData::empty())
-            }
-        };
-
-        Ok((&self.header, kind, data))
     }
 }
 
 #[derive(Debug)]
-pub enum RequestKind<'a> {
+pub struct Request<'a, T> {
+    header: &'a RequestHeader,
+    kind: RequestKind<'a, T>,
+}
+
+impl<'a, T> Request<'a, T> {
+    pub fn new(header: &'a RequestHeader, kind: RequestKind<'a, T>) -> Self {
+        Self { header, kind }
+    }
+
+    pub(crate) fn into_inner(self) -> (&'a RequestHeader, RequestKind<'a, T>) {
+        (self.header, self.kind)
+    }
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct RequestHeader(fuse_in_header);
+
+#[allow(clippy::len_without_is_empty)]
+impl RequestHeader {
+    pub fn len(&self) -> u32 {
+        self.0.len
+    }
+
+    pub fn unique(&self) -> u64 {
+        self.0.unique
+    }
+
+    pub fn opcode(&self) -> Option<fuse_opcode> {
+        fuse_opcode::try_from(self.0.opcode).ok()
+    }
+
+    pub fn nodeid(&self) -> u64 {
+        self.0.nodeid
+    }
+
+    pub fn uid(&self) -> u32 {
+        self.0.uid
+    }
+
+    pub fn gid(&self) -> u32 {
+        self.0.gid
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.0.pid
+    }
+}
+
+#[derive(Debug)]
+pub enum RequestKind<'a, T> {
     Init {
         arg: &'a fuse_init_in,
     },
@@ -254,6 +399,7 @@ pub enum RequestKind<'a> {
     },
     Write {
         arg: &'a fuse_write_in,
+        data: T,
     },
     Release {
         arg: &'a fuse_release_in,
@@ -330,6 +476,7 @@ pub enum RequestKind<'a> {
     },
     NotifyReply {
         arg: &'a fuse_notify_retrieve_in,
+        data: T,
     },
     Poll {
         arg: &'a fuse_poll_in,
@@ -339,51 +486,6 @@ pub enum RequestKind<'a> {
 
 // TODO: add opcodes:
 // Ioctl,
-
-#[derive(Debug)]
-pub struct RequestData(Option<Bytes>);
-
-impl RequestData {
-    pub fn new(bytes: Bytes) -> Self {
-        Self(Some(bytes))
-    }
-
-    pub fn empty() -> Self {
-        Self(None)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        match &self.0 {
-            Some(bytes) => bytes.is_empty(),
-            None => true,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        match &self.0 {
-            Some(bytes) => bytes.len(),
-            None => 0,
-        }
-    }
-}
-
-impl AsRef<[u8]> for RequestData {
-    fn as_ref(&self) -> &[u8] {
-        match &self.0 {
-            Some(bytes) => bytes.as_ref(),
-            None => &[],
-        }
-    }
-}
-
-impl std::ops::Deref for RequestData {
-    type Target = [u8];
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
 
 #[derive(Debug)]
 pub struct Parser<'a> {
@@ -396,7 +498,7 @@ impl<'a> Parser<'a> {
         Self { bytes, offset: 0 }
     }
 
-    fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
+    pub fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
         if self.bytes.len() < self.offset + count {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "fetch"));
         }
@@ -405,12 +507,12 @@ impl<'a> Parser<'a> {
         Ok(bytes)
     }
 
-    fn fetch_array<T>(&mut self, count: usize) -> io::Result<&'a [T]> {
+    pub fn fetch_array<T>(&mut self, count: usize) -> io::Result<&'a [T]> {
         self.fetch_bytes(mem::size_of::<T>() * count)
             .map(|bytes| unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, count) })
     }
 
-    fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
+    pub fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
         let len = self.bytes[self.offset..]
             .iter()
             .position(|&b| b == b'\0')
@@ -418,16 +520,19 @@ impl<'a> Parser<'a> {
         self.fetch_bytes(len).map(OsStr::from_bytes)
     }
 
-    fn fetch<T>(&mut self) -> io::Result<&'a T> {
+    pub fn fetch<T>(&mut self) -> io::Result<&'a T> {
         self.fetch_bytes(mem::size_of::<T>())
             .map(|data| unsafe { &*(data.as_ptr() as *const T) })
     }
 
-    fn offset(&self) -> usize {
+    pub fn offset(&self) -> usize {
         self.offset
     }
 
-    pub fn parse(&mut self, opcode: fuse_opcode) -> io::Result<RequestKind<'a>> {
+    pub fn parse<F, T>(&mut self, opcode: fuse_opcode, f: F) -> io::Result<RequestKind<'a, T>>
+    where
+        F: FnOnce(&mut Self) -> T,
+    {
         match opcode {
             fuse_opcode::FUSE_INIT => {
                 let arg = self.fetch()?;
@@ -495,7 +600,8 @@ impl<'a> Parser<'a> {
             }
             fuse_opcode::FUSE_WRITE => {
                 let arg = self.fetch()?;
-                Ok(RequestKind::Write { arg })
+                let data = f(&mut *self);
+                Ok(RequestKind::Write { arg, data })
             }
             fuse_opcode::FUSE_RELEASE => {
                 let arg = self.fetch()?;
@@ -603,7 +709,8 @@ impl<'a> Parser<'a> {
             }
             fuse_opcode::FUSE_NOTIFY_REPLY => {
                 let arg = self.fetch()?;
-                Ok(RequestKind::NotifyReply { arg })
+                let data = f(&mut *self);
+                Ok(RequestKind::NotifyReply { arg, data })
             }
             _ => Ok(RequestKind::Unknown),
         }

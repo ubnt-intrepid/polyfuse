@@ -17,6 +17,7 @@ use super::{
         ReplyWrite,
         ReplyXattr,
     },
+    request::Buffer,
     Context,
 };
 use async_trait::async_trait;
@@ -109,69 +110,81 @@ impl Forget {
 
 /// The filesystem running on the user space.
 #[async_trait]
-pub trait Filesystem: Send + Sync {
+pub trait Filesystem<T: ?Sized>: Send + Sync
+where
+    T: Buffer,
+{
     /// Handle a FUSE request from the kernel and reply with its result.
-    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_>) -> io::Result<()> {
+    async fn call(&self, cx: &mut Context<'_, T>, op: Operation<'_, T::Data>) -> io::Result<()>
+    where
+        T::Data: Send + 'async_trait,
+    {
         drop(op);
         cx.reply_err(libc::ENOSYS).await
     }
 }
 
-impl<'a, T: ?Sized> Filesystem for &'a T
+impl<'a, F: ?Sized, T: ?Sized> Filesystem<T> for &'a F
 where
-    T: Filesystem,
+    F: Filesystem<T>,
+    T: Buffer,
 {
     #[inline]
     fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3>,
-        op: Operation<'l4>,
+        cx: &'l2 mut Context<'l3, T>,
+        op: Operation<'l4, T::Data>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
         'l1: 'async_trait,
         'l2: 'async_trait,
         'l3: 'async_trait,
         'l4: 'async_trait,
+        T::Data: Send + 'async_trait,
     {
         (**self).call(cx, op)
     }
 }
 
-impl<T: ?Sized> Filesystem for Box<T>
+impl<F: ?Sized, T: ?Sized> Filesystem<T> for Box<F>
 where
-    T: Filesystem,
+    F: Filesystem<T>,
+    T: Buffer,
 {
     #[inline]
     fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3>,
-        op: Operation<'l4>,
+        cx: &'l2 mut Context<'l3, T>,
+        op: Operation<'l4, T::Data>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
         'l1: 'async_trait,
         'l2: 'async_trait,
         'l3: 'async_trait,
         'l4: 'async_trait,
+        T::Data: Send + 'async_trait,
     {
         (**self).call(cx, op)
     }
 }
 
-impl<T: ?Sized> Filesystem for std::sync::Arc<T>
+impl<F: ?Sized, T: ?Sized> Filesystem<T> for std::sync::Arc<F>
 where
-    T: Filesystem,
+    F: Filesystem<T>,
+    T: Buffer,
 {
     #[inline]
     fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3>,
-        op: Operation<'l4>,
+        cx: &'l2 mut Context<'l3, T>,
+        op: Operation<'l4, T::Data>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
         'l1: 'async_trait,
         'l2: 'async_trait,
         'l3: 'async_trait,
         'l4: 'async_trait,
+        T::Data: Send + 'async_trait,
     {
         (**self).call(cx, op)
     }
@@ -179,7 +192,7 @@ where
 
 /// The kind of FUSE requests received from the kernel.
 #[derive(Debug)]
-pub enum Operation<'a> {
+pub enum Operation<'a, T> {
     /// Look up a directory entry by name.
     Lookup {
         parent: u64,
@@ -296,7 +309,7 @@ pub enum Operation<'a> {
         ino: u64,
         fh: u64,
         offset: u64,
-        data: &'a [u8],
+        data: T,
         flags: u32,
         lock_owner: Option<u64>,
         reply: ReplyWrite,

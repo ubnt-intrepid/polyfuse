@@ -25,7 +25,7 @@ use crate::{
         ReplyWrite,
         ReplyXattr,
     },
-    request::{Request, RequestData, RequestKind},
+    request::{Buffer, BufferExt, BytesBuffer, RequestHeader, RequestKind},
 };
 use bitflags::bitflags;
 use futures::{
@@ -37,7 +37,6 @@ use futures::{
 use lazy_static::lazy_static;
 use polyfuse_sys::kernel::{
     fuse_forget_one, //
-    fuse_in_header,
     fuse_init_out,
     fuse_notify_code,
     fuse_notify_delete_out,
@@ -84,13 +83,17 @@ lazy_static! {
 
 /// FUSE session driver.
 #[derive(Debug)]
-pub struct Session {
+pub struct Session<T: ?Sized>
+where
+    T: Buffer,
+{
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
     interrupt_state: Mutex<InterruptState>,
     notify_unique: AtomicU64,
-    notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, RequestData)>>>,
+    #[allow(clippy::type_complexity)]
+    notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, T::Data)>>>,
 }
 
 #[derive(Debug)]
@@ -99,7 +102,10 @@ struct InterruptState {
     interrupted: HashSet<u64>,
 }
 
-impl Session {
+impl<T: ?Sized> Session<T>
+where
+    T: Buffer,
+{
     /// Start a new FUSE session.
     ///
     /// This function receives an INIT request from the kernel and replies
@@ -109,11 +115,14 @@ impl Session {
     where
         I: AsyncRead + AsyncWrite + Unpin,
     {
+        let init_buf_size = BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES;
         loop {
-            let mut req = Request::new(BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES);
-            req.receive(io).await?;
-
-            let (header, kind, _) = req.extract()?;
+            let mut buf = BytesBuffer::new(init_buf_size);
+            let (header, kind) = {
+                buf.receive(io, init_buf_size).await?;
+                let req = buf.extract()?;
+                req.into_inner()
+            };
 
             match kind {
                 RequestKind::Init { arg: init_in } => {
@@ -138,7 +147,7 @@ impl Session {
 
                     if init_in.major > 7 {
                         log::debug!("wait for a second INIT request with an older version.");
-                        send_msg(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
+                        send_msg(&mut *io, header.unique(), 0, &[init_out.as_bytes()]).await?;
                         continue;
                     }
 
@@ -149,7 +158,7 @@ impl Session {
                             init_in.major,
                             init_in.minor
                         );
-                        send_msg(&mut *io, header.unique, -libc::EPROTO, &[]).await?;
+                        send_msg(&mut *io, header.unique(), -libc::EPROTO, &[]).await?;
                         continue;
                     }
 
@@ -191,7 +200,7 @@ impl Session {
                         init_out.congestion_threshold
                     );
                     log::debug!("  time_gran = {}", init_out.time_gran);
-                    send_msg(&mut *io, header.unique, 0, &[init_out.as_bytes()]).await?;
+                    send_msg(&mut *io, header.unique(), 0, &[init_out.as_bytes()]).await?;
 
                     let conn = ConnectionInfo(init_out);
                     let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
@@ -211,9 +220,9 @@ impl Session {
                 _ => {
                     log::warn!(
                         "ignoring an operation before init (opcode={:?})",
-                        header.opcode
+                        header.opcode()
                     );
-                    send_msg(&mut *io, header.unique, -libc::EIO, &[]).await?;
+                    send_msg(&mut *io, header.unique(), -libc::EIO, &[]).await?;
                     continue;
                 }
             }
@@ -239,35 +248,38 @@ impl Session {
     }
 
     /// Receive one or more requests from the kernel.
-    pub async fn receive<R: ?Sized>(&self, reader: &mut R, req: &mut Request) -> io::Result<()>
+    pub async fn receive<R: ?Sized>(&self, reader: &mut R, buf: &mut T) -> io::Result<()>
     where
         R: AsyncRead + Unpin,
     {
         loop {
-            req.receive(reader).await?;
+            buf.receive(reader, self.buffer_size()).await?;
 
-            match req.opcode() {
-                Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
-                _ => {
-                    // check if the request is already interrupted by the kernel.
-                    let mut state = self.interrupt_state.lock().await;
-                    if state.interrupted.remove(&req.unique()) {
-                        log::debug!("The request was interrupted (unique={})", req.unique());
-                        continue;
+            {
+                let header = buf.header().unwrap();
+                match header.opcode() {
+                    Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
+                    _ => {
+                        // check if the request is already interrupted by the kernel.
+                        let mut state = self.interrupt_state.lock().await;
+                        if state.interrupted.remove(&header.unique()) {
+                            log::debug!("The request was interrupted (unique={})", header.unique());
+                            continue;
+                        }
+
+                        return Ok(());
                     }
-
-                    return Ok(());
                 }
             }
 
-            let (header, kind, data) = req.extract()?;
+            let (header, kind) = buf.extract()?.into_inner();
             match kind {
                 RequestKind::Interrupt { arg } => {
                     log::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
                     self.send_interrupt(arg.unique).await;
                 }
-                RequestKind::NotifyReply { arg } => {
-                    let unique = header.unique;
+                RequestKind::NotifyReply { arg, data } => {
+                    let unique = header.unique();
                     log::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
                     self.send_notify_reply(unique, arg.offset, data).await;
                 }
@@ -281,11 +293,12 @@ impl Session {
     pub async fn process<F: ?Sized, W: ?Sized>(
         &self,
         fs: &F,
-        req: &mut Request,
+        buf: &mut T,
         writer: &mut W,
     ) -> io::Result<()>
     where
-        F: Filesystem,
+        F: Filesystem<T>,
+        T::Data: Send,
         W: AsyncWrite + Send + Unpin,
     {
         let mut writer = writer;
@@ -295,14 +308,13 @@ impl Session {
             return Ok(());
         }
 
+        let (header, kind) = buf.extract()?.into_inner();
+        let ino = header.nodeid();
         log::debug!(
             "Handle a request: unique={}, opcode={:?}",
-            req.unique(),
-            req.opcode(),
+            header.unique(),
+            header.opcode(),
         );
-
-        let (header, kind, data) = req.extract()?;
-        let ino = header.nodeid;
 
         let mut cx = Context {
             header: &header,
@@ -470,14 +482,14 @@ impl Session {
                     reply: ReplyData::new(arg.size),
                 });
             }
-            RequestKind::Write { arg } => {
-                debug_assert_eq!(data.len(), arg.size as usize);
+            RequestKind::Write { arg, data } => {
+                // debug_assert_eq!(data.len(), arg.size as usize);
 
                 run_op!(Operation::Write {
                     ino,
                     fh: arg.fh,
                     offset: arg.offset,
-                    data: &*data,
+                    data,
                     flags: arg.flags,
                     lock_owner: arg.lock_owner(),
                     reply: ReplyWrite::new(),
@@ -707,7 +719,7 @@ impl Session {
             }
 
             RequestKind::Unknown => {
-                log::warn!("unsupported opcode: {:?}", header.opcode);
+                log::warn!("unsupported opcode: {:?}", header.opcode());
                 cx.reply_err(libc::ENOSYS).await?;
             }
         }
@@ -857,7 +869,7 @@ impl Session {
         ino: u64,
         offset: u64,
         size: u32,
-    ) -> io::Result<NotifyRetrieve>
+    ) -> io::Result<NotifyRetrieve<T>>
     where
         W: AsyncWrite + Unpin,
     {
@@ -933,7 +945,7 @@ impl Session {
         }
     }
 
-    async fn send_notify_reply(&self, unique: u64, offset: u64, data: RequestData) {
+    async fn send_notify_reply(&self, unique: u64, offset: u64, data: T::Data) {
         if let Some(tx) = self.notify_remains.lock().await.remove(&unique) {
             let _ = tx.send((offset, data));
         }
@@ -941,32 +953,41 @@ impl Session {
 }
 
 /// Contextural information about an incoming request.
-pub struct Context<'a> {
-    header: &'a fuse_in_header,
+pub struct Context<'a, T: ?Sized>
+where
+    T: Buffer,
+{
+    header: &'a RequestHeader,
     writer: Option<&'a mut (dyn AsyncWrite + Send + Unpin)>,
-    session: &'a Session,
+    session: &'a Session<T>,
 }
 
-impl fmt::Debug for Context<'_> {
+impl<T: ?Sized> fmt::Debug for Context<'_, T>
+where
+    T: Buffer,
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Context").finish()
     }
 }
 
-impl<'a> Context<'a> {
+impl<'a, T: ?Sized> Context<'a, T>
+where
+    T: Buffer,
+{
     /// Return the user ID of the calling process.
     pub fn uid(&self) -> u32 {
-        self.header.uid
+        self.header.uid()
     }
 
     /// Return the group ID of the calling process.
     pub fn gid(&self) -> u32 {
-        self.header.gid
+        self.header.gid()
     }
 
     /// Return the process ID of the calling process.
     pub fn pid(&self) -> u32 {
-        self.header.pid
+        self.header.pid()
     }
 
     #[inline]
@@ -977,7 +998,7 @@ impl<'a> Context<'a> {
     #[inline]
     pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()> {
         if let Some(ref mut writer) = self.writer {
-            send_msg(writer, self.header.unique, 0, data).await?;
+            send_msg(writer, self.header.unique(), 0, data).await?;
         }
         Ok(())
     }
@@ -985,7 +1006,7 @@ impl<'a> Context<'a> {
     /// Reply to the kernel with an error code.
     pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
         if let Some(ref mut writer) = self.writer {
-            send_msg(writer, self.header.unique, -error, &[]).await?;
+            send_msg(writer, self.header.unique(), -error, &[]).await?;
         }
         Ok(())
     }
@@ -993,7 +1014,7 @@ impl<'a> Context<'a> {
     /// Register the request with the sesssion and get a signal
     /// that will be notified when the request is canceld by the kernel.
     pub async fn on_interrupt(&mut self) -> Interrupt {
-        self.session.enable_interrupt(self.header.unique).await
+        self.session.enable_interrupt(self.header.unique()).await
     }
 }
 
@@ -1016,26 +1037,38 @@ impl FusedFuture for Interrupt {
 }
 
 #[derive(Debug)]
-pub struct NotifyRetrieve {
+pub struct NotifyRetrieve<T: ?Sized>
+where
+    T: Buffer,
+{
     unique: u64,
-    rx: Fuse<oneshot::Receiver<(u64, RequestData)>>,
+    rx: Fuse<oneshot::Receiver<(u64, T::Data)>>,
 }
 
-impl NotifyRetrieve {
+impl<T: ?Sized> NotifyRetrieve<T>
+where
+    T: Buffer,
+{
     pub fn unique(&self) -> u64 {
         self.unique
     }
 }
 
-impl Future for NotifyRetrieve {
-    type Output = (u64, RequestData);
+impl<T: ?Sized> Future for NotifyRetrieve<T>
+where
+    T: Buffer,
+{
+    type Output = (u64, T::Data);
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
         self.rx.poll_unpin(cx).map(|res| res.expect("canceled"))
     }
 }
 
-impl FusedFuture for NotifyRetrieve {
+impl<T: ?Sized> FusedFuture for NotifyRetrieve<T>
+where
+    T: Buffer,
+{
     fn is_terminated(&self) -> bool {
         self.rx.is_terminated()
     }
