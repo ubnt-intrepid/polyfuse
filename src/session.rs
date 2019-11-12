@@ -5,16 +5,28 @@
 // FIXME: re-enable lints.
 #![allow(clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
-pub mod reply;
-
-mod dirent;
-mod fs;
-mod request;
-
-pub use dirent::{DirEntry, DirEntryType};
-pub use fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation};
-pub use request::{Request, RequestData};
-
+use crate::{
+    fs::{FileLock, Filesystem, Forget, Operation},
+    reply::{
+        send_msg, //
+        Payload,
+        ReplyAttr,
+        ReplyBmap,
+        ReplyCreate,
+        ReplyData,
+        ReplyEmpty,
+        ReplyEntry,
+        ReplyLk,
+        ReplyOpen,
+        ReplyOpendir,
+        ReplyPoll,
+        ReplyReadlink,
+        ReplyStatfs,
+        ReplyWrite,
+        ReplyXattr,
+    },
+    request::{Request, RequestData, RequestKind},
+};
 use bitflags::bitflags;
 use futures::{
     channel::oneshot,
@@ -54,26 +66,6 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::{self, Poll},
 };
-
-use reply::{
-    send_msg, //
-    Payload,
-    ReplyAttr,
-    ReplyBmap,
-    ReplyCreate,
-    ReplyData,
-    ReplyEmpty,
-    ReplyEntry,
-    ReplyLk,
-    ReplyOpen,
-    ReplyOpendir,
-    ReplyPoll,
-    ReplyReadlink,
-    ReplyStatfs,
-    ReplyWrite,
-    ReplyXattr,
-};
-use request::RequestKind;
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;

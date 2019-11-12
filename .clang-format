@@ -1,9 +1,0 @@
----
-Language: Cpp
-BasedOnStyle: LLVM
-IndentWidth: 4
-AlwaysBreakAfterDefinitionReturnType: All
-BinPackArguments: false
-BinPackParameters: true
-BreakBeforeBraces: Linux
-PointerAlignment: Left

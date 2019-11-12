@@ -12,15 +12,19 @@
     clippy::unimplemented
 )]
 
-mod lock;
-mod server;
+pub mod reply;
 
-pub mod channel;
-pub mod session;
+mod dirent;
+mod fs;
+mod request;
+mod session;
 
-// re-exports from sub modules.
-#[doc(inline)]
 pub use crate::{
-    server::{Notifier, Server},
-    session::{Context, Filesystem, Operation},
+    dirent::{DirEntry, DirEntryType},
+    fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation},
+    request::{Request, RequestData},
+    session::{
+        CapabilityFlags, ConnectionInfo, Context, Interrupt, NotifyRetrieve, Session,
+        SessionInitializer,
+    },
 };

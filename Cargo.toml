@@ -2,8 +2,9 @@
 name = "polyfuse"
 version = "0.1.0"
 description = "Asynchronous FUSE (Filesystem in Userspace) framework"
-publish = false
 authors = [ "Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>" ]
+repository = "https://github.com/ubnt-intrepid/polyfuse.git"
+license = "MIT OR Apache-2.0"
 edition = "2018"
 
 [dependencies]
@@ -15,17 +16,11 @@ lazy_static = "1"
 libc = "0.2"
 log = "0.4"
 memoffset = "0.5"
-mio = "0.6"
 smallvec = "0.6"
-tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master" }
 
 [dependencies.polyfuse-sys]
 version = "0.1.0"
 path = "polyfuse-sys"
-
-[dev-dependencies]
-anyhow = "1"
-pretty_env_logger = "0.3"
 
 [dev-dependencies.cargo-husky]
 version = "1"
@@ -36,5 +31,7 @@ features = [ "user-hooks" ]
 members = [
   ".",
   "polyfuse-sys",
+  "polyfuse-tokio",
   "systest",
+  "examples/hello",
 ]

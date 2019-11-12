@@ -1,8 +1,6 @@
 //! Establish connection with FUSE kernel driver.
 
-mod conn;
-pub use conn::{Connection, MountOptions};
-
+use crate::conn::{Connection, MountOptions};
 use futures::{
     io::{AsyncRead, AsyncWrite},
     ready,

@@ -10,6 +10,7 @@ rm -rfv $DIR/target/doc
 
 timeout -sKILL 900 cargo doc --no-deps -p polyfuse-sys
 timeout -sKILL 900 cargo doc --no-deps -p polyfuse
+timeout -sKILL 900 cargo doc --no-deps -p polyfuse-tokio
 
 rm -rfv $DIR/target/doc/.lock
 

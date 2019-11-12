@@ -4,7 +4,8 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::{future::FutureExt, select};
-use polyfuse::{session::DirEntry, Context, Filesystem, Operation, Server};
+use polyfuse::{Context, DirEntry, Filesystem, Operation};
+use polyfuse_tokio::Server;
 use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 
 #[tokio::main]
@@ -141,7 +142,7 @@ impl Filesystem for Hello {
                     return cx.reply_err(libc::ENOENT).await;
                 }
 
-                let mut entries = smallvec::SmallVec::<[_; 3]>::new();
+                let mut entries = Vec::with_capacity(3);
                 let mut total_len = 0usize;
                 for entry in self.dir_entries.iter().skip(offset as usize) {
                     let entry = entry.as_ref();

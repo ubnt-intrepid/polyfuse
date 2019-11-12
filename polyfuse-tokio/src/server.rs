@@ -1,10 +1,6 @@
 //! Serve FUSE filesystem.
 
-use crate::{
-    channel::{Channel, MountOptions},
-    lock::Lock,
-    session::{Filesystem, NotifyRetrieve, Request, Session},
-};
+use crate::{channel::Channel, conn::MountOptions, lock::Lock};
 use futures::{
     future::{Future, FutureExt},
     lock::Mutex,
@@ -12,6 +8,7 @@ use futures::{
     stream::StreamExt,
 };
 use libc::c_int;
+use polyfuse::{Filesystem, NotifyRetrieve, Request, Session};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
