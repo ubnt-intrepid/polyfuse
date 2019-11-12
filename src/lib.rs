@@ -13,16 +13,16 @@
 )]
 
 pub mod reply;
+pub mod request;
 
 mod dirent;
 mod fs;
-mod request;
 mod session;
 
 pub use crate::{
     dirent::{DirEntry, DirEntryType},
     fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation},
-    request::{Request, RequestData},
+    request::{Buffer, BytesBuffer},
     session::{
         CapabilityFlags, ConnectionInfo, Context, Interrupt, NotifyRetrieve, Session,
         SessionInitializer,

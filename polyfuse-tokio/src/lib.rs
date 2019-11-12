@@ -4,4 +4,4 @@ mod lock;
 mod server;
 
 pub use crate::conn::MountOptions;
-pub use crate::server::{Notifier, Server};
+pub use crate::server::{Notifier, NotifyHandle, Server};
