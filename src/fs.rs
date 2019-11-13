@@ -1,7 +1,9 @@
 //! Filesystem abstraction.
 
-use super::{
+use crate::{
+    common::{FileLock, Forget},
     reply::{
+        send_msg,
         ReplyAttr, //
         ReplyBmap,
         ReplyCreate,
@@ -17,100 +19,94 @@ use super::{
         ReplyWrite,
         ReplyXattr,
     },
-    request::Buffer,
-    Context,
+    request::{Buffer, RequestHeader},
+    session::{Interrupt, Session},
 };
 use async_trait::async_trait;
-use polyfuse_sys::kernel::{
-    fuse_attr, //
-    fuse_file_lock,
-    fuse_forget_one,
-    fuse_kstatfs,
-};
-use std::{convert::TryFrom, ffi::OsStr, future::Future, io, pin::Pin};
+use futures::io::AsyncWrite;
+use std::{ffi::OsStr, fmt, future::Future, io, pin::Pin};
 
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct FileAttr(fuse_attr);
+/// Contextural information about an incoming request.
+pub struct Context<'a, T: ?Sized>
+where
+    T: Buffer,
+{
+    header: &'a RequestHeader,
+    writer: Option<&'a mut (dyn AsyncWrite + Send + Unpin)>,
+    session: &'a Session<T>,
+}
 
-impl TryFrom<libc::stat> for FileAttr {
-    type Error = <fuse_attr as TryFrom<libc::stat>>::Error;
-
-    fn try_from(st: libc::stat) -> Result<Self, Self::Error> {
-        fuse_attr::try_from(st).map(Self)
+impl<T: ?Sized> fmt::Debug for Context<'_, T>
+where
+    T: Buffer,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Context").finish()
     }
 }
 
-impl FileAttr {
-    pub(crate) fn into_inner(self) -> fuse_attr {
-        self.0
-    }
-}
-
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct FsStatistics(fuse_kstatfs);
-
-impl TryFrom<libc::statvfs> for FsStatistics {
-    type Error = <fuse_kstatfs as TryFrom<libc::statvfs>>::Error;
-
-    fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
-        fuse_kstatfs::try_from(st).map(Self)
-    }
-}
-
-impl FsStatistics {
-    pub(crate) fn into_inner(self) -> fuse_kstatfs {
-        self.0
-    }
-}
-
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct FileLock(fuse_file_lock);
-
-impl TryFrom<libc::flock> for FileLock {
-    type Error = <fuse_file_lock as TryFrom<libc::flock>>::Error;
-
-    fn try_from(lk: libc::flock) -> Result<Self, Self::Error> {
-        fuse_file_lock::try_from(lk).map(Self)
-    }
-}
-
-impl FileLock {
-    pub(crate) fn new(attr: &fuse_file_lock) -> &Self {
-        unsafe { &*(attr as *const fuse_file_lock as *const Self) }
+impl<'a, T: ?Sized> Context<'a, T>
+where
+    T: Buffer,
+{
+    pub(crate) fn new(
+        header: &'a RequestHeader,
+        writer: &'a mut (impl AsyncWrite + Send + Unpin),
+        session: &'a Session<T>,
+    ) -> Self {
+        Self {
+            header,
+            writer: Some(writer),
+            session,
+        }
     }
 
-    pub(crate) fn into_inner(self) -> fuse_file_lock {
-        self.0
-    }
-}
-
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct Forget(fuse_forget_one);
-
-impl Forget {
-    pub(crate) const fn new(ino: u64, nlookup: u64) -> Self {
-        Self(fuse_forget_one {
-            nodeid: ino,
-            nlookup,
-        })
+    /// Return the user ID of the calling process.
+    pub fn uid(&self) -> u32 {
+        self.header.uid()
     }
 
-    pub fn ino(&self) -> u64 {
-        self.0.nodeid
+    /// Return the group ID of the calling process.
+    pub fn gid(&self) -> u32 {
+        self.header.gid()
     }
 
-    pub fn nlookup(&self) -> u64 {
-        self.0.nlookup
+    /// Return the process ID of the calling process.
+    pub fn pid(&self) -> u32 {
+        self.header.pid()
+    }
+
+    #[inline]
+    pub(crate) async fn reply(&mut self, data: &[u8]) -> io::Result<()> {
+        self.reply_vectored(&[data]).await
+    }
+
+    #[inline]
+    pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()> {
+        if let Some(ref mut writer) = self.writer {
+            send_msg(writer, self.header.unique(), 0, data).await?;
+        }
+        Ok(())
+    }
+
+    /// Reply to the kernel with an error code.
+    pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
+        if let Some(ref mut writer) = self.writer {
+            send_msg(writer, self.header.unique(), -error, &[]).await?;
+        }
+        Ok(())
+    }
+
+    /// Register the request with the sesssion and get a signal
+    /// that will be notified when the request is canceld by the kernel.
+    pub async fn on_interrupt(&mut self) -> Interrupt {
+        self.session.enable_interrupt(self.header.unique()).await
     }
 }
 
 /// The filesystem running on the user space.
 #[async_trait]
-pub trait Filesystem<T: ?Sized>: Send + Sync
+pub trait Filesystem<T: ?Sized>: Sync
 where
     T: Buffer,
 {
@@ -170,7 +166,7 @@ where
 
 impl<F: ?Sized, T: ?Sized> Filesystem<T> for std::sync::Arc<F>
 where
-    F: Filesystem<T>,
+    F: Filesystem<T> + Send,
     T: Buffer,
 {
     #[inline]

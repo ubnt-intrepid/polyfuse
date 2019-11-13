@@ -15,16 +15,18 @@
 pub mod reply;
 pub mod request;
 
+mod common;
 mod dirent;
 mod fs;
+mod init;
 mod session;
 
+#[doc(inline)]
 pub use crate::{
+    common::{FileAttr, FileLock, Forget, FsStatistics},
     dirent::{DirEntry, DirEntryType},
-    fs::{FileAttr, FileLock, Filesystem, Forget, FsStatistics, Operation},
-    request::{Buffer, BytesBuffer},
-    session::{
-        CapabilityFlags, ConnectionInfo, Context, Interrupt, NotifyRetrieve, Session,
-        SessionInitializer,
-    },
+    fs::{Context, Filesystem, Operation},
+    init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
+    request::Buffer,
+    session::{Interrupt, NotifyRetrieve, Session},
 };

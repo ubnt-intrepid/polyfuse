@@ -2,7 +2,11 @@
 
 #![allow(clippy::needless_update)]
 
-use super::{Buffer, Context, FileAttr, FileLock, FsStatistics};
+use crate::{
+    common::{FileAttr, FileLock, FsStatistics},
+    fs::Context,
+    request::Buffer,
+};
 use futures::{future::poll_fn, io::AsyncWrite};
 use polyfuse_sys::kernel::{
     fuse_attr_out, //
@@ -25,7 +29,7 @@ use polyfuse_sys::kernel::{
 };
 use smallvec::SmallVec;
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     ffi::OsStr,
     io::{self, IoSlice},
     mem,
@@ -171,17 +175,12 @@ impl ReplyAttr {
     }
 
     /// Reply to the kernel with the specified attributes.
-    pub async fn attr<B: ?Sized, T>(self, cx: &mut Context<'_, B>, attr: T) -> io::Result<()>
+    pub async fn attr<T: ?Sized>(self, cx: &mut Context<'_, T>, attr: FileAttr) -> io::Result<()>
     where
-        B: Buffer,
-        T: TryInto<FileAttr>,
-        T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        T: Buffer,
     {
         let attr_out = fuse_attr_out {
-            attr: attr
-                .try_into()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-                .into_inner(),
+            attr: attr.into_inner(),
             attr_valid: self.attr_valid.0,
             ..Default::default()
         };
@@ -231,21 +230,16 @@ impl ReplyEntry {
     /// That is, the operations must ensure that the pair of
     /// entry's inode number and `generation` is unique for
     /// the lifetime of filesystem.
-    pub async fn entry<B: ?Sized, T>(
+    pub async fn entry<T: ?Sized>(
         self,
-        cx: &mut Context<'_, B>,
-        attr: T,
+        cx: &mut Context<'_, T>,
+        attr: FileAttr,
         generation: u64,
     ) -> io::Result<()>
     where
-        B: Buffer,
-        T: TryInto<FileAttr>,
-        T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        T: Buffer,
     {
-        let attr = attr
-            .try_into()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-            .into_inner();
+        let attr = attr.into_inner();
         let entry_out = fuse_entry_out {
             nodeid: attr.ino,
             generation,
@@ -457,17 +451,12 @@ impl ReplyStatfs {
     }
 
     /// Reply to the kernel with the specified statistics.
-    pub async fn stat<B: ?Sized, T>(self, cx: &mut Context<'_, B>, st: T) -> io::Result<()>
+    pub async fn stat<T: ?Sized>(self, cx: &mut Context<'_, T>, st: FsStatistics) -> io::Result<()>
     where
-        B: Buffer,
-        T: TryInto<FsStatistics>,
-        T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        T: Buffer,
     {
         let out = fuse_statfs_out {
-            st: st
-                .try_into()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-                .into_inner(),
+            st: st.into_inner(),
             ..Default::default()
         };
         cx.reply(out.as_bytes()).await
@@ -488,17 +477,12 @@ impl ReplyLk {
     }
 
     /// Reply to the kernel with the specified file lock.
-    pub async fn lock<B: ?Sized, T>(self, cx: &mut Context<'_, B>, lk: T) -> io::Result<()>
+    pub async fn lock<T: ?Sized>(self, cx: &mut Context<'_, T>, lk: FileLock) -> io::Result<()>
     where
-        B: Buffer,
-        T: TryInto<FileLock>,
-        T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        T: Buffer,
     {
         let out = fuse_lk_out {
-            lk: lk
-                .try_into()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-                .into_inner(),
+            lk: lk.into_inner(),
             ..Default::default()
         };
         cx.reply(out.as_bytes()).await
@@ -566,22 +550,17 @@ impl ReplyCreate {
     }
 
     /// Reply to the kernel with the specified entry parameters and file handle.
-    pub async fn create<B: ?Sized, T>(
+    pub async fn create<T: ?Sized>(
         self,
-        cx: &mut Context<'_, B>,
-        attr: T,
+        cx: &mut Context<'_, T>,
+        attr: FileAttr,
         generation: u64,
         fh: u64,
     ) -> io::Result<()>
     where
-        B: Buffer,
-        T: TryInto<FileAttr>,
-        T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        T: Buffer,
     {
-        let attr = attr
-            .try_into()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-            .into_inner();
+        let attr = attr.into_inner();
 
         let entry_out = fuse_entry_out {
             nodeid: attr.ino,

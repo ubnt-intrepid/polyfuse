@@ -1,3 +1,5 @@
+//! Receives and parses FUSE requests.
+
 use bytes::{Bytes, BytesMut};
 use futures::{future::Future, io::AsyncRead, ready};
 use polyfuse_sys::kernel::{
@@ -49,6 +51,7 @@ pub trait Buffer {
     /// Return a reference to the header part of received request.
     fn header(&self) -> Option<&RequestHeader>;
 
+    /// Prepare the buffer to receive the specified amount of data.
     fn poll_ready(
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
@@ -117,7 +120,7 @@ where
     }
 }
 
-/// A buffer that stores a FUSE request.
+/// A `Buffer` that stores a FUSE request in memory.
 #[derive(Debug)]
 pub struct BytesBuffer {
     header: Option<RequestHeader>,
@@ -294,6 +297,7 @@ impl BytesBufferPayload {
     }
 }
 
+/// A FUSE request.
 #[derive(Debug)]
 pub struct Request<'a, T> {
     header: &'a RequestHeader,
@@ -301,6 +305,7 @@ pub struct Request<'a, T> {
 }
 
 impl<'a, T> Request<'a, T> {
+    /// Create a new `Request` from the provided components.
     pub fn new(header: &'a RequestHeader, kind: RequestKind<'a, T>) -> Self {
         Self { header, kind }
     }
@@ -310,6 +315,9 @@ impl<'a, T> Request<'a, T> {
     }
 }
 
+/// The header part of a FUSE request.
+///
+/// This type is ABI-compatible with `fuse_in_header`.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct RequestHeader(fuse_in_header);
@@ -345,6 +353,7 @@ impl RequestHeader {
     }
 }
 
+/// The kind of FUSE request.
 #[derive(Debug)]
 pub enum RequestKind<'a, T> {
     Init {
@@ -487,6 +496,7 @@ pub enum RequestKind<'a, T> {
 // TODO: add opcodes:
 // Ioctl,
 
+/// A parser for FUSE request.
 #[derive(Debug)]
 pub struct Parser<'a> {
     bytes: &'a [u8],
@@ -498,7 +508,7 @@ impl<'a> Parser<'a> {
         Self { bytes, offset: 0 }
     }
 
-    pub fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
+    fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
         if self.bytes.len() < self.offset + count {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "fetch"));
         }
@@ -507,12 +517,12 @@ impl<'a> Parser<'a> {
         Ok(bytes)
     }
 
-    pub fn fetch_array<T>(&mut self, count: usize) -> io::Result<&'a [T]> {
+    fn fetch_array<T>(&mut self, count: usize) -> io::Result<&'a [T]> {
         self.fetch_bytes(mem::size_of::<T>() * count)
             .map(|bytes| unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, count) })
     }
 
-    pub fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
+    fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
         let len = self.bytes[self.offset..]
             .iter()
             .position(|&b| b == b'\0')
@@ -520,11 +530,12 @@ impl<'a> Parser<'a> {
         self.fetch_bytes(len).map(OsStr::from_bytes)
     }
 
-    pub fn fetch<T>(&mut self) -> io::Result<&'a T> {
+    fn fetch<T>(&mut self) -> io::Result<&'a T> {
         self.fetch_bytes(mem::size_of::<T>())
             .map(|data| unsafe { &*(data.as_ptr() as *const T) })
     }
 
+    /// Return the length of consumed bytes.
     pub fn offset(&self) -> usize {
         self.offset
     }

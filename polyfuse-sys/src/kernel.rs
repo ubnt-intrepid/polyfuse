@@ -117,7 +117,7 @@ pub const FUSE_DEV_IOC_CLONE: u32 = 0x_80_04_e5_00; // = _IOR(229, 0, uint32_t)
 #[cfg(target_os = "freebsd")]
 pub const FUSE_DEV_IOC_CLONE: u32 = 0x_40_04_e5_00; // = _IOR(229, 0, uint32_t)
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Copy, Clone)]
 #[repr(C)]
 pub struct fuse_attr {
     pub ino: u64,
@@ -138,31 +138,6 @@ pub struct fuse_attr {
     pub padding: u32,
 }
 
-impl TryFrom<libc::stat> for fuse_attr {
-    type Error = std::num::TryFromIntError;
-
-    fn try_from(attr: libc::stat) -> Result<Self, Self::Error> {
-        Ok(Self {
-            ino: u64::try_from(attr.st_ino)?,
-            size: u64::try_from(attr.st_size)?,
-            blocks: u64::try_from(attr.st_blocks)?,
-            atime: u64::try_from(attr.st_atime)?,
-            mtime: u64::try_from(attr.st_mtime)?,
-            ctime: u64::try_from(attr.st_ctime)?,
-            atimensec: u32::try_from(attr.st_atime_nsec)?,
-            mtimensec: u32::try_from(attr.st_mtime_nsec)?,
-            ctimensec: u32::try_from(attr.st_ctime_nsec)?,
-            mode: u32::try_from(attr.st_mode)?,
-            nlink: u32::try_from(attr.st_nlink)?,
-            uid: u32::try_from(attr.st_uid)?,
-            gid: u32::try_from(attr.st_gid)?,
-            rdev: u32::try_from(attr.st_gid)?,
-            blksize: u32::try_from(attr.st_blksize)?,
-            padding: 0,
-        })
-    }
-}
-
 #[derive(Debug, Default)]
 #[repr(C)]
 pub struct fuse_dirent {
@@ -180,7 +155,7 @@ pub struct fuse_direntplus {
     pub dirent: fuse_dirent,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 pub struct fuse_kstatfs {
     pub blocks: u64,
@@ -195,26 +170,7 @@ pub struct fuse_kstatfs {
     pub spare: [u32; 6usize],
 }
 
-impl TryFrom<libc::statvfs> for fuse_kstatfs {
-    type Error = std::num::TryFromIntError;
-
-    fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
-        Ok(Self {
-            bsize: u32::try_from(st.f_bsize)?,
-            frsize: u32::try_from(st.f_frsize)?,
-            blocks: u64::try_from(st.f_blocks)?,
-            bfree: u64::try_from(st.f_bfree)?,
-            bavail: u64::try_from(st.f_bavail)?,
-            files: u64::try_from(st.f_files)?,
-            ffree: u64::try_from(st.f_ffree)?,
-            namelen: u32::try_from(st.f_namemax)?,
-            padding: 0,
-            spare: [0u32; 6],
-        })
-    }
-}
-
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 pub struct fuse_file_lock {
     pub start: u64,
@@ -222,63 +178,6 @@ pub struct fuse_file_lock {
     pub typ: u32,
     pub pid: u32,
 }
-
-impl TryFrom<libc::flock> for fuse_file_lock {
-    type Error = InvalidFileLock;
-
-    #[allow(clippy::cast_sign_loss)]
-    fn try_from(lk: libc::flock) -> Result<Self, Self::Error> {
-        const F_RDLCK: u32 = libc::F_RDLCK as u32;
-        const F_WRLCK: u32 = libc::F_WRLCK as u32;
-        const F_UNLCK: u32 = libc::F_UNLCK as u32;
-
-        let lock_type = lk.l_type as u32;
-        let (start, end) = match lock_type {
-            F_UNLCK => (0, 0),
-            F_RDLCK | F_WRLCK => {
-                let start = lk.l_start as u64;
-                let end = if lk.l_len == 0 {
-                    std::u64::MAX
-                } else {
-                    start + (lk.l_len as u64) - 1
-                };
-                (start, end)
-            }
-            _ => return Err(InvalidFileLock(())),
-        };
-
-        Ok(Self {
-            start,
-            end,
-            typ: lock_type,
-            pid: lk.l_pid as u32,
-        })
-    }
-}
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct InvalidFileLock(());
-
-impl From<std::convert::Infallible> for InvalidFileLock {
-    fn from(infallible: std::convert::Infallible) -> Self {
-        match infallible {}
-    }
-}
-
-impl From<std::num::TryFromIntError> for InvalidFileLock {
-    fn from(_: std::num::TryFromIntError) -> Self {
-        Self(())
-    }
-}
-
-impl fmt::Display for InvalidFileLock {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "invalid file lock")
-    }
-}
-
-impl error::Error for InvalidFileLock {}
 
 macro_rules! define_opcode {
     ($(

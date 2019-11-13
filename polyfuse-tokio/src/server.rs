@@ -10,7 +10,7 @@ use futures::{
     task::{self, Poll},
 };
 use libc::c_int;
-use polyfuse::{BytesBuffer, Filesystem, NotifyRetrieve, Session};
+use polyfuse::{request::BytesBuffer, Filesystem, NotifyRetrieve, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, pin::Pin, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -26,11 +26,9 @@ impl Server {
     /// Create a FUSE server mounted on the specified path.
     pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
         let mut channel = Channel::open(mountpoint.as_ref(), &mountopts)?;
-        let session = Session::start(
-            &mut channel, //
-            Default::default(),
-        )
-        .await?;
+        let session = SessionInitializer::default() //
+            .init(&mut channel)
+            .await?;
         Ok(Server {
             session: Arc::new(session),
             channel,
@@ -58,7 +56,7 @@ impl Server {
     /// Run a FUSE filesystem.
     pub async fn run<F>(self, fs: F) -> io::Result<()>
     where
-        F: Filesystem<BytesBuffer> + 'static,
+        F: Filesystem<BytesBuffer> + Send + 'static,
     {
         let sig = default_shutdown_signal()?;
         let _sig = self.run_until(fs, sig).await?;
@@ -69,7 +67,7 @@ impl Server {
     #[allow(clippy::unnecessary_mut_passed)]
     pub async fn run_until<F, S>(self, fs: F, sig: S) -> io::Result<Option<S::Output>>
     where
-        F: Filesystem<BytesBuffer> + 'static,
+        F: Filesystem<BytesBuffer> + Send + 'static,
         S: Future + Unpin,
     {
         let session = self.session;

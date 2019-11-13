@@ -4,9 +4,9 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::{future::FutureExt, select};
-use polyfuse::{Buffer, Context, DirEntry, Filesystem, Operation};
+use polyfuse::{Buffer, Context, DirEntry, FileAttr, Filesystem, Operation};
 use polyfuse_tokio::Server;
-use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
+use std::{convert::TryInto, env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -49,17 +49,17 @@ struct Hello {
 }
 
 impl Hello {
-    fn root_attr(&self) -> libc::stat {
+    fn root_attr(&self) -> FileAttr {
         let mut attr: libc::stat = unsafe { std::mem::zeroed() };
         attr.st_mode = libc::S_IFDIR | 0o555;
         attr.st_ino = 1;
         attr.st_nlink = 2;
         attr.st_uid = unsafe { libc::getuid() };
         attr.st_gid = unsafe { libc::getgid() };
-        attr
+        attr.try_into().unwrap()
     }
 
-    fn hello_attr(&self) -> libc::stat {
+    fn hello_attr(&self) -> FileAttr {
         let mut attr: libc::stat = unsafe { std::mem::zeroed() };
         attr.st_mode = libc::S_IFREG | 0o444;
         attr.st_ino = 2;
@@ -67,7 +67,7 @@ impl Hello {
         attr.st_size = self.content.len() as i64;
         attr.st_uid = unsafe { libc::getuid() };
         attr.st_gid = unsafe { libc::getgid() };
-        attr
+        attr.try_into().unwrap()
     }
 }
 
