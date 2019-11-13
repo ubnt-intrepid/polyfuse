@@ -5,7 +5,6 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::{future::FutureExt, select};
 use polyfuse::{Buffer, Context, DirEntry, FileAttr, Filesystem, Operation};
-use polyfuse_tokio::Server;
 use std::{convert::TryInto, env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 
 #[tokio::main]
@@ -34,10 +33,7 @@ async fn main() -> Result<()> {
         dir_entries,
     };
 
-    Server::mount(mountpoint, Default::default())
-        .await?
-        .run(hello)
-        .await?;
+    polyfuse_tokio::mount(hello, mountpoint).await?;
 
     Ok(())
 }
