@@ -108,7 +108,7 @@ impl SessionInitializer {
         );
         if threshold == 0 {
             threshold = self.max_background * 3 / 4;
-            log::debug!("congestion_threshold <- {}", threshold);
+            tracing::debug!(congestion_threshold = threshold);
         }
         self.congestion_threshold = threshold;
         self
@@ -146,16 +146,16 @@ impl SessionInitializer {
             match kind {
                 RequestKind::Init { arg: init_in } => {
                     let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
-                    log::debug!("INIT request:");
-                    log::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
-                    log::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
-                    log::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
-                    log::debug!("  max_pages = {}", init_in.flags & FUSE_MAX_PAGES != 0);
-                    log::debug!(
+                    tracing::debug!("INIT request:");
+                    tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
+                    tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
+                    tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
+                    tracing::debug!("  max_pages = {}", init_in.flags & FUSE_MAX_PAGES != 0);
+                    tracing::debug!(
                         "  no_open_support = {}",
                         init_in.flags & FUSE_NO_OPEN_SUPPORT != 0
                     );
-                    log::debug!(
+                    tracing::debug!(
                         "  no_opendir_support = {}",
                         init_in.flags & FUSE_NO_OPENDIR_SUPPORT != 0
                     );
@@ -165,13 +165,13 @@ impl SessionInitializer {
                     init_out.minor = FUSE_KERNEL_MINOR_VERSION;
 
                     if init_in.major > 7 {
-                        log::debug!("wait for a second INIT request with an older version.");
+                        tracing::debug!("wait for a second INIT request with an older version.");
                         send_msg(&mut *io, header.unique(), 0, &[init_out.as_bytes()]).await?;
                         continue;
                     }
 
                     if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
-                        log::warn!(
+                        tracing::warn!(
                             "polyfuse supports only ABI 7.{} or later. {}.{} is not supported",
                             MINIMUM_SUPPORTED_MINOR_VERSION,
                             init_in.major,
@@ -203,21 +203,21 @@ impl SessionInitializer {
                     debug_assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
                     debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
 
-                    log::debug!("Reply to INIT:");
-                    log::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
-                    log::debug!(
+                    tracing::debug!("Reply to INIT:");
+                    tracing::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
+                    tracing::debug!(
                         "  flags = 0x{:08x} ({:?})",
                         init_out.flags,
                         CapabilityFlags::from_bits_truncate(init_out.flags)
                     );
-                    log::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
-                    log::debug!("  max_write = 0x{:08X}", init_out.max_write);
-                    log::debug!("  max_background = 0x{:04X}", init_out.max_background);
-                    log::debug!(
+                    tracing::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
+                    tracing::debug!("  max_write = 0x{:08X}", init_out.max_write);
+                    tracing::debug!("  max_background = 0x{:04X}", init_out.max_background);
+                    tracing::debug!(
                         "  congestion_threshold = 0x{:04X}",
                         init_out.congestion_threshold
                     );
-                    log::debug!("  time_gran = {}", init_out.time_gran);
+                    tracing::debug!("  time_gran = {}", init_out.time_gran);
                     send_msg(&mut *io, header.unique(), 0, &[init_out.as_bytes()]).await?;
 
                     let conn = ConnectionInfo(init_out);
@@ -226,7 +226,7 @@ impl SessionInitializer {
                     return Ok(Session::new(conn, bufsize));
                 }
                 _ => {
-                    log::warn!(
+                    tracing::warn!(
                         "ignoring an operation before init (opcode={:?})",
                         header.opcode()
                     );

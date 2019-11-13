@@ -6,11 +6,14 @@ use async_trait::async_trait;
 use futures::{future::FutureExt, select};
 use polyfuse::{Buffer, Context, DirEntry, FileAttr, Filesystem, Operation};
 use std::{convert::TryInto, env, io, os::unix::ffi::OsStrExt, path::PathBuf};
+use tracing::Level;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env::set_var("RUST_LOG", "polyfuse=debug");
-    pretty_env_logger::init();
+    let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+        .with_max_level(Level::DEBUG)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)?;
 
     let mountpoint = env::args()
         .nth(1)

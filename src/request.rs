@@ -210,7 +210,7 @@ impl Buffer for BytesBuffer {
                 }
                 Err(err) => match err.raw_os_error() {
                     Some(libc::ENOENT) | Some(libc::EINTR) => {
-                        log::debug!("continue reading from the kernel");
+                        tracing::debug!("continue reading from the kernel");
                         continue;
                     }
                     _ => return Poll::Ready(Err(err)),

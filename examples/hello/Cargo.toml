@@ -10,8 +10,9 @@ anyhow = "1"
 async-trait = "0.1"
 futures = "0.3"
 libc = "0.2"
-pretty_env_logger = "0.3"
 tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master" }
+tracing = "0.1"
+tracing-subscriber = "0.1"
 
 polyfuse = { path = "../.." }
 polyfuse-tokio = { path = "../../polyfuse-tokio" }

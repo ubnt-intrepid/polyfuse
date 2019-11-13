@@ -128,7 +128,10 @@ where
                         // check if the request is already interrupted by the kernel.
                         let mut state = self.interrupt_state.lock().await;
                         if state.interrupted.remove(&header.unique()) {
-                            log::debug!("The request was interrupted (unique={})", header.unique());
+                            tracing::debug!(
+                                "The request was interrupted (unique={})",
+                                header.unique()
+                            );
                             continue;
                         }
 
@@ -140,12 +143,12 @@ where
             let (header, kind) = buf.extract()?.into_inner();
             match kind {
                 RequestKind::Interrupt { arg } => {
-                    log::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
+                    tracing::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
                     self.send_interrupt(arg.unique).await;
                 }
                 RequestKind::NotifyReply { arg, data } => {
                     let unique = header.unique();
-                    log::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
+                    tracing::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
                     self.send_notify_reply(unique, arg.offset, data).await;
                 }
                 _ => unreachable!(),
@@ -169,13 +172,13 @@ where
         let mut writer = writer;
 
         if self.exited() {
-            log::warn!("The sesson has already been exited");
+            tracing::warn!("The sesson has already been exited");
             return Ok(());
         }
 
         let (header, kind) = buf.extract()?.into_inner();
         let ino = header.nodeid();
-        log::debug!(
+        tracing::debug!(
             "Handle a request: unique={}, opcode={:?}",
             header.unique(),
             header.opcode(),
@@ -568,7 +571,7 @@ where
             }
 
             RequestKind::Init { .. } => {
-                log::warn!("ignore an INIT request after initializing the session");
+                tracing::warn!("ignore an INIT request after initializing the session");
                 cx.reply_err(libc::EIO).await?;
             }
 
@@ -580,7 +583,7 @@ where
             }
 
             RequestKind::Unknown => {
-                log::warn!("unsupported opcode: {:?}", header.opcode());
+                tracing::warn!("unsupported opcode: {:?}", header.opcode());
                 cx.reply_err(libc::ENOSYS).await?;
             }
         }
@@ -802,7 +805,7 @@ where
         if let Some(tx) = state.remains.remove(&unique) {
             state.interrupted.insert(unique);
             let _ = tx.send(());
-            log::debug!("Sent interrupt signal to unique={}", unique);
+            tracing::debug!("Sent interrupt signal to unique={}", unique);
         }
     }
 

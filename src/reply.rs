@@ -667,7 +667,7 @@ where
     })
     .await?;
 
-    log::debug!("Reply to kernel: unique={}: error={}", unique, error);
+    tracing::debug!("Reply to kernel: unique={}: error={}", unique, error);
 
     Ok(())
 }
