@@ -28,5 +28,5 @@ pub use crate::{
     fs::{Context, Filesystem, Operation},
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
     request::Buffer,
-    session::{Interrupt, NotifyRetrieve, Session},
+    session::{Interrupt, RetrieveHandle, Session},
 };

@@ -730,7 +730,7 @@ where
         ino: u64,
         offset: u64,
         size: u32,
-    ) -> io::Result<NotifyRetrieve<T>>
+    ) -> io::Result<RetrieveHandle<T>>
     where
         W: AsyncWrite + Unpin,
     {
@@ -760,7 +760,7 @@ where
         )
         .await?;
 
-        Ok(NotifyRetrieve {
+        Ok(RetrieveHandle {
             unique: notify_unique,
             rx: rx.fuse(),
         })
@@ -813,6 +813,7 @@ where
     }
 }
 
+/// A future for awaiting an interrupt signal sent to a request.
 #[derive(Debug)]
 pub struct Interrupt(Fuse<oneshot::Receiver<()>>);
 
@@ -831,8 +832,9 @@ impl FusedFuture for Interrupt {
     }
 }
 
+/// A handle for awaiting a result of `notify_retrieve`.
 #[derive(Debug)]
-pub struct NotifyRetrieve<T: ?Sized>
+pub struct RetrieveHandle<T: ?Sized>
 where
     T: Buffer,
 {
@@ -840,16 +842,17 @@ where
     rx: Fuse<oneshot::Receiver<(u64, T::Data)>>,
 }
 
-impl<T: ?Sized> NotifyRetrieve<T>
+impl<T: ?Sized> RetrieveHandle<T>
 where
     T: Buffer,
 {
+    /// Return the unique ID of the notification.
     pub fn unique(&self) -> u64 {
         self.unique
     }
 }
 
-impl<T: ?Sized> Future for NotifyRetrieve<T>
+impl<T: ?Sized> Future for RetrieveHandle<T>
 where
     T: Buffer,
 {
@@ -860,7 +863,7 @@ where
     }
 }
 
-impl<T: ?Sized> FusedFuture for NotifyRetrieve<T>
+impl<T: ?Sized> FusedFuture for RetrieveHandle<T>
 where
     T: Buffer,
 {

@@ -10,7 +10,7 @@ use futures::{
     task::{self, Poll},
 };
 use libc::c_int;
-use polyfuse::{request::BytesBuffer, Filesystem, NotifyRetrieve, Session, SessionInitializer};
+use polyfuse::{request::BytesBuffer, Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, pin::Pin, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -146,12 +146,12 @@ impl Notifier {
             .await
     }
 
-    pub async fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<NotifyHandle> {
+    pub async fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<RetrieveHandle> {
         let mut writer = self.writer.lock().await;
         self.session
             .notify_retrieve(&mut *writer, ino, offset, size)
             .await
-            .map(NotifyHandle)
+            .map(RetrieveHandle)
     }
 
     pub async fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
@@ -161,9 +161,9 @@ impl Notifier {
 }
 
 #[derive(Debug)]
-pub struct NotifyHandle(NotifyRetrieve<BytesBuffer>);
+pub struct RetrieveHandle(polyfuse::RetrieveHandle<BytesBuffer>);
 
-impl Future for NotifyHandle {
+impl Future for RetrieveHandle {
     type Output = (u64, Bytes);
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
@@ -171,7 +171,7 @@ impl Future for NotifyHandle {
     }
 }
 
-impl FusedFuture for NotifyHandle {
+impl FusedFuture for RetrieveHandle {
     fn is_terminated(&self) -> bool {
         self.0.is_terminated()
     }
