@@ -83,7 +83,7 @@ where
 
     #[inline]
     pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()> {
-        if let Some(ref mut writer) = self.writer {
+        if let Some(ref mut writer) = self.writer.take() {
             send_msg(writer, self.header.unique(), 0, data).await?;
         }
         Ok(())
@@ -91,7 +91,7 @@ where
 
     /// Reply to the kernel with an error code.
     pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
-        if let Some(ref mut writer) = self.writer {
+        if let Some(ref mut writer) = self.writer.take() {
             send_msg(writer, self.header.unique(), -error, &[]).await?;
         }
         Ok(())
@@ -102,6 +102,10 @@ where
     pub async fn on_interrupt(&mut self) -> Interrupt {
         self.session.enable_interrupt(self.header.unique()).await
     }
+
+    pub(crate) fn is_replied(&self) -> bool {
+        self.writer.is_none()
+    }
 }
 
 /// The filesystem running on the user space.
@@ -111,12 +115,12 @@ where
     T: Buffer,
 {
     /// Handle a FUSE request from the kernel and reply with its result.
+    #[allow(unused_variables)]
     async fn call(&self, cx: &mut Context<'_, T>, op: Operation<'_, T::Data>) -> io::Result<()>
     where
         T::Data: Send + 'async_trait,
     {
-        drop(op);
-        cx.reply_err(libc::ENOSYS).await
+        Ok(())
     }
 }
 

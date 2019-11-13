@@ -161,7 +161,7 @@ where
                 reply.data_vectored(cx, &*entries).await
             }
 
-            _ => cx.reply_err(libc::ENOSYS).await,
+            _ => Ok(()),
         }
     }
 }

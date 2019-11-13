@@ -206,13 +206,14 @@ where
             }
             RequestKind::Forget { arg } => {
                 // no reply.
-                fs.call(
-                    &mut cx,
-                    Operation::Forget {
-                        forgets: &[Forget::new(ino, arg.nlookup)],
-                    },
-                )
-                .await?;
+                return fs
+                    .call(
+                        &mut cx,
+                        Operation::Forget {
+                            forgets: &[Forget::new(ino, arg.nlookup)],
+                        },
+                    )
+                    .await;
             }
             RequestKind::BatchForget { forgets, .. } => {
                 #[inline(always)]
@@ -224,13 +225,16 @@ where
                         )
                     }
                 }
-                fs.call(
-                    &mut cx,
-                    Operation::Forget {
-                        forgets: make_forgets(&*forgets),
-                    },
-                )
-                .await?;
+
+                // no reply.
+                return fs
+                    .call(
+                        &mut cx,
+                        Operation::Forget {
+                            forgets: make_forgets(&*forgets),
+                        },
+                    )
+                    .await;
             }
             RequestKind::Getattr { arg } => {
                 run_op!(Operation::Getattr {
@@ -386,6 +390,14 @@ where
                     ino,
                     reply: ReplyStatfs::new(),
                 });
+
+                if !cx.is_replied() {
+                    let mut st: libc::statvfs = unsafe { mem::zeroed() };
+                    st.f_namemax = 255;
+                    st.f_bsize = 512;
+                    let st = TryFrom::try_from(st).unwrap();
+                    ReplyStatfs::new().stat(&mut cx, st).await?;
+                }
             }
             RequestKind::Fsync { arg } => {
                 run_op!(Operation::Fsync {
@@ -586,6 +598,10 @@ where
                 tracing::warn!("unsupported opcode: {:?}", header.opcode());
                 cx.reply_err(libc::ENOSYS).await?;
             }
+        }
+
+        if !cx.is_replied() {
+            cx.reply_err(libc::ENOSYS).await?;
         }
 
         Ok(())
