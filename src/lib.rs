@@ -1,3 +1,5 @@
+#![doc(html_root_url = "https://docs.rs/polyfuse/0.1.0")]
+
 //! FUSE (Filesystem in userspace) framework for Rust.
 
 #![warn(clippy::checked_conversions)]

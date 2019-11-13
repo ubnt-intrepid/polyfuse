@@ -1,6 +1,6 @@
 //! Serve FUSE filesystem.
 
-use crate::{channel::Channel, conn::MountOptions, lock::Lock};
+use crate::{channel::Channel, lock::Lock, mount::MountOptions};
 use bytes::Bytes;
 use futures::{
     future::{FusedFuture, Future, FutureExt},
@@ -53,7 +53,7 @@ impl Server {
         })
     }
 
-    /// Run a FUSE filesystem.
+    /// Run a FUSE filesystem daemon.
     pub async fn run<F>(self, fs: F) -> io::Result<()>
     where
         F: Filesystem<BytesBuffer> + Send + 'static,
@@ -160,6 +160,7 @@ impl Notifier {
     }
 }
 
+/// A handle for awaiting the result of a `retrieve` notification.
 #[derive(Debug)]
 pub struct RetrieveHandle(polyfuse::RetrieveHandle<BytesBuffer>);
 

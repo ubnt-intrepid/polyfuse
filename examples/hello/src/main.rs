@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
         dir_entries,
     };
 
-    polyfuse_tokio::mount(hello, mountpoint).await?;
+    polyfuse_tokio::run(hello, mountpoint).await?;
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! Establish connection with FUSE kernel driver.
 
-use crate::conn::{Connection, MountOptions};
+use crate::mount::{Connection, MountOptions};
 use futures::{
     io::{AsyncRead, AsyncWrite},
     ready,
