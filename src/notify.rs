@@ -1,7 +1,7 @@
 #![allow(clippy::needless_update)]
 
 use crate::{
-    reply::{send_msg, Payload},
+    reply::{as_bytes, send_msg},
     session::Session,
 };
 use futures::{
@@ -80,7 +80,7 @@ impl<T> Notifier<T> {
         send_notify(
             writer,
             fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
-            &[out.as_bytes()],
+            &[unsafe { as_bytes(&out) }],
         )
         .await
     }
@@ -113,7 +113,7 @@ impl<T> Notifier<T> {
         send_notify(
             writer,
             fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
-            &[out.as_bytes(), name.as_bytes()],
+            &[unsafe { as_bytes(&out) }, name.as_bytes()],
         )
         .await
     }
@@ -153,7 +153,7 @@ impl<T> Notifier<T> {
         send_notify(
             writer,
             fuse_notify_code::FUSE_NOTIFY_DELETE,
-            &[out.as_bytes(), name.as_bytes()],
+            &[unsafe { as_bytes(&out) }, name.as_bytes()],
         )
         .await
     }
@@ -184,7 +184,7 @@ impl<T> Notifier<T> {
             size,
             ..Default::default()
         };
-        let data: SmallVec<[_; 4]> = Some(out.as_bytes())
+        let data: SmallVec<[_; 4]> = Some(unsafe { as_bytes(&out) })
             .into_iter()
             .chain(data.iter().copied())
             .collect();
@@ -225,7 +225,7 @@ impl<T> Notifier<T> {
         send_notify(
             writer,
             fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
-            &[out.as_bytes()],
+            &[unsafe { as_bytes(&out) }],
         )
         .await?;
 
@@ -259,7 +259,7 @@ impl<T> Notifier<T> {
         send_notify(
             writer,
             fuse_notify_code::FUSE_NOTIFY_POLL,
-            &[out.as_bytes()],
+            &[unsafe { as_bytes(&out) }],
         )
         .await
     }

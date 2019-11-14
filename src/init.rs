@@ -6,7 +6,7 @@
 )]
 
 use crate::{
-    reply::{send_msg, Payload},
+    reply::{as_bytes, send_msg},
     request::{Buffer, BufferExt, BytesBuffer, RequestKind},
     session::Session,
 };
@@ -165,7 +165,13 @@ impl SessionInitializer {
 
                     if init_in.major > 7 {
                         tracing::debug!("wait for a second INIT request with an older version.");
-                        send_msg(&mut *io, header.unique(), 0, &[init_out.as_bytes()]).await?;
+                        send_msg(
+                            &mut *io,
+                            header.unique(),
+                            0,
+                            &[unsafe { as_bytes(&init_out) }],
+                        )
+                        .await?;
                         continue;
                     }
 
@@ -217,7 +223,13 @@ impl SessionInitializer {
                         init_out.congestion_threshold
                     );
                     tracing::debug!("  time_gran = {}", init_out.time_gran);
-                    send_msg(&mut *io, header.unique(), 0, &[init_out.as_bytes()]).await?;
+                    send_msg(
+                        &mut *io,
+                        header.unique(),
+                        0,
+                        &[unsafe { as_bytes(&init_out) }],
+                    )
+                    .await?;
 
                     let conn = ConnectionInfo(init_out);
                     let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;

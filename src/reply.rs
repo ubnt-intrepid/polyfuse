@@ -12,14 +12,7 @@ use polyfuse_sys::kernel::{
     fuse_bmap_out,
     fuse_entry_out,
     fuse_getxattr_out,
-    fuse_init_out,
     fuse_lk_out,
-    fuse_notify_delete_out,
-    fuse_notify_inval_entry_out,
-    fuse_notify_inval_inode_out,
-    fuse_notify_poll_wakeup_out,
-    fuse_notify_retrieve_out,
-    fuse_notify_store_out,
     fuse_open_out,
     fuse_out_header,
     fuse_poll_out,
@@ -36,44 +29,9 @@ use std::{
     pin::Pin,
 };
 
-pub(crate) trait Payload {
-    fn as_bytes(&self) -> &[u8];
-}
-
-macro_rules! impl_as_ref_for_abi {
-    ($($t:ty,)*) => {$(
-        impl Payload for $t {
-            #[allow(unsafe_code)]
-            fn as_bytes(&self) -> &[u8] {
-                unsafe {
-                    std::slice::from_raw_parts(
-                        self as *const Self as *const u8,
-                        std::mem::size_of::<Self>(),
-                    )
-                }
-            }
-        }
-    )*}
-}
-
-impl_as_ref_for_abi! {
-    fuse_out_header,
-    fuse_init_out,
-    fuse_open_out,
-    fuse_attr_out,
-    fuse_entry_out,
-    fuse_getxattr_out,
-    fuse_write_out,
-    fuse_statfs_out,
-    fuse_lk_out,
-    fuse_bmap_out,
-    fuse_poll_out,
-    fuse_notify_inval_inode_out,
-    fuse_notify_inval_entry_out,
-    fuse_notify_delete_out,
-    fuse_notify_store_out,
-    fuse_notify_retrieve_out,
-    fuse_notify_poll_wakeup_out,
+#[inline(always)]
+pub(crate) unsafe fn as_bytes<T: Sized>(t: &T) -> &[u8] {
+    std::slice::from_raw_parts(t as *const T as *const u8, std::mem::size_of::<T>())
 }
 
 /// Reply with an empty output.
@@ -183,7 +141,7 @@ impl ReplyAttr {
             attr_valid: self.attr_valid.0,
             ..Default::default()
         };
-        cx.reply(attr_out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&attr_out) }).await
     }
 }
 
@@ -249,7 +207,7 @@ impl ReplyEntry {
             attr,
             ..Default::default()
         };
-        cx.reply(entry_out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&entry_out) }).await
     }
 }
 
@@ -326,7 +284,7 @@ impl ReplyOpen {
             open_flags: self.open_flags,
             ..Default::default()
         };
-        cx.reply(out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&out) }).await
     }
 }
 
@@ -352,7 +310,7 @@ impl ReplyWrite {
             size,
             ..Default::default()
         };
-        cx.reply(out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&out) }).await
     }
 }
 
@@ -394,7 +352,7 @@ impl ReplyOpendir {
             open_flags: self.open_flags,
             ..Default::default()
         };
-        cx.reply(out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&out) }).await
     }
 }
 
@@ -420,7 +378,7 @@ impl ReplyXattr {
             size,
             ..Default::default()
         };
-        cx.reply(out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&out) }).await
     }
 
     /// Reply to the kernel with the specified value.
@@ -458,7 +416,7 @@ impl ReplyStatfs {
             st: st.into_inner(),
             ..Default::default()
         };
-        cx.reply(out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&out) }).await
     }
 }
 
@@ -484,7 +442,7 @@ impl ReplyLk {
             lk: lk.into_inner(),
             ..Default::default()
         };
-        cx.reply(out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&out) }).await
     }
 }
 
@@ -578,8 +536,10 @@ impl ReplyCreate {
             ..Default::default()
         };
 
-        cx.reply_vectored(&[entry_out.as_bytes(), open_out.as_bytes()])
-            .await
+        cx.reply_vectored(&[unsafe { as_bytes(&entry_out) }, unsafe {
+            as_bytes(&open_out)
+        }])
+        .await
     }
 }
 
@@ -605,7 +565,7 @@ impl ReplyBmap {
             block,
             ..Default::default()
         };
-        cx.reply(out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&out) }).await
     }
 }
 
@@ -631,7 +591,7 @@ impl ReplyPoll {
             revents,
             ..Default::default()
         };
-        cx.reply(out.as_bytes()).await
+        cx.reply(unsafe { as_bytes(&out) }).await
     }
 }
 
@@ -658,7 +618,7 @@ where
     // Unfortunately, IoSlice<'_> does not implement Send and
     // the data vector must be created in `poll` function.
     poll_fn(move |cx| {
-        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(out_header.as_bytes()))
+        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(unsafe { as_bytes(&out_header) }))
             .into_iter()
             .chain(data.iter().map(|t| IoSlice::new(&*t)))
             .collect();
