@@ -90,7 +90,10 @@ impl ReplyEmpty {
     }
 
     #[inline]
-    pub async fn ok(self, cx: &mut Context<'_>) -> io::Result<()> {
+    pub async fn ok<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         cx.reply(&[]).await
     }
 }
@@ -117,7 +120,14 @@ impl ReplyData {
     ///
     /// If the data size is larger than the maximum size provided by the kernel,
     /// this method replies with the error number ERANGE.
-    pub async fn data(self, cx: &mut Context<'_>, data: impl AsRef<[u8]>) -> io::Result<()> {
+    pub async fn data<W: ?Sized>(
+        self,
+        cx: &mut Context<'_, W>,
+        data: impl AsRef<[u8]>,
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         self.data_vectored(cx, &[data.as_ref()]).await
     }
 
@@ -126,7 +136,14 @@ impl ReplyData {
     /// If the data size is larger than the maximum size provided by the kernel,
     /// this method replies with the error number ERANGE.
     #[allow(clippy::cast_possible_truncation)]
-    pub async fn data_vectored(self, cx: &mut Context<'_>, data: &[&[u8]]) -> io::Result<()> {
+    pub async fn data_vectored<W: ?Sized>(
+        self,
+        cx: &mut Context<'_, W>,
+        data: &[&[u8]],
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let len: u32 = data.iter().map(|t| t.len() as u32).sum();
         if len <= self.size {
             cx.reply_vectored(data).await
@@ -157,7 +174,10 @@ impl ReplyAttr {
     }
 
     /// Reply to the kernel with the specified attributes.
-    pub async fn attr(self, cx: &mut Context<'_>, attr: FileAttr) -> io::Result<()> {
+    pub async fn attr<W: ?Sized>(self, cx: &mut Context<'_, W>, attr: FileAttr) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let attr_out = fuse_attr_out {
             attr: attr.into_inner(),
             attr_valid: self.attr_valid.0,
@@ -209,12 +229,15 @@ impl ReplyEntry {
     /// That is, the operations must ensure that the pair of
     /// entry's inode number and `generation` is unique for
     /// the lifetime of filesystem.
-    pub async fn entry(
+    pub async fn entry<W: ?Sized>(
         self,
-        cx: &mut Context<'_>,
+        cx: &mut Context<'_, W>,
         attr: FileAttr,
         generation: u64,
-    ) -> io::Result<()> {
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let attr = attr.into_inner();
         let entry_out = fuse_entry_out {
             nodeid: attr.ino,
@@ -244,7 +267,14 @@ impl ReplyReadlink {
     }
 
     /// Reply to the kernel with the specified link value.
-    pub async fn link(self, cx: &mut Context<'_>, value: impl AsRef<OsStr>) -> io::Result<()> {
+    pub async fn link<W: ?Sized>(
+        self,
+        cx: &mut Context<'_, W>,
+        value: impl AsRef<OsStr>,
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         cx.reply(value.as_ref().as_bytes()).await
     }
 }
@@ -287,7 +317,10 @@ impl ReplyOpen {
     }
 
     /// Reply to the kernel with the specified file handle and flags.
-    pub async fn open(self, cx: &mut Context<'_>, fh: u64) -> io::Result<()> {
+    pub async fn open<W: ?Sized>(self, cx: &mut Context<'_, W>, fh: u64) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let out = fuse_open_out {
             fh,
             open_flags: self.open_flags,
@@ -311,7 +344,10 @@ impl ReplyWrite {
     }
 
     /// Reply to the kernel with the total length of written data.
-    pub async fn write(self, cx: &mut Context<'_>, size: u32) -> io::Result<()> {
+    pub async fn write<W: ?Sized>(self, cx: &mut Context<'_, W>, size: u32) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let out = fuse_write_out {
             size,
             ..Default::default()
@@ -349,7 +385,10 @@ impl ReplyOpendir {
     }
 
     /// Reply to the kernel with the specified file handle and flags.
-    pub async fn open(self, cx: &mut Context<'_>, fh: u64) -> io::Result<()> {
+    pub async fn open<W: ?Sized>(self, cx: &mut Context<'_, W>, fh: u64) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let out = fuse_open_out {
             fh,
             open_flags: self.open_flags,
@@ -373,7 +412,10 @@ impl ReplyXattr {
     }
 
     /// Reply to the kernel with the specified size value.
-    pub async fn size(self, cx: &mut Context<'_>, size: u32) -> io::Result<()> {
+    pub async fn size<W: ?Sized>(self, cx: &mut Context<'_, W>, size: u32) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let out = fuse_getxattr_out {
             size,
             ..Default::default()
@@ -382,7 +424,14 @@ impl ReplyXattr {
     }
 
     /// Reply to the kernel with the specified value.
-    pub async fn value(self, cx: &mut Context<'_>, value: impl AsRef<[u8]>) -> io::Result<()> {
+    pub async fn value<W: ?Sized>(
+        self,
+        cx: &mut Context<'_, W>,
+        value: impl AsRef<[u8]>,
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         cx.reply(value.as_ref()).await
     }
 }
@@ -401,7 +450,10 @@ impl ReplyStatfs {
     }
 
     /// Reply to the kernel with the specified statistics.
-    pub async fn stat(self, cx: &mut Context<'_>, st: FsStatistics) -> io::Result<()> {
+    pub async fn stat<W: ?Sized>(self, cx: &mut Context<'_, W>, st: FsStatistics) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let out = fuse_statfs_out {
             st: st.into_inner(),
             ..Default::default()
@@ -424,7 +476,10 @@ impl ReplyLk {
     }
 
     /// Reply to the kernel with the specified file lock.
-    pub async fn lock(self, cx: &mut Context<'_>, lk: FileLock) -> io::Result<()> {
+    pub async fn lock<W: ?Sized>(self, cx: &mut Context<'_, W>, lk: FileLock) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let out = fuse_lk_out {
             lk: lk.into_inner(),
             ..Default::default()
@@ -494,13 +549,16 @@ impl ReplyCreate {
     }
 
     /// Reply to the kernel with the specified entry parameters and file handle.
-    pub async fn create(
+    pub async fn create<W: ?Sized>(
         self,
-        cx: &mut Context<'_>,
+        cx: &mut Context<'_, W>,
         attr: FileAttr,
         generation: u64,
         fh: u64,
-    ) -> io::Result<()> {
+    ) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let attr = attr.into_inner();
 
         let entry_out = fuse_entry_out {
@@ -539,7 +597,10 @@ impl ReplyBmap {
     }
 
     /// Reply to the kernel with a mapped block index.
-    pub async fn block(self, cx: &mut Context<'_>, block: u64) -> io::Result<()> {
+    pub async fn block<W: ?Sized>(self, cx: &mut Context<'_, W>, block: u64) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let out = fuse_bmap_out {
             block,
             ..Default::default()
@@ -562,7 +623,10 @@ impl ReplyPoll {
     }
 
     /// Reply to the kernel with a poll event mask.
-    pub async fn events(self, cx: &mut Context<'_>, revents: u32) -> io::Result<()> {
+    pub async fn events<W: ?Sized>(self, cx: &mut Context<'_, W>, revents: u32) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let out = fuse_poll_out {
             revents,
             ..Default::default()

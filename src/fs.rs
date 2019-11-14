@@ -27,24 +27,20 @@ use futures::io::AsyncWrite;
 use std::{ffi::OsStr, fmt, future::Future, io, pin::Pin};
 
 /// Contextural information about an incoming request.
-pub struct Context<'a> {
+pub struct Context<'a, W: ?Sized> {
     header: &'a RequestHeader,
-    writer: Option<&'a mut (dyn AsyncWrite + Send + Unpin)>,
+    writer: Option<&'a mut W>,
     session: &'a Session,
 }
 
-impl fmt::Debug for Context<'_> {
+impl<W: ?Sized> fmt::Debug for Context<'_, W> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Context").finish()
     }
 }
 
-impl<'a> Context<'a> {
-    pub(crate) fn new(
-        header: &'a RequestHeader,
-        writer: &'a mut (impl AsyncWrite + Send + Unpin),
-        session: &'a Session,
-    ) -> Self {
+impl<'a, W: ?Sized> Context<'a, W> {
+    pub(crate) fn new(header: &'a RequestHeader, writer: &'a mut W, session: &'a Session) -> Self {
         Self {
             header,
             writer: Some(writer),
@@ -68,12 +64,18 @@ impl<'a> Context<'a> {
     }
 
     #[inline]
-    pub(crate) async fn reply(&mut self, data: &[u8]) -> io::Result<()> {
+    pub(crate) async fn reply(&mut self, data: &[u8]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         self.reply_vectored(&[data]).await
     }
 
     #[inline]
-    pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()> {
+    pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         if let Some(ref mut writer) = self.writer.take() {
             send_msg(writer, self.header.unique(), 0, data).await?;
         }
@@ -81,7 +83,10 @@ impl<'a> Context<'a> {
     }
 
     /// Reply to the kernel with an error code.
-    pub async fn reply_err(&mut self, error: i32) -> io::Result<()> {
+    pub async fn reply_err(&mut self, error: i32) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
         if let Some(ref mut writer) = self.writer.take() {
             send_msg(writer, self.header.unique(), -error, &[]).await?;
         }
@@ -104,9 +109,10 @@ impl<'a> Context<'a> {
 pub trait Filesystem<T>: Sync {
     /// Handle a FUSE request from the kernel and reply with its result.
     #[allow(unused_variables)]
-    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
+    async fn call<W: ?Sized>(&self, cx: &mut Context<'_, W>, op: Operation<'_, T>) -> io::Result<()>
     where
         T: Send + 'async_trait,
+        W: AsyncWrite + Send + Unpin,
     {
         Ok(())
     }
@@ -117,9 +123,9 @@ where
     F: Filesystem<T>,
 {
     #[inline]
-    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
+    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait, W: ?Sized>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3>,
+        cx: &'l2 mut Context<'l3, W>,
         op: Operation<'l4, T>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
@@ -128,6 +134,7 @@ where
         'l3: 'async_trait,
         'l4: 'async_trait,
         T: Send + 'async_trait,
+        W: AsyncWrite + Send + Unpin + 'async_trait,
     {
         (**self).call(cx, op)
     }
@@ -138,9 +145,9 @@ where
     F: Filesystem<T>,
 {
     #[inline]
-    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
+    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait, W: ?Sized>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3>,
+        cx: &'l2 mut Context<'l3, W>,
         op: Operation<'l4, T>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
@@ -149,6 +156,7 @@ where
         'l3: 'async_trait,
         'l4: 'async_trait,
         T: Send + 'async_trait,
+        W: AsyncWrite + Send + Unpin + 'async_trait,
     {
         (**self).call(cx, op)
     }
@@ -159,9 +167,9 @@ where
     F: Filesystem<T> + Send,
 {
     #[inline]
-    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
+    fn call<'l1, 'l2, 'l3, 'l4, 'async_trait, W: ?Sized>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3>,
+        cx: &'l2 mut Context<'l3, W>,
         op: Operation<'l4, T>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
@@ -170,6 +178,7 @@ where
         'l3: 'async_trait,
         'l4: 'async_trait,
         T: Send + 'async_trait,
+        W: AsyncWrite + Send + Unpin + 'async_trait,
     {
         (**self).call(cx, op)
     }
