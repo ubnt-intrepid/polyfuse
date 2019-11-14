@@ -23,13 +23,14 @@ pub use crate::{
     server::{Notifier, RetrieveHandle, Server},
 };
 
-use polyfuse::{request::BytesBuffer, Filesystem};
+use bytes::Bytes;
+use polyfuse::Filesystem;
 use std::{io, path::Path};
 
 /// Run a FUSE filesystem daemon mounted onto the specified path.
 pub async fn run<F>(fs: F, mountpoint: impl AsRef<Path>) -> io::Result<()>
 where
-    F: Filesystem<BytesBuffer> + Send + 'static,
+    F: Filesystem<Bytes> + Send + 'static,
 {
     let server = Server::mount(mountpoint, Default::default()).await?;
     server.run(fs).await?;

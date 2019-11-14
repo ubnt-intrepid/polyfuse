@@ -129,9 +129,8 @@ impl SessionInitializer {
     /// This function receives an INIT request from the kernel and replies
     /// after initializing the connection parameters.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn init<T, I: ?Sized>(self, io: &mut I) -> io::Result<Session<T>>
+    pub async fn init<I: ?Sized>(self, io: &mut I) -> io::Result<Session>
     where
-        T: Buffer,
         I: AsyncRead + AsyncWrite + Unpin,
     {
         let init_buf_size = BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES;

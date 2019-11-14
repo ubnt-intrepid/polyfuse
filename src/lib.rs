@@ -14,6 +14,7 @@
     clippy::unimplemented
 )]
 
+pub mod notify;
 pub mod reply;
 pub mod request;
 
@@ -29,6 +30,7 @@ pub use crate::{
     dirent::{DirEntry, DirEntryType},
     fs::{Context, Filesystem, Operation},
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
+    notify::Notifier,
     request::Buffer,
-    session::{Interrupt, RetrieveHandle, Session},
+    session::{Interrupt, Session},
 };

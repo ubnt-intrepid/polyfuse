@@ -4,7 +4,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::{future::FutureExt, select};
-use polyfuse::{Buffer, Context, DirEntry, FileAttr, Filesystem, Operation};
+use polyfuse::{Context, DirEntry, FileAttr, Filesystem, Operation};
 use std::{convert::TryInto, env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 use tracing::Level;
 
@@ -76,13 +76,10 @@ async fn expensive_task() -> io::Result<()> {
 }
 
 #[async_trait]
-impl<T: ?Sized> Filesystem<T> for Hello
-where
-    T: Buffer,
-{
-    async fn call(&self, cx: &mut Context<'_, T>, op: Operation<'_, T::Data>) -> io::Result<()>
+impl<T> Filesystem<T> for Hello {
+    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where
-        T::Data: Send + 'async_trait,
+        T: Send + 'async_trait,
     {
         match op {
             Operation::Lookup {

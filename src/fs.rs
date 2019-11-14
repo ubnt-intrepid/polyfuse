@@ -19,7 +19,7 @@ use crate::{
         ReplyWrite,
         ReplyXattr,
     },
-    request::{Buffer, RequestHeader},
+    request::RequestHeader,
     session::{Interrupt, Session},
 };
 use async_trait::async_trait;
@@ -27,32 +27,23 @@ use futures::io::AsyncWrite;
 use std::{ffi::OsStr, fmt, future::Future, io, pin::Pin};
 
 /// Contextural information about an incoming request.
-pub struct Context<'a, T: ?Sized>
-where
-    T: Buffer,
-{
+pub struct Context<'a> {
     header: &'a RequestHeader,
     writer: Option<&'a mut (dyn AsyncWrite + Send + Unpin)>,
-    session: &'a Session<T>,
+    session: &'a Session,
 }
 
-impl<T: ?Sized> fmt::Debug for Context<'_, T>
-where
-    T: Buffer,
-{
+impl fmt::Debug for Context<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Context").finish()
     }
 }
 
-impl<'a, T: ?Sized> Context<'a, T>
-where
-    T: Buffer,
-{
+impl<'a> Context<'a> {
     pub(crate) fn new(
         header: &'a RequestHeader,
         writer: &'a mut (impl AsyncWrite + Send + Unpin),
-        session: &'a Session<T>,
+        session: &'a Session,
     ) -> Self {
         Self {
             header,
@@ -110,81 +101,75 @@ where
 
 /// The filesystem running on the user space.
 #[async_trait]
-pub trait Filesystem<T: ?Sized>: Sync
-where
-    T: Buffer,
-{
+pub trait Filesystem<T>: Sync {
     /// Handle a FUSE request from the kernel and reply with its result.
     #[allow(unused_variables)]
-    async fn call(&self, cx: &mut Context<'_, T>, op: Operation<'_, T::Data>) -> io::Result<()>
+    async fn call(&self, cx: &mut Context<'_>, op: Operation<'_, T>) -> io::Result<()>
     where
-        T::Data: Send + 'async_trait,
+        T: Send + 'async_trait,
     {
         Ok(())
     }
 }
 
-impl<'a, F: ?Sized, T: ?Sized> Filesystem<T> for &'a F
+impl<'a, F: ?Sized, T> Filesystem<T> for &'a F
 where
     F: Filesystem<T>,
-    T: Buffer,
 {
     #[inline]
     fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3, T>,
-        op: Operation<'l4, T::Data>,
+        cx: &'l2 mut Context<'l3>,
+        op: Operation<'l4, T>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
         'l1: 'async_trait,
         'l2: 'async_trait,
         'l3: 'async_trait,
         'l4: 'async_trait,
-        T::Data: Send + 'async_trait,
+        T: Send + 'async_trait,
     {
         (**self).call(cx, op)
     }
 }
 
-impl<F: ?Sized, T: ?Sized> Filesystem<T> for Box<F>
+impl<F: ?Sized, T> Filesystem<T> for Box<F>
 where
     F: Filesystem<T>,
-    T: Buffer,
 {
     #[inline]
     fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3, T>,
-        op: Operation<'l4, T::Data>,
+        cx: &'l2 mut Context<'l3>,
+        op: Operation<'l4, T>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
         'l1: 'async_trait,
         'l2: 'async_trait,
         'l3: 'async_trait,
         'l4: 'async_trait,
-        T::Data: Send + 'async_trait,
+        T: Send + 'async_trait,
     {
         (**self).call(cx, op)
     }
 }
 
-impl<F: ?Sized, T: ?Sized> Filesystem<T> for std::sync::Arc<F>
+impl<F: ?Sized, T> Filesystem<T> for std::sync::Arc<F>
 where
     F: Filesystem<T> + Send,
-    T: Buffer,
 {
     #[inline]
     fn call<'l1, 'l2, 'l3, 'l4, 'async_trait>(
         &'l1 self,
-        cx: &'l2 mut Context<'l3, T>,
-        op: Operation<'l4, T::Data>,
+        cx: &'l2 mut Context<'l3>,
+        op: Operation<'l4, T>,
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
     where
         'l1: 'async_trait,
         'l2: 'async_trait,
         'l3: 'async_trait,
         'l4: 'async_trait,
-        T::Data: Send + 'async_trait,
+        T: Send + 'async_trait,
     {
         (**self).call(cx, op)
     }
