@@ -19,6 +19,7 @@ use crate::{
         ReplyReadlink,
         ReplyStatfs,
         ReplyWrite,
+        ReplyWriter,
         ReplyXattr,
     },
     request::{Buffer, BufferExt, RequestKind},
@@ -26,7 +27,7 @@ use crate::{
 use futures::{
     channel::oneshot,
     future::{Fuse, FusedFuture, Future, FutureExt},
-    io::{AsyncRead, AsyncWrite},
+    io::AsyncRead,
     lock::Mutex,
 };
 use polyfuse_sys::kernel::{fuse_forget_one, fuse_opcode};
@@ -141,16 +142,15 @@ impl Session {
         &self,
         fs: &F,
         buf: &mut B,
-        writer: &mut W,
+        writer: &W,
     ) -> io::Result<()>
     where
         F: Filesystem<B::Data>,
-        W: AsyncWrite + Send + Unpin,
+        W: ReplyWriter + Sync + Unpin,
+        W::Permit: Send,
         B: Buffer,
         B::Data: Send,
     {
-        let mut writer = writer;
-
         if self.exited() {
             tracing::warn!("The sesson has already been exited");
             return Ok(());
@@ -164,7 +164,7 @@ impl Session {
             header.opcode(),
         );
 
-        let mut cx = Context::new(&header, &mut writer, &*self);
+        let mut cx = Context::new(&header, writer, &*self);
 
         macro_rules! run_op {
             ($op:expr) => {

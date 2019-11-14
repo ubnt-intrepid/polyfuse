@@ -104,6 +104,50 @@ impl Connection {
         }
         Ok(())
     }
+
+    pub fn read(&self, dst: &mut [u8]) -> io::Result<usize> {
+        let res = cvt(unsafe {
+            libc::read(
+                self.fd, //
+                dst.as_mut_ptr() as *mut c_void,
+                dst.len(),
+            )
+        })?;
+        Ok(res as usize)
+    }
+
+    pub fn read_vectored(&self, dst: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        let res = cvt(unsafe {
+            libc::readv(
+                self.fd, //
+                dst.as_mut_ptr() as *mut iovec,
+                cmp::min(dst.len(), c_int::max_value() as usize) as c_int,
+            )
+        })?;
+        Ok(res as usize)
+    }
+
+    pub fn write(&self, src: &[u8]) -> io::Result<usize> {
+        let res = cvt(unsafe {
+            libc::write(
+                self.fd, //
+                src.as_ptr() as *const c_void,
+                src.len(),
+            )
+        })?;
+        Ok(res as usize)
+    }
+
+    pub fn write_vectored(&self, src: &[IoSlice]) -> io::Result<usize> {
+        let res = cvt(unsafe {
+            libc::writev(
+                self.fd, //
+                src.as_ptr() as *const iovec,
+                cmp::min(src.len(), c_int::max_value() as usize) as c_int,
+            )
+        })?;
+        Ok(res as usize)
+    }
 }
 
 fn exec_fusermount(
@@ -181,54 +225,30 @@ impl AsRawFd for Connection {
 }
 
 impl Read for Connection {
+    #[inline]
     fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
-        let res = cvt(unsafe {
-            libc::read(
-                self.fd, //
-                dst.as_mut_ptr() as *mut c_void,
-                dst.len(),
-            )
-        })?;
-        Ok(res as usize)
+        (&*self).read(dst)
     }
 
+    #[inline]
     fn read_vectored(&mut self, dst: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        let res = cvt(unsafe {
-            libc::readv(
-                self.fd, //
-                dst.as_mut_ptr() as *mut iovec,
-                cmp::min(dst.len(), c_int::max_value() as usize) as c_int,
-            )
-        })?;
-        Ok(res as usize)
+        (&*self).read_vectored(dst)
     }
 }
 
 impl Write for Connection {
+    #[inline]
     fn write(&mut self, src: &[u8]) -> io::Result<usize> {
-        let res = cvt(unsafe {
-            libc::write(
-                self.fd, //
-                src.as_ptr() as *const c_void,
-                src.len(),
-            )
-        })?;
-        Ok(res as usize)
+        (&*self).write(src)
     }
 
+    #[inline]
     fn write_vectored(&mut self, src: &[IoSlice]) -> io::Result<usize> {
-        let res = cvt(unsafe {
-            libc::writev(
-                self.fd, //
-                src.as_ptr() as *const iovec,
-                cmp::min(src.len(), c_int::max_value() as usize) as c_int,
-            )
-        })?;
-        Ok(res as usize)
+        (&*self).write_vectored(src)
     }
 
+    #[inline]
     fn flush(&mut self) -> io::Result<()> {
-        cvt(unsafe { libc::fsync(self.fd) })?;
         Ok(())
     }
 }

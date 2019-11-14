@@ -17,19 +17,19 @@ use crate::{
         ReplyReadlink,
         ReplyStatfs,
         ReplyWrite,
+        ReplyWriter,
         ReplyXattr,
     },
     request::RequestHeader,
     session::{Interrupt, Session},
 };
 use async_trait::async_trait;
-use futures::io::AsyncWrite;
 use std::{ffi::OsStr, fmt, future::Future, io, pin::Pin};
 
 /// Contextural information about an incoming request.
 pub struct Context<'a, W: ?Sized> {
     header: &'a RequestHeader,
-    writer: Option<&'a mut W>,
+    writer: Option<&'a W>,
     session: &'a Session,
 }
 
@@ -40,7 +40,7 @@ impl<W: ?Sized> fmt::Debug for Context<'_, W> {
 }
 
 impl<'a, W: ?Sized> Context<'a, W> {
-    pub(crate) fn new(header: &'a RequestHeader, writer: &'a mut W, session: &'a Session) -> Self {
+    pub(crate) fn new(header: &'a RequestHeader, writer: &'a W, session: &'a Session) -> Self {
         Self {
             header,
             writer: Some(writer),
@@ -66,7 +66,7 @@ impl<'a, W: ?Sized> Context<'a, W> {
     #[inline]
     pub(crate) async fn reply(&mut self, data: &[u8]) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: ReplyWriter + Unpin,
     {
         self.reply_vectored(&[data]).await
     }
@@ -74,9 +74,9 @@ impl<'a, W: ?Sized> Context<'a, W> {
     #[inline]
     pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: ReplyWriter + Unpin,
     {
-        if let Some(ref mut writer) = self.writer.take() {
+        if let Some(writer) = self.writer.take() {
             send_msg(writer, self.header.unique(), 0, data).await?;
         }
         Ok(())
@@ -85,9 +85,9 @@ impl<'a, W: ?Sized> Context<'a, W> {
     /// Reply to the kernel with an error code.
     pub async fn reply_err(&mut self, error: i32) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: ReplyWriter + Unpin,
     {
-        if let Some(ref mut writer) = self.writer.take() {
+        if let Some(writer) = self.writer.take() {
             send_msg(writer, self.header.unique(), -error, &[]).await?;
         }
         Ok(())
@@ -112,7 +112,8 @@ pub trait Filesystem<T>: Sync {
     async fn call<W: ?Sized>(&self, cx: &mut Context<'_, W>, op: Operation<'_, T>) -> io::Result<()>
     where
         T: Send + 'async_trait,
-        W: AsyncWrite + Send + Unpin,
+        W: ReplyWriter + Sync + Unpin,
+        W::Permit: Send,
     {
         Ok(())
     }
@@ -134,7 +135,8 @@ where
         'l3: 'async_trait,
         'l4: 'async_trait,
         T: Send + 'async_trait,
-        W: AsyncWrite + Send + Unpin + 'async_trait,
+        W: ReplyWriter + Sync + Unpin + 'async_trait,
+        W::Permit: Send,
     {
         (**self).call(cx, op)
     }
@@ -156,7 +158,8 @@ where
         'l3: 'async_trait,
         'l4: 'async_trait,
         T: Send + 'async_trait,
-        W: AsyncWrite + Send + Unpin + 'async_trait,
+        W: ReplyWriter + Sync + Unpin + 'async_trait,
+        W::Permit: Send,
     {
         (**self).call(cx, op)
     }
@@ -178,7 +181,8 @@ where
         'l3: 'async_trait,
         'l4: 'async_trait,
         T: Send + 'async_trait,
-        W: AsyncWrite + Send + Unpin + 'async_trait,
+        W: ReplyWriter + Sync + Unpin + 'async_trait,
+        W::Permit: Send,
     {
         (**self).call(cx, op)
     }
