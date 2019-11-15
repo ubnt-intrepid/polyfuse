@@ -3,7 +3,7 @@
 #![allow(clippy::needless_update)]
 
 use crate::{
-    common::{FileAttr, FileLock, FsStatistics},
+    common::{FileAttr, FileLock, StatFs},
     fs::Context,
 };
 use futures::{future::poll_fn, io::AsyncWrite};
@@ -408,7 +408,7 @@ impl ReplyStatfs {
     }
 
     /// Reply to the kernel with the specified statistics.
-    pub async fn stat<W: ?Sized>(self, cx: &mut Context<'_, W>, st: FsStatistics) -> io::Result<()>
+    pub async fn stat<W: ?Sized>(self, cx: &mut Context<'_, W>, st: StatFs) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {

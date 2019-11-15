@@ -6,31 +6,6 @@ fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct DirEntryType(u32);
-
-impl Default for DirEntryType {
-    fn default() -> Self {
-        Self::UNKNOWN
-    }
-}
-
-impl DirEntryType {
-    pub const UNKNOWN: Self = Self::from_raw(libc::DT_UNKNOWN);
-    pub const FIFO: Self = Self::from_raw(libc::DT_FIFO);
-    pub const CHR: Self = Self::from_raw(libc::DT_CHR);
-    pub const DIR: Self = Self::from_raw(libc::DT_DIR);
-    pub const BLK: Self = Self::from_raw(libc::DT_BLK);
-    pub const REG: Self = Self::from_raw(libc::DT_REG);
-    pub const LNK: Self = Self::from_raw(libc::DT_LNK);
-    pub const SOCK: Self = Self::from_raw(libc::DT_SOCK);
-
-    const fn from_raw(typ: u8) -> Self {
-        Self(typ as u32)
-    }
-}
-
 #[derive(Debug)]
 pub struct DirEntry {
     dirent_buf: Vec<u8>,
@@ -54,7 +29,7 @@ impl DirEntry {
             (*pheader).ino = ino;
             (*pheader).off = off;
             (*pheader).namelen = namelen;
-            (*pheader).typ = DirEntryType::default().0;
+            (*pheader).typ = libc::DT_UNKNOWN as u32;
 
             #[allow(clippy::unneeded_field_pattern)]
             let p = p.add(offset_of!(fuse_dirent, name));
@@ -69,15 +44,17 @@ impl DirEntry {
         Self { dirent_buf }
     }
 
+    #[allow(clippy::cast_lossless)]
     pub fn dir(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {
         let mut ent = Self::new(name, ino, off);
-        ent.set_typ(DirEntryType::DIR);
+        ent.set_typ(libc::DT_DIR as u32);
         ent
     }
 
+    #[allow(clippy::cast_lossless)]
     pub fn file(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {
         let mut ent = Self::new(name, ino, off);
-        ent.set_typ(DirEntryType::REG);
+        ent.set_typ(libc::DT_REG as u32);
         ent
     }
 
@@ -113,13 +90,13 @@ impl DirEntry {
         }
     }
 
-    pub fn typ(&self) -> DirEntryType {
-        DirEntryType(unsafe { self.header().typ })
+    pub fn typ(&self) -> u32 {
+        unsafe { self.header().typ }
     }
 
-    pub fn set_typ(&mut self, typ: DirEntryType) {
+    pub fn set_typ(&mut self, typ: u32) {
         unsafe {
-            self.header_mut().typ = typ.0;
+            self.header_mut().typ = typ;
         }
     }
 
@@ -199,7 +176,7 @@ mod tests {
         let dirent = DirEntry::new("hello", 1, 42);
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.typ(), DirEntryType::UNKNOWN);
+        assert_eq!(dirent.typ(), libc::DT_UNKNOWN as u32);
         assert_eq!(dirent.name(), "hello");
 
         assert_eq!(dirent.as_ref().len(), 32usize);
@@ -223,11 +200,11 @@ mod tests {
 
         dirent.set_nodeid(2);
         dirent.set_offset(90);
-        dirent.set_typ(DirEntryType::DIR);
+        dirent.set_typ(libc::DT_DIR as u32);
 
         assert_eq!(dirent.nodeid(), 2u64);
         assert_eq!(dirent.offset(), 90u64);
-        assert_eq!(dirent.typ(), DirEntryType::DIR);
+        assert_eq!(dirent.typ(), libc::DT_DIR as u32);
     }
 
     #[test]
@@ -236,7 +213,7 @@ mod tests {
         dirent.set_name("good evening");
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.typ(), DirEntryType::UNKNOWN);
+        assert_eq!(dirent.typ(), libc::DT_UNKNOWN as u32);
         assert_eq!(dirent.name(), "good evening");
 
         assert_eq!(dirent.as_ref().len(), 40usize);
@@ -260,7 +237,7 @@ mod tests {
         dirent.set_name("bye");
         assert_eq!(dirent.nodeid(), 1u64);
         assert_eq!(dirent.offset(), 42u64);
-        assert_eq!(dirent.typ(), DirEntryType::UNKNOWN);
+        assert_eq!(dirent.typ(), libc::DT_UNKNOWN as u32);
         assert_eq!(dirent.name(), "bye");
 
         assert_eq!(dirent.as_ref().len(), 32usize);

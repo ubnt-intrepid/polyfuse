@@ -1,9 +1,63 @@
 use polyfuse_sys::kernel::{fuse_attr, fuse_file_lock, fuse_forget_one, fuse_kstatfs};
 use std::{convert::TryFrom, error, fmt};
 
-#[derive(Debug, Clone, Copy)]
+/// Attributes about a file.
+///
+/// This type is ABI-compatible with `fuse_attr`.
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(transparent)]
 pub struct FileAttr(fuse_attr);
+
+macro_rules! define_accessor {
+    ($field:ident, $field_mut:ident, $t:ty) => {
+        pub fn $field(&self) -> $t {
+            (self.0).$field
+        }
+
+        pub fn $field_mut(&mut self, value: $t) {
+            (self.0).$field = value;
+        }
+    };
+}
+
+impl FileAttr {
+    define_accessor!(ino, set_ino, u64);
+    define_accessor!(size, set_size, u64);
+    define_accessor!(blocks, set_blocks, u64);
+    define_accessor!(mode, set_mode, u32);
+    define_accessor!(nlink, set_nlink, u32);
+    define_accessor!(uid, set_uid, u32);
+    define_accessor!(gid, set_gid, u32);
+    define_accessor!(rdev, set_rdev, u32);
+    define_accessor!(blksize, set_blksize, u32);
+
+    pub fn atime(&self) -> (u64, u32) {
+        (self.0.atime, self.0.atimensec)
+    }
+
+    pub fn set_atime(&mut self, sec: u64, nsec: u32) {
+        self.0.atime = sec;
+        self.0.atimensec = nsec;
+    }
+
+    pub fn mtime(&self) -> (u64, u32) {
+        (self.0.mtime, self.0.mtimensec)
+    }
+
+    pub fn set_mtime(&mut self, sec: u64, nsec: u32) {
+        self.0.mtime = sec;
+        self.0.mtimensec = nsec;
+    }
+
+    pub fn ctime(&self) -> (u64, u32) {
+        (self.0.ctime, self.0.ctimensec)
+    }
+
+    pub fn set_ctime(&mut self, sec: u64, nsec: u32) {
+        self.0.ctime = sec;
+        self.0.ctimensec = nsec;
+    }
+}
 
 impl TryFrom<libc::stat> for FileAttr {
     type Error = std::num::TryFromIntError;
@@ -36,36 +90,10 @@ impl FileAttr {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(transparent)]
-pub struct FsStatistics(fuse_kstatfs);
-
-impl TryFrom<libc::statvfs> for FsStatistics {
-    type Error = std::num::TryFromIntError;
-
-    fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
-        Ok(Self(fuse_kstatfs {
-            bsize: u32::try_from(st.f_bsize)?,
-            frsize: u32::try_from(st.f_frsize)?,
-            blocks: u64::try_from(st.f_blocks)?,
-            bfree: u64::try_from(st.f_bfree)?,
-            bavail: u64::try_from(st.f_bavail)?,
-            files: u64::try_from(st.f_files)?,
-            ffree: u64::try_from(st.f_ffree)?,
-            namelen: u32::try_from(st.f_namemax)?,
-            padding: 0,
-            spare: [0u32; 6],
-        }))
-    }
-}
-
-impl FsStatistics {
-    pub(crate) fn into_inner(self) -> fuse_kstatfs {
-        self.0
-    }
-}
-
-#[derive(Debug)]
+/// File lock information.
+///
+/// This type is ABI-compatible with `fuse_file_lock`.
+#[derive(Debug, Copy, Clone, Default)]
 #[repr(transparent)]
 pub struct FileLock(fuse_file_lock);
 
@@ -73,6 +101,11 @@ impl FileLock {
     pub(crate) fn new(attr: &fuse_file_lock) -> &Self {
         unsafe { &*(attr as *const fuse_file_lock as *const Self) }
     }
+
+    define_accessor!(start, set_start, u64);
+    define_accessor!(end, set_end, u64);
+    define_accessor!(typ, set_typ, u32);
+    define_accessor!(pid, set_pid, u32);
 
     pub(crate) fn into_inner(self) -> fuse_file_lock {
         self.0
@@ -136,6 +169,50 @@ impl fmt::Display for InvalidFileLock {
 
 impl error::Error for InvalidFileLock {}
 
+/// Filesystem statistics.
+///
+/// This type is ABI-compatible with `fuse_kstatfs`.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(transparent)]
+pub struct StatFs(fuse_kstatfs);
+
+impl StatFs {
+    define_accessor!(blocks, set_blocks, u64);
+    define_accessor!(bfree, set_bfree, u64);
+    define_accessor!(bavail, set_bavail, u64);
+    define_accessor!(files, set_files, u64);
+    define_accessor!(ffree, set_ffree, u64);
+    define_accessor!(bsize, set_bsize, u32);
+    define_accessor!(namelen, set_namelen, u32);
+    define_accessor!(frsize, set_frsize, u32);
+
+    pub(crate) fn into_inner(self) -> fuse_kstatfs {
+        self.0
+    }
+}
+
+impl TryFrom<libc::statvfs> for StatFs {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
+        Ok(Self(fuse_kstatfs {
+            bsize: u32::try_from(st.f_bsize)?,
+            frsize: u32::try_from(st.f_frsize)?,
+            blocks: u64::try_from(st.f_blocks)?,
+            bfree: u64::try_from(st.f_bfree)?,
+            bavail: u64::try_from(st.f_bavail)?,
+            files: u64::try_from(st.f_files)?,
+            ffree: u64::try_from(st.f_ffree)?,
+            namelen: u32::try_from(st.f_namemax)?,
+            padding: 0,
+            spare: [0u32; 6],
+        }))
+    }
+}
+
+/// A forget information.
+///
+/// This type is ABI-compatible with `fuse_forget_one`.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct Forget(fuse_forget_one);

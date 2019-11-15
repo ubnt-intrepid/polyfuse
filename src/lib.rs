@@ -26,8 +26,8 @@ mod session;
 
 #[doc(inline)]
 pub use crate::{
-    common::{FileAttr, FileLock, Forget, FsStatistics},
-    dirent::{DirEntry, DirEntryType},
+    common::{FileAttr, FileLock, Forget, StatFs},
+    dirent::DirEntry,
     fs::{Context, Filesystem, Operation},
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
     notify::Notifier,

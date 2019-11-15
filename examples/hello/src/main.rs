@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::{future::FutureExt, io::AsyncWrite, select};
 use polyfuse::{Context, DirEntry, FileAttr, Filesystem, Operation};
-use std::{convert::TryInto, env, io, os::unix::ffi::OsStrExt, path::PathBuf};
+use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
 use tracing::Level;
 
 #[tokio::main]
@@ -49,24 +49,24 @@ struct Hello {
 
 impl Hello {
     fn root_attr(&self) -> FileAttr {
-        let mut attr: libc::stat = unsafe { std::mem::zeroed() };
-        attr.st_mode = libc::S_IFDIR | 0o555;
-        attr.st_ino = 1;
-        attr.st_nlink = 2;
-        attr.st_uid = unsafe { libc::getuid() };
-        attr.st_gid = unsafe { libc::getgid() };
-        attr.try_into().unwrap()
+        let mut attr = FileAttr::default();
+        attr.set_mode(libc::S_IFDIR as u32 | 0o555);
+        attr.set_ino(1);
+        attr.set_nlink(2);
+        attr.set_uid(unsafe { libc::getuid() });
+        attr.set_gid(unsafe { libc::getgid() });
+        attr
     }
 
     fn hello_attr(&self) -> FileAttr {
-        let mut attr: libc::stat = unsafe { std::mem::zeroed() };
-        attr.st_mode = libc::S_IFREG | 0o444;
-        attr.st_ino = 2;
-        attr.st_nlink = 1;
-        attr.st_size = self.content.len() as i64;
-        attr.st_uid = unsafe { libc::getuid() };
-        attr.st_gid = unsafe { libc::getgid() };
-        attr.try_into().unwrap()
+        let mut attr = FileAttr::default();
+        attr.set_mode(libc::S_IFREG as u32 | 0o444);
+        attr.set_ino(2);
+        attr.set_nlink(1);
+        attr.set_size(self.content.len() as u64);
+        attr.set_uid(unsafe { libc::getuid() });
+        attr.set_gid(unsafe { libc::getgid() });
+        attr
     }
 }
 
@@ -91,8 +91,8 @@ impl<T> Filesystem<T> for Hello {
             } => match parent {
                 1 => {
                     if name.as_bytes() == self.filename.as_bytes() {
-                        reply.attr_valid(std::u64::MAX, std::u32::MAX);
-                        reply.entry_valid(std::u64::MAX, std::u32::MAX);
+                        reply.attr_valid(u64::max_value(), u32::max_value());
+                        reply.entry_valid(u64::max_value(), u32::max_value());
                         reply.entry(cx, self.hello_attr(), 0).await
                     } else {
                         cx.reply_err(libc::ENOENT).await
@@ -107,7 +107,7 @@ impl<T> Filesystem<T> for Hello {
                     2 => self.hello_attr(),
                     _ => return cx.reply_err(libc::ENOENT).await,
                 };
-                reply.attr_valid(std::u64::MAX, std::u32::MAX);
+                reply.attr_valid(u64::max_value(), u32::max_value());
                 reply.attr(cx, attr).await
             }
 
