@@ -6,12 +6,12 @@
 )]
 
 use crate::{
-    reply::{as_bytes, send_msg, ReplyWriter},
+    reply::{as_bytes, send_msg},
     request::{Buffer, BufferExt, BytesBuffer, RequestKind},
     session::Session,
 };
 use bitflags::bitflags;
-use futures::io::AsyncRead;
+use futures::io::{AsyncRead, AsyncWrite};
 use lazy_static::lazy_static;
 use polyfuse_sys::kernel::{
     fuse_init_out, FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_MAX_PAGES,
@@ -131,7 +131,7 @@ impl SessionInitializer {
     #[allow(clippy::cognitive_complexity)]
     pub async fn init<I: ?Sized>(self, io: &mut I) -> io::Result<Session>
     where
-        I: AsyncRead + ReplyWriter + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
     {
         let init_buf_size = BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES;
         loop {
@@ -165,8 +165,13 @@ impl SessionInitializer {
 
                     if init_in.major > 7 {
                         tracing::debug!("wait for a second INIT request with an older version.");
-                        send_msg(&*io, header.unique(), 0, &[unsafe { as_bytes(&init_out) }])
-                            .await?;
+                        send_msg(
+                            &mut *io,
+                            header.unique(),
+                            0,
+                            &[unsafe { as_bytes(&init_out) }],
+                        )
+                        .await?;
                         continue;
                     }
 
@@ -177,7 +182,7 @@ impl SessionInitializer {
                             init_in.major,
                             init_in.minor
                         );
-                        send_msg(&*io, header.unique(), -libc::EPROTO, &[]).await?;
+                        send_msg(&mut *io, header.unique(), -libc::EPROTO, &[]).await?;
                         continue;
                     }
 
@@ -218,7 +223,13 @@ impl SessionInitializer {
                         init_out.congestion_threshold
                     );
                     tracing::debug!("  time_gran = {}", init_out.time_gran);
-                    send_msg(&*io, header.unique(), 0, &[unsafe { as_bytes(&init_out) }]).await?;
+                    send_msg(
+                        &mut *io,
+                        header.unique(),
+                        0,
+                        &[unsafe { as_bytes(&init_out) }],
+                    )
+                    .await?;
 
                     let conn = ConnectionInfo(init_out);
                     let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
@@ -230,7 +241,7 @@ impl SessionInitializer {
                         "ignoring an operation before init (opcode={:?})",
                         header.opcode()
                     );
-                    send_msg(&*io, header.unique(), -libc::EIO, &[]).await?;
+                    send_msg(&mut *io, header.unique(), -libc::EIO, &[]).await?;
                     continue;
                 }
             }

@@ -13,6 +13,7 @@
 )]
 
 mod channel;
+mod lock;
 mod mount;
 mod server;
 

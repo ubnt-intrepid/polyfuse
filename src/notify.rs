@@ -1,12 +1,13 @@
 #![allow(clippy::needless_update)]
 
 use crate::{
-    reply::{as_bytes, send_msg, ReplyWriter},
+    reply::{as_bytes, send_msg},
     session::Session,
 };
 use futures::{
     channel::oneshot,
     future::{Fuse, FusedFuture, Future, FutureExt},
+    io::AsyncWrite,
     lock::Mutex,
 };
 use polyfuse_sys::kernel::{
@@ -54,14 +55,14 @@ impl<T> Notifier<T> {
     /// Notify the cache invalidation about an inode to the kernel.
     pub async fn inval_inode<W: ?Sized>(
         &self,
-        writer: &W,
+        writer: &mut W,
         session: &Session,
         ino: u64,
         off: i64,
         len: i64,
     ) -> io::Result<()>
     where
-        W: ReplyWriter + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -87,13 +88,13 @@ impl<T> Notifier<T> {
     /// Notify the invalidation about a directory entry to the kernel.
     pub async fn inval_entry<W: ?Sized>(
         &self,
-        writer: &W,
+        writer: &mut W,
         session: &Session,
         parent: u64,
         name: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        W: ReplyWriter + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -125,14 +126,14 @@ impl<T> Notifier<T> {
     /// watchers if exists.
     pub async fn delete<W: ?Sized>(
         &self,
-        writer: &W,
+        writer: &mut W,
         session: &Session,
         parent: u64,
         child: u64,
         name: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        W: ReplyWriter + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -160,14 +161,14 @@ impl<T> Notifier<T> {
     /// Push the data in an inode for updating the kernel cache.
     pub async fn store<W: ?Sized>(
         &self,
-        writer: &W,
+        writer: &mut W,
         session: &Session,
         ino: u64,
         offset: u64,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: ReplyWriter + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -193,14 +194,14 @@ impl<T> Notifier<T> {
     /// Retrieve data in an inode from the kernel cache.
     pub async fn retrieve<W: ?Sized>(
         &self,
-        writer: &W,
+        writer: &mut W,
         session: &Session,
         ino: u64,
         offset: u64,
         size: u32,
     ) -> io::Result<RetrieveHandle<T>>
     where
-        W: ReplyWriter + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -237,12 +238,12 @@ impl<T> Notifier<T> {
     /// Send I/O readiness to the kernel.
     pub async fn poll_wakeup<W: ?Sized>(
         &self,
-        writer: &W,
+        writer: &mut W,
         session: &Session,
         kh: u64,
     ) -> io::Result<()>
     where
-        W: ReplyWriter + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -300,12 +301,12 @@ impl<T> FusedFuture for RetrieveHandle<T> {
 
 #[inline]
 async fn send_notify<W: ?Sized>(
-    writer: &W,
+    writer: &mut W,
     code: fuse_notify_code,
     data: &[&[u8]],
 ) -> io::Result<()>
 where
-    W: ReplyWriter + Unpin,
+    W: AsyncWrite + Unpin,
 {
     let code = unsafe { mem::transmute::<_, i32>(code) };
     send_msg(writer, 0, code, data).await

@@ -1,12 +1,10 @@
 //! Serve FUSE filesystem.
 
-use crate::{
-    channel::{Channel, SharedWriter},
-    mount::MountOptions,
-};
+use crate::{channel::Channel, lock::Lock, mount::MountOptions};
 use bytes::Bytes;
 use futures::{
     future::{FusedFuture, Future, FutureExt},
+    lock::Mutex,
     select,
     stream::StreamExt,
     task::{self, Poll},
@@ -22,7 +20,7 @@ pub struct Server {
     session: Arc<Session>,
     notifier: Arc<polyfuse::Notifier<Bytes>>,
     channel: Channel,
-    notify_writer: Option<Arc<SharedWriter>>,
+    notify_writer: Option<Arc<Mutex<Channel>>>,
 }
 
 impl Server {
@@ -45,8 +43,9 @@ impl Server {
         let writer = match self.notify_writer {
             Some(ref writer) => writer,
             None => {
-                let writer = self.channel.shared_writer(false)?;
-                self.notify_writer.get_or_insert(Arc::new(writer))
+                let writer = self.channel.try_clone(false)?;
+                self.notify_writer
+                    .get_or_insert(Arc::new(Mutex::new(writer)))
             }
         };
 
@@ -78,7 +77,7 @@ impl Server {
         let notifier = self.notifier;
         let fs = Arc::new(fs);
         let mut channel = self.channel;
-        let writer = Arc::new(channel.shared_writer(false)?);
+        let writer = Lock::new(channel.try_clone(false)?);
         let mut sig = sig.fuse();
 
         let mut main_loop = Box::pin(async move {
@@ -96,10 +95,10 @@ impl Server {
 
                 let session = session.clone();
                 let fs = fs.clone();
-                let writer = writer.clone();
+                let mut writer = writer.clone();
                 let mut req = std::mem::replace(&mut req, BytesBuffer::new(session.buffer_size()));
                 tokio::spawn(async move {
-                    if let Err(e) = session.process(&*fs, &mut req, &*writer).await {
+                    if let Err(e) = session.process(&*fs, &mut req, &mut writer).await {
                         log::error!("error during handling a request: {}", e);
                     }
                 });
@@ -120,44 +119,50 @@ impl Server {
 pub struct Notifier {
     session: Arc<Session>,
     notifier: Arc<polyfuse::Notifier<Bytes>>,
-    writer: Arc<SharedWriter>,
+    writer: Arc<Mutex<Channel>>,
 }
 
 impl Notifier {
     pub async fn inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.notifier
-            .inval_inode(&*self.writer, &*self.session, ino, off, len)
+            .inval_inode(&mut *writer, &*self.session, ino, off, len)
             .await
     }
 
     pub async fn inval_entry(&self, parent: u64, name: impl AsRef<OsStr>) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.notifier
-            .inval_entry(&*self.writer, &*self.session, parent, name)
+            .inval_entry(&mut *writer, &*self.session, parent, name)
             .await
     }
 
     pub async fn delete(&self, parent: u64, child: u64, name: impl AsRef<OsStr>) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.notifier
-            .delete(&*self.writer, &*self.session, parent, child, name)
+            .delete(&mut *writer, &*self.session, parent, child, name)
             .await
     }
 
     pub async fn store(&self, ino: u64, offset: u64, data: &[&[u8]]) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.notifier
-            .store(&*self.writer, &*self.session, ino, offset, data)
+            .store(&mut *writer, &*self.session, ino, offset, data)
             .await
     }
 
     pub async fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<RetrieveHandle> {
+        let mut writer = self.writer.lock().await;
         self.notifier
-            .retrieve(&*self.writer, &*self.session, ino, offset, size)
+            .retrieve(&mut *writer, &*self.session, ino, offset, size)
             .await
             .map(RetrieveHandle)
     }
 
     pub async fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
+        let mut writer = self.writer.lock().await;
         self.notifier
-            .poll_wakeup(&*self.writer, &*self.session, kh)
+            .poll_wakeup(&mut *writer, &*self.session, kh)
             .await
     }
 }
