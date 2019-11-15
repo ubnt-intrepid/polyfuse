@@ -440,7 +440,9 @@ pub enum RequestKind<'a, T> {
     },
     Readdir {
         arg: &'a fuse_read_in,
-        plus: bool,
+    },
+    Readdirplus {
+        arg: &'a fuse_read_in,
     },
     Releasedir {
         arg: &'a fuse_release_in,
@@ -652,7 +654,7 @@ impl<'a> Parser<'a> {
             }
             fuse_opcode::FUSE_READDIR => {
                 let arg = self.fetch()?;
-                Ok(RequestKind::Readdir { arg, plus: false })
+                Ok(RequestKind::Readdir { arg })
             }
             fuse_opcode::FUSE_RELEASEDIR => {
                 let arg = self.fetch()?;
@@ -697,7 +699,7 @@ impl<'a> Parser<'a> {
             }
             fuse_opcode::FUSE_READDIRPLUS => {
                 let arg = self.fetch()?;
-                Ok(RequestKind::Readdir { arg, plus: true })
+                Ok(RequestKind::Readdirplus { arg })
             }
             fuse_opcode::FUSE_RENAME2 => {
                 let arg = self.fetch()?;

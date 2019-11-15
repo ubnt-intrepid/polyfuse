@@ -365,19 +365,15 @@ bitflags! {
         /// operations.
         const DONT_MASK = polyfuse_sys::kernel::FUSE_DONT_MASK;
 
-        /// The filesystem supports the `FUSE_READDIRPLUS` operation.
-        const READDIRPLUS = polyfuse_sys::kernel::FUSE_DO_READDIRPLUS;
-
-        /// The filesystem supports adaptive readdirplus.
-        ///
-        /// This flag has no effect when `READDIRPLUS` is not set.
-        const READDIRPLUS_AUTO = polyfuse_sys::kernel::FUSE_READDIRPLUS_AUTO;
-
         /// The writeback caching should be enabled.
         const WRITEBACK_CACHE = polyfuse_sys::kernel::FUSE_WRITEBACK_CACHE;
 
         /// The filesystem supports POSIX access control lists.
         const POSIX_ACL = polyfuse_sys::kernel::FUSE_POSIX_ACL;
+
+        // TODO: readdirplus
+        // const READDIRPLUS = polyfuse_sys::kernel::FUSE_DO_READDIRPLUS;
+        // const READDIRPLUS_AUTO = polyfuse_sys::kernel::FUSE_READDIRPLUS_AUTO;
 
         // TODO: splice read/write
         // const SPLICE_WRITE = polyfuse_sys::kernel::FUSE_SPLICE_WRITE;

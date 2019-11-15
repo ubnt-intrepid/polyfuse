@@ -395,7 +395,6 @@ pub enum Operation<'a, T> {
         ino: u64,
         fh: u64,
         offset: u64,
-        plus: bool,
         reply: ReplyData,
     },
 

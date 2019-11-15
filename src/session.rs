@@ -433,14 +433,18 @@ impl Session {
                     reply: ReplyOpendir::new(),
                 });
             }
-            RequestKind::Readdir { arg, plus } => {
+            RequestKind::Readdir { arg } => {
                 run_op!(Operation::Readdir {
                     ino,
                     fh: arg.fh,
                     offset: arg.offset,
-                    plus,
                     reply: ReplyData::new(arg.size),
                 });
+            }
+            RequestKind::Readdirplus { .. } => {
+                // FIXME: support readdirplus
+                tracing::warn!("FUSE_READDIRPLUS is not currently disabled");
+                cx.reply_err(libc::ENOSYS).await?;
             }
             RequestKind::Releasedir { arg } => {
                 run_op!(Operation::Releasedir {
