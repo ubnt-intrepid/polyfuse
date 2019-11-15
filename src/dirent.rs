@@ -146,6 +146,7 @@ impl AsRef<[u8]> for DirEntry {
     }
 }
 
+#[allow(clippy::cast_lossless)]
 #[cfg(test)]
 mod tests {
     use super::*;
