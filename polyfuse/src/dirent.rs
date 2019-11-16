@@ -6,11 +6,13 @@ fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
 
+/// A directory entry.
 #[derive(Debug)]
 pub struct DirEntry {
     dirent_buf: Vec<u8>,
 }
 
+#[allow(missing_docs)]
 impl DirEntry {
     #[allow(clippy::cast_ptr_alignment, clippy::cast_lossless)]
     pub fn new(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {

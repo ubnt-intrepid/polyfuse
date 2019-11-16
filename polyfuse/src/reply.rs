@@ -47,6 +47,7 @@ impl ReplyEmpty {
         Self { _p: () }
     }
 
+    /// Send an empty reply to the kernel.
     #[inline]
     pub async fn ok<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
     where
@@ -446,6 +447,7 @@ impl ReplyLk {
     }
 }
 
+/// Reply with information about a created file.
 #[derive(Debug)]
 #[must_use]
 pub struct ReplyCreate {

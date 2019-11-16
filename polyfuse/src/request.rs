@@ -46,6 +46,7 @@ use std::{
 
 /// Buffer that stores FUSE requests.
 pub trait Buffer {
+    /// The remaining part of request data.
     type Data;
 
     /// Return a reference to the header part of received request.
@@ -129,6 +130,7 @@ pub struct BytesBuffer {
 }
 
 impl BytesBuffer {
+    /// Create a new `BytesBuffer` with the specified buffer size.
     pub fn new(bufsize: usize) -> Self {
         Self {
             header: None,
@@ -323,6 +325,7 @@ impl<'a, T> Request<'a, T> {
 pub struct RequestHeader(fuse_in_header);
 
 #[allow(clippy::len_without_is_empty)]
+#[doc(hidden)]
 impl RequestHeader {
     pub fn len(&self) -> u32 {
         self.0.len
@@ -354,6 +357,7 @@ impl RequestHeader {
 }
 
 /// The kind of FUSE request.
+#[doc(hidden)] // TODO: document
 #[derive(Debug)]
 pub enum RequestKind<'a, T> {
     Init {
@@ -498,13 +502,14 @@ pub enum RequestKind<'a, T> {
 // TODO: add opcodes:
 // Ioctl,
 
-/// A parser for FUSE request.
+#[doc(hidden)] // TODO: document
 #[derive(Debug)]
 pub struct Parser<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
+#[doc(hidden)] // TODO: document
 impl<'a> Parser<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }

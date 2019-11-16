@@ -296,18 +296,22 @@ impl ConnectionInfo {
         self.0.max_write
     }
 
+    #[doc(hidden)]
     pub fn max_background(&self) -> u16 {
         self.0.max_background
     }
 
+    #[doc(hidden)]
     pub fn congestion_threshold(&self) -> u16 {
         self.0.congestion_threshold
     }
 
+    #[doc(hidden)]
     pub fn time_gran(&self) -> u32 {
         self.0.time_gran
     }
 
+    #[doc(hidden)]
     pub fn max_pages(&self) -> Option<u16> {
         if self.0.flags & FUSE_MAX_PAGES != 0 {
             Some(self.0.max_pages)

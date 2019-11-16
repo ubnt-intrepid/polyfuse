@@ -1,3 +1,5 @@
+//! Send notification to the kernel.
+
 #![allow(clippy::needless_update)]
 
 use crate::{
@@ -31,11 +33,11 @@ use std::{
     task::{self, Poll},
 };
 
+/// Notification sender.
 #[derive(Debug)]
-#[allow(clippy::type_complexity)]
 pub struct Notifier<T> {
-    notify_unique: AtomicU64,
-    notify_remains: Mutex<HashMap<u64, oneshot::Sender<(u64, T)>>>,
+    unique: AtomicU64,
+    in_flights: Mutex<HashMap<u64, oneshot::Sender<(u64, T)>>>,
 }
 
 impl<T> Default for Notifier<T> {
@@ -45,10 +47,11 @@ impl<T> Default for Notifier<T> {
 }
 
 impl<T> Notifier<T> {
+    /// Create a new `Notifier`.
     pub fn new() -> Self {
         Self {
-            notify_unique: AtomicU64::new(0),
-            notify_remains: Mutex::new(HashMap::new()),
+            unique: AtomicU64::new(0),
+            in_flights: Mutex::new(HashMap::new()),
         }
     }
 
@@ -210,13 +213,13 @@ impl<T> Notifier<T> {
             ));
         }
 
-        let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
+        let unique = self.unique.fetch_add(1, Ordering::SeqCst);
 
         let (tx, rx) = oneshot::channel();
-        self.notify_remains.lock().await.insert(notify_unique, tx);
+        self.in_flights.lock().await.insert(unique, tx);
 
         let out = fuse_notify_retrieve_out {
-            notify_unique,
+            notify_unique: unique,
             nodeid: ino,
             offset,
             size,
@@ -230,7 +233,7 @@ impl<T> Notifier<T> {
         .await?;
 
         Ok(RetrieveHandle {
-            unique: notify_unique,
+            unique,
             rx: rx.fuse(),
         })
     }
@@ -265,7 +268,7 @@ impl<T> Notifier<T> {
     }
 
     pub(crate) async fn send_notify_reply(&self, unique: u64, offset: u64, data: T) {
-        if let Some(tx) = self.notify_remains.lock().await.remove(&unique) {
+        if let Some(tx) = self.in_flights.lock().await.remove(&unique) {
             let _ = tx.send((offset, data));
         }
     }

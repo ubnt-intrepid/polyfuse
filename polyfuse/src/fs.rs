@@ -186,6 +186,7 @@ where
 
 /// The kind of FUSE requests received from the kernel.
 #[derive(Debug)]
+#[allow(missing_docs)]
 pub enum Operation<'a, T> {
     /// Look up a directory entry by name.
     Lookup {

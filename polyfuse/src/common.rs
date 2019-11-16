@@ -20,6 +20,7 @@ macro_rules! define_accessor {
     };
 }
 
+#[allow(missing_docs)]
 impl FileAttr {
     define_accessor!(ino, set_ino, u64);
     define_accessor!(size, set_size, u64);
@@ -97,6 +98,7 @@ impl FileAttr {
 #[repr(transparent)]
 pub struct FileLock(fuse_file_lock);
 
+#[allow(missing_docs)]
 impl FileLock {
     pub(crate) fn new(attr: &fuse_file_lock) -> &Self {
         unsafe { &*(attr as *const fuse_file_lock as *const Self) }
@@ -176,6 +178,7 @@ impl error::Error for InvalidFileLock {}
 #[repr(transparent)]
 pub struct StatFs(fuse_kstatfs);
 
+#[allow(missing_docs)]
 impl StatFs {
     define_accessor!(blocks, set_blocks, u64);
     define_accessor!(bfree, set_bfree, u64);
@@ -217,6 +220,7 @@ impl TryFrom<libc::statvfs> for StatFs {
 #[repr(transparent)]
 pub struct Forget(fuse_forget_one);
 
+#[allow(missing_docs)]
 impl Forget {
     pub(crate) const fn new(ino: u64, nlookup: u64) -> Self {
         Self(fuse_forget_one {
