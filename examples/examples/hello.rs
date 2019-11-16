@@ -1,24 +1,17 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
 
-use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use futures::{future::FutureExt, io::AsyncWrite, select};
-use polyfuse::{Context, DirEntry, FileAttr, Filesystem, Interrupt, Operation};
-use std::{env, ffi::OsStr, io, os::unix::ffi::OsStrExt, path::PathBuf};
-use tracing::Level;
+use polyfuse_examples::prelude::*;
+
+use futures::select;
+use polyfuse::{DirEntry, FileAttr, Interrupt};
+use std::io;
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let subscriber = tracing_subscriber::fmt::Subscriber::builder()
-        .with_max_level(Level::DEBUG)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+async fn main() -> anyhow::Result<()> {
+    examples::init_tracing()?;
 
-    let mountpoint = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("missing mountpoint"))?;
+    let mountpoint = examples::get_mountpoint()?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
     let filename = "hello.txt".to_string();
@@ -37,7 +30,6 @@ async fn main() -> Result<()> {
     };
 
     polyfuse_tokio::run(hello, mountpoint).await?;
-
     Ok(())
 }
 

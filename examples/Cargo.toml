@@ -9,6 +9,8 @@ edition = "2018"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
+bytes = "0.4"
+chrono = "0.4"
 futures = "0.3"
 libc = "0.2"
 tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master" }
