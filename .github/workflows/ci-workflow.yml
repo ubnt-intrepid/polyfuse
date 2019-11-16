@@ -94,7 +94,10 @@ jobs:
     # * restrict network access during building docs.
     # * restrict all write access expect target/
     - name: Build API docs
-      run: bash ./scripts/gen_docs.sh
+      uses: actions-rs/cargo@v1
+      with:
+        command: xrun
+        args: docs
 
     - name: Upload artifact
       uses: actions/upload-artifact@master

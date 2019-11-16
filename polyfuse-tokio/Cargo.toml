@@ -2,6 +2,7 @@
 name = "polyfuse-tokio"
 version = "0.1.0"
 publish = false
+description = "Tokio integration for polyfuse"
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 repository = "https://github.com/ubnt-intrepid/polyfuse.git"
 edition = "2018"
@@ -16,7 +17,7 @@ tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master" }
 
 [dependencies.polyfuse]
 version = "0.1.0"
-path = ".."
+path = "../polyfuse"
 
 [dependencies.polyfuse-sys]
 version = "0.1.0"

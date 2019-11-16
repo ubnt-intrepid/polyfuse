@@ -1,5 +1,5 @@
 [package]
-name = "systest"
+name = "polyfuse-systest"
 version = "0.0.0" # never publish
 publish = false
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
