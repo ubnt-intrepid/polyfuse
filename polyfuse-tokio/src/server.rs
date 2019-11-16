@@ -6,7 +6,6 @@ use futures::{
     future::{FusedFuture, Future, FutureExt},
     lock::Mutex,
     select,
-    stream::StreamExt,
     task::{self, Poll},
 };
 use libc::c_int;
@@ -187,12 +186,18 @@ impl FusedFuture for RetrieveHandle {
 
 #[allow(clippy::unnecessary_mut_passed)]
 fn default_shutdown_signal() -> io::Result<impl Future<Output = c_int> + Unpin> {
-    let mut sighup = signal(SignalKind::hangup())?.into_future();
-    let mut sigint = signal(SignalKind::interrupt())?.into_future();
-    let mut sigterm = signal(SignalKind::terminate())?.into_future();
-    let mut sigpipe = signal(SignalKind::pipe())?.into_future();
+    let mut sighup = signal(SignalKind::hangup())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigpipe = signal(SignalKind::pipe())?;
 
     Ok(Box::pin(async move {
+        // TODO: use stabilized API.
+        let mut sighup = Box::pin(sighup.recv()).fuse();
+        let mut sigint = Box::pin(sigint.recv()).fuse();
+        let mut sigterm = Box::pin(sigterm.recv()).fuse();
+        let mut sigpipe = Box::pin(sigpipe.recv()).fuse();
+
         loop {
             select! {
                 _ = sighup => {
