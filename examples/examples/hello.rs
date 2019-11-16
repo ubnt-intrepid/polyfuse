@@ -4,8 +4,8 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::{future::FutureExt, io::AsyncWrite, select};
-use polyfuse::{Context, DirEntry, FileAttr, Filesystem, Operation};
-use std::{env, io, os::unix::ffi::OsStrExt, path::PathBuf};
+use polyfuse::{Context, DirEntry, FileAttr, Filesystem, Interrupt, Operation};
+use std::{env, ffi::OsStr, io, os::unix::ffi::OsStrExt, path::PathBuf};
 use tracing::Level;
 
 #[tokio::main]
@@ -68,11 +68,70 @@ impl Hello {
         attr.set_gid(unsafe { libc::getgid() });
         attr
     }
-}
 
-async fn expensive_task() -> io::Result<()> {
-    tokio::time::delay_for(std::time::Duration::from_secs(10)).await;
-    Ok(())
+    fn lookup(&self, parent: u64, name: &OsStr) -> Option<FileAttr> {
+        match parent {
+            1 if name.as_bytes() == self.filename.as_bytes() => Some(self.hello_attr()),
+            _ => None,
+        }
+    }
+
+    fn getattr(&self, ino: u64) -> Option<FileAttr> {
+        match ino {
+            1 => Some(self.root_attr()),
+            2 => Some(self.hello_attr()),
+            _ => None,
+        }
+    }
+
+    async fn read(
+        &self,
+        ino: u64,
+        offset: usize,
+        size: usize,
+        mut intr: Interrupt,
+    ) -> Result<&[u8], libc::c_int> {
+        match ino {
+            1 => Err(libc::EISDIR),
+            2 => {
+                let mut fetch_task = Box::pin(async {
+                    tokio::time::delay_for(std::time::Duration::from_secs(10)).await;
+                })
+                .fuse();
+                select! {
+                    _ = fetch_task => (),
+                    _ = intr => return Err(libc::EINTR),
+                }
+
+                if offset >= self.content.len() {
+                    return Ok(&[] as &[u8]);
+                }
+                let data = &self.content.as_bytes()[offset..];
+                let data = &data[..std::cmp::min(data.len(), size)];
+                Ok(data)
+            }
+            _ => Err(libc::ENOENT),
+        }
+    }
+
+    fn readdir(&self, ino: u64, offset: u64, size: usize) -> Result<Vec<&[u8]>, libc::c_int> {
+        if ino != 1 {
+            return Err(libc::ENOENT);
+        }
+
+        let mut entries = Vec::with_capacity(3);
+        let mut total_len = 0usize;
+        for entry in self.dir_entries.iter().skip(offset as usize) {
+            let entry = entry.as_ref();
+            if total_len + entry.len() > size {
+                break;
+            }
+            entries.push(entry);
+            total_len += entry.len();
+        }
+
+        Ok(entries)
+    }
 }
 
 #[async_trait]
@@ -88,78 +147,46 @@ impl<T> Filesystem<T> for Hello {
                 name,
                 mut reply,
                 ..
-            } => match parent {
-                1 => {
-                    if name.as_bytes() == self.filename.as_bytes() {
-                        reply.attr_valid(u64::max_value(), u32::max_value());
-                        reply.entry_valid(u64::max_value(), u32::max_value());
-                        reply.entry(cx, self.hello_attr(), 0).await
-                    } else {
-                        cx.reply_err(libc::ENOENT).await
-                    }
+            } => match self.lookup(parent, name) {
+                Some(attr) => {
+                    reply.attr_valid(u64::max_value(), u32::max_value());
+                    reply.entry_valid(u64::max_value(), u32::max_value());
+                    reply.entry(cx, attr, 0).await?;
                 }
-                _ => cx.reply_err(libc::ENOENT).await,
+                None => cx.reply_err(libc::ENOENT).await?,
             },
 
-            Operation::Getattr { ino, mut reply, .. } => {
-                let attr = match ino {
-                    1 => self.root_attr(),
-                    2 => self.hello_attr(),
-                    _ => return cx.reply_err(libc::ENOENT).await,
-                };
-                reply.attr_valid(u64::max_value(), u32::max_value());
-                reply.attr(cx, attr).await
-            }
+            Operation::Getattr { ino, mut reply, .. } => match self.getattr(ino) {
+                Some(attr) => {
+                    reply.attr_valid(u64::max_value(), u32::max_value());
+                    reply.attr(cx, attr).await?;
+                }
+                None => cx.reply_err(libc::ENOENT).await?,
+            },
 
             Operation::Read {
-                ino, reply, offset, ..
-            } => match ino {
-                1 => cx.reply_err(libc::EISDIR).await,
-                2 => {
-                    let mut task = Box::pin(expensive_task()).fuse();
-                    let mut intr = cx.on_interrupt().await;
-                    let this = self;
-                    select! {
-                        res = task => {
-                            res?;
-                            let offset = offset as usize;
-                            let size = reply.size() as usize;
-                            if offset >= this.content.len() {
-                                return reply.data(cx, &[]).await;
-                            }
-
-                            let data = &this.content.as_bytes()[offset..];
-                            let data = &data[..std::cmp::min(data.len(), size)];
-                            reply.data(cx, data).await
-                        },
-                        _ = intr => cx.reply_err(libc::EINTR).await,
-                    }
-                }
-                _ => cx.reply_err(libc::ENOENT).await,
-            },
-
-            Operation::Readdir {
-                ino, reply, offset, ..
+                ino, offset, reply, ..
             } => {
-                if ino != 1 {
-                    return cx.reply_err(libc::ENOENT).await;
+                let intr = cx.on_interrupt().await;
+                match self
+                    .read(ino, offset as usize, reply.size() as usize, intr)
+                    .await
+                {
+                    Ok(data) => reply.data(cx, data).await?,
+                    Err(errno) => cx.reply_err(errno).await?,
                 }
-
-                let mut entries = Vec::with_capacity(3);
-                let mut total_len = 0usize;
-                for entry in self.dir_entries.iter().skip(offset as usize) {
-                    let entry = entry.as_ref();
-                    if total_len + entry.len() > reply.size() as usize {
-                        break;
-                    }
-                    entries.push(entry);
-                    total_len += entry.len();
-                }
-
-                reply.data_vectored(cx, &*entries).await
             }
 
-            _ => Ok(()),
+            Operation::Readdir {
+                ino, offset, reply, ..
+            } => match self.readdir(ino, offset, reply.size() as usize) {
+                Ok(entries) => reply.data_vectored(cx, &*entries).await?,
+                Err(errno) => cx.reply_err(errno).await?,
+            },
+
+            _ => (),
         }
+
+        Ok(())
     }
 }
