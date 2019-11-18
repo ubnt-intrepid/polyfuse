@@ -6,10 +6,9 @@
 
 use libc::{c_int, c_void, iovec, ssize_t};
 use mio::{unix::EventedFd, Evented, PollOpt, Ready, Token};
-use polyfuse_sys::kernel::FUSE_DEV_IOC_CLONE;
 use std::{
     cmp,
-    ffi::{CStr, OsStr, OsString},
+    ffi::{OsStr, OsString},
     io::{self, IoSlice, IoSliceMut, Read, Write},
     mem::{self, MaybeUninit},
     os::unix::{
@@ -75,22 +74,8 @@ impl Connection {
     }
 
     /// Attempt to get a clone of this connection.
-    pub fn try_clone(&self, ioc_clone: bool) -> io::Result<Self> {
-        let clonefd;
-        unsafe {
-            if ioc_clone {
-                let devname = CStr::from_bytes_with_nul_unchecked(b"/dev/fuse\0");
-
-                clonefd = cvt(libc::open(devname.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC))?;
-
-                if let Err(err) = cvt(libc::ioctl(clonefd, FUSE_DEV_IOC_CLONE.into(), &self.fd)) {
-                    libc::close(clonefd);
-                    return Err(err);
-                }
-            } else {
-                clonefd = cvt(libc::dup(self.fd))?;
-            }
-        }
+    pub fn try_clone(&self) -> io::Result<Self> {
+        let clonefd = cvt(unsafe { libc::dup(self.fd) })?;
 
         Ok(Self {
             fd: clonefd,

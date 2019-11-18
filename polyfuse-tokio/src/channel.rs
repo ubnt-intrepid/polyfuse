@@ -64,8 +64,8 @@ impl Channel {
     }
 
     /// Attempt to create a clone of this channel.
-    pub fn try_clone(&self, ioc_clone: bool) -> io::Result<Self> {
-        let conn = self.0.get_ref().try_clone(ioc_clone)?;
+    pub fn try_clone(&self) -> io::Result<Self> {
+        let conn = self.0.get_ref().try_clone()?;
         Ok(Self(PollEvented::new(conn)?))
     }
 }

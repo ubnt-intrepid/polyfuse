@@ -42,7 +42,7 @@ impl Server {
         let writer = match self.notify_writer {
             Some(ref writer) => writer,
             None => {
-                let writer = self.channel.try_clone(false)?;
+                let writer = self.channel.try_clone()?;
                 self.notify_writer
                     .get_or_insert(Arc::new(Mutex::new(writer)))
             }
@@ -93,7 +93,7 @@ impl Server {
 
                 let session = session.clone();
                 let fs = fs.clone();
-                let mut writer = channel.try_clone(false)?;
+                let mut writer = channel.try_clone()?;
                 let mut req = std::mem::replace(&mut req, BytesBuffer::new(session.buffer_size()));
                 tokio::spawn(async move {
                     if let Err(e) = session.process(&*fs, &mut req, &mut writer).await {
