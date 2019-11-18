@@ -307,7 +307,7 @@ pub struct Request<'a, T> {
 }
 
 impl<'a, T> Request<'a, T> {
-    /// Create a new `Request` from the provided components.
+    #[doc(hidden)] // FIXME: document
     pub fn new(header: &'a RequestHeader, kind: RequestKind<'a, T>) -> Self {
         Self { header, kind }
     }
