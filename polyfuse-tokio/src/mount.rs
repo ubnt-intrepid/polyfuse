@@ -50,6 +50,9 @@ pub struct Connection {
 impl Drop for Connection {
     fn drop(&mut self) {
         let _e = self.unmount();
+        unsafe {
+            libc::close(self.fd);
+        }
     }
 }
 

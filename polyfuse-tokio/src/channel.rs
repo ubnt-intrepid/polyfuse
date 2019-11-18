@@ -57,7 +57,7 @@ impl Channel {
                 Poll::Pending
             }
             Err(e) => {
-                log::debug!("write error: {}", e);
+                tracing::debug!("write error: {}", e);
                 Poll::Ready(Err(e))
             }
         }

@@ -11,9 +11,9 @@ edition = "2018"
 bytes = "0.4"
 futures = { version = "0.3.0", features = [ "unstable", "async-await" ] }
 libc = "0.2"
-log = "0.4"
 mio = "0.6"
 tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master" }
+tracing = "0.1"
 
 [dependencies.polyfuse]
 version = "0.1.0"

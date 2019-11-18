@@ -1,6 +1,6 @@
 //! Serve FUSE filesystem.
 
-use crate::{channel::Channel, lock::Lock, mount::MountOptions};
+use crate::{channel::Channel, mount::MountOptions};
 use bytes::Bytes;
 use futures::{
     future::{FusedFuture, Future, FutureExt},
@@ -76,7 +76,6 @@ impl Server {
         let notifier = self.notifier;
         let fs = Arc::new(fs);
         let mut channel = self.channel;
-        let writer = Lock::new(channel.try_clone(false)?);
         let mut sig = sig.fuse();
 
         let mut main_loop = Box::pin(async move {
@@ -85,7 +84,7 @@ impl Server {
                 if let Err(err) = session.receive(&mut channel, &mut req, &notifier).await {
                     match err.raw_os_error() {
                         Some(libc::ENODEV) => {
-                            log::debug!("connection was closed by the kernel");
+                            tracing::debug!("connection was closed by the kernel");
                             return Ok(());
                         }
                         _ => return Err(err),
@@ -94,11 +93,11 @@ impl Server {
 
                 let session = session.clone();
                 let fs = fs.clone();
-                let mut writer = writer.clone();
+                let mut writer = channel.try_clone(false)?;
                 let mut req = std::mem::replace(&mut req, BytesBuffer::new(session.buffer_size()));
                 tokio::spawn(async move {
                     if let Err(e) = session.process(&*fs, &mut req, &mut writer).await {
-                        log::error!("error during handling a request: {}", e);
+                        tracing::error!("error during handling a request: {}", e);
                     }
                 });
             }
@@ -201,19 +200,19 @@ fn default_shutdown_signal() -> io::Result<impl Future<Output = c_int> + Unpin> 
         loop {
             select! {
                 _ = sighup => {
-                    log::debug!("Got SIGHUP");
+                    tracing::debug!("Got SIGHUP");
                     return libc::SIGHUP;
                 },
                 _ = sigint => {
-                    log::debug!("Got SIGINT");
+                    tracing::debug!("Got SIGINT");
                     return libc::SIGINT;
                 },
                 _ = sigterm => {
-                    log::debug!("Got SIGTERM");
+                    tracing::debug!("Got SIGTERM");
                     return libc::SIGTERM;
                 },
                 _ = sigpipe => {
-                    log::debug!("Got SIGPIPE (and ignored)");
+                    tracing::debug!("Got SIGPIPE (and ignored)");
                     continue
                 }
             }
