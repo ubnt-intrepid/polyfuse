@@ -20,10 +20,9 @@
          alt="rust toolchain"
     />
   </a>
-  <a href="https://ubnt-intrepid.github.io/polyfuse/">
-    <img src="https://img.shields.io/badge/doc-master-informational?style=flat-square"
-         alt="master doc"
-    />
+  <a href="https://docs.rs/polyfuse">
+    <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
+         alt="docs.rs" />
   </a>
 </div>
 
