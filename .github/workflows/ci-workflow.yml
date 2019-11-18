@@ -96,7 +96,7 @@ jobs:
     - name: Build API docs
       uses: actions-rs/cargo@v1
       with:
-        command: xrun
+        command: xscript
         args: docs
 
     - name: Upload artifact
