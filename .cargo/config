@@ -1,3 +1,4 @@
 [alias]
-xtask = "run --manifest-path ./xtask/Cargo.toml --"
+xtask = "run -p polyfuse-xtask --"
 xrun = "xtask run"
+run-example = "run -p polyfuse-examples --example"
