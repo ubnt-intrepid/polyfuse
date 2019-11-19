@@ -12,7 +12,7 @@ async fn main() -> anyhow::Result<()> {
     let mountpoint = examples::get_mountpoint()?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let memfs = MemFS::new(&mountpoint)?;
+    let memfs = MemFS::new(&std::fs::metadata(&mountpoint)?);
 
     polyfuse_tokio::run(memfs, mountpoint).await?;
 

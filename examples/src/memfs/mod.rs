@@ -1,12 +1,15 @@
 mod inode;
+mod table;
+
+pub use inode::{Directory, File, INode};
+pub use table::INodeTable;
 
 use crate::prelude::*;
-use inode::INodeTable;
 use polyfuse::{
     reply::{ReplyAttr, ReplyData, ReplyEntry, ReplyWrite},
     FileAttr,
 };
-use std::{io, time::SystemTime};
+use std::{fs::Metadata, io, time::SystemTime};
 
 /// An in-memory filesystem.
 pub struct MemFS {
@@ -17,12 +20,12 @@ pub struct MemFS {
 
 impl MemFS {
     /// Create a new `MemFS` mounted on the specified directory.
-    pub fn new(mountpoint: impl AsRef<Path>) -> io::Result<Self> {
-        Ok(Self {
-            inodes: INodeTable::new(mountpoint)?,
+    pub fn new(metadata: &Metadata) -> Self {
+        Self {
+            inodes: INodeTable::new(metadata),
             entry_valid: (u64::max_value(), u32::max_value()),
             attr_valid: (u64::max_value(), u32::max_value()),
-        })
+        }
     }
 
     fn make_attr<W: ?Sized>(&self, cx: &Context<'_, W>, mode: u32) -> FileAttr {
@@ -162,7 +165,7 @@ impl MemFS {
             None => return cx.reply_err(libc::ENOENT).await,
         };
 
-        let file = match inode.as_file() {
+        let file = match inode.downcast_ref::<File>() {
             Some(file) => file,
             None => return cx.reply_err(libc::EPERM).await,
         };
@@ -190,7 +193,7 @@ impl MemFS {
             None => return cx.reply_err(libc::ENOENT).await,
         };
 
-        let file = match inode.as_file() {
+        let file = match inode.downcast_ref::<File>() {
             Some(file) => file,
             None => return cx.reply_err(libc::EPERM).await,
         };
@@ -220,7 +223,7 @@ impl MemFS {
             None => return cx.reply_err(libc::ENOENT).await,
         };
 
-        let dir = match inode.as_dir() {
+        let dir = match inode.downcast_ref::<Directory>() {
             Some(dir) => dir,
             None => return cx.reply_err(libc::ENOTDIR).await,
         };
@@ -257,7 +260,8 @@ impl MemFS {
             libc::S_IFREG => {
                 let attr = self.make_attr(cx, mode);
                 match self.inodes.insert_file(parent, name, attr, vec![]).await {
-                    Ok(attr) => {
+                    Ok(inode) => {
+                        let attr = inode.load_attr();
                         reply.entry_valid(self.entry_valid.0, self.entry_valid.1);
                         reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
                         reply.entry(cx, attr, 0).await
@@ -282,7 +286,8 @@ impl MemFS {
     {
         let attr = self.make_attr(cx, mode);
         match self.inodes.insert_dir(parent, name, attr).await {
-            Ok(attr) => {
+            Ok(inode) => {
+                let attr = inode.load_attr();
                 reply.entry_valid(self.entry_valid.0, self.entry_valid.1);
                 reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
                 reply.entry(cx, attr, 0).await
