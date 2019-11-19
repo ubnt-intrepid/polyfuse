@@ -1,38 +1,28 @@
-#![allow(clippy::unnecessary_mut_passed)]
-#![deny(clippy::unimplemented)]
-
 mod inode;
 
-use crate::inode::INodeTable;
+use crate::prelude::*;
 use polyfuse::FileAttr;
-use polyfuse_examples::prelude::*;
+
+use inode::INodeTable;
 use std::io;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    examples::init_tracing()?;
-
-    let mountpoint = examples::get_mountpoint()?;
-    anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
-
-    let uid = unsafe { libc::getuid() };
-    let gid = unsafe { libc::getgid() };
-
-    let memfs = MemFs {
-        inodes: INodeTable::new(uid, gid),
-        entry_valid: (u64::max_value(), u32::max_value()),
-        attr_valid: (u64::max_value(), u32::max_value()),
-    };
-
-    polyfuse_tokio::run(memfs, mountpoint).await?;
-
-    Ok(())
-}
-
-struct MemFs {
+pub struct MemFs {
     inodes: INodeTable,
     entry_valid: (u64, u32),
     attr_valid: (u64, u32),
+}
+
+impl Default for MemFs {
+    fn default() -> Self {
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+
+        Self {
+            inodes: INodeTable::new(uid, gid),
+            entry_valid: (u64::max_value(), u32::max_value()),
+            attr_valid: (u64::max_value(), u32::max_value()),
+        }
+    }
 }
 
 impl MemFs {

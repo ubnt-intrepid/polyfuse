@@ -1,7 +1,7 @@
-use polyfuse_examples::prelude::*;
+use crate::prelude::*;
+use polyfuse::{DirEntry, FileAttr};
 
 use futures::lock::Mutex;
-use polyfuse::{DirEntry, FileAttr};
 use std::{
     collections::hash_map::{Entry, HashMap},
     sync::{

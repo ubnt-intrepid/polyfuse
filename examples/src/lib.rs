@@ -1,3 +1,8 @@
+#![allow(clippy::unnecessary_mut_passed)]
+#![deny(clippy::unimplemented)]
+
+pub mod memfs;
+
 pub mod prelude {
     pub use anyhow::{anyhow, ensure};
     pub use async_trait::async_trait;

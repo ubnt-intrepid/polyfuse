@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
         entries.push(DirEntry::file(&filename, 2, 3));
         entries
     };
+
     let hello = Hello {
         filename,
         content,
@@ -30,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     polyfuse_tokio::run(hello, mountpoint).await?;
+
     Ok(())
 }
 
