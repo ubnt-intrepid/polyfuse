@@ -1,9 +1,12 @@
 use crate::prelude::*;
 use polyfuse::{DirEntry, FileAttr};
 
+use crossbeam::atomic::AtomicCell;
 use futures::lock::Mutex;
 use std::{
     collections::hash_map::{Entry, HashMap},
+    io,
+    os::linux::fs::MetadataExt,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Weak,
@@ -16,7 +19,22 @@ pub struct INodeTable {
 }
 
 impl INodeTable {
-    pub fn new(uid: u32, gid: u32) -> Self {
+    pub fn new(mountpoint: impl AsRef<Path>) -> io::Result<Self> {
+        let metadata = std::fs::metadata(mountpoint)?;
+        if !metadata.is_dir() {
+            return Err(io::Error::from_raw_os_error(libc::ENOTDIR));
+        }
+
+        let mut attr = FileAttr::default();
+        attr.set_ino(1);
+        attr.set_nlink(2);
+        attr.set_mode(metadata.st_mode());
+        attr.set_uid(metadata.st_uid());
+        attr.set_gid(metadata.st_gid());
+        attr.set_atime(metadata.st_atime() as u64, metadata.st_atime_nsec() as u32);
+        attr.set_mtime(metadata.st_mtime() as u64, metadata.st_mtime_nsec() as u32);
+        attr.set_ctime(metadata.st_ctime() as u64, metadata.st_ctime_nsec() as u32);
+
         let mut inodes = HashMap::new();
         inodes.insert(
             1,
@@ -24,25 +42,17 @@ impl INodeTable {
                 ino: 1,
                 kind: INodeKind::Dir(Directory {
                     ino: 1,
-                    attr: Mutex::new({
-                        let mut attr = FileAttr::default();
-                        attr.set_ino(1);
-                        attr.set_nlink(2);
-                        attr.set_mode(libc::S_IFDIR as u32 | 0o755);
-                        attr.set_uid(uid);
-                        attr.set_gid(gid);
-                        attr
-                    }),
+                    attr: AtomicCell::new(attr),
                     parent: None,
                     children: Mutex::new(HashMap::new()),
                 }),
             }),
         );
 
-        Self {
+        Ok(Self {
             inodes: Mutex::new(inodes),
             next_id: AtomicU64::new(2), // ino=1 is used by the root inode.
-        }
+        })
     }
 
     pub async fn lookup(&self, parent: u64, name: &OsStr) -> Option<Arc<INode>> {
@@ -80,7 +90,7 @@ impl INodeTable {
                 let inode = Arc::new(INode {
                     ino,
                     kind: INodeKind::File(File {
-                        attr: Mutex::new(attr),
+                        attr: AtomicCell::new(attr),
                         data: Mutex::new(data),
                     }),
                 });
@@ -118,7 +128,7 @@ impl INodeTable {
                     ino,
                     kind: INodeKind::Dir(Directory {
                         ino,
-                        attr: Mutex::new(attr),
+                        attr: AtomicCell::new(attr),
                         parent: Some(parent_handle),
                         children: Mutex::new(HashMap::new()),
                     }),
@@ -174,17 +184,17 @@ enum INodeKind {
 }
 
 impl INode {
-    pub async fn attr(&self) -> FileAttr {
+    pub fn load_attr(&self) -> FileAttr {
         match &self.kind {
-            INodeKind::Dir(dir) => *dir.attr.lock().await,
-            INodeKind::File(file) => *file.attr.lock().await,
+            INodeKind::Dir(dir) => dir.attr.load(),
+            INodeKind::File(file) => file.attr.load(),
         }
     }
 
-    pub async fn set_attr(&self, attr: FileAttr) {
+    pub fn store_attr(&self, attr: FileAttr) {
         match &self.kind {
-            INodeKind::Dir(dir) => *dir.attr.lock().await = attr,
-            INodeKind::File(file) => *file.attr.lock().await = attr,
+            INodeKind::Dir(dir) => dir.attr.store(attr),
+            INodeKind::File(file) => file.attr.store(attr),
         }
     }
 
@@ -212,7 +222,7 @@ impl INode {
 
 pub struct Directory {
     ino: u64,
-    attr: Mutex<FileAttr>,
+    attr: AtomicCell<FileAttr>,
     parent: Option<Weak<INode>>,
     children: Mutex<HashMap<OsString, Weak<INode>>>,
 }
@@ -255,7 +265,7 @@ impl Directory {
 }
 
 pub struct File {
-    attr: Mutex<FileAttr>,
+    attr: AtomicCell<FileAttr>,
     data: Mutex<Vec<u8>>,
 }
 

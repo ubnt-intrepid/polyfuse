@@ -3,7 +3,7 @@
 
 use polyfuse_examples::prelude::*;
 
-use examples::memfs::MemFs;
+use examples::memfs::MemFS;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -12,7 +12,8 @@ async fn main() -> anyhow::Result<()> {
     let mountpoint = examples::get_mountpoint()?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let memfs = MemFs::default();
+    let memfs = MemFS::new(&mountpoint)?;
+
     polyfuse_tokio::run(memfs, mountpoint).await?;
 
     Ok(())
