@@ -5,10 +5,7 @@ pub use inode::{Directory, File, INode};
 pub use table::INodeTable;
 
 use crate::prelude::*;
-use polyfuse::{
-    reply::{ReplyAttr, ReplyData, ReplyEntry, ReplyWrite},
-    FileAttr,
-};
+use polyfuse::{op, FileAttr};
 use std::{fs::Metadata, io, time::SystemTime};
 
 /// An in-memory filesystem.
@@ -49,16 +46,15 @@ impl MemFS {
     async fn do_lookup<W: ?Sized>(
         &self,
         cx: &mut Context<'_, W>,
-        parent: u64,
-        name: &OsStr,
-        mut reply: ReplyEntry,
+        op: op::Lookup<'_>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        match self.inodes.lookup(parent, name).await {
+        match self.inodes.lookup(op.parent(), op.name()).await {
             Some(inode) => {
                 let attr = inode.load_attr();
+                let mut reply = op.reply();
                 reply.entry_valid(self.entry_valid.0, self.entry_valid.1);
                 reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
                 reply.entry(cx, attr, 0).await
@@ -70,41 +66,32 @@ impl MemFS {
     async fn do_getattr<W: ?Sized>(
         &self,
         cx: &mut Context<'_, W>,
-        ino: u64,
-        mut reply: ReplyAttr,
+        op: op::Getattr<'_>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        let inode = match self.inodes.get(ino).await {
+        let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
             None => return cx.reply_err(libc::ENOENT).await,
         };
 
         let attr = inode.load_attr();
 
+        let mut reply = op.reply();
         reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
         reply.attr(cx, attr).await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn do_setattr<W: ?Sized>(
         &self,
         cx: &mut Context<'_, W>,
-        ino: u64,
-        mode: Option<u32>,
-        uid: Option<u32>,
-        gid: Option<u32>,
-        size: Option<u64>,
-        atime: Option<(u64, u32, bool)>,
-        mtime: Option<(u64, u32, bool)>,
-        ctime: Option<(u64, u32)>,
-        mut reply: ReplyAttr,
+        op: polyfuse::op::Setattr<'_>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        let inode = match self.inodes.get(ino).await {
+        let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
             None => return cx.reply_err(libc::ENOENT).await,
         };
@@ -114,53 +101,48 @@ impl MemFS {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
 
-        if let Some(mode) = mode {
+        if let Some(mode) = op.mode() {
             attr.set_mode(mode);
         }
-        if let Some(uid) = uid {
+        if let Some(uid) = op.uid() {
             attr.set_uid(uid);
         }
-        if let Some(gid) = gid {
+        if let Some(gid) = op.gid() {
             attr.set_gid(gid);
         }
-        if let Some(size) = size {
+        if let Some(size) = op.size() {
             attr.set_size(size);
         }
-        if let Some((s, ns, is_now)) = atime {
+        if let Some((s, ns, is_now)) = op.atime() {
             if is_now {
                 attr.set_atime(now.as_secs() as u64, now.subsec_nanos());
             } else {
                 attr.set_atime(s, ns);
             }
         }
-        if let Some((s, ns, is_now)) = mtime {
+        if let Some((s, ns, is_now)) = op.mtime() {
             if is_now {
                 attr.set_mtime(now.as_secs() as u64, now.subsec_nanos());
             } else {
                 attr.set_mtime(s, ns);
             }
         }
-        if let Some((s, ns)) = ctime {
+        if let Some((s, ns)) = op.ctime() {
             attr.set_ctime(s, ns);
         }
 
         inode.store_attr(attr);
 
+        let mut reply = op.reply();
         reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
         reply.attr(cx, attr).await
     }
 
-    async fn do_read<W: ?Sized>(
-        &self,
-        cx: &mut Context<'_, W>,
-        ino: u64,
-        offset: u64,
-        reply: ReplyData,
-    ) -> io::Result<()>
+    async fn do_read<W: ?Sized>(&self, cx: &mut Context<'_, W>, op: op::Read<'_>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        let inode = match self.inodes.get(ino).await {
+        let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
             None => return cx.reply_err(libc::ENOENT).await,
         };
@@ -170,7 +152,8 @@ impl MemFS {
             None => return cx.reply_err(libc::EPERM).await,
         };
 
-        match file.read(offset as usize, reply.size() as usize).await {
+        let reply = op.reply();
+        match file.read(op.offset() as usize, op.size() as usize).await {
             Some(data) => reply.data(cx, &data).await,
             None => reply.data(cx, &[]).await,
         }
@@ -179,16 +162,14 @@ impl MemFS {
     async fn do_write<W: ?Sized, T>(
         &self,
         cx: &mut Context<'_, W>,
-        ino: u64,
-        offset: u64,
+        op: op::Write<'_>,
         data: T,
-        reply: ReplyWrite,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
         T: AsRef<[u8]>,
     {
-        let inode = match self.inodes.get(ino).await {
+        let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
             None => return cx.reply_err(libc::ENOENT).await,
         };
@@ -199,26 +180,27 @@ impl MemFS {
         };
 
         let data = data.as_ref();
+        let offset = op.offset();
+
         file.write(offset as usize, data).await;
 
         let mut attr = inode.load_attr();
         attr.set_size(offset + data.len() as u64);
         inode.store_attr(attr);
 
+        let reply = op.reply();
         reply.write(cx, data.len() as u32).await
     }
 
     async fn do_readdir<W: ?Sized>(
         &self,
         cx: &mut Context<'_, W>,
-        ino: u64,
-        offset: u64,
-        reply: ReplyData,
+        op: op::Readdir<'_>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        let inode = match self.inodes.get(ino).await {
+        let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
             None => return cx.reply_err(libc::ENOENT).await,
         };
@@ -234,34 +216,37 @@ impl MemFS {
             .entries()
             .await
             .into_iter()
-            .skip(offset as usize)
+            .skip(op.offset() as usize)
             .take_while(|entry| {
                 totallen += entry.as_ref().len();
-                totallen <= reply.size() as usize
+                totallen <= op.size() as usize
             })
             .collect();
         let entries: Vec<_> = entries.iter().map(|entry| entry.as_ref()).collect();
 
+        let reply = op.reply();
         reply.data_vectored(cx, &*entries).await
     }
 
     async fn do_mknod<W: ?Sized>(
         &self,
         cx: &mut Context<'_, W>,
-        parent: u64,
-        name: &OsStr,
-        mode: u32,
-        mut reply: ReplyEntry,
+        op: op::Mknod<'_>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        match mode & libc::S_IFMT {
+        match op.mode() & libc::S_IFMT {
             libc::S_IFREG => {
-                let attr = self.make_attr(cx, mode);
-                match self.inodes.insert_file(parent, name, attr, vec![]).await {
+                let attr = self.make_attr(cx, op.mode());
+                match self
+                    .inodes
+                    .insert_file(op.parent(), op.name(), attr, vec![])
+                    .await
+                {
                     Ok(inode) => {
                         let attr = inode.load_attr();
+                        let mut reply = op.reply();
                         reply.entry_valid(self.entry_valid.0, self.entry_valid.1);
                         reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
                         reply.entry(cx, attr, 0).await
@@ -276,18 +261,16 @@ impl MemFS {
     async fn do_mkdir<W: ?Sized>(
         &self,
         cx: &mut Context<'_, W>,
-        parent: u64,
-        name: &OsStr,
-        mode: u32,
-        mut reply: ReplyEntry,
+        op: op::Mkdir<'_>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        let attr = self.make_attr(cx, mode);
-        match self.inodes.insert_dir(parent, name, attr).await {
+        let attr = self.make_attr(cx, op.mode());
+        match self.inodes.insert_dir(op.parent(), op.name(), attr).await {
             Ok(inode) => {
                 let attr = inode.load_attr();
+                let mut reply = op.reply();
                 reply.entry_valid(self.entry_valid.0, self.entry_valid.1);
                 reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
                 reply.entry(cx, attr, 0).await
@@ -308,80 +291,20 @@ where
         T: Send + 'async_trait,
     {
         match op {
-            Operation::Lookup {
-                parent,
-                name,
-                reply,
-                ..
-            } => self.do_lookup(cx, parent, name, reply).await?,
-
-            Operation::Getattr {
-                ino, //
-                reply,
-                ..
-            } => self.do_getattr(cx, ino, reply).await?,
-
-            Operation::Setattr {
-                ino,
-                mode,
-                uid,
-                gid,
-                size,
-                atime,
-                mtime,
-                ctime,
-                reply,
-                ..
-            } => {
-                self.do_setattr(cx, ino, mode, uid, gid, size, atime, mtime, ctime, reply)
-                    .await?
-            }
-
-            Operation::Read {
-                ino, offset, reply, ..
-            } => self.do_read(cx, ino, offset, reply).await?,
-
-            Operation::Write {
-                ino,
-                offset,
-                data,
-                reply,
-                ..
-            } => self.do_write(cx, ino, offset, data, reply).await?,
-
-            Operation::Readdir {
-                ino, offset, reply, ..
-            } => self.do_readdir(cx, ino, offset, reply).await?,
-
-            Operation::Mknod {
-                parent,
-                name,
-                mode,
-                reply,
-                ..
-            } => self.do_mknod(cx, parent, name, mode, reply).await?,
-
-            Operation::Mkdir {
-                parent,
-                name,
-                mode,
-                reply,
-                ..
-            } => self.do_mkdir(cx, parent, name, mode, reply).await?,
-
-            Operation::Unlink {
-                parent,
-                name,
-                reply,
-                ..
-            }
-            | Operation::Rmdir {
-                parent,
-                name,
-                reply,
-                ..
-            } => match self.inodes.remove(parent, name).await {
-                Ok(()) => reply.ok(cx).await?,
+            Operation::Lookup(op) => self.do_lookup(cx, op).await?,
+            Operation::Getattr(op) => self.do_getattr(cx, op).await?,
+            Operation::Setattr(op) => self.do_setattr(cx, op).await?,
+            Operation::Read(op) => self.do_read(cx, op).await?,
+            Operation::Write(op, data) => self.do_write(cx, op, data).await?,
+            Operation::Readdir(op) => self.do_readdir(cx, op).await?,
+            Operation::Mknod(op) => self.do_mknod(cx, op).await?,
+            Operation::Mkdir(op) => self.do_mkdir(cx, op).await?,
+            Operation::Unlink(op) => match self.inodes.remove(op.parent(), op.name()).await {
+                Ok(()) => op.reply().ok(cx).await?,
+                Err(errno) => cx.reply_err(errno).await?,
+            },
+            Operation::Rmdir(op) => match self.inodes.remove(op.parent(), op.name()).await {
+                Ok(()) => op.reply().ok(cx).await?,
                 Err(errno) => cx.reply_err(errno).await?,
             },
 

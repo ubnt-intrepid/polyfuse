@@ -16,6 +16,7 @@
 #![forbid(clippy::unimplemented)]
 
 pub mod notify;
+pub mod op;
 pub mod reply;
 pub mod request;
 
@@ -29,9 +30,10 @@ mod session;
 pub use crate::{
     common::{FileAttr, FileLock, Forget, StatFs},
     dirent::DirEntry,
-    fs::{Context, Filesystem, Operation},
+    fs::{Context, Filesystem},
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
     notify::Notifier,
+    op::Operation,
     request::Buffer,
     session::{Interrupt, Session},
 };
