@@ -1,26 +1,11 @@
 //! Lowlevel interface to handle FUSE requests.
 
 use crate::{
-    common::{FileLock, Forget},
-    fs::{Context, Filesystem, Operation},
+    common::{Forget, StatFs},
+    fs::{Context, Filesystem},
     init::ConnectionInfo,
     notify::Notifier,
-    reply::{
-        ReplyAttr, //
-        ReplyBmap,
-        ReplyCreate,
-        ReplyData,
-        ReplyEmpty,
-        ReplyEntry,
-        ReplyLk,
-        ReplyOpen,
-        ReplyOpendir,
-        ReplyPoll,
-        ReplyReadlink,
-        ReplyStatfs,
-        ReplyWrite,
-        ReplyXattr,
-    },
+    op::{self, Operation},
     request::{Buffer, BufferExt, RequestKind},
 };
 use futures::{
@@ -32,8 +17,7 @@ use futures::{
 use polyfuse_sys::kernel::{fuse_forget_one, fuse_opcode};
 use std::{
     collections::{HashMap, HashSet},
-    convert::TryFrom,
-    io, mem,
+    io,
     pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
     task::{self, Poll},
@@ -178,21 +162,12 @@ impl Session {
                 return Ok(());
             }
             RequestKind::Lookup { name } => {
-                run_op!(Operation::Lookup {
-                    parent: ino,
-                    name: &*name,
-                    reply: ReplyEntry::new(),
-                });
+                run_op!(Operation::Lookup(op::Lookup { header, name }));
             }
             RequestKind::Forget { arg } => {
                 // no reply.
                 return fs
-                    .call(
-                        &mut cx,
-                        Operation::Forget {
-                            forgets: &[Forget::new(ino, arg.nlookup)],
-                        },
-                    )
+                    .call(&mut cx, Operation::Forget(&[Forget::new(ino, arg.nlookup)]))
                     .await;
             }
             RequestKind::BatchForget { forgets, .. } => {
@@ -208,238 +183,99 @@ impl Session {
 
                 // no reply.
                 return fs
-                    .call(
-                        &mut cx,
-                        Operation::Forget {
-                            forgets: make_forgets(&*forgets),
-                        },
-                    )
+                    .call(&mut cx, Operation::Forget(make_forgets(&*forgets)))
                     .await;
             }
             RequestKind::Getattr { arg } => {
-                run_op!(Operation::Getattr {
-                    ino,
-                    fh: arg.fh(),
-                    reply: ReplyAttr::new(),
-                });
+                run_op!(Operation::Getattr(op::Getattr { header, arg }));
             }
             RequestKind::Setattr { arg } => {
-                run_op!(Operation::Setattr {
-                    ino,
-                    fh: arg.fh(),
-                    mode: arg.mode(),
-                    uid: arg.uid(),
-                    gid: arg.gid(),
-                    size: arg.size(),
-                    atime: arg.atime(),
-                    mtime: arg.mtime(),
-                    ctime: arg.ctime(),
-                    lock_owner: arg.lock_owner(),
-                    reply: ReplyAttr::new(),
-                });
+                run_op!(Operation::Setattr(op::Setattr { header, arg }));
             }
             RequestKind::Readlink => {
-                run_op!(Operation::Readlink {
-                    ino,
-                    reply: ReplyReadlink::new(),
-                });
+                run_op!(Operation::Readlink(op::Readlink { header }));
             }
             RequestKind::Symlink { name, link } => {
-                run_op!(Operation::Symlink {
-                    parent: ino,
-                    name: &*name,
-                    link: &*link,
-                    reply: ReplyEntry::new(),
-                });
+                run_op!(Operation::Symlink(op::Symlink { header, name, link }));
             }
             RequestKind::Mknod { arg, name } => {
-                run_op!(Operation::Mknod {
-                    parent: ino,
-                    name: &*name,
-                    mode: arg.mode,
-                    rdev: arg.rdev,
-                    umask: Some(arg.umask),
-                    reply: ReplyEntry::new(),
-                });
+                run_op!(Operation::Mknod(op::Mknod { header, arg, name }));
             }
             RequestKind::Mkdir { arg, name } => {
-                run_op!(Operation::Mkdir {
-                    parent: ino,
-                    name: &*name,
-                    mode: arg.mode,
-                    umask: Some(arg.umask),
-                    reply: ReplyEntry::new(),
-                });
+                run_op!(Operation::Mkdir(op::Mkdir { header, arg, name }));
             }
             RequestKind::Unlink { name } => {
-                run_op!(Operation::Unlink {
-                    parent: ino,
-                    name: &*name,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Unlink(op::Unlink { header, name }));
             }
             RequestKind::Rmdir { name } => {
-                run_op!(Operation::Rmdir {
-                    parent: ino,
-                    name: &*name,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Rmdir(op::Rmdir { header, name }));
             }
             RequestKind::Rename { arg, name, newname } => {
-                run_op!(Operation::Rename {
-                    parent: ino,
-                    name: &*name,
-                    newparent: arg.newdir,
-                    newname: &*newname,
-                    flags: 0,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Rename(op::Rename {
+                    header,
+                    arg: arg.into(),
+                    name,
+                    newname
+                }));
             }
             RequestKind::Rename2 { arg, name, newname } => {
-                run_op!(Operation::Rename {
-                    parent: ino,
-                    name: &*name,
-                    newparent: arg.newdir,
-                    newname: &*newname,
-                    flags: arg.flags,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Rename(op::Rename {
+                    header,
+                    arg: arg.into(),
+                    name,
+                    newname
+                }));
             }
             RequestKind::Link { arg, newname } => {
-                run_op!(Operation::Link {
-                    ino: arg.oldnodeid,
-                    newparent: ino,
-                    newname: &*newname,
-                    reply: ReplyEntry::new(),
-                });
+                run_op!(Operation::Link(op::Link {
+                    header,
+                    arg,
+                    newname
+                }));
             }
             RequestKind::Open { arg } => {
-                run_op!(Operation::Open {
-                    ino,
-                    flags: arg.flags,
-                    reply: ReplyOpen::new(),
-                });
+                run_op!(Operation::Open(op::Open { header, arg }));
             }
             RequestKind::Read { arg } => {
-                run_op!(Operation::Read {
-                    ino,
-                    fh: arg.fh,
-                    offset: arg.offset,
-                    flags: arg.flags,
-                    lock_owner: arg.lock_owner(),
-                    reply: ReplyData::new(arg.size),
-                });
+                run_op!(Operation::Read(op::Read { header, arg }));
             }
             RequestKind::Write { arg, data } => {
-                // debug_assert_eq!(data.len(), arg.size as usize);
-
-                run_op!(Operation::Write {
-                    ino,
-                    fh: arg.fh,
-                    offset: arg.offset,
-                    data,
-                    flags: arg.flags,
-                    lock_owner: arg.lock_owner(),
-                    reply: ReplyWrite::new(),
-                });
+                run_op!(Operation::Write(op::Write { header, arg }, data));
             }
             RequestKind::Release { arg } => {
-                let mut flush = false;
-                let mut flock_release = false;
-                let mut lock_owner = None;
-                if self.conn.proto_minor() >= 8 {
-                    flush = arg.release_flags & polyfuse_sys::kernel::FUSE_RELEASE_FLUSH != 0;
-                    lock_owner.get_or_insert_with(|| arg.lock_owner);
-                }
-                if arg.release_flags & polyfuse_sys::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0 {
-                    flock_release = true;
-                    lock_owner.get_or_insert_with(|| arg.lock_owner);
-                }
-                run_op!(Operation::Release {
-                    ino,
-                    fh: arg.fh,
-                    flags: arg.flags,
-                    lock_owner,
-                    flush,
-                    flock_release,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Release(op::Release { header, arg }));
             }
             RequestKind::Statfs => {
-                run_op!(Operation::Statfs {
-                    ino,
-                    reply: ReplyStatfs::new(),
-                });
-
-                if !cx.is_replied() {
-                    let mut st: libc::statvfs = unsafe { mem::zeroed() };
-                    st.f_namemax = 255;
-                    st.f_bsize = 512;
-                    let st = TryFrom::try_from(st).unwrap();
-                    ReplyStatfs::new().stat(&mut cx, st).await?;
-                }
+                run_op!(Operation::Statfs(op::Statfs { header }));
             }
             RequestKind::Fsync { arg } => {
-                run_op!(Operation::Fsync {
-                    ino,
-                    fh: arg.fh,
-                    datasync: arg.datasync(),
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Fsync(op::Fsync { header, arg }));
             }
             RequestKind::Setxattr { arg, name, value } => {
-                run_op!(Operation::Setxattr {
-                    ino,
-                    name: &*name,
-                    value: &*value,
-                    flags: arg.flags,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Setxattr(op::Setxattr {
+                    header,
+                    arg,
+                    name,
+                    value
+                }));
             }
             RequestKind::Getxattr { arg, name } => {
-                run_op!(Operation::Getxattr {
-                    ino,
-                    name: &*name,
-                    size: arg.size,
-                    reply: ReplyXattr::new(),
-                });
+                run_op!(Operation::Getxattr(op::Getxattr { header, arg, name }));
             }
             RequestKind::Listxattr { arg } => {
-                run_op!(Operation::Listxattr {
-                    ino,
-                    size: arg.size,
-                    reply: ReplyXattr::new(),
-                });
+                run_op!(Operation::Listxattr(op::Listxattr { header, arg }));
             }
             RequestKind::Removexattr { name } => {
-                run_op!(Operation::Removexattr {
-                    ino,
-                    name: &*name,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Removexattr(op::Removexattr { header, name }));
             }
             RequestKind::Flush { arg } => {
-                run_op!(Operation::Flush {
-                    ino,
-                    fh: arg.fh,
-                    lock_owner: arg.lock_owner,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Flush(op::Flush { header, arg }));
             }
             RequestKind::Opendir { arg } => {
-                run_op!(Operation::Opendir {
-                    ino,
-                    flags: arg.flags,
-                    reply: ReplyOpendir::new(),
-                });
+                run_op!(Operation::Opendir(op::Opendir { header, arg }));
             }
             RequestKind::Readdir { arg } => {
-                run_op!(Operation::Readdir {
-                    ino,
-                    fh: arg.fh,
-                    offset: arg.offset,
-                    reply: ReplyData::new(arg.size),
-                });
+                run_op!(Operation::Readdir(op::Readdir { header, arg }));
             }
             RequestKind::Readdirplus { .. } => {
                 // FIXME: support readdirplus
@@ -447,123 +283,38 @@ impl Session {
                 cx.reply_err(libc::ENOSYS).await?;
             }
             RequestKind::Releasedir { arg } => {
-                run_op!(Operation::Releasedir {
-                    ino,
-                    fh: arg.fh,
-                    flags: arg.flags,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Releasedir(op::Releasedir { header, arg }));
             }
             RequestKind::Fsyncdir { arg } => {
-                run_op!(Operation::Fsyncdir {
-                    ino,
-                    fh: arg.fh,
-                    datasync: arg.datasync(),
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Fsyncdir(op::Fsyncdir { header, arg }));
             }
             RequestKind::Getlk { arg } => {
-                run_op!(Operation::Getlk {
-                    ino,
-                    fh: arg.fh,
-                    owner: arg.owner,
-                    lk: FileLock::new(&arg.lk),
-                    reply: ReplyLk::new(),
-                });
+                run_op!(Operation::Getlk(op::Getlk { header, arg }));
             }
             RequestKind::Setlk { arg, sleep } => {
                 if arg.lk_flags & polyfuse_sys::kernel::FUSE_LK_FLOCK != 0 {
-                    const F_RDLCK: u32 = libc::F_RDLCK as u32;
-                    const F_WRLCK: u32 = libc::F_WRLCK as u32;
-                    const F_UNLCK: u32 = libc::F_UNLCK as u32;
-                    #[allow(clippy::cast_possible_wrap)]
-                    let mut op = match arg.lk.typ {
-                        F_RDLCK => libc::LOCK_SH as u32,
-                        F_WRLCK => libc::LOCK_EX as u32,
-                        F_UNLCK => libc::LOCK_UN as u32,
-                        _ => return cx.reply_err(libc::EIO).await,
-                    };
-                    if !sleep {
-                        op |= libc::LOCK_NB as u32;
-                    }
-                    run_op!(Operation::Flock {
-                        ino,
-                        fh: arg.fh,
-                        owner: arg.owner,
-                        op,
-                        reply: ReplyEmpty::new(),
-                    });
+                    run_op!(Operation::Flock(op::Flock { header, arg, sleep }));
                 } else {
-                    run_op!(Operation::Setlk {
-                        ino,
-                        fh: arg.fh,
-                        owner: arg.owner,
-                        lk: FileLock::new(&arg.lk),
-                        sleep,
-                        reply: ReplyEmpty::new(),
-                    });
+                    run_op!(Operation::Setlk(op::Setlk { header, arg, sleep }));
                 }
             }
             RequestKind::Access { arg } => {
-                run_op!(Operation::Access {
-                    ino,
-                    mask: arg.mask,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Access(op::Access { header, arg }));
             }
             RequestKind::Create { arg, name } => {
-                run_op!(Operation::Create {
-                    parent: ino,
-                    name: &*name,
-                    mode: arg.mode,
-                    umask: Some(arg.umask),
-                    open_flags: arg.flags,
-                    reply: ReplyCreate::new(),
-                });
+                run_op!(Operation::Create(op::Create { header, arg, name }));
             }
             RequestKind::Bmap { arg } => {
-                run_op!(Operation::Bmap {
-                    ino,
-                    block: arg.block,
-                    blocksize: arg.blocksize,
-                    reply: ReplyBmap::new(),
-                });
+                run_op!(Operation::Bmap(op::Bmap { header, arg }));
             }
             RequestKind::Fallocate { arg } => {
-                run_op!(Operation::Fallocate {
-                    ino,
-                    fh: arg.fh,
-                    offset: arg.offset,
-                    length: arg.length,
-                    mode: arg.mode,
-                    reply: ReplyEmpty::new(),
-                });
+                run_op!(Operation::Fallocate(op::Fallocate { header, arg }));
             }
             RequestKind::CopyFileRange { arg } => {
-                run_op!(Operation::CopyFileRange {
-                    ino_in: ino,
-                    fh_in: arg.fh_in,
-                    off_in: arg.off_in,
-                    ino_out: arg.nodeid_out,
-                    fh_out: arg.fh_out,
-                    off_out: arg.off_out,
-                    len: arg.len,
-                    flags: arg.flags,
-                    reply: ReplyWrite::new(),
-                });
+                run_op!(Operation::CopyFileRange(op::CopyFileRange { header, arg }));
             }
             RequestKind::Poll { arg } => {
-                run_op!(Operation::Poll {
-                    ino,
-                    fh: arg.fh,
-                    events: arg.events,
-                    kh: if arg.flags & polyfuse_sys::kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
-                        Some(arg.kh)
-                    } else {
-                        None
-                    },
-                    reply: ReplyPoll::new(),
-                });
+                run_op!(Operation::Poll(op::Poll { header, arg }));
             }
 
             RequestKind::Init { .. } => {
@@ -585,7 +336,15 @@ impl Session {
         }
 
         if !cx.is_replied() {
-            cx.reply_err(libc::ENOSYS).await?;
+            match header.opcode() {
+                Some(fuse_opcode::FUSE_STATFS) => {
+                    let mut st = StatFs::default();
+                    st.set_namelen(255);
+                    st.set_bsize(512);
+                    crate::reply::ReplyStatfs::new().stat(&mut cx, st).await?;
+                }
+                _ => cx.reply_err(libc::ENOSYS).await?,
+            }
         }
 
         Ok(())

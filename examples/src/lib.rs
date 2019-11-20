@@ -10,7 +10,7 @@ pub mod prelude {
         future::{Future, FutureExt},
         io::AsyncWrite,
     };
-    pub use polyfuse::{Context, Filesystem, Operation};
+    pub use polyfuse::{op::Operation, Context, Filesystem};
     pub use std::{
         ffi::{OsStr, OsString},
         os::unix::ffi::OsStrExt,
