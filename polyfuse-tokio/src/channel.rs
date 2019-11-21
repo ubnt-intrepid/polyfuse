@@ -12,7 +12,7 @@ use std::{
     path::Path,
     pin::Pin,
 };
-use tokio::net::util::PollEvented;
+use tokio::io::PollEvented;
 
 /// Asynchronous I/O object that communicates with the FUSE kernel driver.
 #[derive(Debug)]

@@ -8,7 +8,7 @@ repository = "https://github.com/ubnt-intrepid/polyfuse.git"
 edition = "2018"
 
 [dependencies]
-bytes = "0.4"
+bytes04 = { package = "bytes", version = "0.4" }
 futures = { version = "0.3.0", features = [ "unstable", "async-await" ] }
 libc = "0.2"
 mio = "0.6"

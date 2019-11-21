@@ -22,7 +22,7 @@ pub use crate::{
     server::{Notifier, RetrieveHandle, Server},
 };
 
-use bytes::Bytes;
+use bytes04::Bytes;
 use polyfuse::Filesystem;
 use std::{io, path::Path};
 

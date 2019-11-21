@@ -1,7 +1,7 @@
 //! Serve FUSE filesystem.
 
 use crate::{channel::Channel, mount::MountOptions};
-use bytes::Bytes;
+use bytes04::Bytes;
 use futures::{
     future::{FusedFuture, Future, FutureExt},
     select,
