@@ -12,8 +12,12 @@ bytes04 = { package = "bytes", version = "0.4" }
 futures = { version = "0.3.0", features = [ "unstable", "async-await" ] }
 libc = "0.2"
 mio = "0.6"
-tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master" }
 tracing = "0.1"
+
+[dependencies.tokio]
+git = "https://github.com/tokio-rs/tokio.git"
+branch = "master"
+features = [ "io-driver", "signal", "rt-core" ]
 
 [dependencies.polyfuse]
 version = "0.1.0"
