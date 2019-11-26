@@ -15,8 +15,7 @@ mio = "0.6"
 tracing = "0.1"
 
 [dependencies.tokio]
-git = "https://github.com/tokio-rs/tokio.git"
-branch = "master"
+version = "0.2"
 features = [ "io-driver", "signal", "rt-core" ]
 
 [dependencies.polyfuse]

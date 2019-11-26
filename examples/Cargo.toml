@@ -20,6 +20,5 @@ polyfuse = { path = "../polyfuse" }
 polyfuse-tokio = { path = "../polyfuse-tokio" }
 
 [dependencies.tokio]
-git = "https://github.com/tokio-rs/tokio.git"
-branch = "master"
+version = "0.2"
 features = [ "macros", "rt-threaded", "time" ]
