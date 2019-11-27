@@ -11,7 +11,6 @@ use libc::c_int;
 use polyfuse::{request::BytesBuffer, Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, pin::Pin, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
-
 /// FUSE filesystem server.
 #[derive(Debug)]
 pub struct Server {
