@@ -230,7 +230,7 @@ impl Buffer for BytesBuffer {
         let kind = match opcode {
             fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_NOTIFY_REPLY => {
                 let payload = self.payload.make_shared();
-                Parser::new(payload).parse(opcode, |parser| payload.slice_from(parser.offset()))?
+                Parser::new(payload).parse(opcode, |parser| payload.slice(parser.offset()..))?
             }
             _ => {
                 let payload = self.payload.as_slice();

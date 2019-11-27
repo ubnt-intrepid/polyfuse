@@ -8,7 +8,7 @@ repository = "https://github.com/ubnt-intrepid/polyfuse.git"
 edition = "2018"
 
 [dependencies]
-bytes04 = { package = "bytes", version = "0.4" }
+bytes = "0.5"
 futures = { version = "0.3.0", features = [ "unstable", "async-await" ] }
 libc = "0.2"
 mio = "0.6"
@@ -19,7 +19,7 @@ version = "0.2"
 features = [ "io-driver", "signal", "rt-core" ]
 
 [dependencies.polyfuse]
-version = "0.1.0"
+version = "0.2.0-dev"
 path = "../polyfuse"
 
 [dependencies.polyfuse-sys]
