@@ -4,7 +4,10 @@
 use polyfuse_examples::prelude::*;
 
 use futures::select;
-use polyfuse::{DirEntry, FileAttr, Interrupt};
+use polyfuse::{
+    reply::{ReplyAttr, ReplyEntry},
+    DirEntry, FileAttr, Interrupt,
+};
 use std::io;
 
 #[tokio::main]
@@ -138,19 +141,19 @@ impl<T> Filesystem<T> for Hello {
         match op {
             Operation::Lookup(op) => match self.lookup(op.parent(), op.name()) {
                 Some(attr) => {
-                    let mut reply = op.reply();
+                    let mut reply = ReplyEntry::new(attr);
                     reply.attr_valid(u64::max_value(), u32::max_value());
                     reply.entry_valid(u64::max_value(), u32::max_value());
-                    reply.entry(cx, attr, 0).await?;
+                    op.reply(cx, reply).await?;
                 }
                 None => cx.reply_err(libc::ENOENT).await?,
             },
 
             Operation::Getattr(op) => match self.getattr(op.ino()) {
                 Some(attr) => {
-                    let mut reply = op.reply();
+                    let mut reply = ReplyAttr::new(attr);
                     reply.attr_valid(u64::max_value(), u32::max_value());
-                    reply.attr(cx, attr).await?;
+                    op.reply(cx, reply).await?;
                 }
                 None => cx.reply_err(libc::ENOENT).await?,
             },
@@ -161,14 +164,14 @@ impl<T> Filesystem<T> for Hello {
                     .read(op.ino(), op.offset() as usize, op.size() as usize, intr)
                     .await
                 {
-                    Ok(data) => op.reply().data(cx, data).await?,
+                    Ok(data) => op.reply(cx, data).await?,
                     Err(errno) => cx.reply_err(errno).await?,
                 }
             }
 
             Operation::Readdir(op) => match self.readdir(op.ino(), op.offset(), op.size() as usize)
             {
-                Ok(entries) => op.reply().data_vectored(cx, &*entries).await?,
+                Ok(entries) => op.reply_vectored(cx, &*entries).await?,
                 Err(errno) => cx.reply_err(errno).await?,
             },
 
