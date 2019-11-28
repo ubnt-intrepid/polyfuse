@@ -341,7 +341,8 @@ impl Session {
                     let mut st = StatFs::default();
                     st.set_namelen(255);
                     st.set_bsize(512);
-                    crate::reply::ReplyStatfs::new().stat(&mut cx, st).await?;
+                    let out = crate::reply::ReplyStatfs::new(st);
+                    cx.reply(unsafe { crate::reply::as_bytes(&out) }).await?;
                 }
                 _ => cx.reply_err(libc::ENOSYS).await?,
             }

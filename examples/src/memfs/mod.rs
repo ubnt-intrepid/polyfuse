@@ -5,7 +5,11 @@ pub use inode::{Directory, File, INode};
 pub use table::INodeTable;
 
 use crate::prelude::*;
-use polyfuse::{op, FileAttr};
+use polyfuse::{
+    op,
+    reply::{ReplyAttr, ReplyEntry, ReplyWrite},
+    FileAttr,
+};
 use std::{fs::Metadata, io, time::SystemTime};
 
 /// An in-memory filesystem.
@@ -54,10 +58,10 @@ impl MemFS {
         match self.inodes.lookup(op.parent(), op.name()).await {
             Some(inode) => {
                 let attr = inode.load_attr();
-                let mut reply = op.reply();
-                reply.entry_valid(self.entry_valid.0, self.entry_valid.1);
-                reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                reply.entry(cx, attr, 0).await
+                let mut entry = ReplyEntry::new(attr);
+                entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
+                entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
+                op.reply(cx, entry).await
             }
             None => cx.reply_err(libc::ENOENT).await,
         }
@@ -78,9 +82,9 @@ impl MemFS {
 
         let attr = inode.load_attr();
 
-        let mut reply = op.reply();
-        reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
-        reply.attr(cx, attr).await
+        let mut attr = ReplyAttr::new(attr);
+        attr.attr_valid(self.attr_valid.0, self.attr_valid.1);
+        op.reply(cx, attr).await
     }
 
     async fn do_setattr<W: ?Sized>(
@@ -133,9 +137,9 @@ impl MemFS {
 
         inode.store_attr(attr);
 
-        let mut reply = op.reply();
-        reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
-        reply.attr(cx, attr).await
+        let mut attr = ReplyAttr::new(attr);
+        attr.attr_valid(self.attr_valid.0, self.attr_valid.1);
+        op.reply(cx, attr).await
     }
 
     async fn do_read<W: ?Sized>(&self, cx: &mut Context<'_, W>, op: op::Read<'_>) -> io::Result<()>
@@ -152,10 +156,9 @@ impl MemFS {
             None => return cx.reply_err(libc::EPERM).await,
         };
 
-        let reply = op.reply();
         match file.read(op.offset() as usize, op.size() as usize).await {
-            Some(data) => reply.data(cx, &data).await,
-            None => reply.data(cx, &[]).await,
+            Some(data) => op.reply(cx, &data).await,
+            None => op.reply(cx, &[]).await,
         }
     }
 
@@ -188,8 +191,7 @@ impl MemFS {
         attr.set_size(offset + data.len() as u64);
         inode.store_attr(attr);
 
-        let reply = op.reply();
-        reply.write(cx, data.len() as u32).await
+        op.reply(cx, ReplyWrite::new(data.len() as u32)).await
     }
 
     async fn do_readdir<W: ?Sized>(
@@ -224,8 +226,7 @@ impl MemFS {
             .collect();
         let entries: Vec<_> = entries.iter().map(|entry| entry.as_ref()).collect();
 
-        let reply = op.reply();
-        reply.data_vectored(cx, &*entries).await
+        op.reply_vectored(cx, &*entries).await
     }
 
     async fn do_mknod<W: ?Sized>(
@@ -246,10 +247,10 @@ impl MemFS {
                 {
                     Ok(inode) => {
                         let attr = inode.load_attr();
-                        let mut reply = op.reply();
-                        reply.entry_valid(self.entry_valid.0, self.entry_valid.1);
-                        reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                        reply.entry(cx, attr, 0).await
+                        let mut entry = ReplyEntry::new(attr);
+                        entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
+                        entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
+                        op.reply(cx, entry).await
                     }
                     Err(errno) => cx.reply_err(errno).await,
                 }
@@ -270,10 +271,10 @@ impl MemFS {
         match self.inodes.insert_dir(op.parent(), op.name(), attr).await {
             Ok(inode) => {
                 let attr = inode.load_attr();
-                let mut reply = op.reply();
-                reply.entry_valid(self.entry_valid.0, self.entry_valid.1);
-                reply.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                reply.entry(cx, attr, 0).await
+                let mut entry = ReplyEntry::new(attr);
+                entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
+                entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
+                op.reply(cx, entry).await
             }
             Err(errno) => cx.reply_err(errno).await,
         }
@@ -300,11 +301,11 @@ where
             Operation::Mknod(op) => self.do_mknod(cx, op).await?,
             Operation::Mkdir(op) => self.do_mkdir(cx, op).await?,
             Operation::Unlink(op) => match self.inodes.remove(op.parent(), op.name()).await {
-                Ok(()) => op.reply().ok(cx).await?,
+                Ok(()) => op.reply(cx).await?,
                 Err(errno) => cx.reply_err(errno).await?,
             },
             Operation::Rmdir(op) => match self.inodes.remove(op.parent(), op.name()).await {
-                Ok(()) => op.reply().ok(cx).await?,
+                Ok(()) => op.reply(cx).await?,
                 Err(errno) => cx.reply_err(errno).await?,
             },
 

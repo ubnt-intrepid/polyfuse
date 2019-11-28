@@ -2,10 +2,7 @@
 
 #![allow(clippy::needless_update)]
 
-use crate::{
-    common::{FileAttr, FileLock, StatFs},
-    fs::Context,
-};
+use crate::common::{FileAttr, FileLock, StatFs};
 use futures::{future::poll_fn, io::AsyncWrite};
 use polyfuse_sys::kernel::{
     fuse_attr_out, //
@@ -22,10 +19,8 @@ use polyfuse_sys::kernel::{
 use smallvec::SmallVec;
 use std::{
     convert::TryFrom,
-    ffi::OsStr,
     io::{self, IoSlice},
     mem,
-    os::unix::ffi::OsStrExt,
     pin::Pin,
 };
 
@@ -34,133 +29,63 @@ pub(crate) unsafe fn as_bytes<T: Sized>(t: &T) -> &[u8] {
     std::slice::from_raw_parts(t as *const T as *const u8, std::mem::size_of::<T>())
 }
 
-/// Reply with an empty output.
-#[derive(Debug)]
-#[must_use]
-pub struct ReplyEmpty {
-    _p: (),
-}
-
-impl ReplyEmpty {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { _p: () }
-    }
-
-    /// Send an empty reply to the kernel.
-    #[inline]
-    pub async fn ok<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        cx.reply(&[]).await
-    }
-}
-
-/// Reply with arbitrary binary data.
-#[derive(Debug)]
-#[must_use]
-pub struct ReplyData {
-    size: u32,
-}
-
-impl ReplyData {
-    #[inline]
-    pub(crate) const fn new(size: u32) -> Self {
-        Self { size }
-    }
-
-    /// Return the maximum size of data provided by the kernel.
-    pub fn size(&self) -> u32 {
-        self.size
-    }
-
-    /// Reply to the kernel with a data.
-    ///
-    /// If the data size is larger than the maximum size provided by the kernel,
-    /// this method replies with the error number ERANGE.
-    pub async fn data<W: ?Sized>(
-        self,
-        cx: &mut Context<'_, W>,
-        data: impl AsRef<[u8]>,
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        self.data_vectored(cx, &[data.as_ref()]).await
-    }
-
-    /// Reply to the kernel with a *split* data.
-    ///
-    /// If the data size is larger than the maximum size provided by the kernel,
-    /// this method replies with the error number ERANGE.
-    #[allow(clippy::cast_possible_truncation)]
-    pub async fn data_vectored<W: ?Sized>(
-        self,
-        cx: &mut Context<'_, W>,
-        data: &[&[u8]],
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let len: u32 = data.iter().map(|t| t.len() as u32).sum();
-        if len <= self.size {
-            cx.reply_vectored(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
-        }
-    }
-
-    // TODO: async fn reader(self, impl AsyncRead) -> io::Result<()>
-}
-
 /// Reply with the inode attributes.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyAttr {
-    attr_valid: (u64, u32),
+pub struct ReplyAttr(fuse_attr_out);
+
+impl AsRef<Self> for ReplyAttr {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyAttr {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { attr_valid: (0, 0) }
+    /// Create a new `ReplyAttr`.
+    pub fn new(attr: FileAttr) -> Self {
+        Self(fuse_attr_out {
+            attr: attr.into_inner(),
+            ..Default::default()
+        })
+    }
+
+    /// Set the attribute value.
+    pub fn attr(&mut self, attr: FileAttr) {
+        self.0.attr = attr.into_inner();
     }
 
     /// Set the validity timeout for attributes.
     pub fn attr_valid(&mut self, secs: u64, nsecs: u32) {
-        self.attr_valid = (secs, nsecs);
-    }
-
-    /// Reply to the kernel with the specified attributes.
-    pub async fn attr<W: ?Sized>(self, cx: &mut Context<'_, W>, attr: FileAttr) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let attr_out = fuse_attr_out {
-            attr: attr.into_inner(),
-            attr_valid: self.attr_valid.0,
-            ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&attr_out) }).await
+        self.0.attr_valid = secs;
+        self.0.attr_valid_nsec = nsecs;
     }
 }
 
 /// Reply with entry params.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyEntry {
-    entry_valid: (u64, u32),
-    attr_valid: (u64, u32),
+pub struct ReplyEntry(fuse_entry_out);
+
+impl AsRef<Self> for ReplyEntry {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyEntry {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self {
-            entry_valid: (0, 0),
-            attr_valid: (0, 0),
-        }
+    /// Create a new `ReplyEntry`.
+    pub fn new(attr: FileAttr) -> Self {
+        Self(fuse_entry_out {
+            attr: attr.into_inner(),
+            ..Default::default()
+        })
+    }
+
+    /// Set the attribute value of this entry.
+    pub fn attr(&mut self, attr: FileAttr) {
+        self.0.attr = attr.into_inner();
     }
 
     /// Set the validity timeout for inode attributes.
@@ -169,7 +94,8 @@ impl ReplyEntry {
     /// when the changes of inode attributes are caused
     /// only by FUSE requests.
     pub fn attr_valid(&mut self, sec: u64, nsec: u32) {
-        self.attr_valid = (sec, nsec);
+        self.0.attr_valid = sec;
+        self.0.attr_valid_nsec = nsec;
     }
 
     /// Set the validity timeout for the name.
@@ -178,85 +104,54 @@ impl ReplyEntry {
     /// when the changes/deletions of directory entries are
     /// caused only by FUSE requests.
     pub fn entry_valid(&mut self, sec: u64, nsec: u32) {
-        self.entry_valid = (sec, nsec);
+        self.0.entry_valid = sec;
+        self.0.entry_valid_nsec = nsec;
     }
 
-    /// Reply to the kernel with the specified entry parameters.
+    /// Sets the generation of this entry.
     ///
     /// The parameter `generation` is used to distinguish the inode
     /// from the past one when the filesystem reuse inode numbers.
     /// That is, the operations must ensure that the pair of
     /// entry's inode number and `generation` is unique for
     /// the lifetime of filesystem.
-    pub async fn entry<W: ?Sized>(
-        self,
-        cx: &mut Context<'_, W>,
-        attr: FileAttr,
-        generation: u64,
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let attr = attr.into_inner();
-        let entry_out = fuse_entry_out {
-            nodeid: attr.ino,
-            generation,
-            entry_valid: self.entry_valid.0,
-            entry_valid_nsec: self.entry_valid.1,
-            attr_valid: self.attr_valid.0,
-            attr_valid_nsec: self.attr_valid.1,
-            attr,
-            ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&entry_out) }).await
-    }
-}
-
-/// Reply with the read link value.
-#[derive(Debug)]
-#[must_use]
-pub struct ReplyReadlink {
-    _p: (),
-}
-
-impl ReplyReadlink {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { _p: () }
-    }
-
-    /// Reply to the kernel with the specified link value.
-    pub async fn link<W: ?Sized>(
-        self,
-        cx: &mut Context<'_, W>,
-        value: impl AsRef<OsStr>,
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        cx.reply(value.as_ref().as_bytes()).await
+    pub fn generation(&mut self, generation: u64) {
+        self.0.generation = generation;
     }
 }
 
 /// Reply with an opened file.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyOpen {
-    open_flags: u32,
+pub struct ReplyOpen(fuse_open_out);
+
+impl AsRef<Self> for ReplyOpen {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyOpen {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { open_flags: 0 }
+    /// Create a new `ReplyOpen`.
+    pub fn new(fh: u64) -> Self {
+        Self(fuse_open_out {
+            fh,
+            ..Default::default()
+        })
     }
 
     fn set_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
-            self.open_flags |= flag;
+            self.0.open_flags |= flag;
         } else {
-            self.open_flags &= !flag;
+            self.0.open_flags &= !flag;
         }
+    }
+
+    /// Set the file handle.
+    pub fn fh(&mut self, fh: u64) {
+        self.0.fh = fh;
     }
 
     /// Indicates that the direct I/O is used on this file.
@@ -274,66 +169,67 @@ impl ReplyOpen {
     pub fn nonseekable(&mut self, enabled: bool) {
         self.set_flag(polyfuse_sys::kernel::FOPEN_NONSEEKABLE, enabled);
     }
-
-    /// Reply to the kernel with the specified file handle and flags.
-    pub async fn open<W: ?Sized>(self, cx: &mut Context<'_, W>, fh: u64) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let out = fuse_open_out {
-            fh,
-            open_flags: self.open_flags,
-            ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&out) }).await
-    }
 }
 
 /// Reply with the information about written data.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyWrite {
-    _p: (),
+pub struct ReplyWrite(fuse_write_out);
+
+impl AsRef<Self> for ReplyWrite {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyWrite {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { _p: () }
-    }
-
-    /// Reply to the kernel with the total length of written data.
-    pub async fn write<W: ?Sized>(self, cx: &mut Context<'_, W>, size: u32) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let out = fuse_write_out {
+    /// Create a new `ReplyWrite`.
+    pub fn new(size: u32) -> Self {
+        Self(fuse_write_out {
             size,
             ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&out) }).await
+        })
+    }
+
+    /// Set the size of written bytes.
+    pub fn size(&mut self, size: u32) {
+        self.0.size = size;
     }
 }
 
 /// Reply with an opened directory.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyOpendir {
-    open_flags: u32,
+pub struct ReplyOpendir(fuse_open_out);
+
+impl AsRef<Self> for ReplyOpendir {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyOpendir {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { open_flags: 0 }
+    /// Create a new `ReplyOpendir`
+    pub fn new(fh: u64) -> Self {
+        Self(fuse_open_out {
+            fh,
+            ..Default::default()
+        })
     }
 
     fn set_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
-            self.open_flags |= flag;
+            self.0.open_flags |= flag;
         } else {
-            self.open_flags &= !flag;
+            self.0.open_flags &= !flag;
         }
+    }
+
+    /// Set the file handle.
+    pub fn fh(&mut self, fh: u64) {
+        self.0.fh = fh;
     }
 
     // MEMO: should we add direct_io()?
@@ -342,258 +238,140 @@ impl ReplyOpendir {
     pub fn cache_dir(&mut self, enabled: bool) {
         self.set_flag(polyfuse_sys::kernel::FOPEN_CACHE_DIR, enabled);
     }
-
-    /// Reply to the kernel with the specified file handle and flags.
-    pub async fn open<W: ?Sized>(self, cx: &mut Context<'_, W>, fh: u64) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let out = fuse_open_out {
-            fh,
-            open_flags: self.open_flags,
-            ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&out) }).await
-    }
 }
 
 /// Reply to a request about extended attributes.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyXattr {
-    _p: (),
+pub struct ReplyXattr(fuse_getxattr_out);
+
+impl AsRef<Self> for ReplyXattr {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyXattr {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { _p: () }
-    }
-
-    /// Reply to the kernel with the specified size value.
-    pub async fn size<W: ?Sized>(self, cx: &mut Context<'_, W>, size: u32) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let out = fuse_getxattr_out {
+    /// Create a new `ReplyXattr`.
+    pub fn new(size: u32) -> Self {
+        Self(fuse_getxattr_out {
             size,
             ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&out) }).await
+        })
     }
 
-    /// Reply to the kernel with the specified value.
-    pub async fn value<W: ?Sized>(
-        self,
-        cx: &mut Context<'_, W>,
-        value: impl AsRef<[u8]>,
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        cx.reply(value.as_ref()).await
+    /// Set the actual size of attribute value.
+    pub fn size(&mut self, size: u32) {
+        self.0.size = size;
     }
 }
 
 /// Reply with the filesystem staticstics.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyStatfs {
-    _p: (),
+pub struct ReplyStatfs(fuse_statfs_out);
+
+impl AsRef<Self> for ReplyStatfs {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyStatfs {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { _p: () }
-    }
-
-    /// Reply to the kernel with the specified statistics.
-    pub async fn stat<W: ?Sized>(self, cx: &mut Context<'_, W>, st: StatFs) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let out = fuse_statfs_out {
+    /// Create a new `ReplyStatfs`.
+    pub fn new(st: StatFs) -> Self {
+        Self(fuse_statfs_out {
             st: st.into_inner(),
             ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&out) }).await
+        })
+    }
+
+    /// Set the value of filesystem statistics.
+    pub fn stat(&mut self, st: StatFs) {
+        self.0.st = st.into_inner();
     }
 }
 
 /// Reply with a file lock.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyLk {
-    _p: (),
+pub struct ReplyLk(fuse_lk_out);
+
+impl AsRef<Self> for ReplyLk {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyLk {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { _p: () }
-    }
-
-    /// Reply to the kernel with the specified file lock.
-    pub async fn lock<W: ?Sized>(self, cx: &mut Context<'_, W>, lk: FileLock) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let out = fuse_lk_out {
+    /// Create a new `ReplyLk`.
+    pub fn new(lk: FileLock) -> Self {
+        Self(fuse_lk_out {
             lk: lk.into_inner(),
             ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&out) }).await
-    }
-}
-
-/// Reply with information about a created file.
-#[derive(Debug)]
-#[must_use]
-pub struct ReplyCreate {
-    entry_valid: (u64, u32),
-    attr_valid: (u64, u32),
-    open_flags: u32,
-}
-
-impl ReplyCreate {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self {
-            entry_valid: (0, 0),
-            attr_valid: (0, 0),
-            open_flags: 0,
-        }
+        })
     }
 
-    /// Set the validity timeout for inode attributes.
-    ///
-    /// The operations should set this value to very large
-    /// when the changes of inode attributes are caused
-    /// only by FUSE requests.
-    pub fn attr_valid(&mut self, sec: u64, nsec: u32) {
-        self.attr_valid = (sec, nsec);
-    }
-
-    /// Set the validity timeout for the name.
-    ///
-    /// The operations should set this value to very large
-    /// when the changes/deletions of directory entries are
-    /// caused only by FUSE requests.
-    pub fn entry_valid(&mut self, sec: u64, nsec: u32) {
-        self.entry_valid = (sec, nsec);
-    }
-
-    fn set_flag(&mut self, flag: u32, enabled: bool) {
-        if enabled {
-            self.open_flags |= flag;
-        } else {
-            self.open_flags &= !flag;
-        }
-    }
-
-    /// Indicates that the direct I/O is used on this file.
-    pub fn direct_io(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::kernel::FOPEN_DIRECT_IO, enabled);
-    }
-
-    /// Indicates that the currently cached file data in the kernel
-    /// need not be invalidated.
-    pub fn keep_cache(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::kernel::FOPEN_KEEP_CACHE, enabled);
-    }
-
-    /// Indicates that the opened file is not seekable.
-    pub fn nonseekable(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::kernel::FOPEN_NONSEEKABLE, enabled);
-    }
-
-    /// Reply to the kernel with the specified entry parameters and file handle.
-    pub async fn create<W: ?Sized>(
-        self,
-        cx: &mut Context<'_, W>,
-        attr: FileAttr,
-        generation: u64,
-        fh: u64,
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let attr = attr.into_inner();
-
-        let entry_out = fuse_entry_out {
-            nodeid: attr.ino,
-            generation,
-            entry_valid: self.entry_valid.0,
-            entry_valid_nsec: self.entry_valid.1,
-            attr_valid: self.attr_valid.0,
-            attr_valid_nsec: self.attr_valid.1,
-            attr,
-            ..Default::default()
-        };
-
-        let open_out = fuse_open_out {
-            fh,
-            open_flags: self.open_flags,
-            ..Default::default()
-        };
-
-        cx.reply_vectored(&[unsafe { as_bytes(&entry_out) }, unsafe {
-            as_bytes(&open_out)
-        }])
-        .await
+    /// Set the lock information.
+    pub fn lock(&mut self, lk: FileLock) {
+        self.0.lk = lk.into_inner();
     }
 }
 
 /// Reply with the mapped block index.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyBmap {
-    _p: (),
+pub struct ReplyBmap(fuse_bmap_out);
+
+impl AsRef<Self> for ReplyBmap {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyBmap {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { _p: () }
-    }
-
-    /// Reply to the kernel with a mapped block index.
-    pub async fn block<W: ?Sized>(self, cx: &mut Context<'_, W>, block: u64) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let out = fuse_bmap_out {
+    /// Create a new `ReplyBmap`.
+    pub fn new(block: u64) -> Self {
+        Self(fuse_bmap_out {
             block,
             ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&out) }).await
+        })
+    }
+
+    /// Set the index of mapped block.
+    pub fn block(&mut self, block: u64) {
+        self.0.block = block;
     }
 }
 
 /// Reply with the poll result.
 #[derive(Debug)]
 #[must_use]
-pub struct ReplyPoll {
-    _p: (),
+pub struct ReplyPoll(fuse_poll_out);
+
+impl AsRef<Self> for ReplyPoll {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl ReplyPoll {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self { _p: () }
-    }
-
-    /// Reply to the kernel with a poll event mask.
-    pub async fn events<W: ?Sized>(self, cx: &mut Context<'_, W>, revents: u32) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let out = fuse_poll_out {
+    /// Create a new `ReplyPoll`.
+    pub fn new(revents: u32) -> Self {
+        Self(fuse_poll_out {
             revents,
             ..Default::default()
-        };
-        cx.reply(unsafe { as_bytes(&out) }).await
+        })
+    }
+
+    /// Set the mask of ready events.
+    pub fn revents(&mut self, revents: u32) {
+        self.0.revents = revents;
     }
 }
 
@@ -691,22 +469,5 @@ mod tests {
             "header.unique"
         );
         assert_eq!(dest[16..], *b"hello, this is a message.", "payload");
-    }
-
-    #[test]
-    fn smoke_debug() {
-        let _ = dbg!(ReplyEmpty::new());
-        let _ = dbg!(ReplyData::new(42));
-        let _ = dbg!(ReplyAttr::new());
-        let _ = dbg!(ReplyEntry::new());
-        let _ = dbg!(ReplyReadlink::new());
-        let _ = dbg!(ReplyOpen::new());
-        let _ = dbg!(ReplyWrite::new());
-        let _ = dbg!(ReplyOpendir::new());
-        let _ = dbg!(ReplyXattr::new());
-        let _ = dbg!(ReplyStatfs::new());
-        let _ = dbg!(ReplyLk::new());
-        let _ = dbg!(ReplyCreate::new());
-        let _ = dbg!(ReplyBmap::new());
     }
 }
