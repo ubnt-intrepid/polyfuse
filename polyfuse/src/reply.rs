@@ -2,20 +2,22 @@
 
 #![allow(clippy::needless_update)]
 
-use crate::common::{FileAttr, FileLock, StatFs};
-use futures::{future::poll_fn, io::AsyncWrite};
-use polyfuse_sys::kernel::{
-    fuse_attr_out, //
-    fuse_bmap_out,
-    fuse_entry_out,
-    fuse_getxattr_out,
-    fuse_lk_out,
-    fuse_open_out,
-    fuse_out_header,
-    fuse_poll_out,
-    fuse_statfs_out,
-    fuse_write_out,
+use crate::{
+    common::{FileAttr, FileLock, StatFs},
+    kernel::{
+        fuse_attr_out, //
+        fuse_bmap_out,
+        fuse_entry_out,
+        fuse_getxattr_out,
+        fuse_lk_out,
+        fuse_open_out,
+        fuse_out_header,
+        fuse_poll_out,
+        fuse_statfs_out,
+        fuse_write_out,
+    },
 };
+use futures::{future::poll_fn, io::AsyncWrite};
 use smallvec::SmallVec;
 use std::{
     convert::TryFrom,
@@ -156,18 +158,18 @@ impl ReplyOpen {
 
     /// Indicates that the direct I/O is used on this file.
     pub fn direct_io(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::kernel::FOPEN_DIRECT_IO, enabled);
+        self.set_flag(crate::kernel::FOPEN_DIRECT_IO, enabled);
     }
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
     pub fn keep_cache(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::kernel::FOPEN_KEEP_CACHE, enabled);
+        self.set_flag(crate::kernel::FOPEN_KEEP_CACHE, enabled);
     }
 
     /// Indicates that the opened file is not seekable.
     pub fn nonseekable(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::kernel::FOPEN_NONSEEKABLE, enabled);
+        self.set_flag(crate::kernel::FOPEN_NONSEEKABLE, enabled);
     }
 }
 
@@ -236,7 +238,7 @@ impl ReplyOpendir {
 
     /// Enable caching of entries returned by `readdir`.
     pub fn cache_dir(&mut self, enabled: bool) {
-        self.set_flag(polyfuse_sys::kernel::FOPEN_CACHE_DIR, enabled);
+        self.set_flag(crate::kernel::FOPEN_CACHE_DIR, enabled);
     }
 }
 

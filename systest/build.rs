@@ -15,5 +15,8 @@ fn generate_abi_tests() {
 
     cfg.skip_struct(|s| s == "UnknownOpcode" || s == "InvalidFileLock");
 
-    cfg.generate("../polyfuse-sys/src/kernel.rs", "kernel.rs");
+    // FUSE_FSYNC_FDATASYNC is defined since libfuse 3.7.0.
+    cfg.skip_const(|name| name == "FUSE_FSYNC_FDATASYNC");
+
+    cfg.generate("src/kernel.rs", "kernel.rs");
 }

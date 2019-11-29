@@ -4,6 +4,7 @@ use crate::{
     common::{Forget, StatFs},
     fs::{Context, Filesystem},
     init::ConnectionInfo,
+    kernel::{fuse_forget_one, fuse_opcode},
     notify::Notifier,
     op::{self, Operation},
     request::{Buffer, BufferExt, RequestKind},
@@ -14,7 +15,6 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
     lock::Mutex,
 };
-use polyfuse_sys::kernel::{fuse_forget_one, fuse_opcode};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -298,7 +298,7 @@ impl Session {
                 run_op!(Operation::Getlk(op::Getlk { header, arg }));
             }
             RequestKind::Setlk { arg, sleep } => {
-                if arg.lk_flags & polyfuse_sys::kernel::FUSE_LK_FLOCK != 0 {
+                if arg.lk_flags & crate::kernel::FUSE_LK_FLOCK != 0 {
                     run_op!(Operation::Flock(op::Flock { header, arg, sleep }));
                 } else {
                     run_op!(Operation::Setlk(op::Setlk { header, arg, sleep }));

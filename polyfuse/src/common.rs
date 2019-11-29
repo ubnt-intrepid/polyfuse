@@ -1,4 +1,4 @@
-use polyfuse_sys::kernel::{fuse_attr, fuse_file_lock, fuse_forget_one, fuse_kstatfs};
+use crate::kernel::{fuse_attr, fuse_file_lock, fuse_forget_one, fuse_kstatfs};
 use std::{convert::TryFrom, error, fmt};
 
 /// Attributes about a file.

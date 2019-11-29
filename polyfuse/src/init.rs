@@ -6,6 +6,15 @@
 )]
 
 use crate::{
+    kernel::{
+        fuse_init_out, //
+        FUSE_KERNEL_MINOR_VERSION,
+        FUSE_KERNEL_VERSION,
+        FUSE_MAX_PAGES,
+        FUSE_MIN_READ_BUFFER,
+        FUSE_NO_OPENDIR_SUPPORT,
+        FUSE_NO_OPEN_SUPPORT,
+    },
     reply::{as_bytes, send_msg},
     request::{Buffer, BufferExt, BytesBuffer, RequestKind},
     session::Session,
@@ -13,10 +22,6 @@ use crate::{
 use bitflags::bitflags;
 use futures::io::{AsyncRead, AsyncWrite};
 use lazy_static::lazy_static;
-use polyfuse_sys::kernel::{
-    fuse_init_out, FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_MAX_PAGES,
-    FUSE_MIN_READ_BUFFER, FUSE_NO_OPENDIR_SUPPORT, FUSE_NO_OPEN_SUPPORT,
-};
 use std::{cmp, io};
 
 // The minimum supported ABI minor version by polyfuse.
@@ -189,7 +194,7 @@ impl SessionInitializer {
                     init_out.minor = cmp::min(init_out.minor, init_in.minor);
 
                     init_out.flags = (self.flags & capable).bits();
-                    init_out.flags |= polyfuse_sys::kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
+                    init_out.flags |= crate::kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
 
                     init_out.max_readahead = cmp::min(self.max_readahead, init_in.max_readahead);
                     init_out.max_write = self.max_write;
@@ -328,66 +333,66 @@ bitflags! {
         /// The filesystem supports asynchronous read requests.
         ///
         /// Enabled by default.
-        const ASYNC_READ = polyfuse_sys::kernel::FUSE_ASYNC_READ;
+        const ASYNC_READ = crate::kernel::FUSE_ASYNC_READ;
 
         /// The filesystem supports the `O_TRUNC` open flag.
         ///
         /// Enabled by default.
-        const ATOMIC_O_TRUNC = polyfuse_sys::kernel::FUSE_ATOMIC_O_TRUNC;
+        const ATOMIC_O_TRUNC = crate::kernel::FUSE_ATOMIC_O_TRUNC;
 
         /// The kernel check the validity of attributes on every read.
         ///
         /// Enabled by default.
-        const AUTO_INVAL_DATA = polyfuse_sys::kernel::FUSE_AUTO_INVAL_DATA;
+        const AUTO_INVAL_DATA = crate::kernel::FUSE_AUTO_INVAL_DATA;
 
         /// The filesystem supports asynchronous direct I/O submission.
         ///
         /// Enabled by default.
-        const ASYNC_DIO = polyfuse_sys::kernel::FUSE_ASYNC_DIO;
+        const ASYNC_DIO = crate::kernel::FUSE_ASYNC_DIO;
 
         /// The kernel supports parallel directory operations.
         ///
         /// Enabled by default.
-        const PARALLEL_DIROPS = polyfuse_sys::kernel::FUSE_PARALLEL_DIROPS;
+        const PARALLEL_DIROPS = crate::kernel::FUSE_PARALLEL_DIROPS;
 
         /// The filesystem is responsible for unsetting setuid and setgid bits
         /// when a file is written, truncated, or its owner is changed.
         ///
         /// Enabled by default.
-        const HANDLE_KILLPRIV = polyfuse_sys::kernel::FUSE_HANDLE_KILLPRIV;
+        const HANDLE_KILLPRIV = crate::kernel::FUSE_HANDLE_KILLPRIV;
 
         /// The filesystem supports the POSIX-style file lock.
-        const POSIX_LOCKS = polyfuse_sys::kernel::FUSE_POSIX_LOCKS;
+        const POSIX_LOCKS = crate::kernel::FUSE_POSIX_LOCKS;
 
         /// The filesystem supports the `flock` handling.
-        const FLOCK_LOCKS = polyfuse_sys::kernel::FUSE_FLOCK_LOCKS;
+        const FLOCK_LOCKS = crate::kernel::FUSE_FLOCK_LOCKS;
 
         /// The filesystem supports lookups of `"."` and `".."`.
-        const EXPORT_SUPPORT = polyfuse_sys::kernel::FUSE_EXPORT_SUPPORT;
+        const EXPORT_SUPPORT = crate::kernel::FUSE_EXPORT_SUPPORT;
 
         /// The kernel should not apply the umask to the file mode on create
         /// operations.
-        const DONT_MASK = polyfuse_sys::kernel::FUSE_DONT_MASK;
+        const DONT_MASK = crate::kernel::FUSE_DONT_MASK;
 
         /// The writeback caching should be enabled.
-        const WRITEBACK_CACHE = polyfuse_sys::kernel::FUSE_WRITEBACK_CACHE;
+        const WRITEBACK_CACHE = crate::kernel::FUSE_WRITEBACK_CACHE;
 
         /// The filesystem supports POSIX access control lists.
-        const POSIX_ACL = polyfuse_sys::kernel::FUSE_POSIX_ACL;
+        const POSIX_ACL = crate::kernel::FUSE_POSIX_ACL;
 
         /// The filesystem supports `readdirplus` operations.
-        const READDIRPLUS = polyfuse_sys::kernel::FUSE_DO_READDIRPLUS;
+        const READDIRPLUS = crate::kernel::FUSE_DO_READDIRPLUS;
 
         /// Indicates that the kernel uses the adaptive readdirplus.
-        const READDIRPLUS_AUTO = polyfuse_sys::kernel::FUSE_READDIRPLUS_AUTO;
+        const READDIRPLUS_AUTO = crate::kernel::FUSE_READDIRPLUS_AUTO;
 
         // TODO: splice read/write
-        // const SPLICE_WRITE = polyfuse_sys::kernel::FUSE_SPLICE_WRITE;
-        // const SPLICE_MOVE = polyfuse_sys::kernel::FUSE_SPLICE_MOVE;
-        // const SPLICE_READ = polyfuse_sys::kernel::FUSE_SPLICE_READ;
+        // const SPLICE_WRITE = crate::kernel::FUSE_SPLICE_WRITE;
+        // const SPLICE_MOVE = crate::kernel::FUSE_SPLICE_MOVE;
+        // const SPLICE_READ = crate::kernel::FUSE_SPLICE_READ;
 
         // TODO: ioctl
-        // const IOCTL_DIR = polyfuse_sys::kernel::FUSE_IOCTL_DIR;
+        // const IOCTL_DIR = crate::kernel::FUSE_IOCTL_DIR;
     }
 }
 

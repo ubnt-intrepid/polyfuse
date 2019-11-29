@@ -7,11 +7,13 @@ edition = "2018"
 build = "build.rs"
 
 [dependencies]
-polyfuse-sys = { path = "../polyfuse-sys" }
 libc = "0.2"
 
 [build-dependencies]
 ctest = "0.2"
+
+[lib]
+name = "systest"
 
 [[test]]
 name = "test_kernel"

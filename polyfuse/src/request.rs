@@ -1,8 +1,6 @@
 //! Receives and parses FUSE requests.
 
-use bytes::{Bytes, BytesMut};
-use futures::{future::Future, io::AsyncRead, ready};
-use polyfuse_sys::kernel::{
+use crate::kernel::{
     fuse_access_in, //
     fuse_batch_forget_in,
     fuse_bmap_in,
@@ -34,6 +32,8 @@ use polyfuse_sys::kernel::{
     fuse_setxattr_in,
     fuse_write_in,
 };
+use bytes::{Bytes, BytesMut};
+use futures::{future::Future, io::AsyncRead, ready};
 use std::{
     convert::TryFrom, //
     ffi::OsStr,

@@ -24,6 +24,7 @@ mod common;
 mod dirent;
 mod fs;
 mod init;
+mod kernel;
 mod session;
 
 #[doc(inline)]

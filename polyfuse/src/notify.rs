@@ -3,6 +3,15 @@
 #![allow(clippy::needless_update)]
 
 use crate::{
+    kernel::{
+        fuse_notify_code, //
+        fuse_notify_delete_out,
+        fuse_notify_inval_entry_out,
+        fuse_notify_inval_inode_out,
+        fuse_notify_poll_wakeup_out,
+        fuse_notify_retrieve_out,
+        fuse_notify_store_out,
+    },
     reply::{as_bytes, send_msg},
     session::Session,
 };
@@ -11,15 +20,6 @@ use futures::{
     future::{Fuse, FusedFuture, Future, FutureExt},
     io::AsyncWrite,
     lock::Mutex,
-};
-use polyfuse_sys::kernel::{
-    fuse_notify_code, //
-    fuse_notify_delete_out,
-    fuse_notify_inval_entry_out,
-    fuse_notify_inval_inode_out,
-    fuse_notify_poll_wakeup_out,
-    fuse_notify_retrieve_out,
-    fuse_notify_store_out,
 };
 use smallvec::SmallVec;
 use std::{

@@ -22,9 +22,5 @@ memoffset = "0.5"
 smallvec = "0.6"
 tracing = "0.1"
 
-[dependencies.polyfuse-sys]
-version = "0.1.0"
-path = "../polyfuse-sys"
-
 [dev-dependencies]
 version-sync = "0.8"

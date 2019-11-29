@@ -5,6 +5,30 @@
 use crate::{
     common::{FileLock, Forget},
     fs::Context,
+    kernel::{
+        fuse_access_in, //
+        fuse_bmap_in,
+        fuse_copy_file_range_in,
+        fuse_create_in,
+        fuse_fallocate_in,
+        fuse_flush_in,
+        fuse_fsync_in,
+        fuse_getattr_in,
+        fuse_getxattr_in,
+        fuse_link_in,
+        fuse_lk_in,
+        fuse_mkdir_in,
+        fuse_mknod_in,
+        fuse_open_in,
+        fuse_poll_in,
+        fuse_read_in,
+        fuse_release_in,
+        fuse_rename2_in,
+        fuse_rename_in,
+        fuse_setattr_in,
+        fuse_setxattr_in,
+        fuse_write_in,
+    },
     reply::{
         ReplyAttr, //
         ReplyBmap,
@@ -20,34 +44,7 @@ use crate::{
     request::RequestHeader,
 };
 use futures::io::AsyncWrite;
-use polyfuse_sys::kernel::{
-    fuse_access_in, //
-    fuse_bmap_in,
-    fuse_copy_file_range_in,
-    fuse_create_in,
-    fuse_fallocate_in,
-    fuse_flush_in,
-    fuse_fsync_in,
-    fuse_getattr_in,
-    fuse_getxattr_in,
-    fuse_link_in,
-    fuse_lk_in,
-    fuse_mkdir_in,
-    fuse_mknod_in,
-    fuse_open_in,
-    fuse_poll_in,
-    fuse_read_in,
-    fuse_release_in,
-    fuse_rename2_in,
-    fuse_rename_in,
-    fuse_setattr_in,
-    fuse_setxattr_in,
-    fuse_write_in,
-};
 use std::{ffi::OsStr, io, os::unix::ffi::OsStrExt};
-
-#[allow(clippy::identity_op)]
-const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
 /// The kind of FUSE requests received from the kernel.
 #[derive(Debug)]
@@ -229,7 +226,7 @@ impl<'a> Getattr<'a> {
     }
 
     pub fn fh(&self) -> Option<u64> {
-        if self.arg.getattr_flags & polyfuse_sys::kernel::FUSE_GETATTR_FH != 0 {
+        if self.arg.getattr_flags & crate::kernel::FUSE_GETATTR_FH != 0 {
             Some(self.arg.fh)
         } else {
             None
@@ -270,53 +267,51 @@ impl<'a> Setattr<'a> {
     }
 
     pub fn fh(&self) -> Option<u64> {
-        self.get(polyfuse_sys::kernel::FATTR_FH, |arg| arg.fh)
+        self.get(crate::kernel::FATTR_FH, |arg| arg.fh)
     }
 
     pub fn mode(&self) -> Option<u32> {
-        self.get(polyfuse_sys::kernel::FATTR_MODE, |arg| arg.mode)
+        self.get(crate::kernel::FATTR_MODE, |arg| arg.mode)
     }
 
     pub fn uid(&self) -> Option<u32> {
-        self.get(polyfuse_sys::kernel::FATTR_UID, |arg| arg.uid)
+        self.get(crate::kernel::FATTR_UID, |arg| arg.uid)
     }
 
     pub fn gid(&self) -> Option<u32> {
-        self.get(polyfuse_sys::kernel::FATTR_GID, |arg| arg.gid)
+        self.get(crate::kernel::FATTR_GID, |arg| arg.gid)
     }
 
     pub fn size(&self) -> Option<u64> {
-        self.get(polyfuse_sys::kernel::FATTR_SIZE, |arg| arg.size)
+        self.get(crate::kernel::FATTR_SIZE, |arg| arg.size)
     }
 
     pub fn atime(&self) -> Option<(u64, u32, bool)> {
-        self.get(polyfuse_sys::kernel::FATTR_ATIME, |arg| {
+        self.get(crate::kernel::FATTR_ATIME, |arg| {
             (
                 arg.atime,
                 arg.atimensec,
-                arg.valid & polyfuse_sys::kernel::FATTR_ATIME_NOW != 0,
+                arg.valid & crate::kernel::FATTR_ATIME_NOW != 0,
             )
         })
     }
 
     pub fn mtime(&self) -> Option<(u64, u32, bool)> {
-        self.get(polyfuse_sys::kernel::FATTR_MTIME, |arg| {
+        self.get(crate::kernel::FATTR_MTIME, |arg| {
             (
                 arg.mtime,
                 arg.mtimensec,
-                arg.valid & polyfuse_sys::kernel::FATTR_MTIME_NOW != 0,
+                arg.valid & crate::kernel::FATTR_MTIME_NOW != 0,
             )
         })
     }
 
     pub fn ctime(&self) -> Option<(u64, u32)> {
-        self.get(polyfuse_sys::kernel::FATTR_CTIME, |arg| {
-            (arg.ctime, arg.ctimensec)
-        })
+        self.get(crate::kernel::FATTR_CTIME, |arg| (arg.ctime, arg.ctimensec))
     }
 
     pub fn lock_owner(&self) -> Option<u64> {
-        self.get(polyfuse_sys::kernel::FATTR_LOCKOWNER, |arg| arg.lock_owner)
+        self.get(crate::kernel::FATTR_LOCKOWNER, |arg| arg.lock_owner)
     }
 
     pub async fn reply<W: ?Sized>(
@@ -662,7 +657,7 @@ impl<'a> Read<'a> {
     }
 
     pub fn lock_owner(&self) -> Option<u64> {
-        if self.arg.read_flags & polyfuse_sys::kernel::FUSE_READ_LOCKOWNER != 0 {
+        if self.arg.read_flags & crate::kernel::FUSE_READ_LOCKOWNER != 0 {
             Some(self.arg.lock_owner)
         } else {
             None
@@ -731,7 +726,7 @@ impl<'a> Write<'a> {
     }
 
     pub fn lock_owner(&self) -> Option<u64> {
-        if self.arg.write_flags & polyfuse_sys::kernel::FUSE_WRITE_LOCKOWNER != 0 {
+        if self.arg.write_flags & crate::kernel::FUSE_WRITE_LOCKOWNER != 0 {
             Some(self.arg.lock_owner)
         } else {
             None
@@ -776,11 +771,11 @@ impl<'a> Release<'a> {
     }
 
     pub fn flush(&self) -> bool {
-        self.arg.release_flags & polyfuse_sys::kernel::FUSE_RELEASE_FLUSH != 0
+        self.arg.release_flags & crate::kernel::FUSE_RELEASE_FLUSH != 0
     }
 
     pub fn flock_release(&self) -> bool {
-        self.arg.release_flags & polyfuse_sys::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
+        self.arg.release_flags & crate::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
     }
 
     pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
@@ -830,7 +825,7 @@ impl<'a> Fsync<'a> {
     }
 
     pub fn datasync(&self) -> bool {
-        self.arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
+        self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
     pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
@@ -1189,7 +1184,7 @@ impl<'a> Fsyncdir<'a> {
     }
 
     pub fn datasync(&self) -> bool {
-        self.arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
+        self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
     pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
@@ -1511,7 +1506,7 @@ impl<'a> Poll<'a> {
     }
 
     pub fn kh(&self) -> Option<u64> {
-        if self.arg.flags & polyfuse_sys::kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
+        if self.arg.flags & crate::kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
             Some(self.arg.kh)
         } else {
             None

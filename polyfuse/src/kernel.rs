@@ -2,7 +2,7 @@
 //!
 //! The bindings is compatible with ABI 7.29 (in libfuse 3.6.2).
 
-#![allow(clippy::identity_op)]
+#![allow(nonstandard_style, clippy::identity_op)]
 
 use std::convert::TryFrom;
 use std::error;
@@ -18,7 +18,7 @@ pub const FUSE_KERNEL_MINOR_VERSION: u32 = 29;
 pub const FUSE_MIN_READ_BUFFER: u32 = 8192;
 
 /// Maximum of in_iovecs + out_iovecs
-pub const FUSE_IOCTL_MAX_IOV: u32 = 256;
+//pub const FUSE_IOCTL_MAX_IOV: u32 = 256;
 
 // Bitmasks for fuse_setattr_in.valid
 pub const FATTR_MODE: u32 = 1 << 0;
@@ -42,16 +42,16 @@ pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
 // INIT request/reply flags.
 pub const FUSE_ASYNC_READ: u32 = 1;
 pub const FUSE_POSIX_LOCKS: u32 = 1 << 1;
-pub const FUSE_FILE_OPS: u32 = 1 << 2;
+//pub const FUSE_FILE_OPS: u32 = 1 << 2;
 pub const FUSE_ATOMIC_O_TRUNC: u32 = 1 << 3;
 pub const FUSE_EXPORT_SUPPORT: u32 = 1 << 4;
 pub const FUSE_BIG_WRITES: u32 = 1 << 5;
 pub const FUSE_DONT_MASK: u32 = 1 << 6;
-pub const FUSE_SPLICE_WRITE: u32 = 1 << 7;
-pub const FUSE_SPLICE_MOVE: u32 = 1 << 8;
-pub const FUSE_SPLICE_READ: u32 = 1 << 9;
+//pub const FUSE_SPLICE_WRITE: u32 = 1 << 7;
+//pub const FUSE_SPLICE_MOVE: u32 = 1 << 8;
+//pub const FUSE_SPLICE_READ: u32 = 1 << 9;
 pub const FUSE_FLOCK_LOCKS: u32 = 1 << 10;
-pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11;
+//pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11;
 pub const FUSE_AUTO_INVAL_DATA: u32 = 1 << 12;
 pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
 pub const FUSE_READDIRPLUS_AUTO: u32 = 1 << 14;
@@ -61,13 +61,13 @@ pub const FUSE_NO_OPEN_SUPPORT: u32 = 1 << 17;
 pub const FUSE_PARALLEL_DIROPS: u32 = 1 << 18;
 pub const FUSE_HANDLE_KILLPRIV: u32 = 1 << 19;
 pub const FUSE_POSIX_ACL: u32 = 1 << 20;
-pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
+//pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
 pub const FUSE_MAX_PAGES: u32 = 1 << 22;
-pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
+//pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
 pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
 
 // CUSE INIT request/reply flags.
-pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;
+//pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;
 
 // Release flags.
 pub const FUSE_RELEASE_FLUSH: u32 = 1 << 0;
@@ -80,42 +80,34 @@ pub const FUSE_GETATTR_FH: u32 = 1;
 pub const FUSE_LK_FLOCK: u32 = 1 << 0;
 
 // WRITE flags.
-pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
+//pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
 pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
 
 // Read flags.
 pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
 
 // Ioctl flags.
-pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
-pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
-pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
-pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
-pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
+// pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
+// pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
+// pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
+// pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
+// pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
 
 // Poll flags.
 pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 
 // Fsync flags.
-// Added in libfuse 3.7.0.
-const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
+pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
 // misc
-pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
-pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
-pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
-pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
-pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
-pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
-pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
-pub const CUSE_INIT_INFO_MAX: u32 = 4096;
-
-// Device ioctls
-#[cfg(target_os = "linux")]
-pub const FUSE_DEV_IOC_CLONE: u32 = 0x_80_04_e5_00; // = _IOR(229, 0, uint32_t)
-
-#[cfg(target_os = "freebsd")]
-pub const FUSE_DEV_IOC_CLONE: u32 = 0x_40_04_e5_00; // = _IOR(229, 0, uint32_t)
+// pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
+// pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
+// pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
+// pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
+// pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
+// pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
+// pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
+// pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 
 #[derive(Default, Debug, Copy, Clone)]
 #[repr(C)]
@@ -313,16 +305,6 @@ pub struct fuse_getattr_in {
     pub fh: u64,
 }
 
-impl fuse_getattr_in {
-    pub fn fh(&self) -> Option<u64> {
-        if self.getattr_flags & FUSE_GETATTR_FH != 0 {
-            Some(self.fh)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug)]
 #[repr(C)]
 pub struct fuse_setattr_in {
@@ -342,68 +324,6 @@ pub struct fuse_setattr_in {
     pub uid: u32,
     pub gid: u32,
     pub unused5: u32,
-}
-
-impl fuse_setattr_in {
-    #[inline]
-    fn get<R>(&self, flag: u32, f: impl FnOnce(&Self) -> R) -> Option<R> {
-        if self.valid & flag != 0 {
-            Some(f(self))
-        } else {
-            None
-        }
-    }
-
-    pub fn fh(&self) -> Option<u64> {
-        self.get(FATTR_FH, |this| this.fh)
-    }
-
-    pub fn size(&self) -> Option<u64> {
-        self.get(FATTR_SIZE, |this| this.size)
-    }
-
-    pub fn lock_owner(&self) -> Option<u64> {
-        self.get(FATTR_LOCKOWNER, |this| this.lock_owner)
-    }
-
-    pub fn atime(&self) -> Option<(u64, u32, bool)> {
-        self.get(FATTR_ATIME, |this| {
-            (
-                this.atime,
-                this.atimensec,
-                this.valid & FATTR_ATIME_NOW != 0,
-            )
-        })
-    }
-
-    pub fn mtime(&self) -> Option<(u64, u32, bool)> {
-        self.get(FATTR_CTIME, |this| {
-            (
-                this.mtime,
-                this.mtimensec,
-                this.valid & FATTR_MTIME_NOW != 0,
-            )
-        })
-    }
-
-    pub fn ctime(&self) -> Option<(u64, u32)> {
-        self.get(FATTR_CTIME, |this| (this.ctime, this.ctimensec))
-    }
-
-    /// Returns the new file if specified.
-    pub fn mode(&self) -> Option<u32> {
-        self.get(FATTR_MODE, |this| this.mode)
-    }
-
-    /// Returns the new UID if specified.
-    pub fn uid(&self) -> Option<u32> {
-        self.get(FATTR_UID, |this| this.uid)
-    }
-
-    /// Returns the new GID if specified.
-    pub fn gid(&self) -> Option<u32> {
-        self.get(FATTR_GID, |this| this.gid)
-    }
 }
 
 #[derive(Debug)]
@@ -453,16 +373,6 @@ pub struct fuse_read_in {
     pub padding: u32,
 }
 
-impl fuse_read_in {
-    pub fn lock_owner(&self) -> Option<u64> {
-        if self.read_flags & FUSE_READ_LOCKOWNER != 0 {
-            Some(self.lock_owner)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug)]
 #[repr(C)]
 pub struct fuse_write_in {
@@ -473,16 +383,6 @@ pub struct fuse_write_in {
     pub lock_owner: u64,
     pub flags: u32,
     pub padding: u32,
-}
-
-impl fuse_write_in {
-    pub fn lock_owner(&self) -> Option<u64> {
-        if self.write_flags & FUSE_WRITE_LOCKOWNER != 0 {
-            Some(self.lock_owner)
-        } else {
-            None
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -503,24 +403,12 @@ pub struct fuse_release_in {
     pub lock_owner: u64,
 }
 
-impl fuse_release_in {
-    pub fn flush(&self) -> bool {
-        self.release_flags & FUSE_RELEASE_FLUSH != 0
-    }
-}
-
 #[derive(Debug)]
 #[repr(C)]
 pub struct fuse_fsync_in {
     pub fh: u64,
     pub fsync_flags: u32,
     pub padding: u32,
-}
-
-impl fuse_fsync_in {
-    pub fn datasync(&self) -> bool {
-        self.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
-    }
 }
 
 #[derive(Debug)]
@@ -812,7 +700,6 @@ define_notify_code! {
     FUSE_NOTIFY_STORE = 4,
     FUSE_NOTIFY_RETRIEVE = 5,
     FUSE_NOTIFY_DELETE = 6,
-    FUSE_NOTIFY_CODE_MAX = 7,
 }
 
 #[derive(Debug, Default)]

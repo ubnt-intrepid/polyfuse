@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "polyfuse",
-  "polyfuse-sys",
   "polyfuse-tokio",
 
   "examples",
