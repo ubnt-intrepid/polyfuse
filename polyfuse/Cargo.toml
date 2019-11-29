@@ -8,6 +8,8 @@ repository = "https://github.com/ubnt-intrepid/polyfuse.git"
 license = "MIT OR Apache-2.0"
 edition = "2018"
 readme = "README.md"
+categories = [ "filesystem" ]
+keywords = [ "fuse", "filesystem", "async", "futures" ]
 
 [dependencies]
 async-trait = "0.1"
