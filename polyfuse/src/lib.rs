@@ -37,3 +37,8 @@ pub use crate::{
     request::Buffer,
     session::{Interrupt, Session},
 };
+
+/// A re-export of [`async_trait`] for implementing `Filesystem`.
+///
+/// [`async_trait`]: https://docs.rs/async-trait
+pub use async_trait::async_trait;

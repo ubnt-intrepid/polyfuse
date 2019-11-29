@@ -1,12 +1,12 @@
 //! Filesystem abstraction.
 
 use crate::{
+    async_trait,
     op::Operation,
     reply::send_msg,
     request::RequestHeader,
     session::{Interrupt, Session},
 };
-use async_trait::async_trait;
 use futures::io::AsyncWrite;
 use std::{fmt, future::Future, io, pin::Pin};
 
