@@ -275,12 +275,18 @@ impl Session {
                 run_op!(Operation::Opendir(op::Opendir { header, arg }));
             }
             RequestKind::Readdir { arg } => {
-                run_op!(Operation::Readdir(op::Readdir { header, arg }));
+                run_op!(Operation::Readdir(op::Readdir {
+                    header,
+                    arg,
+                    mode: op::ReaddirMode::Normal
+                }));
             }
-            RequestKind::Readdirplus { .. } => {
-                // FIXME: support readdirplus
-                tracing::warn!("FUSE_READDIRPLUS is not currently disabled");
-                cx.reply_err(libc::ENOSYS).await?;
+            RequestKind::Readdirplus { arg } => {
+                run_op!(Operation::Readdir(op::Readdir {
+                    header,
+                    arg,
+                    mode: op::ReaddirMode::Plus
+                }));
             }
             RequestKind::Releasedir { arg } => {
                 run_op!(Operation::Releasedir(op::Releasedir { header, arg }));

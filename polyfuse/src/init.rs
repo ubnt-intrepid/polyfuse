@@ -375,9 +375,11 @@ bitflags! {
         /// The filesystem supports POSIX access control lists.
         const POSIX_ACL = polyfuse_sys::kernel::FUSE_POSIX_ACL;
 
-        // TODO: readdirplus
-        // const READDIRPLUS = polyfuse_sys::kernel::FUSE_DO_READDIRPLUS;
-        // const READDIRPLUS_AUTO = polyfuse_sys::kernel::FUSE_READDIRPLUS_AUTO;
+        /// The filesystem supports `readdirplus` operations.
+        const READDIRPLUS = polyfuse_sys::kernel::FUSE_DO_READDIRPLUS;
+
+        /// Indicates that the kernel uses the adaptive readdirplus.
+        const READDIRPLUS_AUTO = polyfuse_sys::kernel::FUSE_READDIRPLUS_AUTO;
 
         // TODO: splice read/write
         // const SPLICE_WRITE = polyfuse_sys::kernel::FUSE_SPLICE_WRITE;

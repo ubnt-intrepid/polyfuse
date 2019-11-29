@@ -1078,10 +1078,17 @@ impl<'a> Opendir<'a> {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ReaddirMode {
+    Normal,
+    Plus,
+}
+
 #[derive(Debug)]
 pub struct Readdir<'a> {
     pub(crate) header: &'a RequestHeader,
     pub(crate) arg: &'a fuse_read_in,
+    pub(crate) mode: ReaddirMode,
 }
 
 impl<'a> Readdir<'a> {
@@ -1099,6 +1106,10 @@ impl<'a> Readdir<'a> {
 
     pub fn size(&self) -> u32 {
         self.arg.size
+    }
+
+    pub fn mode(&self) -> ReaddirMode {
+        self.mode
     }
 
     pub async fn reply<W: ?Sized>(
