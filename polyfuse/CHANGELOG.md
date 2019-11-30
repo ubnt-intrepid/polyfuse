@@ -5,6 +5,8 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.2.0] (2019-11-30)
+
 ### Added
 
 * re-export `async_trait` from the crate root ([1160953](https://github.com/ubnt-intrepid/polyfuse/commit/1160953f8e74c8888c7d4270eff926a8112ea256))
@@ -29,7 +31,8 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 <!-- links -->
 
-[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ubnt-intrepid/polyfuse/tree/v0.1.0
 
