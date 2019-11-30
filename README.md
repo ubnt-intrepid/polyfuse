@@ -37,16 +37,11 @@ The goal of this project is to provide a Rust FUSE library that has a high affin
 Add a dependency to your package using [`cargo-edit`](https://github.com/killercup/cargo-edit) as follows:
 
 ```shell-session
-$ cargo add polyfuse@0.1 async-trait@0.1
+$ cargo add polyfuse@0.2
 ```
 
 To run FUSE daemon, it is necessary to choose appropriate supporting package according to the asynchronous runtime to be used.
-Currently, `polyfuse` only provides a support for the [`tokio`](https://github.com/tokio-rs/tokio) and adding support for [`async-std`](https://github.com/async-rs/async-std) is a future work).
-
-```
-$ cargo add tokio --git https://github.com/tokio-rs/tokio.git
-$ cargo add polyfuse-tokio --git https://github.com/ubnt-intrepid/polyfuse.git
-```
+Currently, `polyfuse` only provides a support for the [`tokio`](https://github.com/tokio-rs/tokio) and adding support for [`async-std`](https://github.com/async-rs/async-std) is a future work.
 
 ## Platform Requirements
 
