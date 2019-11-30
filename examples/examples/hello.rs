@@ -15,25 +15,9 @@ async fn main() -> anyhow::Result<()> {
     examples::init_tracing()?;
 
     let mountpoint = examples::get_mountpoint()?;
-    anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
+    ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let filename = "hello.txt".to_string();
-    let content = "Hello, World!\n".to_string();
-    let dir_entries = {
-        let mut entries = Vec::with_capacity(3);
-        entries.push(DirEntry::dir(".", 1, 1));
-        entries.push(DirEntry::dir("..", 1, 2));
-        entries.push(DirEntry::file(&filename, 2, 3));
-        entries
-    };
-
-    let hello = Hello {
-        filename,
-        content,
-        dir_entries,
-    };
-
-    polyfuse_tokio::run(hello, mountpoint).await?;
+    polyfuse_tokio::run(Hello::new(), mountpoint).await?;
 
     Ok(())
 }
@@ -45,6 +29,24 @@ struct Hello {
 }
 
 impl Hello {
+    fn new() -> Self {
+        let filename = "hello.txt".to_string();
+        let content = "Hello, World!\n".to_string();
+        let dir_entries = {
+            let mut entries = Vec::with_capacity(3);
+            entries.push(DirEntry::dir(".", 1, 1));
+            entries.push(DirEntry::dir("..", 1, 2));
+            entries.push(DirEntry::file(&filename, 2, 3));
+            entries
+        };
+
+        Self {
+            filename,
+            content,
+            dir_entries,
+        }
+    }
+
     fn root_attr(&self) -> FileAttr {
         let mut attr = FileAttr::default();
         attr.set_mode(libc::S_IFDIR as u32 | 0o555);
