@@ -8,52 +8,125 @@ use std::{convert::TryFrom, error, fmt};
 #[repr(transparent)]
 pub struct FileAttr(fuse_attr);
 
-macro_rules! define_accessor {
-    ($field:ident, $field_mut:ident, $t:ty) => {
-        pub fn $field(&self) -> $t {
-            (self.0).$field
-        }
-
-        pub fn $field_mut(&mut self, value: $t) {
-            (self.0).$field = value;
-        }
-    };
-}
-
-#[allow(missing_docs)]
 impl FileAttr {
-    define_accessor!(ino, set_ino, u64);
-    define_accessor!(size, set_size, u64);
-    define_accessor!(blocks, set_blocks, u64);
-    define_accessor!(mode, set_mode, u32);
-    define_accessor!(nlink, set_nlink, u32);
-    define_accessor!(uid, set_uid, u32);
-    define_accessor!(gid, set_gid, u32);
-    define_accessor!(rdev, set_rdev, u32);
-    define_accessor!(blksize, set_blksize, u32);
+    /// Return the inode number.
+    pub fn ino(&self) -> u64 {
+        self.0.ino
+    }
 
+    /// Set the inode number.
+    pub fn set_ino(&mut self, ino: u64) {
+        self.0.ino = ino;
+    }
+
+    /// Return the size of content.
+    pub fn size(&self) -> u64 {
+        self.0.size
+    }
+
+    /// Set the size of content.
+    pub fn set_size(&mut self, size: u64) {
+        self.0.size = size;
+    }
+
+    /// Return the permission of the inode.
+    pub fn mode(&self) -> u32 {
+        self.0.mode
+    }
+
+    /// Set the permission of the inode.
+    pub fn set_mode(&mut self, mode: u32) {
+        self.0.mode = mode;
+    }
+
+    /// Return the number of hard links.
+    pub fn nlink(&self) -> u32 {
+        self.0.nlink
+    }
+
+    /// Set the number of hard links.
+    pub fn set_nlink(&mut self, nlink: u32) {
+        self.0.nlink = nlink
+    }
+
+    /// Return the user ID.
+    pub fn uid(&self) -> u32 {
+        self.0.uid
+    }
+
+    /// Set the user ID.
+    pub fn set_uid(&mut self, uid: u32) {
+        self.0.uid = uid;
+    }
+
+    /// Return the group ID.
+    pub fn gid(&self) -> u32 {
+        self.0.gid
+    }
+
+    /// Set the group ID.
+    pub fn set_gid(&mut self, gid: u32) {
+        self.0.gid = gid;
+    }
+
+    /// Return the device ID.
+    pub fn rdev(&self) -> u32 {
+        self.0.rdev
+    }
+
+    /// Set the device ID.
+    pub fn set_rdev(&mut self, rdev: u32) {
+        self.0.rdev = rdev;
+    }
+
+    /// Return the block size.
+    pub fn blksize(&self) -> u32 {
+        self.0.blksize
+    }
+
+    /// Set the block size.
+    pub fn set_blksize(&mut self, blksize: u32) {
+        self.0.blksize = blksize;
+    }
+
+    /// Return the number of allocated blocks.
+    pub fn blocks(&self) -> u64 {
+        self.0.blocks
+    }
+
+    /// Set the number of allocated blocks.
+    pub fn set_blocks(&mut self, blocks: u64) {
+        self.0.blocks = blocks;
+    }
+
+    /// Return the last accessed time.
     pub fn atime(&self) -> (u64, u32) {
         (self.0.atime, self.0.atimensec)
     }
 
+    /// Set the last accessed time.
     pub fn set_atime(&mut self, sec: u64, nsec: u32) {
         self.0.atime = sec;
         self.0.atimensec = nsec;
     }
 
+    /// Return the last modification time.
     pub fn mtime(&self) -> (u64, u32) {
         (self.0.mtime, self.0.mtimensec)
     }
 
+    /// Set the last modification time.
     pub fn set_mtime(&mut self, sec: u64, nsec: u32) {
         self.0.mtime = sec;
         self.0.mtimensec = nsec;
     }
 
+    /// Return the last created time.
     pub fn ctime(&self) -> (u64, u32) {
         (self.0.ctime, self.0.ctimensec)
     }
 
+    /// Set the last created time.
     pub fn set_ctime(&mut self, sec: u64, nsec: u32) {
         self.0.ctime = sec;
         self.0.ctimensec = nsec;
@@ -98,16 +171,50 @@ impl FileAttr {
 #[repr(transparent)]
 pub struct FileLock(fuse_file_lock);
 
-#[allow(missing_docs)]
 impl FileLock {
     pub(crate) fn new(attr: &fuse_file_lock) -> &Self {
         unsafe { &*(attr as *const fuse_file_lock as *const Self) }
     }
 
-    define_accessor!(start, set_start, u64);
-    define_accessor!(end, set_end, u64);
-    define_accessor!(typ, set_typ, u32);
-    define_accessor!(pid, set_pid, u32);
+    /// Return the type of lock.
+    pub fn typ(&self) -> u32 {
+        self.0.typ
+    }
+
+    /// Set the type of lock.
+    pub fn set_typ(&mut self, typ: u32) {
+        self.0.typ = typ;
+    }
+
+    /// Return the starting offset for lock.
+    pub fn start(&self) -> u64 {
+        self.0.start
+    }
+
+    /// Set the starting offset for lock.
+    pub fn set_start(&mut self, start: u64) {
+        self.0.start = start;
+    }
+
+    /// Return the ending offset for lock.
+    pub fn end(&self) -> u64 {
+        self.0.end
+    }
+
+    /// Set the ending offset for lock.
+    pub fn set_end(&mut self, end: u64) {
+        self.0.end = end;
+    }
+
+    /// Return the process ID blocking the lock.
+    pub fn pid(&self) -> u32 {
+        self.0.pid
+    }
+
+    /// Set the process ID blocking the lock.
+    pub fn set_pid(&mut self, pid: u32) {
+        self.0.pid = pid;
+    }
 
     pub(crate) fn into_inner(self) -> fuse_file_lock {
         self.0
@@ -178,16 +285,86 @@ impl error::Error for InvalidFileLock {}
 #[repr(transparent)]
 pub struct StatFs(fuse_kstatfs);
 
-#[allow(missing_docs)]
 impl StatFs {
-    define_accessor!(blocks, set_blocks, u64);
-    define_accessor!(bfree, set_bfree, u64);
-    define_accessor!(bavail, set_bavail, u64);
-    define_accessor!(files, set_files, u64);
-    define_accessor!(ffree, set_ffree, u64);
-    define_accessor!(bsize, set_bsize, u32);
-    define_accessor!(namelen, set_namelen, u32);
-    define_accessor!(frsize, set_frsize, u32);
+    /// Return the block size.
+    pub fn bsize(&self) -> u32 {
+        self.0.bsize
+    }
+
+    /// Set the block size.
+    pub fn set_bsize(&mut self, bsize: u32) {
+        self.0.bsize = bsize;
+    }
+
+    /// Return the fragment size.
+    pub fn frsize(&self) -> u32 {
+        self.0.frsize
+    }
+
+    /// Set the fragment size.
+    pub fn set_frsize(&mut self, frsize: u32) {
+        self.0.frsize = frsize;
+    }
+
+    /// Return the number of blocks in the filesystem.
+    pub fn blocks(&self) -> u64 {
+        self.0.blocks
+    }
+
+    /// Return the number of blocks in the filesystem.
+    pub fn set_blocks(&mut self, blocks: u64) {
+        self.0.blocks = blocks;
+    }
+
+    /// Return the number of free blocks.
+    pub fn bfree(&self) -> u64 {
+        self.0.bfree
+    }
+
+    /// Return the number of free blocks.
+    pub fn set_bfree(&mut self, bfree: u64) {
+        self.0.bfree = bfree;
+    }
+
+    /// Return the number of free blocks for non-priviledge users.
+    pub fn bavail(&self) -> u64 {
+        self.0.bavail
+    }
+
+    /// Set the number of free blocks for non-priviledge users.
+    pub fn set_bavail(&mut self, bavail: u64) {
+        self.0.bavail = bavail;
+    }
+
+    /// Return the number of inodes.
+    pub fn files(&self) -> u64 {
+        self.0.files
+    }
+
+    /// Set the number of inodes.
+    pub fn set_files(&mut self, files: u64) {
+        self.0.files = files;
+    }
+
+    /// Return the number of free inodes.
+    pub fn ffree(&self) -> u64 {
+        self.0.ffree
+    }
+
+    /// Set the number of free inodes.
+    pub fn set_ffree(&mut self, ffree: u64) {
+        self.0.ffree = ffree;
+    }
+
+    /// Return the maximum length of file names.
+    pub fn namelen(&self) -> u32 {
+        self.0.namelen
+    }
+
+    /// Return the maximum length of file names.
+    pub fn set_namelen(&mut self, namelen: u32) {
+        self.0.namelen = namelen;
+    }
 
     pub(crate) fn into_inner(self) -> fuse_kstatfs {
         self.0
@@ -220,7 +397,6 @@ impl TryFrom<libc::statvfs> for StatFs {
 #[repr(transparent)]
 pub struct Forget(fuse_forget_one);
 
-#[allow(missing_docs)]
 impl Forget {
     pub(crate) const fn new(ino: u64, nlookup: u64) -> Self {
         Self(fuse_forget_one {
@@ -229,10 +405,12 @@ impl Forget {
         })
     }
 
+    /// Return the inode number of the target inode.
     pub fn ino(&self) -> u64 {
         self.0.nodeid
     }
 
+    /// Return the released lookup count of the target inode.
     pub fn nlookup(&self) -> u64 {
         self.0.nlookup
     }

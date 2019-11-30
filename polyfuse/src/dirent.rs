@@ -6,14 +6,14 @@ fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
 
-/// A directory entry.
+/// A directory entry replied to the kernel.
 #[derive(Debug)]
 pub struct DirEntry {
     dirent_buf: Vec<u8>,
 }
 
-#[allow(missing_docs)]
 impl DirEntry {
+    /// Create a new `DirEntry`.
     #[allow(clippy::cast_ptr_alignment, clippy::cast_lossless)]
     pub fn new(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {
         let name = name.as_ref().as_bytes();
@@ -46,6 +46,7 @@ impl DirEntry {
         Self { dirent_buf }
     }
 
+    /// Create a `DirEntry` for a directory.
     #[allow(clippy::cast_lossless)]
     pub fn dir(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {
         let mut ent = Self::new(name, ino, off);
@@ -53,6 +54,7 @@ impl DirEntry {
         ent
     }
 
+    /// Create a `DirEntry` for a regular file.
     #[allow(clippy::cast_lossless)]
     pub fn file(name: impl AsRef<OsStr>, ino: u64, off: u64) -> Self {
         let mut ent = Self::new(name, ino, off);
@@ -72,36 +74,43 @@ impl DirEntry {
         &mut *(self.dirent_buf.as_mut_ptr() as *mut fuse_dirent)
     }
 
+    /// Return the inode number of this entry.
     pub fn nodeid(&self) -> u64 {
         unsafe { self.header().ino }
     }
 
+    /// Set the inode number of this entry.
     pub fn set_nodeid(&mut self, ino: u64) {
         unsafe {
             self.header_mut().ino = ino;
         }
     }
 
+    /// Return the offset value of this entry.
     pub fn offset(&self) -> u64 {
         unsafe { self.header().off }
     }
 
+    /// Set the offset value of this entry.
     pub fn set_offset(&mut self, off: u64) {
         unsafe {
             self.header_mut().off = off;
         }
     }
 
+    /// Return the type of this entry.
     pub fn typ(&self) -> u32 {
         unsafe { self.header().typ }
     }
 
+    /// Set the type of this entry.
     pub fn set_typ(&mut self, typ: u32) {
         unsafe {
             self.header_mut().typ = typ;
         }
     }
 
+    /// Returns the name of this entry.
     pub fn name(&self) -> &OsStr {
         #[allow(clippy::unneeded_field_pattern)]
         let name_offset = offset_of!(fuse_dirent, name);
@@ -109,6 +118,7 @@ impl DirEntry {
         OsStr::from_bytes(&self.dirent_buf[name_offset..name_offset + namelen])
     }
 
+    /// Set the name of this entry.
     #[allow(clippy::cast_ptr_alignment)]
     pub fn set_name(&mut self, name: impl AsRef<OsStr>) {
         let name = name.as_ref().as_bytes();
