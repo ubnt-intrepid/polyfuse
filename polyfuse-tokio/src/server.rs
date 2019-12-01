@@ -3,13 +3,12 @@
 use crate::{channel::Channel, mount::MountOptions};
 use bytes::Bytes;
 use futures::{
-    future::{FusedFuture, Future, FutureExt},
+    future::{Future, FutureExt},
     select,
-    task::{self, Poll},
 };
 use libc::c_int;
 use polyfuse::{request::BytesBuffer, Filesystem, Session, SessionInitializer};
-use std::{ffi::OsStr, io, path::Path, pin::Pin, sync::Arc};
+use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 /// FUSE filesystem server.
 #[derive(Debug)]
@@ -138,40 +137,19 @@ impl Notifier {
             .await
     }
 
-    pub async fn retrieve(
-        &mut self,
-        ino: u64,
-        offset: u64,
-        size: u32,
-    ) -> io::Result<RetrieveHandle> {
-        self.notifier
+    pub async fn retrieve(&mut self, ino: u64, offset: u64, size: u32) -> io::Result<(u64, Bytes)> {
+        let handle = self
+            .notifier
             .retrieve(&mut self.channel, &*self.session, ino, offset, size)
-            .await
-            .map(RetrieveHandle)
+            .await?;
+        let (offset, data) = handle.await;
+        Ok((offset, data))
     }
 
     pub async fn poll_wakeup(&mut self, kh: u64) -> io::Result<()> {
         self.notifier
             .poll_wakeup(&mut self.channel, &*self.session, kh)
             .await
-    }
-}
-
-/// A handle for awaiting the result of a `retrieve` notification.
-#[derive(Debug)]
-pub struct RetrieveHandle(polyfuse::notify::RetrieveHandle<Bytes>);
-
-impl Future for RetrieveHandle {
-    type Output = (u64, Bytes);
-
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
-        Pin::new(&mut self.get_mut().0).poll(cx)
-    }
-}
-
-impl FusedFuture for RetrieveHandle {
-    fn is_terminated(&self) -> bool {
-        self.0.is_terminated()
     }
 }
 

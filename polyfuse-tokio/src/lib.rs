@@ -19,7 +19,7 @@ mod server;
 pub use crate::{
     channel::Channel,
     mount::MountOptions,
-    server::{Notifier, RetrieveHandle, Server},
+    server::{Notifier, Server},
 };
 
 use bytes::Bytes;

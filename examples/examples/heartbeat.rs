@@ -18,6 +18,8 @@ use polyfuse::{
 use polyfuse_tokio::{Notifier, Server};
 use std::{io, sync::Arc, time::Duration};
 
+const ROOT_INO: u64 = 1;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     examples::init_tracing()?;
@@ -96,7 +98,7 @@ impl Heartbeat {
         let content = Local::now().to_rfc3339();
 
         let mut attr = FileAttr::default();
-        attr.set_ino(1);
+        attr.set_ino(ROOT_INO);
         attr.set_mode(libc::S_IFREG | 0o444);
         attr.set_size(content.len() as u64);
 
@@ -117,13 +119,12 @@ impl Heartbeat {
         let content = &inner.content;
 
         tracing::info!("send notify_store(data={:?})", content);
-        notifier.store(1, 0, &[content.as_bytes()]).await?;
+        notifier.store(ROOT_INO, 0, &[content.as_bytes()]).await?;
 
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
-        let retrieve = notifier.retrieve(1, 0, 1024).await?;
-        let (_offset, data) = retrieve.await;
+        let (_offset, data) = notifier.retrieve(ROOT_INO, 0, 1024).await?;
         tracing::info!("--> content={:?}", data);
 
         if data[..content.len()] != *content.as_bytes() {
@@ -135,7 +136,7 @@ impl Heartbeat {
 
     async fn notify_inval_inode(&self, notifier: &mut Notifier) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
-        notifier.inval_inode(1, 0, 0).await?;
+        notifier.inval_inode(ROOT_INO, 0, 0).await?;
         Ok(())
     }
 }
@@ -149,14 +150,14 @@ impl<T> Filesystem<T> for Heartbeat {
     {
         match op {
             Operation::Getattr(op) => match op.ino() {
-                1 => {
+                ROOT_INO => {
                     let inner = self.inner.lock().await;
                     op.reply(cx, ReplyAttr::new(inner.attr)).await?;
                 }
                 _ => cx.reply_err(libc::ENOENT).await?,
             },
             Operation::Open(op) => match op.ino() {
-                1 => {
+                ROOT_INO => {
                     let mut reply = ReplyOpen::new(0);
                     reply.keep_cache(true);
                     op.reply(cx, reply).await?;
@@ -164,7 +165,7 @@ impl<T> Filesystem<T> for Heartbeat {
                 _ => cx.reply_err(libc::ENOENT).await?,
             },
             Operation::Read(op) => match op.ino() {
-                1 => {
+                ROOT_INO => {
                     let inner = self.inner.lock().await;
 
                     let offset = op.offset() as usize;
