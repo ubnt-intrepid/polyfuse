@@ -29,7 +29,13 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let mut args = pico_args::Arguments::from_vec(std::env::args_os().skip(2).collect());
-    let with_notify = !args.contains("--no-notify");
+    let kind = args.opt_value_from_os_str("--kind", |s| match s.to_str() {
+        Some("store") => Ok(NotifyKind::Store),
+        Some("invalidate") => Ok(NotifyKind::Invalidate),
+        s => Err(anyhow::anyhow!("invalid notify kind: {:?}", s)),
+    })?;
+
+    tracing::info!("CLI options: kind={:?}", kind);
 
     let heartbeat = Arc::new(Heartbeat::now());
 
@@ -38,27 +44,42 @@ async fn main() -> anyhow::Result<()> {
     let mut server = Server::mount(mountpoint, Default::default()).await?;
 
     // Spawn a task that beats the heart.
-    tokio::task::spawn({
-        let mut notifier = if with_notify {
-            server.notifier().map(Some)?
+    {
+        let heartbeat = heartbeat.clone();
+        let mut notifier = if let Some(kind) = kind {
+            let notifier = server.notifier()?;
+            Some((notifier, kind))
         } else {
             None
         };
-        let heartbeat = heartbeat.clone();
-        async move {
+
+        let _: tokio::task::JoinHandle<io::Result<()>> = tokio::task::spawn(async move {
             loop {
-                if let Err(err) = heartbeat.heartbeat(notifier.as_mut()).await {
-                    tracing::error!("heartbeat error: {}", err);
-                    return;
+                tracing::info!("heartbeat");
+
+                heartbeat.update_content().await;
+
+                if let Some((ref mut notifier, kind)) = notifier {
+                    match kind {
+                        NotifyKind::Store => heartbeat.notify_store(notifier).await?,
+                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(notifier).await?,
+                    }
                 }
+
                 tokio::time::delay_for(Duration::from_secs(2)).await;
             }
-        }
-    });
+        });
+    }
 
     // Run the filesystem daemon on the foreground.
     server.run(heartbeat).await?;
     Ok(())
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum NotifyKind {
+    Store,
+    Invalidate,
 }
 
 struct Heartbeat {
@@ -66,13 +87,13 @@ struct Heartbeat {
 }
 
 struct Inner {
-    content: Arc<String>,
+    content: String,
     attr: FileAttr,
 }
 
 impl Heartbeat {
     fn now() -> Self {
-        let content = Arc::new(Local::now().to_rfc3339());
+        let content = Local::now().to_rfc3339();
 
         let mut attr = FileAttr::default();
         attr.set_ino(1);
@@ -84,28 +105,37 @@ impl Heartbeat {
         }
     }
 
-    async fn heartbeat(&self, notifier: Option<&mut Notifier>) -> io::Result<()> {
+    async fn update_content(&self) {
         let mut inner = self.inner.lock().await;
-
-        let content = Arc::new(Local::now().to_rfc3339());
+        let content = Local::now().to_rfc3339();
         inner.attr.set_size(content.len() as u64);
-        inner.content = content.clone();
+        inner.content = content;
+    }
 
-        tracing::info!("heartbeat: {:?}", content);
+    async fn notify_store(&self, notifier: &mut Notifier) -> io::Result<()> {
+        let inner = self.inner.lock().await;
+        let content = &inner.content;
 
-        if let Some(notifier) = notifier {
-            tracing::info!("send notify_store: {:?}", content);
-            notifier.store(1, 0, &[content.as_bytes()]).await?;
+        tracing::info!("send notify_store(data={:?})", content);
+        notifier.store(1, 0, &[content.as_bytes()]).await?;
 
-            //
-            let retrieve = notifier.retrieve(1, 0, 1024).await?;
-            let (_offset, data) = retrieve.await;
-            tracing::info!(" --> retrieved: {:?}", data);
-            if data[..content.len()] != *content.as_bytes() {
-                tracing::error!("mismatched data");
-            }
+        // To check if the cache is updated correctly, pull the
+        // content from the kernel using notify_retrieve.
+        tracing::info!("send notify_retrieve");
+        let retrieve = notifier.retrieve(1, 0, 1024).await?;
+        let (_offset, data) = retrieve.await;
+        tracing::info!("--> content={:?}", data);
+
+        if data[..content.len()] != *content.as_bytes() {
+            tracing::error!("mismatched data");
         }
 
+        Ok(())
+    }
+
+    async fn notify_inval_inode(&self, notifier: &mut Notifier) -> io::Result<()> {
+        tracing::info!("send notify_invalidate_inode");
+        notifier.inval_inode(1, 0, 0).await?;
         Ok(())
     }
 }
