@@ -5,6 +5,13 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.2.1] (2019-12-02)
+
+### Fixed
+
+* set the field `nodeid` correctly when `ReplyEntry` is created ([1cb39b3](https://github.com/ubnt-intrepid/polyfuse/commit/1cb39b3077d62210f3d7b91ce7be57719b2fb73f))
+* add a null terminator to the notification payload ([9af5ab4](https://github.com/ubnt-intrepid/polyfuse/commit/9af5ab4daf0f59a898c0fed08098a57fe2664243))
+
 ## [0.2.0] (2019-11-30)
 
 ### Added
@@ -31,7 +38,8 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 <!-- links -->
 
-[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ubnt-intrepid/polyfuse/tree/v0.1.0
