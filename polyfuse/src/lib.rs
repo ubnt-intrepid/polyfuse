@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/polyfuse/0.2.0")]
+#![doc(html_root_url = "https://docs.rs/polyfuse/0.2.1")]
 
 //! A FUSE (Filesystem in userspace) framework.
 
