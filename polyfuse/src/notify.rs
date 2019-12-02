@@ -116,7 +116,7 @@ impl<T> Notifier<T> {
         send_notify(
             writer,
             fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
-            &[unsafe { as_bytes(&out) }, name.as_bytes()],
+            &[unsafe { as_bytes(&out) }, name.as_bytes(), &[0]],
         )
         .await
     }
@@ -156,7 +156,7 @@ impl<T> Notifier<T> {
         send_notify(
             writer,
             fuse_notify_code::FUSE_NOTIFY_DELETE,
-            &[unsafe { as_bytes(&out) }, name.as_bytes()],
+            &[unsafe { as_bytes(&out) }, name.as_bytes(), &[0]],
         )
         .await
     }
