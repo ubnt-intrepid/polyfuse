@@ -31,29 +31,31 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let mut args = pico_args::Arguments::from_vec(std::env::args_os().skip(2).collect());
-    let kind = args.opt_value_from_os_str("--kind", |s| match s.to_str() {
-        Some("store") => Ok(NotifyKind::Store),
-        Some("invalidate") => Ok(NotifyKind::Invalidate),
-        s => Err(anyhow::anyhow!("invalid notify kind: {:?}", s)),
-    })?;
 
-    tracing::info!("CLI options: kind={:?}", kind);
+    let no_notify = args.contains("--no-notify");
+    let notify_kind = args
+        .opt_value_from_os_str("--notify-kind", |s| match s.to_str() {
+            Some("store") => Ok(NotifyKind::Store),
+            Some("invalidate") => Ok(NotifyKind::Invalidate),
+            s => Err(anyhow::anyhow!("invalid notify kind: {:?}", s)),
+        })?
+        .unwrap_or(NotifyKind::Store);
+    let update_interval: u64 = args.value_from_str("--update-interval")?;
 
     let heartbeat = Arc::new(Heartbeat::now());
 
     // It is necessary to use the primitive server APIs in order to obtain
     // the instance of `Notifier` associated with the server.
     let mut server = Server::mount(mountpoint, Default::default()).await?;
+    let mut notifier = if !no_notify {
+        Some(server.notifier()?)
+    } else {
+        None
+    };
 
     // Spawn a task that beats the heart.
     {
         let heartbeat = heartbeat.clone();
-        let mut notifier = if let Some(kind) = kind {
-            let notifier = server.notifier()?;
-            Some((notifier, kind))
-        } else {
-            None
-        };
 
         let _: tokio::task::JoinHandle<io::Result<()>> = tokio::task::spawn(async move {
             loop {
@@ -61,14 +63,14 @@ async fn main() -> anyhow::Result<()> {
 
                 heartbeat.update_content().await;
 
-                if let Some((ref mut notifier, kind)) = notifier {
-                    match kind {
+                if let Some(ref mut notifier) = notifier {
+                    match notify_kind {
                         NotifyKind::Store => heartbeat.notify_store(notifier).await?,
                         NotifyKind::Invalidate => heartbeat.notify_inval_inode(notifier).await?,
                     }
                 }
 
-                tokio::time::delay_for(Duration::from_secs(2)).await;
+                tokio::time::delay_for(Duration::from_secs(update_interval)).await;
             }
         });
     }
