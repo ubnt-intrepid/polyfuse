@@ -79,8 +79,11 @@ impl AsRef<Self> for ReplyEntry {
 impl ReplyEntry {
     /// Create a new `ReplyEntry`.
     pub fn new(attr: FileAttr) -> Self {
+        let attr = attr.into_inner();
+        let nodeid = attr.ino;
         Self(fuse_entry_out {
-            attr: attr.into_inner(),
+            nodeid,
+            attr,
             ..Default::default()
         })
     }
