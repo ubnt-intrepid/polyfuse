@@ -13,25 +13,20 @@
 )]
 
 mod channel;
-mod mount;
 mod server;
 
-pub use crate::{
-    channel::Channel,
-    mount::MountOptions,
-    server::{Notifier, Server},
-};
+pub use crate::server::{Notifier, Server};
 
 use bytes::Bytes;
 use polyfuse::Filesystem;
-use std::{io, path::Path};
+use std::{ffi::OsStr, io, path::Path};
 
 /// Run a FUSE filesystem daemon mounted onto the specified path.
-pub async fn run<F>(fs: F, mountpoint: impl AsRef<Path>) -> io::Result<()>
+pub async fn run<F>(fs: F, mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<()>
 where
     F: Filesystem<Bytes> + Send + 'static,
 {
-    let server = Server::mount(mountpoint, Default::default()).await?;
+    let server = Server::mount(mountpoint, mountopts).await?;
     server.run(fs).await?;
     Ok(())
 }

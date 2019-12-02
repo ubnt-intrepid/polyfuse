@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     // It is necessary to use the primitive server APIs in order to obtain
     // the instance of `Notifier` associated with the server.
-    let mut server = Server::mount(mountpoint, Default::default()).await?;
+    let mut server = Server::mount(mountpoint, &[]).await?;
     let mut notifier = if !no_notify {
         Some(server.notifier()?)
     } else {

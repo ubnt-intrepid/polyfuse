@@ -1,6 +1,6 @@
 //! Serve FUSE filesystem.
 
-use crate::{channel::Channel, mount::MountOptions};
+use crate::channel::Channel;
 use bytes::Bytes;
 use futures::{
     future::{Future, FutureExt},
@@ -10,6 +10,7 @@ use libc::c_int;
 use polyfuse::{request::BytesBuffer, Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
+
 /// FUSE filesystem server.
 #[derive(Debug)]
 pub struct Server {
@@ -20,8 +21,8 @@ pub struct Server {
 
 impl Server {
     /// Create a FUSE server mounted on the specified path.
-    pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: MountOptions) -> io::Result<Self> {
-        let mut channel = Channel::open(mountpoint.as_ref(), &mountopts)?;
+    pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<Self> {
+        let mut channel = Channel::open(mountpoint.as_ref(), mountopts)?;
         let session = SessionInitializer::default() //
             .init(&mut channel)
             .await?;
