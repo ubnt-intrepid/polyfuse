@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
 
     let memfs = MemFS::new(&std::fs::metadata(&mountpoint)?);
 
-    polyfuse_tokio::run(memfs, mountpoint, &[]).await?;
+    polyfuse_tokio::mount(memfs, mountpoint, &[]).await?;
 
     Ok(())
 }

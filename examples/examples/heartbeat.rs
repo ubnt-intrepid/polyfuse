@@ -126,7 +126,7 @@ impl Heartbeat {
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
-        let (_offset, data) = notifier.retrieve(ROOT_INO, 0, 1024).await?;
+        let data = notifier.retrieve(ROOT_INO, 0, 1024).await?;
         tracing::info!("--> content={:?}", data);
 
         if data[..content.len()] != *content.as_bytes() {
