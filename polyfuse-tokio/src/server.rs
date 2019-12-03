@@ -11,7 +11,7 @@ use polyfuse::{request::BytesBuffer, Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
-/// FUSE filesystem server.
+/// A FUSE filesystem server running on Tokio runtime.
 #[derive(Debug)]
 pub struct Server {
     session: Arc<Session>,
@@ -60,16 +60,18 @@ impl Server {
         F: Filesystem<Bytes> + Send + 'static,
         S: Future + Unpin,
     {
-        let session = self.session;
-        let notifier = self.notifier;
+        let Self {
+            session,
+            notifier,
+            mut channel,
+        } = self;
         let fs = Arc::new(fs);
-        let mut channel = self.channel;
         let mut sig = sig.fuse();
 
         let mut main_loop = Box::pin(async move {
-            let mut req = BytesBuffer::new(session.buffer_size());
             loop {
-                if let Err(err) = session.receive(&mut channel, &mut req, &notifier).await {
+                let mut buf = BytesBuffer::new(session.buffer_size());
+                if let Err(err) = session.receive(&mut channel, &mut buf, &notifier).await {
                     match err.raw_os_error() {
                         Some(libc::ENODEV) => {
                             tracing::debug!("connection was closed by the kernel");
@@ -82,9 +84,8 @@ impl Server {
                 let session = session.clone();
                 let fs = fs.clone();
                 let mut writer = channel.try_clone()?;
-                let mut req = std::mem::replace(&mut req, BytesBuffer::new(session.buffer_size()));
                 tokio::spawn(async move {
-                    if let Err(e) = session.process(&*fs, &mut req, &mut writer).await {
+                    if let Err(e) = session.process(&*fs, &mut buf, &mut writer).await {
                         tracing::error!("error during handling a request: {}", e);
                     }
                 });
@@ -92,7 +93,6 @@ impl Server {
         })
         .fuse();
 
-        // FIXME: graceful shutdown the background tasks.
         select! {
             _ = main_loop => Ok(None),
             sig = sig => Ok(Some(sig)),
@@ -109,18 +109,33 @@ pub struct Notifier {
 }
 
 impl Notifier {
+    /// Attempt to make a clone of this instance.
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            session: self.session.clone(),
+            notifier: self.notifier.clone(),
+            channel: self.channel.try_clone()?,
+        })
+    }
+
+    /// Invalidate the specified range of cache data for an inode.
+    ///
+    /// When the kernel receives this notification, some requests are queued to read
+    /// the updated data.
     pub async fn inval_inode(&mut self, ino: u64, off: i64, len: i64) -> io::Result<()> {
         self.notifier
             .inval_inode(&mut self.channel, &*self.session, ino, off, len)
             .await
     }
 
+    /// Invalidate an entry with the specified name in the directory.
     pub async fn inval_entry(&mut self, parent: u64, name: impl AsRef<OsStr>) -> io::Result<()> {
         self.notifier
             .inval_entry(&mut self.channel, &*self.session, parent, name)
             .await
     }
 
+    /// Notify that an entry with the specified name has been deleted from the directory.
     pub async fn delete(
         &mut self,
         parent: u64,
@@ -132,21 +147,25 @@ impl Notifier {
             .await
     }
 
+    /// Replace the specified range of cache data with a new value.
     pub async fn store(&mut self, ino: u64, offset: u64, data: &[&[u8]]) -> io::Result<()> {
         self.notifier
             .store(&mut self.channel, &*self.session, ino, offset, data)
             .await
     }
 
-    pub async fn retrieve(&mut self, ino: u64, offset: u64, size: u32) -> io::Result<(u64, Bytes)> {
+    /// Retrieve the value of the cache data with the specified range.
+    pub async fn retrieve(&mut self, ino: u64, offset: u64, size: u32) -> io::Result<Bytes> {
         let handle = self
             .notifier
             .retrieve(&mut self.channel, &*self.session, ino, offset, size)
             .await?;
-        let (offset, data) = handle.await;
-        Ok((offset, data))
+        let (in_offset, data) = handle.await;
+        debug_assert_eq!(offset, in_offset);
+        Ok(data)
     }
 
+    /// Notify an I/O readiness.
     pub async fn poll_wakeup(&mut self, kh: u64) -> io::Result<()> {
         self.notifier
             .poll_wakeup(&mut self.channel, &*self.session, kh)

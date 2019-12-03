@@ -17,7 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let mountpoint = examples::get_mountpoint()?;
     ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    polyfuse_tokio::run(Hello::new(), mountpoint, &[]).await?;
+    polyfuse_tokio::mount(Hello::new(), mountpoint, &[]).await?;
 
     Ok(())
 }
