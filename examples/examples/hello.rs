@@ -135,7 +135,12 @@ impl Hello {
 
 #[async_trait]
 impl<T> Filesystem<T> for Hello {
-    async fn call<W: ?Sized>(&self, cx: &mut Context<'_, W>, op: Operation<'_, T>) -> io::Result<()>
+    async fn call<W: ?Sized>(
+        &self,
+        cx: &mut Context<'_>,
+        op: Operation<'_, T>,
+        writer: &mut ReplyWriter<'_, W>,
+    ) -> io::Result<()>
     where
         T: Send + 'async_trait,
         W: AsyncWrite + Unpin + Send,
@@ -146,18 +151,18 @@ impl<T> Filesystem<T> for Hello {
                     let mut reply = ReplyEntry::new(attr);
                     reply.attr_valid(u64::max_value(), u32::max_value());
                     reply.entry_valid(u64::max_value(), u32::max_value());
-                    op.reply(cx, reply).await?;
+                    op.reply(writer, reply).await?;
                 }
-                None => cx.reply_err(libc::ENOENT).await?,
+                None => writer.reply_err(libc::ENOENT).await?,
             },
 
             Operation::Getattr(op) => match self.getattr(op.ino()) {
                 Some(attr) => {
                     let mut reply = ReplyAttr::new(attr);
                     reply.attr_valid(u64::max_value(), u32::max_value());
-                    op.reply(cx, reply).await?;
+                    op.reply(writer, reply).await?;
                 }
-                None => cx.reply_err(libc::ENOENT).await?,
+                None => writer.reply_err(libc::ENOENT).await?,
             },
 
             Operation::Read(op) => {
@@ -166,15 +171,15 @@ impl<T> Filesystem<T> for Hello {
                     .read(op.ino(), op.offset() as usize, op.size() as usize, intr)
                     .await
                 {
-                    Ok(data) => op.reply(cx, data).await?,
-                    Err(errno) => cx.reply_err(errno).await?,
+                    Ok(data) => op.reply(writer, data).await?,
+                    Err(errno) => writer.reply_err(errno).await?,
                 }
             }
 
             Operation::Readdir(op) => match self.readdir(op.ino(), op.offset(), op.size() as usize)
             {
-                Ok(entries) => op.reply_vectored(cx, &*entries).await?,
-                Err(errno) => cx.reply_err(errno).await?,
+                Ok(entries) => op.reply_vectored(writer, &*entries).await?,
+                Err(errno) => writer.reply_err(errno).await?,
             },
 
             _ => (),

@@ -145,7 +145,12 @@ impl Heartbeat {
 
 #[async_trait]
 impl<T> Filesystem<T> for Heartbeat {
-    async fn call<W: ?Sized>(&self, cx: &mut Context<'_, W>, op: Operation<'_, T>) -> io::Result<()>
+    async fn call<W: ?Sized>(
+        &self,
+        cx: &mut Context<'_>,
+        op: Operation<'_, T>,
+        writer: &mut ReplyWriter<'_, W>,
+    ) -> io::Result<()>
     where
         T: Send + 'async_trait,
         W: AsyncWrite + Unpin + Send,
@@ -154,17 +159,17 @@ impl<T> Filesystem<T> for Heartbeat {
             Operation::Getattr(op) => match op.ino() {
                 ROOT_INO => {
                     let inner = self.inner.lock().await;
-                    op.reply(cx, ReplyAttr::new(inner.attr)).await?;
+                    op.reply(writer, ReplyAttr::new(inner.attr)).await?;
                 }
-                _ => cx.reply_err(libc::ENOENT).await?,
+                _ => writer.reply_err(libc::ENOENT).await?,
             },
             Operation::Open(op) => match op.ino() {
                 ROOT_INO => {
                     let mut reply = ReplyOpen::new(0);
                     reply.keep_cache(true);
-                    op.reply(cx, reply).await?;
+                    op.reply(writer, reply).await?;
                 }
-                _ => cx.reply_err(libc::ENOENT).await?,
+                _ => writer.reply_err(libc::ENOENT).await?,
             },
             Operation::Read(op) => match op.ino() {
                 ROOT_INO => {
@@ -172,15 +177,15 @@ impl<T> Filesystem<T> for Heartbeat {
 
                     let offset = op.offset() as usize;
                     if offset >= inner.content.len() {
-                        op.reply(cx, &[]).await?;
+                        op.reply(writer, &[]).await?;
                     } else {
                         let size = op.size() as usize;
                         let data = &inner.content.as_bytes()[offset..];
                         let data = &data[..std::cmp::min(data.len(), size)];
-                        op.reply(cx, data).await?;
+                        op.reply(writer, data).await?;
                     }
                 }
-                _ => cx.reply_err(libc::ENOENT).await?,
+                _ => writer.reply_err(libc::ENOENT).await?,
             },
             _ => (),
         }

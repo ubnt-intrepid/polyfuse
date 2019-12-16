@@ -4,7 +4,6 @@
 
 use crate::{
     common::{FileLock, Forget},
-    fs::Context,
     kernel::{
         fuse_access_in, //
         fuse_bmap_in,
@@ -39,6 +38,7 @@ use crate::{
         ReplyPoll,
         ReplyStatfs,
         ReplyWrite,
+        ReplyWriter,
         ReplyXattr,
     },
     request::RequestHeader,
@@ -203,14 +203,14 @@ impl<'a> Lookup<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
     }
 }
 
@@ -235,14 +235,14 @@ impl<'a> Getattr<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         attr: impl AsRef<ReplyAttr>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let attr = attr.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(attr) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(attr) }).await
     }
 }
 
@@ -316,14 +316,14 @@ impl<'a> Setattr<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         attr: impl AsRef<ReplyAttr>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let attr = attr.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(attr) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(attr) }).await
     }
 }
 
@@ -340,13 +340,13 @@ impl Readlink<'_> {
     /// Reply to the kernel with the specified link value.
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         value: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(value.as_ref().as_bytes()).await
+        writer.reply(value.as_ref().as_bytes()).await
     }
 }
 
@@ -372,14 +372,14 @@ impl<'a> Symlink<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
     }
 }
 
@@ -413,14 +413,14 @@ impl<'a> Mknod<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
     }
 }
 
@@ -450,14 +450,14 @@ impl<'a> Mkdir<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
     }
 }
 
@@ -476,11 +476,11 @@ impl<'a> Unlink<'a> {
         &*self.name
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -499,11 +499,11 @@ impl<'a> Rmdir<'a> {
         &*self.name
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -560,11 +560,11 @@ impl<'a> Rename<'a> {
         }
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -590,14 +590,14 @@ impl<'a> Link<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
     }
 }
 
@@ -618,14 +618,14 @@ impl<'a> Open<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyOpen>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 }
 
@@ -666,7 +666,7 @@ impl<'a> Read<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
@@ -675,15 +675,15 @@ impl<'a> Read<'a> {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            cx.reply(data).await
+            writer.reply(data).await
         } else {
-            cx.reply_err(libc::ERANGE).await
+            writer.reply_err(libc::ERANGE).await
         }
     }
 
     pub async fn reply_vectored<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
@@ -691,9 +691,9 @@ impl<'a> Read<'a> {
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            cx.reply_vectored(data).await
+            writer.reply_vectored(data).await
         } else {
-            cx.reply_err(libc::ERANGE).await
+            writer.reply_err(libc::ERANGE).await
         }
     }
 }
@@ -735,14 +735,14 @@ impl<'a> Write<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyWrite>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 }
 
@@ -778,11 +778,11 @@ impl<'a> Release<'a> {
         self.arg.release_flags & crate::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -798,14 +798,14 @@ impl Statfs<'_> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyStatfs>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 }
 
@@ -828,11 +828,11 @@ impl<'a> Fsync<'a> {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -861,11 +861,11 @@ impl<'a> Setxattr<'a> {
         self.arg.flags
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -891,19 +891,19 @@ impl<'a> Getxattr<'a> {
 
     pub async fn reply_size<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyXattr>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
@@ -912,15 +912,15 @@ impl<'a> Getxattr<'a> {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            cx.reply(data).await
+            writer.reply(data).await
         } else {
-            cx.reply_err(libc::ERANGE).await
+            writer.reply_err(libc::ERANGE).await
         }
     }
 
     pub async fn reply_vectored<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
@@ -928,9 +928,9 @@ impl<'a> Getxattr<'a> {
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            cx.reply_vectored(data).await
+            writer.reply_vectored(data).await
         } else {
-            cx.reply_err(libc::ERANGE).await
+            writer.reply_err(libc::ERANGE).await
         }
     }
 }
@@ -952,19 +952,19 @@ impl<'a> Listxattr<'a> {
 
     pub async fn reply_size<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyXattr>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
@@ -973,15 +973,15 @@ impl<'a> Listxattr<'a> {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            cx.reply(data).await
+            writer.reply(data).await
         } else {
-            cx.reply_err(libc::ERANGE).await
+            writer.reply_err(libc::ERANGE).await
         }
     }
 
     pub async fn reply_vectored<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
@@ -989,9 +989,9 @@ impl<'a> Listxattr<'a> {
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            cx.reply_vectored(data).await
+            writer.reply_vectored(data).await
         } else {
-            cx.reply_err(libc::ERANGE).await
+            writer.reply_err(libc::ERANGE).await
         }
     }
 }
@@ -1010,11 +1010,11 @@ impl<'a> Removexattr<'a> {
         &*self.name
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -1037,11 +1037,11 @@ impl<'a> Flush<'a> {
         self.arg.lock_owner
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -1062,14 +1062,14 @@ impl<'a> Opendir<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyOpendir>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 }
 
@@ -1109,7 +1109,7 @@ impl<'a> Readdir<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
@@ -1118,15 +1118,15 @@ impl<'a> Readdir<'a> {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            cx.reply(data).await
+            writer.reply(data).await
         } else {
-            cx.reply_err(libc::ERANGE).await
+            writer.reply_err(libc::ERANGE).await
         }
     }
 
     pub async fn reply_vectored<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
@@ -1134,9 +1134,9 @@ impl<'a> Readdir<'a> {
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            cx.reply_vectored(data).await
+            writer.reply_vectored(data).await
         } else {
-            cx.reply_err(libc::ERANGE).await
+            writer.reply_err(libc::ERANGE).await
         }
     }
 }
@@ -1160,11 +1160,11 @@ impl<'a> Releasedir<'a> {
         self.arg.flags
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -1187,11 +1187,11 @@ impl<'a> Fsyncdir<'a> {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -1220,14 +1220,14 @@ impl<'a> Getlk<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyLk>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 }
 
@@ -1259,11 +1259,11 @@ impl<'a> Setlk<'a> {
         self.sleep
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -1306,11 +1306,11 @@ impl<'a> Flock<'a> {
         Some(op)
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -1329,11 +1329,11 @@ impl<'a> Access<'a> {
         self.arg.mask
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -1367,7 +1367,7 @@ impl<'a> Create<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         entry: impl AsRef<ReplyEntry>,
         open: impl AsRef<ReplyOpen>,
     ) -> io::Result<()>
@@ -1376,10 +1376,11 @@ impl<'a> Create<'a> {
     {
         let entry = entry.as_ref();
         let open = open.as_ref();
-        cx.reply_vectored(&[unsafe { crate::reply::as_bytes(entry) }, unsafe {
-            crate::reply::as_bytes(open)
-        }])
-        .await
+        writer
+            .reply_vectored(&[unsafe { crate::reply::as_bytes(entry) }, unsafe {
+                crate::reply::as_bytes(open)
+            }])
+            .await
     }
 }
 
@@ -1404,14 +1405,14 @@ impl<'a> Bmap<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyBmap>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 }
 
@@ -1442,11 +1443,11 @@ impl<'a> Fallocate<'a> {
         self.arg.mode
     }
 
-    pub async fn reply<W: ?Sized>(self, cx: &mut Context<'_, W>) -> io::Result<()>
+    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
-        cx.reply(&[]).await
+        writer.reply(&[]).await
     }
 }
 
@@ -1475,14 +1476,14 @@ impl<'a> CopyFileRange<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyWrite>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 }
 
@@ -1515,13 +1516,13 @@ impl<'a> Poll<'a> {
 
     pub async fn reply<W: ?Sized>(
         self,
-        cx: &mut Context<'_, W>,
+        writer: &mut ReplyWriter<'_, W>,
         out: impl AsRef<ReplyPoll>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        cx.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
     }
 }

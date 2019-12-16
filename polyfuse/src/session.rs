@@ -7,6 +7,7 @@ use crate::{
     kernel::{fuse_forget_one, fuse_opcode},
     notify::Notifier,
     op::{self, Operation},
+    reply::ReplyWriter,
     request::{Buffer, BufferExt, RequestKind},
 };
 use futures::{
@@ -133,8 +134,6 @@ impl Session {
         B: Buffer,
         B::Data: Send,
     {
-        let mut writer = writer;
-
         if self.exited() {
             tracing::warn!("The sesson has already been exited");
             return Ok(());
@@ -148,11 +147,12 @@ impl Session {
             header.opcode(),
         );
 
-        let mut cx = Context::new(&header, &mut writer, &*self);
+        let mut cx = Context::new(&header, &*self);
+        let mut writer = ReplyWriter::new(header.unique(), &mut *writer);
 
         macro_rules! run_op {
             ($op:expr) => {
-                fs.call(&mut cx, $op).await?;
+                fs.call(&mut cx, $op, &mut writer).await?;
             };
         }
 
@@ -167,7 +167,11 @@ impl Session {
             RequestKind::Forget { arg } => {
                 // no reply.
                 return fs
-                    .call(&mut cx, Operation::Forget(&[Forget::new(ino, arg.nlookup)]))
+                    .call(
+                        &mut cx,
+                        Operation::Forget(&[Forget::new(ino, arg.nlookup)]),
+                        &mut writer,
+                    )
                     .await;
             }
             RequestKind::BatchForget { forgets, .. } => {
@@ -183,7 +187,11 @@ impl Session {
 
                 // no reply.
                 return fs
-                    .call(&mut cx, Operation::Forget(make_forgets(&*forgets)))
+                    .call(
+                        &mut cx,
+                        Operation::Forget(make_forgets(&*forgets)),
+                        &mut writer,
+                    )
                     .await;
             }
             RequestKind::Getattr { arg } => {
@@ -215,7 +223,7 @@ impl Session {
                     header,
                     arg: arg.into(),
                     name,
-                    newname
+                    newname,
                 }));
             }
             RequestKind::Rename2 { arg, name, newname } => {
@@ -223,14 +231,14 @@ impl Session {
                     header,
                     arg: arg.into(),
                     name,
-                    newname
+                    newname,
                 }));
             }
             RequestKind::Link { arg, newname } => {
                 run_op!(Operation::Link(op::Link {
                     header,
                     arg,
-                    newname
+                    newname,
                 }));
             }
             RequestKind::Open { arg } => {
@@ -256,7 +264,7 @@ impl Session {
                     header,
                     arg,
                     name,
-                    value
+                    value,
                 }));
             }
             RequestKind::Getxattr { arg, name } => {
@@ -278,14 +286,14 @@ impl Session {
                 run_op!(Operation::Readdir(op::Readdir {
                     header,
                     arg,
-                    mode: op::ReaddirMode::Normal
+                    mode: op::ReaddirMode::Normal,
                 }));
             }
             RequestKind::Readdirplus { arg } => {
                 run_op!(Operation::Readdir(op::Readdir {
                     header,
                     arg,
-                    mode: op::ReaddirMode::Plus
+                    mode: op::ReaddirMode::Plus,
                 }));
             }
             RequestKind::Releasedir { arg } => {
@@ -325,7 +333,7 @@ impl Session {
 
             RequestKind::Init { .. } => {
                 tracing::warn!("ignore an INIT request after initializing the session");
-                cx.reply_err(libc::EIO).await?;
+                writer.reply_err(libc::EIO).await?;
             }
 
             RequestKind::Interrupt { .. } | RequestKind::NotifyReply { .. } => {
@@ -337,20 +345,22 @@ impl Session {
 
             RequestKind::Unknown => {
                 tracing::warn!("unsupported opcode: {:?}", header.opcode());
-                cx.reply_err(libc::ENOSYS).await?;
+                writer.reply_err(libc::ENOSYS).await?;
             }
         }
 
-        if !cx.is_replied() {
+        if !writer.written() {
             match header.opcode() {
                 Some(fuse_opcode::FUSE_STATFS) => {
                     let mut st = StatFs::default();
                     st.set_namelen(255);
                     st.set_bsize(512);
                     let out = crate::reply::ReplyStatfs::new(st);
-                    cx.reply(unsafe { crate::reply::as_bytes(&out) }).await?;
+                    writer
+                        .reply(unsafe { crate::reply::as_bytes(&out) })
+                        .await?;
                 }
-                _ => cx.reply_err(libc::ENOSYS).await?,
+                _ => writer.reply_err(libc::ENOSYS).await?,
             }
         }
 

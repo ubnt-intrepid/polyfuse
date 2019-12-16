@@ -21,6 +21,7 @@ use futures::{future::poll_fn, io::AsyncWrite};
 use smallvec::SmallVec;
 use std::{
     convert::TryFrom,
+    fmt,
     io::{self, IoSlice},
     mem,
     pin::Pin,
@@ -29,6 +30,64 @@ use std::{
 #[inline(always)]
 pub(crate) unsafe fn as_bytes<T: Sized>(t: &T) -> &[u8] {
     std::slice::from_raw_parts(t as *const T as *const u8, std::mem::size_of::<T>())
+}
+
+#[allow(missing_docs)]
+pub struct ReplyWriter<'w, W: ?Sized> {
+    unique: u64,
+    writer: Option<&'w mut W>,
+}
+
+impl<W: ?Sized> fmt::Debug for ReplyWriter<'_, W> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReplyWriter").finish()
+    }
+}
+
+impl<'w, W: ?Sized> ReplyWriter<'w, W> {
+    pub(crate) fn new(unique: u64, writer: &'w mut W) -> Self {
+        Self {
+            unique,
+            writer: Some(writer),
+        }
+    }
+
+    pub(crate) async fn reply(&mut self, data: &[u8]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        self.send_reply(0, &[data]).await
+    }
+
+    pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        self.send_reply(0, data).await
+    }
+
+    ///
+    pub async fn reply_err(&mut self, error: i32) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        self.send_reply(error, &[]).await
+    }
+
+    async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        if let Some(ref mut writer) = self.writer.take() {
+            send_msg(writer, self.unique, -error, data).await?;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn written(&self) -> bool {
+        self.writer.is_none()
+    }
 }
 
 /// Reply with the inode attributes.
