@@ -1,6 +1,7 @@
 [package]
 name = "polyfuse"
-version = "0.2.1"
+version = "0.3.0-dev"
+publish = false
 description = "A FUSE (Filesystem in Userspace) framework"
 authors = [ "Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>" ]
 repository = "https://github.com/ubnt-intrepid/polyfuse.git"
