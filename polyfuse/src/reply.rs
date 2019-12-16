@@ -32,7 +32,7 @@ pub(crate) unsafe fn as_bytes<T: Sized>(t: &T) -> &[u8] {
     std::slice::from_raw_parts(t as *const T as *const u8, std::mem::size_of::<T>())
 }
 
-#[allow(missing_docs)]
+/// A reply sender to the kernel.
 pub struct ReplyWriter<'w, W: ?Sized> {
     unique: u64,
     writer: Option<&'w mut W>,
@@ -52,21 +52,21 @@ impl<'w, W: ?Sized> ReplyWriter<'w, W> {
         }
     }
 
-    pub(crate) async fn reply(&mut self, data: &[u8]) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        self.send_reply(0, &[data]).await
+    /// Return whether the writer has already sent a reply to the kernel or not.
+    #[inline]
+    pub fn replied(&self) -> bool {
+        self.writer.is_none()
     }
 
-    pub(crate) async fn reply_vectored(&mut self, data: &[&[u8]]) -> io::Result<()>
+    /// Reply to the kernel with an arbitrary bytes of data.
+    pub async fn reply_raw(&mut self, data: &[&[u8]]) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         self.send_reply(0, data).await
     }
 
-    ///
+    /// Reply to the kernel with an error code.
     pub async fn reply_err(&mut self, error: i32) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
@@ -82,11 +82,6 @@ impl<'w, W: ?Sized> ReplyWriter<'w, W> {
             send_msg(writer, self.unique, -error, data).await?;
         }
         Ok(())
-    }
-
-    #[inline]
-    pub(crate) fn written(&self) -> bool {
-        self.writer.is_none()
     }
 }
 

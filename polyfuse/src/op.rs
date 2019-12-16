@@ -210,7 +210,9 @@ impl<'a> Lookup<'a> {
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
+            .await
     }
 }
 
@@ -242,7 +244,9 @@ impl<'a> Getattr<'a> {
         W: AsyncWrite + Unpin,
     {
         let attr = attr.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(attr) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(attr) }])
+            .await
     }
 }
 
@@ -323,7 +327,9 @@ impl<'a> Setattr<'a> {
         W: AsyncWrite + Unpin,
     {
         let attr = attr.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(attr) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(attr) }])
+            .await
     }
 }
 
@@ -346,7 +352,7 @@ impl Readlink<'_> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(value.as_ref().as_bytes()).await
+        writer.reply_raw(&[value.as_ref().as_bytes()]).await
     }
 }
 
@@ -379,7 +385,9 @@ impl<'a> Symlink<'a> {
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
+            .await
     }
 }
 
@@ -420,7 +428,9 @@ impl<'a> Mknod<'a> {
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
+            .await
     }
 }
 
@@ -457,7 +467,9 @@ impl<'a> Mkdir<'a> {
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
+            .await
     }
 }
 
@@ -480,7 +492,7 @@ impl<'a> Unlink<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -503,7 +515,7 @@ impl<'a> Rmdir<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -564,7 +576,7 @@ impl<'a> Rename<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -597,7 +609,9 @@ impl<'a> Link<'a> {
         W: AsyncWrite + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(entry) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
+            .await
     }
 }
 
@@ -625,7 +639,9 @@ impl<'a> Open<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 }
 
@@ -675,7 +691,7 @@ impl<'a> Read<'a> {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            writer.reply(data).await
+            writer.reply_raw(&[data]).await
         } else {
             writer.reply_err(libc::ERANGE).await
         }
@@ -691,7 +707,7 @@ impl<'a> Read<'a> {
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            writer.reply_vectored(data).await
+            writer.reply_raw(data).await
         } else {
             writer.reply_err(libc::ERANGE).await
         }
@@ -742,7 +758,9 @@ impl<'a> Write<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 }
 
@@ -782,7 +800,7 @@ impl<'a> Release<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -805,7 +823,9 @@ impl Statfs<'_> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 }
 
@@ -832,7 +852,7 @@ impl<'a> Fsync<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -865,7 +885,7 @@ impl<'a> Setxattr<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -898,7 +918,9 @@ impl<'a> Getxattr<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 
     pub async fn reply<W: ?Sized>(
@@ -912,7 +934,7 @@ impl<'a> Getxattr<'a> {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            writer.reply(data).await
+            writer.reply_raw(&[data]).await
         } else {
             writer.reply_err(libc::ERANGE).await
         }
@@ -928,7 +950,7 @@ impl<'a> Getxattr<'a> {
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            writer.reply_vectored(data).await
+            writer.reply_raw(data).await
         } else {
             writer.reply_err(libc::ERANGE).await
         }
@@ -959,7 +981,9 @@ impl<'a> Listxattr<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 
     pub async fn reply<W: ?Sized>(
@@ -973,7 +997,7 @@ impl<'a> Listxattr<'a> {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            writer.reply(data).await
+            writer.reply_raw(&[data]).await
         } else {
             writer.reply_err(libc::ERANGE).await
         }
@@ -989,7 +1013,7 @@ impl<'a> Listxattr<'a> {
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            writer.reply_vectored(data).await
+            writer.reply_raw(data).await
         } else {
             writer.reply_err(libc::ERANGE).await
         }
@@ -1014,7 +1038,7 @@ impl<'a> Removexattr<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -1041,7 +1065,7 @@ impl<'a> Flush<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -1069,7 +1093,9 @@ impl<'a> Opendir<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 }
 
@@ -1118,7 +1144,7 @@ impl<'a> Readdir<'a> {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            writer.reply(data).await
+            writer.reply_raw(&[data]).await
         } else {
             writer.reply_err(libc::ERANGE).await
         }
@@ -1134,7 +1160,7 @@ impl<'a> Readdir<'a> {
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            writer.reply_vectored(data).await
+            writer.reply_raw(data).await
         } else {
             writer.reply_err(libc::ERANGE).await
         }
@@ -1164,7 +1190,7 @@ impl<'a> Releasedir<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -1191,7 +1217,7 @@ impl<'a> Fsyncdir<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -1227,7 +1253,9 @@ impl<'a> Getlk<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 }
 
@@ -1263,7 +1291,7 @@ impl<'a> Setlk<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -1310,7 +1338,7 @@ impl<'a> Flock<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -1333,7 +1361,7 @@ impl<'a> Access<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -1377,9 +1405,10 @@ impl<'a> Create<'a> {
         let entry = entry.as_ref();
         let open = open.as_ref();
         writer
-            .reply_vectored(&[unsafe { crate::reply::as_bytes(entry) }, unsafe {
-                crate::reply::as_bytes(open)
-            }])
+            .reply_raw(&[
+                unsafe { crate::reply::as_bytes(entry) }, //
+                unsafe { crate::reply::as_bytes(open) },
+            ])
             .await
     }
 }
@@ -1412,7 +1441,9 @@ impl<'a> Bmap<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 }
 
@@ -1447,7 +1478,7 @@ impl<'a> Fallocate<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        writer.reply(&[]).await
+        writer.reply_raw(&[]).await
     }
 }
 
@@ -1483,7 +1514,9 @@ impl<'a> CopyFileRange<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 }
 
@@ -1523,6 +1556,8 @@ impl<'a> Poll<'a> {
         W: AsyncWrite + Unpin,
     {
         let out = out.as_ref();
-        writer.reply(unsafe { crate::reply::as_bytes(out) }).await
+        writer
+            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
+            .await
     }
 }

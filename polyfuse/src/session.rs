@@ -152,7 +152,15 @@ impl Session {
 
         macro_rules! run_op {
             ($op:expr) => {
+                run_op!($op, {
+                    writer.reply_err(libc::ENOSYS).await?;
+                })
+            };
+            ($op:expr, $after:stmt) => {
                 fs.call(&mut cx, $op, &mut writer).await?;
+                if !writer.replied() {
+                    $after
+                }
             };
         }
 
@@ -254,7 +262,15 @@ impl Session {
                 run_op!(Operation::Release(op::Release { header, arg }));
             }
             RequestKind::Statfs => {
-                run_op!(Operation::Statfs(op::Statfs { header }));
+                run_op!(Operation::Statfs(op::Statfs { header }), {
+                    let mut st = StatFs::default();
+                    st.set_namelen(255);
+                    st.set_bsize(512);
+                    let out = crate::reply::ReplyStatfs::new(st);
+                    writer
+                        .reply_raw(&[unsafe { crate::reply::as_bytes(&out) }])
+                        .await?;
+                });
             }
             RequestKind::Fsync { arg } => {
                 run_op!(Operation::Fsync(op::Fsync { header, arg }));
@@ -346,21 +362,6 @@ impl Session {
             RequestKind::Unknown => {
                 tracing::warn!("unsupported opcode: {:?}", header.opcode());
                 writer.reply_err(libc::ENOSYS).await?;
-            }
-        }
-
-        if !writer.written() {
-            match header.opcode() {
-                Some(fuse_opcode::FUSE_STATFS) => {
-                    let mut st = StatFs::default();
-                    st.set_namelen(255);
-                    st.set_bsize(512);
-                    let out = crate::reply::ReplyStatfs::new(st);
-                    writer
-                        .reply(unsafe { crate::reply::as_bytes(&out) })
-                        .await?;
-                }
-                _ => writer.reply_err(libc::ENOSYS).await?,
             }
         }
 
