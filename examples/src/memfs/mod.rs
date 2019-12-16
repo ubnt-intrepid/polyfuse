@@ -292,11 +292,11 @@ impl<T> Filesystem<T> for MemFS
 where
     T: AsRef<[u8]>,
 {
-    async fn call<W: ?Sized>(
-        &self,
-        cx: &mut Context<'_>,
-        op: Operation<'_, T>,
-        writer: &mut ReplyWriter<'_, W>,
+    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+        &'a self,
+        cx: &'a mut Context<'cx>,
+        op: Operation<'cx, T>,
+        writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
         W: AsyncWrite + Send + Unpin + 'async_trait,

@@ -135,11 +135,11 @@ impl Hello {
 
 #[async_trait]
 impl<T> Filesystem<T> for Hello {
-    async fn call<W: ?Sized>(
-        &self,
-        cx: &mut Context<'_>,
-        op: Operation<'_, T>,
-        writer: &mut ReplyWriter<'_, W>,
+    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+        &'a self,
+        cx: &'a mut Context<'cx>,
+        op: Operation<'cx, T>,
+        writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
         T: Send + 'async_trait,

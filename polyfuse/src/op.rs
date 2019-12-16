@@ -3,7 +3,7 @@
 #![allow(missing_docs)]
 
 use crate::{
-    common::{FileLock, Forget},
+    common::FileLock,
     kernel::{
         fuse_access_in, //
         fuse_bmap_in,
@@ -52,9 +52,6 @@ use std::{ffi::OsStr, io, os::unix::ffi::OsStrExt};
 pub enum Operation<'a, T> {
     /// Look up a directory entry by name.
     Lookup(Lookup<'a>),
-
-    /// Forget about inodes removed from the kernel's internal caches.
-    Forget(&'a [Forget]),
 
     /// Get file attributes.
     Getattr(Getattr<'a>),

@@ -2,6 +2,7 @@
 
 use crate::{
     async_trait,
+    common::Forget,
     op::Operation,
     reply::ReplyWriter,
     request::RequestHeader,
@@ -52,13 +53,20 @@ impl<'a> Context<'a> {
 /// The filesystem running on the user space.
 #[async_trait]
 pub trait Filesystem<T>: Sync {
-    /// Handle a FUSE request from the kernel and reply with its result.
+    /// Reply to a FUSE request.
+    ///
+    /// This callback is invoked when a request is received from the kernel
+    /// and ready to be processed and its reply to the kernel is performed
+    /// via `writer`.
+    ///
+    /// If there is no reply in the callback, the default reply (typically
+    /// an `ENOSYS` error code) is automatically sent to the kernel.
     #[allow(unused_variables)]
-    async fn call<W: ?Sized>(
-        &self,
-        cx: &mut Context<'_>,
-        op: Operation<'_, T>,
-        writer: &mut ReplyWriter<'_, W>,
+    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+        &'a self,
+        cx: &'a mut Context<'cx>,
+        op: Operation<'cx, T>,
+        writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
         T: Send + 'async_trait,
@@ -66,79 +74,73 @@ pub trait Filesystem<T>: Sync {
     {
         Ok(())
     }
+
+    /// Forget about inodes removed from the kernel's internal caches.
+    #[allow(unused_variables)]
+    async fn forget<'a, 'cx>(
+        &'a self,
+        cx: &'a mut Context<'cx>,
+        forgets: &'a [Forget],
+    ) -> io::Result<()>
+    where
+        T: 'async_trait,
+    {
+        Ok(())
+    }
 }
 
-impl<'a, F: ?Sized, T> Filesystem<T> for &'a F
+macro_rules! impl_filesystem_body {
+    () => {
+        #[inline]
+        fn reply<'a, 'cx, 'w, 'async_trait, W: ?Sized>(
+            &'a self,
+            cx: &'a mut Context<'cx>,
+            op: Operation<'cx, T>,
+            writer: &'a mut ReplyWriter<'w, W>,
+        ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
+        where
+            'a: 'async_trait,
+            'cx: 'async_trait,
+            'w: 'async_trait,
+            T: Send + 'async_trait,
+            W: AsyncWrite + Send + Unpin + 'async_trait,
+        {
+            (**self).reply(cx, op, writer)
+        }
+
+        #[inline]
+        fn forget<'a, 'cx, 'async_trait>(
+            &'a self,
+            cx: &'a mut Context<'cx>,
+            forgets: &'a [Forget],
+        ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
+        where
+            'a: 'async_trait,
+            'cx: 'async_trait,
+            T: 'async_trait,
+        {
+            (**self).forget(cx, forgets)
+        }
+    };
+}
+
+impl<F: ?Sized, T> Filesystem<T> for &F
 where
     F: Filesystem<T>,
 {
-    #[inline]
-    fn call<'l1, 'l2, 'l3, 'l4, 'l5, 'l6, 'async_trait, W: ?Sized>(
-        &'l1 self,
-        cx: &'l2 mut Context<'l3>,
-        op: Operation<'l4, T>,
-        writer: &'l5 mut ReplyWriter<'l6, W>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
-    where
-        'l1: 'async_trait,
-        'l2: 'async_trait,
-        'l3: 'async_trait,
-        'l4: 'async_trait,
-        'l5: 'async_trait,
-        'l6: 'async_trait,
-        T: Send + 'async_trait,
-        W: AsyncWrite + Send + Unpin + 'async_trait,
-    {
-        (**self).call(cx, op, writer)
-    }
+    impl_filesystem_body!();
 }
 
 impl<F: ?Sized, T> Filesystem<T> for Box<F>
 where
     F: Filesystem<T>,
 {
-    #[inline]
-    fn call<'l1, 'l2, 'l3, 'l4, 'l5, 'l6, 'async_trait, W: ?Sized>(
-        &'l1 self,
-        cx: &'l2 mut Context<'l3>,
-        op: Operation<'l4, T>,
-        writer: &'l5 mut ReplyWriter<'l6, W>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
-    where
-        'l1: 'async_trait,
-        'l2: 'async_trait,
-        'l3: 'async_trait,
-        'l4: 'async_trait,
-        'l5: 'async_trait,
-        'l6: 'async_trait,
-        T: Send + 'async_trait,
-        W: AsyncWrite + Send + Unpin + 'async_trait,
-    {
-        (**self).call(cx, op, writer)
-    }
+    impl_filesystem_body!();
 }
 
 impl<F: ?Sized, T> Filesystem<T> for std::sync::Arc<F>
 where
     F: Filesystem<T> + Send,
 {
-    #[inline]
-    fn call<'l1, 'l2, 'l3, 'l4, 'l5, 'l6, 'async_trait, W: ?Sized>(
-        &'l1 self,
-        cx: &'l2 mut Context<'l3>,
-        op: Operation<'l4, T>,
-        writer: &'l5 mut ReplyWriter<'l6, W>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
-    where
-        'l1: 'async_trait,
-        'l2: 'async_trait,
-        'l3: 'async_trait,
-        'l4: 'async_trait,
-        'l5: 'async_trait,
-        'l6: 'async_trait,
-        T: Send + 'async_trait,
-        W: AsyncWrite + Send + Unpin + 'async_trait,
-    {
-        (**self).call(cx, op, writer)
-    }
+    impl_filesystem_body!();
 }

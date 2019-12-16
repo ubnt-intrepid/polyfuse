@@ -7,7 +7,7 @@ use chrono::Local;
 use futures::lock::Mutex;
 use polyfuse::{
     reply::{ReplyAttr, ReplyEntry},
-    DirEntry, FileAttr,
+    DirEntry, FileAttr, Forget,
 };
 use polyfuse_tokio::{Notifier, Server};
 use std::{io, mem, sync::Arc};
@@ -116,11 +116,11 @@ impl Heartbeat {
 #[async_trait]
 impl<T> Filesystem<T> for Heartbeat {
     #[allow(clippy::cognitive_complexity)]
-    async fn call<W: ?Sized>(
-        &self,
-        _: &mut Context<'_>,
-        op: Operation<'_, T>,
-        writer: &mut ReplyWriter<'_, W>,
+    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+        &'a self,
+        _: &'a mut Context<'cx>,
+        op: Operation<'cx, T>,
+        writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
         T: Send + 'async_trait,
@@ -142,15 +142,6 @@ impl<T> Filesystem<T> for Heartbeat {
                 }
                 _ => writer.reply_err(libc::ENOTDIR).await?,
             },
-
-            Operation::Forget(forgets) => {
-                let mut current = self.current.lock().await;
-                for forget in forgets {
-                    if forget.ino() == FILE_INO {
-                        current.nlookup -= forget.nlookup();
-                    }
-                }
-            }
 
             Operation::Getattr(op) => {
                 let attr = match op.ino() {
@@ -185,6 +176,23 @@ impl<T> Filesystem<T> for Heartbeat {
             _ => (),
         }
 
+        Ok(())
+    }
+
+    async fn forget<'a, 'cx>(
+        &'a self,
+        _: &'a mut Context<'cx>,
+        forgets: &'a [Forget],
+    ) -> io::Result<()>
+    where
+        T: 'async_trait,
+    {
+        let mut current = self.current.lock().await;
+        for forget in forgets {
+            if forget.ino() == FILE_INO {
+                current.nlookup -= forget.nlookup();
+            }
+        }
         Ok(())
     }
 }
