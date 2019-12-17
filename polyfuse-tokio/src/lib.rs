@@ -19,7 +19,7 @@
 mod channel;
 mod server;
 
-pub use crate::server::{Notifier, Server};
+pub use crate::server::Server;
 
 use bytes::Bytes;
 use polyfuse::Filesystem;

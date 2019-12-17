@@ -15,7 +15,7 @@ use polyfuse::{
     reply::{ReplyAttr, ReplyOpen},
     FileAttr,
 };
-use polyfuse_tokio::{Notifier, Server};
+use polyfuse_tokio::Server;
 use std::{io, sync::Arc, time::Duration};
 
 const ROOT_INO: u64 = 1;
@@ -47,15 +47,15 @@ async fn main() -> anyhow::Result<()> {
     // It is necessary to use the primitive server APIs in order to obtain
     // the instance of `Notifier` associated with the server.
     let mut server = Server::mount(mountpoint, &[]).await?;
-    let mut notifier = if !no_notify {
-        Some(server.notifier()?)
-    } else {
-        None
-    };
 
     // Spawn a task that beats the heart.
     {
         let heartbeat = heartbeat.clone();
+        let mut server = if !no_notify {
+            Some(server.try_clone()?)
+        } else {
+            None
+        };
 
         let _: tokio::task::JoinHandle<io::Result<()>> = tokio::task::spawn(async move {
             loop {
@@ -63,10 +63,10 @@ async fn main() -> anyhow::Result<()> {
 
                 heartbeat.update_content().await;
 
-                if let Some(ref mut notifier) = notifier {
+                if let Some(ref mut server) = server {
                     match notify_kind {
-                        NotifyKind::Store => heartbeat.notify_store(notifier).await?,
-                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(notifier).await?,
+                        NotifyKind::Store => heartbeat.notify_store(server).await?,
+                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(server).await?,
                     }
                 }
 
@@ -116,17 +116,19 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    async fn notify_store(&self, notifier: &mut Notifier) -> io::Result<()> {
+    async fn notify_store(&self, server: &mut Server) -> io::Result<()> {
         let inner = self.inner.lock().await;
         let content = &inner.content;
 
         tracing::info!("send notify_store(data={:?})", content);
-        notifier.store(ROOT_INO, 0, &[content.as_bytes()]).await?;
+        server
+            .notify_store(ROOT_INO, 0, &[content.as_bytes()])
+            .await?;
 
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
-        let data = notifier.retrieve(ROOT_INO, 0, 1024).await?;
+        let data = server.notify_retrieve(ROOT_INO, 0, 1024).await?;
         tracing::info!("--> content={:?}", data);
 
         if data[..content.len()] != *content.as_bytes() {
@@ -136,9 +138,9 @@ impl Heartbeat {
         Ok(())
     }
 
-    async fn notify_inval_inode(&self, notifier: &mut Notifier) -> io::Result<()> {
+    async fn notify_inval_inode(&self, server: &mut Server) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
-        notifier.inval_inode(ROOT_INO, 0, 0).await?;
+        server.notify_inval_inode(ROOT_INO, 0, 0).await?;
         Ok(())
     }
 }
