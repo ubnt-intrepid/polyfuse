@@ -19,7 +19,7 @@
 mod channel;
 mod server;
 
-pub use crate::server::{Notifier, Server};
+pub use crate::server::Server;
 
 use bytes::Bytes;
 use polyfuse::Filesystem;
@@ -30,7 +30,7 @@ pub async fn mount<F>(fs: F, mountpoint: impl AsRef<Path>, mountopts: &[&OsStr])
 where
     F: Filesystem<Bytes> + Send + 'static,
 {
-    let server = Server::mount(mountpoint, mountopts).await?;
+    let mut server = Server::mount(mountpoint, mountopts).await?;
     server.run(fs).await?;
     Ok(())
 }

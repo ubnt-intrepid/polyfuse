@@ -9,7 +9,7 @@ use polyfuse::{
     reply::{ReplyAttr, ReplyEntry},
     DirEntry, FileAttr, Forget,
 };
-use polyfuse_tokio::{Notifier, Server};
+use polyfuse_tokio::Server;
 use std::{io, mem, sync::Arc};
 
 const ROOT_INO: u64 = 1;
@@ -33,20 +33,20 @@ async fn main() -> anyhow::Result<()> {
     // It is necessary to use the primitive server APIs in order to obtain
     // the instance of `Notifier` associated with the server.
     let mut server = Server::mount(mountpoint, &[]).await?;
-    let mut notifier = if !no_notify {
-        Some(server.notifier()?)
-    } else {
-        None
-    };
 
     // Spawn a task that beats the heart.
     {
         let heartbeat = heartbeat.clone();
+        let mut server = if !no_notify {
+            Some(server.try_clone()?)
+        } else {
+            None
+        };
 
         let _: tokio::task::JoinHandle<io::Result<()>> = tokio::task::spawn(async move {
             loop {
                 tracing::info!("heartbeat");
-                heartbeat.rename_file(notifier.as_mut()).await?;
+                heartbeat.rename_file(server.as_mut()).await?;
                 tokio::time::delay_for(std::time::Duration::from_secs(update_interval)).await;
             }
         });
@@ -97,14 +97,14 @@ impl Heartbeat {
         }
     }
 
-    async fn rename_file(&self, notifier: Option<&mut Notifier>) -> io::Result<()> {
+    async fn rename_file(&self, server: Option<&mut Server>) -> io::Result<()> {
         let mut current = self.current.lock().await;
         let old_filename = mem::replace(&mut current.filename, generate_filename());
 
-        match (notifier, current.nlookup) {
-            (Some(notifier), n) if n > 0 => {
+        match (server, current.nlookup) {
+            (Some(server), n) if n > 0 => {
                 tracing::info!("send notify_inval_entry");
-                notifier.inval_entry(ROOT_INO, old_filename).await?;
+                server.notify_inval_entry(ROOT_INO, old_filename).await?;
             }
             _ => (),
         }
