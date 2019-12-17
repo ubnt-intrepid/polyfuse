@@ -43,7 +43,7 @@ impl Server {
     }
 
     /// Run a FUSE filesystem daemon.
-    pub async fn run<F>(self, fs: F) -> io::Result<()>
+    pub async fn run<F>(&mut self, fs: F) -> io::Result<()>
     where
         F: Filesystem<Bytes> + Send + 'static,
     {
@@ -54,7 +54,7 @@ impl Server {
 
     /// Run a FUSE filesystem until the specified signal is received.
     #[allow(clippy::unnecessary_mut_passed)]
-    pub async fn run_until<F, S>(self, fs: F, sig: S) -> io::Result<Option<S::Output>>
+    pub async fn run_until<F, S>(&mut self, fs: F, sig: S) -> io::Result<Option<S::Output>>
     where
         F: Filesystem<Bytes> + Send + 'static,
         S: Future + Unpin,
@@ -62,7 +62,7 @@ impl Server {
         let Self {
             session,
             notifier,
-            mut channel,
+            ref mut channel,
         } = self;
         let fs = Arc::new(fs);
         let mut sig = sig.fuse();
@@ -70,7 +70,7 @@ impl Server {
         let mut main_loop = Box::pin(async move {
             loop {
                 let mut buf = BytesBuffer::new(session.buffer_size());
-                if let Err(err) = session.receive(&mut channel, &mut buf, &notifier).await {
+                if let Err(err) = session.receive(&mut *channel, &mut buf, &notifier).await {
                     match err.raw_os_error() {
                         Some(libc::ENODEV) => {
                             tracing::debug!("connection was closed by the kernel");
