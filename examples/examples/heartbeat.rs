@@ -155,7 +155,7 @@ impl<T> Filesystem<T> for Heartbeat {
     ) -> io::Result<()>
     where
         T: Send + 'async_trait,
-        W: AsyncWrite + Unpin + Send,
+        W: Writer + Unpin + Send,
     {
         match op {
             Operation::Getattr(op) => match op.ino() {

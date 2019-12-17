@@ -4,6 +4,7 @@
 
 use crate::{
     common::FileLock,
+    io::{InHeader, Writer},
     kernel::{
         fuse_access_in, //
         fuse_bmap_in,
@@ -41,9 +42,8 @@ use crate::{
         ReplyWriter,
         ReplyXattr,
     },
-    request::RequestHeader,
+    util::as_bytes,
 };
-use futures::io::AsyncWrite;
 use std::{ffi::OsStr, io, os::unix::ffi::OsStrExt};
 
 /// The kind of FUSE requests received from the kernel.
@@ -185,7 +185,7 @@ pub enum Operation<'a, T> {
 
 #[derive(Debug)]
 pub struct Lookup<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) name: &'a OsStr,
 }
 
@@ -204,18 +204,16 @@ impl<'a> Lookup<'a> {
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Getattr<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_getattr_in,
 }
 
@@ -238,18 +236,16 @@ impl<'a> Getattr<'a> {
         attr: impl AsRef<ReplyAttr>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let attr = attr.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(attr) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(attr) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Setattr<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_setattr_in,
 }
 
@@ -321,18 +317,16 @@ impl<'a> Setattr<'a> {
         attr: impl AsRef<ReplyAttr>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let attr = attr.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(attr) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(attr) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Readlink<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
 }
 
 impl Readlink<'_> {
@@ -347,7 +341,7 @@ impl Readlink<'_> {
         value: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[value.as_ref().as_bytes()]).await
     }
@@ -355,7 +349,7 @@ impl Readlink<'_> {
 
 #[derive(Debug)]
 pub struct Symlink<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) name: &'a OsStr,
     pub(crate) link: &'a OsStr,
 }
@@ -379,18 +373,16 @@ impl<'a> Symlink<'a> {
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Mknod<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_mknod_in,
     pub(crate) name: &'a OsStr,
 }
@@ -422,18 +414,16 @@ impl<'a> Mknod<'a> {
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Mkdir<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_mkdir_in,
     pub(crate) name: &'a OsStr,
 }
@@ -461,18 +451,16 @@ impl<'a> Mkdir<'a> {
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Unlink<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) name: &'a OsStr,
 }
 
@@ -487,7 +475,7 @@ impl<'a> Unlink<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -495,7 +483,7 @@ impl<'a> Unlink<'a> {
 
 #[derive(Debug)]
 pub struct Rmdir<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) name: &'a OsStr,
 }
 
@@ -510,7 +498,7 @@ impl<'a> Rmdir<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -518,7 +506,7 @@ impl<'a> Rmdir<'a> {
 
 #[derive(Debug)]
 pub struct Rename<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: RenameKind<'a>,
     pub(crate) name: &'a OsStr,
     pub(crate) newname: &'a OsStr,
@@ -571,7 +559,7 @@ impl<'a> Rename<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -579,7 +567,7 @@ impl<'a> Rename<'a> {
 
 #[derive(Debug)]
 pub struct Link<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_link_in,
     pub(crate) newname: &'a OsStr,
 }
@@ -603,18 +591,16 @@ impl<'a> Link<'a> {
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(entry) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Open<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_open_in,
 }
 
@@ -633,18 +619,16 @@ impl<'a> Open<'a> {
         out: impl AsRef<ReplyOpen>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Read<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_read_in,
 }
 
@@ -683,7 +667,7 @@ impl<'a> Read<'a> {
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let data = data.as_ref();
 
@@ -700,7 +684,7 @@ impl<'a> Read<'a> {
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
@@ -713,7 +697,7 @@ impl<'a> Read<'a> {
 
 #[derive(Debug)]
 pub struct Write<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_write_in,
 }
 
@@ -752,18 +736,16 @@ impl<'a> Write<'a> {
         out: impl AsRef<ReplyWrite>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Release<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_release_in,
 }
 
@@ -795,7 +777,7 @@ impl<'a> Release<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -803,7 +785,7 @@ impl<'a> Release<'a> {
 
 #[derive(Debug)]
 pub struct Statfs<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
 }
 
 impl Statfs<'_> {
@@ -817,18 +799,16 @@ impl Statfs<'_> {
         out: impl AsRef<ReplyStatfs>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Fsync<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_fsync_in,
 }
 
@@ -847,7 +827,7 @@ impl<'a> Fsync<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -855,7 +835,7 @@ impl<'a> Fsync<'a> {
 
 #[derive(Debug)]
 pub struct Setxattr<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_setxattr_in,
     pub(crate) name: &'a OsStr,
     pub(crate) value: &'a [u8],
@@ -880,7 +860,7 @@ impl<'a> Setxattr<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -888,7 +868,7 @@ impl<'a> Setxattr<'a> {
 
 #[derive(Debug)]
 pub struct Getxattr<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_getxattr_in,
     pub(crate) name: &'a OsStr,
 }
@@ -912,12 +892,10 @@ impl<'a> Getxattr<'a> {
         out: impl AsRef<ReplyXattr>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 
     pub async fn reply<W: ?Sized>(
@@ -926,7 +904,7 @@ impl<'a> Getxattr<'a> {
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let data = data.as_ref();
 
@@ -943,7 +921,7 @@ impl<'a> Getxattr<'a> {
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
@@ -956,7 +934,7 @@ impl<'a> Getxattr<'a> {
 
 #[derive(Debug)]
 pub struct Listxattr<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_getxattr_in,
 }
 
@@ -975,12 +953,10 @@ impl<'a> Listxattr<'a> {
         out: impl AsRef<ReplyXattr>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 
     pub async fn reply<W: ?Sized>(
@@ -989,7 +965,7 @@ impl<'a> Listxattr<'a> {
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let data = data.as_ref();
 
@@ -1006,7 +982,7 @@ impl<'a> Listxattr<'a> {
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
@@ -1018,7 +994,7 @@ impl<'a> Listxattr<'a> {
 }
 #[derive(Debug)]
 pub struct Removexattr<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) name: &'a OsStr,
 }
 
@@ -1033,7 +1009,7 @@ impl<'a> Removexattr<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -1041,7 +1017,7 @@ impl<'a> Removexattr<'a> {
 
 #[derive(Debug)]
 pub struct Flush<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_flush_in,
 }
 
@@ -1060,7 +1036,7 @@ impl<'a> Flush<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -1068,7 +1044,7 @@ impl<'a> Flush<'a> {
 
 #[derive(Debug)]
 pub struct Opendir<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_open_in,
 }
 
@@ -1087,12 +1063,10 @@ impl<'a> Opendir<'a> {
         out: impl AsRef<ReplyOpendir>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
@@ -1104,7 +1078,7 @@ pub enum ReaddirMode {
 
 #[derive(Debug)]
 pub struct Readdir<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_read_in,
     pub(crate) mode: ReaddirMode,
 }
@@ -1136,7 +1110,7 @@ impl<'a> Readdir<'a> {
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let data = data.as_ref();
 
@@ -1153,7 +1127,7 @@ impl<'a> Readdir<'a> {
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
@@ -1166,7 +1140,7 @@ impl<'a> Readdir<'a> {
 
 #[derive(Debug)]
 pub struct Releasedir<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_release_in,
 }
 
@@ -1185,7 +1159,7 @@ impl<'a> Releasedir<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -1193,7 +1167,7 @@ impl<'a> Releasedir<'a> {
 
 #[derive(Debug)]
 pub struct Fsyncdir<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_fsync_in,
 }
 
@@ -1212,7 +1186,7 @@ impl<'a> Fsyncdir<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -1220,7 +1194,7 @@ impl<'a> Fsyncdir<'a> {
 
 #[derive(Debug)]
 pub struct Getlk<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_lk_in,
 }
 
@@ -1247,18 +1221,16 @@ impl<'a> Getlk<'a> {
         out: impl AsRef<ReplyLk>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Setlk<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_lk_in,
     pub(crate) sleep: bool,
 }
@@ -1286,7 +1258,7 @@ impl<'a> Setlk<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -1294,7 +1266,7 @@ impl<'a> Setlk<'a> {
 
 #[derive(Debug)]
 pub struct Flock<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_lk_in,
     pub(crate) sleep: bool,
 }
@@ -1333,7 +1305,7 @@ impl<'a> Flock<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -1341,7 +1313,7 @@ impl<'a> Flock<'a> {
 
 #[derive(Debug)]
 pub struct Access<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_access_in,
 }
 
@@ -1356,7 +1328,7 @@ impl<'a> Access<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -1364,7 +1336,7 @@ impl<'a> Access<'a> {
 
 #[derive(Debug)]
 pub struct Create<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_create_in,
     pub(crate) name: &'a OsStr,
 }
@@ -1397,14 +1369,14 @@ impl<'a> Create<'a> {
         open: impl AsRef<ReplyOpen>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let entry = entry.as_ref();
         let open = open.as_ref();
         writer
             .reply_raw(&[
-                unsafe { crate::reply::as_bytes(entry) }, //
-                unsafe { crate::reply::as_bytes(open) },
+                unsafe { as_bytes(entry) }, //
+                unsafe { as_bytes(open) },
             ])
             .await
     }
@@ -1412,7 +1384,7 @@ impl<'a> Create<'a> {
 
 #[derive(Debug)]
 pub struct Bmap<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_bmap_in,
 }
 
@@ -1435,18 +1407,16 @@ impl<'a> Bmap<'a> {
         out: impl AsRef<ReplyBmap>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Fallocate<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_fallocate_in,
 }
 
@@ -1473,7 +1443,7 @@ impl<'a> Fallocate<'a> {
 
     pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         writer.reply_raw(&[]).await
     }
@@ -1481,7 +1451,7 @@ impl<'a> Fallocate<'a> {
 
 #[derive(Debug)]
 pub struct CopyFileRange<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_copy_file_range_in,
 }
 
@@ -1508,18 +1478,16 @@ impl<'a> CopyFileRange<'a> {
         out: impl AsRef<ReplyWrite>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
 #[derive(Debug)]
 pub struct Poll<'a> {
-    pub(crate) header: &'a RequestHeader,
+    pub(crate) header: &'a InHeader,
     pub(crate) arg: &'a fuse_poll_in,
 }
 
@@ -1550,11 +1518,9 @@ impl<'a> Poll<'a> {
         out: impl AsRef<ReplyPoll>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer
-            .reply_raw(&[unsafe { crate::reply::as_bytes(out) }])
-            .await
+        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }

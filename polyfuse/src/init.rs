@@ -6,6 +6,7 @@
 )]
 
 use crate::{
+    io::{Buffer, Reader, ReaderExt, Writer, WriterExt},
     kernel::{
         fuse_init_out, //
         FUSE_KERNEL_MINOR_VERSION,
@@ -15,12 +16,11 @@ use crate::{
         FUSE_NO_OPENDIR_SUPPORT,
         FUSE_NO_OPEN_SUPPORT,
     },
-    reply::{as_bytes, send_msg},
-    request::{Buffer, BufferExt, BytesBuffer, RequestKind},
+    request::RequestKind,
     session::Session,
+    util::as_bytes,
 };
 use bitflags::bitflags;
-use futures::io::{AsyncRead, AsyncWrite};
 use lazy_static::lazy_static;
 use std::{cmp, io};
 
@@ -129,24 +129,25 @@ impl SessionInitializer {
         self
     }
 
+    #[doc(hidden)] // TODO: dox
+    pub fn init_buf_size(&self) -> usize {
+        BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES
+    }
+
     /// Start a new FUSE session.
     ///
     /// This function receives an INIT request from the kernel and replies
     /// after initializing the connection parameters.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn init<I: ?Sized>(self, io: &mut I) -> io::Result<Session>
+    pub async fn init<I: ?Sized, B: ?Sized>(self, io: &mut I, buf: &mut B) -> io::Result<Session>
     where
-        I: AsyncRead + AsyncWrite + Unpin,
+        I: Reader<Buffer = B> + Writer + Unpin,
+        B: Buffer + Unpin,
     {
-        let init_buf_size = BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES;
         loop {
-            let mut buf = BytesBuffer::new(init_buf_size);
-            let (header, kind) = {
-                buf.receive(io, init_buf_size).await?;
-                let req = buf.extract()?;
-                req.into_inner()
-            };
-
+            io.receive_msg(buf).await?;
+            let (header, kind, _data) = buf.extract();
+            let kind = crate::request::Parser::new(kind).parse(header.opcode().unwrap())?;
             match kind {
                 RequestKind::Init { arg: init_in } => {
                     let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
@@ -170,13 +171,8 @@ impl SessionInitializer {
 
                     if init_in.major > 7 {
                         tracing::debug!("wait for a second INIT request with an older version.");
-                        send_msg(
-                            &mut *io,
-                            header.unique(),
-                            0,
-                            &[unsafe { as_bytes(&init_out) }],
-                        )
-                        .await?;
+                        io.send_msg(header.unique(), 0, &[unsafe { as_bytes(&init_out) }])
+                            .await?;
                         continue;
                     }
 
@@ -187,7 +183,7 @@ impl SessionInitializer {
                             init_in.major,
                             init_in.minor
                         );
-                        send_msg(&mut *io, header.unique(), -libc::EPROTO, &[]).await?;
+                        io.send_msg(header.unique(), -libc::EPROTO, &[]).await?;
                         continue;
                     }
 
@@ -228,13 +224,8 @@ impl SessionInitializer {
                         init_out.congestion_threshold
                     );
                     tracing::debug!("  time_gran = {}", init_out.time_gran);
-                    send_msg(
-                        &mut *io,
-                        header.unique(),
-                        0,
-                        &[unsafe { as_bytes(&init_out) }],
-                    )
-                    .await?;
+                    io.send_msg(header.unique(), 0, &[unsafe { as_bytes(&init_out) }])
+                        .await?;
 
                     let conn = ConnectionInfo(init_out);
                     let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
@@ -246,7 +237,7 @@ impl SessionInitializer {
                         "ignoring an operation before init (opcode={:?})",
                         header.opcode()
                     );
-                    send_msg(&mut *io, header.unique(), -libc::EIO, &[]).await?;
+                    io.send_msg(header.unique(), -libc::EIO, &[]).await?;
                     continue;
                 }
             }

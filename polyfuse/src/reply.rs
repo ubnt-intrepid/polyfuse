@@ -4,6 +4,7 @@
 
 use crate::{
     common::{FileAttr, FileLock, StatFs},
+    io::{Writer, WriterExt},
     kernel::{
         fuse_attr_out, //
         fuse_bmap_out,
@@ -11,26 +12,12 @@ use crate::{
         fuse_getxattr_out,
         fuse_lk_out,
         fuse_open_out,
-        fuse_out_header,
         fuse_poll_out,
         fuse_statfs_out,
         fuse_write_out,
     },
 };
-use futures::{future::poll_fn, io::AsyncWrite};
-use smallvec::SmallVec;
-use std::{
-    convert::TryFrom,
-    fmt,
-    io::{self, IoSlice},
-    mem,
-    pin::Pin,
-};
-
-#[inline(always)]
-pub(crate) unsafe fn as_bytes<T: Sized>(t: &T) -> &[u8] {
-    std::slice::from_raw_parts(t as *const T as *const u8, std::mem::size_of::<T>())
-}
+use std::{fmt, io};
 
 /// A reply sender to the kernel.
 pub struct ReplyWriter<'w, W: ?Sized> {
@@ -61,7 +48,7 @@ impl<'w, W: ?Sized> ReplyWriter<'w, W> {
     /// Reply to the kernel with an arbitrary bytes of data.
     pub async fn reply_raw(&mut self, data: &[&[u8]]) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         self.send_reply(0, data).await
     }
@@ -69,17 +56,17 @@ impl<'w, W: ?Sized> ReplyWriter<'w, W> {
     /// Reply to the kernel with an error code.
     pub async fn reply_err(&mut self, error: i32) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         self.send_reply(error, &[]).await
     }
 
     async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         if let Some(ref mut writer) = self.writer.take() {
-            send_msg(writer, self.unique, -error, data).await?;
+            writer.send_msg(self.unique, -error, data).await?;
         }
         Ok(())
     }
@@ -431,102 +418,5 @@ impl ReplyPoll {
     /// Set the mask of ready events.
     pub fn revents(&mut self, revents: u32) {
         self.0.revents = revents;
-    }
-}
-
-pub(crate) async fn send_msg<W: ?Sized>(
-    writer: &mut W,
-    unique: u64,
-    error: i32,
-    data: &[&[u8]],
-) -> io::Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    let data_len: usize = data.iter().map(|t| t.len()).sum();
-    let len = u32::try_from(mem::size_of::<fuse_out_header>() + data_len) //
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the total length of data is too long: {}",
-            )
-        })?;
-
-    let out_header = fuse_out_header { unique, error, len };
-
-    // Unfortunately, IoSlice<'_> does not implement Send and
-    // the data vector must be created in `poll` function.
-    poll_fn(move |cx| {
-        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(unsafe { as_bytes(&out_header) }))
-            .into_iter()
-            .chain(data.iter().map(|t| IoSlice::new(&*t)))
-            .collect();
-        Pin::new(&mut *writer).poll_write_vectored(cx, &*vec)
-    })
-    .await?;
-
-    tracing::debug!("Reply to kernel: unique={}: error={}", unique, error);
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures::executor::block_on;
-
-    #[inline]
-    fn bytes(bytes: &[u8]) -> &[u8] {
-        bytes
-    }
-    macro_rules! b {
-        ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
-    }
-
-    #[test]
-    fn send_msg_empty() {
-        let mut dest = Vec::<u8>::new();
-        block_on(send_msg(&mut dest, 42, 4, &[])).unwrap();
-        assert_eq!(dest[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(dest[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
-        assert_eq!(
-            dest[8..16],
-            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-    }
-
-    #[test]
-    fn send_msg_single_data() {
-        let mut dest = Vec::<u8>::new();
-        block_on(send_msg(&mut dest, 42, 0, &["hello".as_ref()])).unwrap();
-        assert_eq!(dest[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(dest[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
-        assert_eq!(
-            dest[8..16],
-            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-        assert_eq!(dest[16..], b![0x68, 0x65, 0x6c, 0x6c, 0x6f], "payload");
-    }
-
-    #[test]
-    fn send_msg_chunked_data() {
-        let payload: &[&[u8]] = &[
-            "hello, ".as_ref(), //
-            "this ".as_ref(),
-            "is a ".as_ref(),
-            "message.".as_ref(),
-        ];
-        let mut dest = Vec::<u8>::new();
-        block_on(send_msg(&mut dest, 26, 0, payload)).unwrap();
-        assert_eq!(dest[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(dest[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
-        assert_eq!(
-            dest[8..16],
-            b![0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-        assert_eq!(dest[16..], *b"hello, this is a message.", "payload");
     }
 }

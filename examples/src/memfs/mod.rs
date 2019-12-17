@@ -53,7 +53,7 @@ impl MemFS {
         op: op::Lookup<'_>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         match self.inodes.lookup(op.parent(), op.name()).await {
             Some(inode) => {
@@ -73,7 +73,7 @@ impl MemFS {
         op: op::Getattr<'_>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
@@ -93,7 +93,7 @@ impl MemFS {
         op: polyfuse::op::Setattr<'_>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
@@ -148,7 +148,7 @@ impl MemFS {
         op: op::Read<'_>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
@@ -173,7 +173,7 @@ impl MemFS {
         data: T,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
         T: AsRef<[u8]>,
     {
         let inode = match self.inodes.get(op.ino()).await {
@@ -204,7 +204,7 @@ impl MemFS {
         op: op::Readdir<'_>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
@@ -240,7 +240,7 @@ impl MemFS {
         op: op::Mknod<'_>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         match op.mode() & libc::S_IFMT {
             libc::S_IFREG => {
@@ -271,7 +271,7 @@ impl MemFS {
         op: op::Mkdir<'_>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         let attr = self.make_attr(cx, op.mode());
         match self.inodes.insert_dir(op.parent(), op.name(), attr).await {
@@ -299,7 +299,7 @@ where
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Send + Unpin + 'async_trait,
+        W: Writer + Send + Unpin + 'async_trait,
         T: Send + 'async_trait,
     {
         match op {

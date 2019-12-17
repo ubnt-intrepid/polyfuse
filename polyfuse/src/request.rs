@@ -13,7 +13,6 @@ use crate::kernel::{
     fuse_fsync_in,
     fuse_getattr_in,
     fuse_getxattr_in,
-    fuse_in_header,
     fuse_init_in,
     fuse_interrupt_in,
     fuse_link_in,
@@ -32,334 +31,17 @@ use crate::kernel::{
     fuse_setxattr_in,
     fuse_write_in,
 };
-use bytes::{Bytes, BytesMut};
-use futures::{future::Future, io::AsyncRead, ready};
 use std::{
-    convert::TryFrom, //
-    ffi::OsStr,
-    io::{self, IoSliceMut},
+    ffi::OsStr, //
+    io,
     mem,
     os::unix::ffi::OsStrExt,
-    pin::Pin,
-    task::{self, Poll},
 };
-
-/// Buffer that stores FUSE requests.
-pub trait Buffer {
-    /// The remaining part of request data.
-    type Data;
-
-    /// Return a reference to the header part of received request.
-    fn header(&self) -> Option<&RequestHeader>;
-
-    /// Prepare the buffer to receive the specified amount of data.
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        bufsize: usize,
-    ) -> Poll<io::Result<()>>;
-
-    /// Transfer one request queued in the kernel driver into this buffer.
-    fn poll_receive<R: ?Sized>(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        reader: Pin<&mut R>,
-    ) -> Poll<io::Result<()>>
-    where
-        R: AsyncRead;
-
-    /// Extract the content of request from the buffer.
-    fn extract(&mut self) -> io::Result<Request<'_, Self::Data>>;
-}
-
-pub(crate) trait BufferExt: Buffer {
-    fn receive<'a, 'b, R: ?Sized>(
-        &'a mut self,
-        reader: &'b mut R,
-        bufsize: usize,
-    ) -> Receive<'a, 'b, Self, R>
-    where
-        R: AsyncRead,
-    {
-        Receive {
-            buf: self,
-            reader,
-            is_ready: false,
-            bufsize,
-        }
-    }
-}
-
-impl<T: ?Sized> BufferExt for T where T: Buffer {}
-
-#[allow(missing_debug_implementations)]
-pub(crate) struct Receive<'a, 'b, T: ?Sized, R: ?Sized> {
-    buf: &'a mut T,
-    reader: &'b mut R,
-    is_ready: bool,
-    bufsize: usize,
-}
-
-impl<T: ?Sized, R: ?Sized> Future for Receive<'_, '_, T, R>
-where
-    T: Buffer,
-    R: AsyncRead,
-{
-    type Output = io::Result<()>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
-        let me = self.get_mut();
-        let mut buf = unsafe { Pin::new_unchecked(&mut *me.buf) };
-        let reader = unsafe { Pin::new_unchecked(&mut *me.reader) };
-
-        if !me.is_ready {
-            futures::ready!(buf.as_mut().poll_ready(cx, me.bufsize))?;
-            me.is_ready = true;
-        }
-
-        buf.poll_receive(cx, reader)
-    }
-}
-
-/// A `Buffer` that stores a FUSE request in memory.
-#[derive(Debug)]
-pub struct BytesBuffer {
-    header: Option<RequestHeader>,
-    payload: BytesBufferPayload,
-    bufsize: usize,
-}
-
-impl BytesBuffer {
-    /// Create a new `BytesBuffer` with the specified buffer size.
-    pub fn new(bufsize: usize) -> Self {
-        Self {
-            header: None,
-            payload: BytesBufferPayload::Unique(BytesMut::with_capacity(bufsize)),
-            bufsize,
-        }
-    }
-}
-
-impl Buffer for BytesBuffer {
-    type Data = Bytes;
-
-    fn header(&self) -> Option<&RequestHeader> {
-        self.header.as_ref()
-    }
-
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        _: &mut task::Context,
-        bufsize: usize,
-    ) -> Poll<io::Result<()>> {
-        let me = self.get_mut();
-        let payload = me.payload.make_unique(bufsize);
-        unsafe {
-            let capacity = payload.capacity();
-            payload.set_len(capacity);
-        }
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_receive<R: ?Sized>(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context,
-        reader: Pin<&mut R>,
-    ) -> Poll<io::Result<()>>
-    where
-        R: AsyncRead,
-    {
-        let me = self.get_mut();
-        let mut reader = reader;
-
-        let mut header = mem::MaybeUninit::<RequestHeader>::uninit();
-        let payload = me.payload.get_unique();
-
-        let mut vec = [
-            IoSliceMut::new(unsafe {
-                std::slice::from_raw_parts_mut(
-                    header.as_mut_ptr() as *mut u8,
-                    mem::size_of::<fuse_in_header>(),
-                )
-            }),
-            IoSliceMut::new(payload.as_mut()),
-        ];
-
-        loop {
-            match ready!(reader.as_mut().poll_read_vectored(cx, &mut vec[..])) {
-                Ok(len) => {
-                    if len < mem::size_of::<fuse_in_header>() {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "the received data from the kernel is too short",
-                        )));
-                    }
-                    let header = unsafe { header.assume_init() };
-
-                    if header.len() as usize != len {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "the payload length is mismatched to the header value",
-                        )));
-                    }
-
-                    me.header = Some(header);
-                    unsafe {
-                        payload.set_len(len - mem::size_of::<fuse_in_header>());
-                    }
-
-                    return Poll::Ready(Ok(()));
-                }
-                Err(err) => match err.raw_os_error() {
-                    Some(libc::ENOENT) | Some(libc::EINTR) => {
-                        tracing::debug!("continue reading from the kernel");
-                        continue;
-                    }
-                    _ => return Poll::Ready(Err(err)),
-                },
-            }
-        }
-    }
-
-    fn extract(&mut self) -> io::Result<Request<'_, Self::Data>> {
-        let header = self.header.as_ref().expect("the header is not read");
-        let opcode = header
-            .opcode()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid opcode"))?;
-
-        let kind = match opcode {
-            fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_NOTIFY_REPLY => {
-                let payload = self.payload.make_shared();
-                Parser::new(payload).parse(opcode, |parser| payload.slice(parser.offset()..))?
-            }
-            _ => {
-                let payload = self.payload.as_slice();
-                Parser::new(payload).parse(opcode, |_| Bytes::new())?
-            }
-        };
-
-        Ok(Request::new(header, kind))
-    }
-}
-
-#[derive(Debug)]
-enum BytesBufferPayload {
-    Unique(BytesMut),
-    Shared(Bytes),
-    Empty,
-}
-
-impl BytesBufferPayload {
-    fn make_unique(&mut self, bufsize: usize) -> &mut BytesMut {
-        if let Self::Unique(bytes) = self {
-            let cap = bytes.capacity();
-            if cap < bufsize {
-                bytes.reserve(bufsize - cap);
-            }
-            return bytes;
-        }
-
-        *self = Self::Unique(BytesMut::with_capacity(bufsize));
-        match self {
-            Self::Unique(bytes) => bytes,
-            _ => unreachable!(),
-        }
-    }
-
-    fn make_shared(&mut self) -> &Bytes {
-        loop {
-            match self {
-                Self::Shared(bytes) => return bytes,
-                Self::Unique(..) => match mem::replace(self, Self::Empty) {
-                    Self::Unique(bytes) => {
-                        *self = Self::Shared(bytes.freeze());
-                        continue;
-                    }
-                    _ => unreachable!(),
-                },
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    fn get_unique(&mut self) -> &mut BytesMut {
-        match self {
-            Self::Unique(bytes) => bytes,
-            Self::Shared(..) => panic!("unexpected get_unique"),
-            _ => unreachable!(),
-        }
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Unique(bytes) => bytes.as_ref(),
-            Self::Shared(bytes) => bytes.as_ref(),
-            Self::Empty => unreachable!(),
-        }
-    }
-}
-
-/// A FUSE request.
-#[derive(Debug)]
-pub struct Request<'a, T> {
-    header: &'a RequestHeader,
-    kind: RequestKind<'a, T>,
-}
-
-impl<'a, T> Request<'a, T> {
-    #[doc(hidden)] // FIXME: document
-    pub fn new(header: &'a RequestHeader, kind: RequestKind<'a, T>) -> Self {
-        Self { header, kind }
-    }
-
-    pub(crate) fn into_inner(self) -> (&'a RequestHeader, RequestKind<'a, T>) {
-        (self.header, self.kind)
-    }
-}
-
-/// The header part of a FUSE request.
-///
-/// This type is ABI-compatible with `fuse_in_header`.
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct RequestHeader(fuse_in_header);
-
-#[allow(clippy::len_without_is_empty)]
-#[doc(hidden)]
-impl RequestHeader {
-    pub fn len(&self) -> u32 {
-        self.0.len
-    }
-
-    pub fn unique(&self) -> u64 {
-        self.0.unique
-    }
-
-    pub fn opcode(&self) -> Option<fuse_opcode> {
-        fuse_opcode::try_from(self.0.opcode).ok()
-    }
-
-    pub fn nodeid(&self) -> u64 {
-        self.0.nodeid
-    }
-
-    pub fn uid(&self) -> u32 {
-        self.0.uid
-    }
-
-    pub fn gid(&self) -> u32 {
-        self.0.gid
-    }
-
-    pub fn pid(&self) -> u32 {
-        self.0.pid
-    }
-}
 
 /// The kind of FUSE request.
 #[doc(hidden)] // TODO: document
 #[derive(Debug)]
-pub enum RequestKind<'a, T> {
+pub enum RequestKind<'a> {
     Init {
         arg: &'a fuse_init_in,
     },
@@ -412,7 +94,6 @@ pub enum RequestKind<'a, T> {
     },
     Write {
         arg: &'a fuse_write_in,
-        data: T,
     },
     Release {
         arg: &'a fuse_release_in,
@@ -491,7 +172,6 @@ pub enum RequestKind<'a, T> {
     },
     NotifyReply {
         arg: &'a fuse_notify_retrieve_in,
-        data: T,
     },
     Poll {
         arg: &'a fuse_poll_in,
@@ -542,15 +222,7 @@ impl<'a> Parser<'a> {
             .map(|data| unsafe { &*(data.as_ptr() as *const T) })
     }
 
-    /// Return the length of consumed bytes.
-    pub fn offset(&self) -> usize {
-        self.offset
-    }
-
-    pub fn parse<F, T>(&mut self, opcode: fuse_opcode, f: F) -> io::Result<RequestKind<'a, T>>
-    where
-        F: FnOnce(&mut Self) -> T,
-    {
+    pub fn parse(&mut self, opcode: fuse_opcode) -> io::Result<RequestKind<'a>> {
         match opcode {
             fuse_opcode::FUSE_INIT => {
                 let arg = self.fetch()?;
@@ -618,8 +290,7 @@ impl<'a> Parser<'a> {
             }
             fuse_opcode::FUSE_WRITE => {
                 let arg = self.fetch()?;
-                let data = f(&mut *self);
-                Ok(RequestKind::Write { arg, data })
+                Ok(RequestKind::Write { arg })
             }
             fuse_opcode::FUSE_RELEASE => {
                 let arg = self.fetch()?;
@@ -727,8 +398,7 @@ impl<'a> Parser<'a> {
             }
             fuse_opcode::FUSE_NOTIFY_REPLY => {
                 let arg = self.fetch()?;
-                let data = f(&mut *self);
-                Ok(RequestKind::NotifyReply { arg, data })
+                Ok(RequestKind::NotifyReply { arg })
             }
             _ => Ok(RequestKind::Unknown),
         }
