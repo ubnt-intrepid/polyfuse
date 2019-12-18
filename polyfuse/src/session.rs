@@ -17,7 +17,7 @@ use futures::{
     lock::Mutex,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io,
     pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
@@ -36,7 +36,6 @@ pub struct Session {
 #[derive(Debug)]
 struct InterruptState {
     remains: HashMap<u64, oneshot::Sender<()>>,
-    interrupted: HashSet<u64>,
 }
 
 impl Session {
@@ -47,7 +46,6 @@ impl Session {
             exited: AtomicBool::new(false),
             interrupt_state: Mutex::new(InterruptState {
                 remains: HashMap::new(),
-                interrupted: HashSet::new(),
             }),
         }
     }
@@ -84,24 +82,9 @@ impl Session {
         loop {
             reader.receive_msg(buf).await?;
 
-            {
-                let header = buf.header();
-                match header.opcode() {
-                    Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
-                    _ => {
-                        // check if the request is already interrupted by the kernel.
-                        let mut state = self.interrupt_state.lock().await;
-                        if state.interrupted.remove(&header.unique()) {
-                            tracing::debug!(
-                                "The request was interrupted (unique={})",
-                                header.unique()
-                            );
-                            continue;
-                        }
-
-                        return Ok(());
-                    }
-                }
+            match buf.header().opcode() {
+                Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
+                _ => return Ok(()),
             }
 
             let (header, kind, data) = buf.extract();
@@ -374,7 +357,6 @@ impl Session {
     async fn send_interrupt(&self, unique: u64) {
         let mut state = self.interrupt_state.lock().await;
         if let Some(tx) = state.remains.remove(&unique) {
-            state.interrupted.insert(unique);
             let _ = tx.send(());
             tracing::debug!("Sent interrupt signal to unique={}", unique);
         }
