@@ -3,17 +3,16 @@
 use crate::{
     async_trait,
     common::Forget,
+    io::{InHeader, Writer},
     op::Operation,
     reply::ReplyWriter,
-    request::RequestHeader,
     session::{Interrupt, Session},
 };
-use futures::io::AsyncWrite;
 use std::{fmt, future::Future, io, pin::Pin};
 
 /// Contextural information about an incoming request.
 pub struct Context<'a> {
-    header: &'a RequestHeader,
+    header: &'a InHeader,
     session: &'a Session,
 }
 
@@ -24,7 +23,7 @@ impl fmt::Debug for Context<'_> {
 }
 
 impl<'a> Context<'a> {
-    pub(crate) fn new(header: &'a RequestHeader, session: &'a Session) -> Self {
+    pub(crate) fn new(header: &'a InHeader, session: &'a Session) -> Self {
         Self { header, session }
     }
 
@@ -70,7 +69,7 @@ pub trait Filesystem<T>: Sync {
     ) -> io::Result<()>
     where
         T: Send + 'async_trait,
-        W: AsyncWrite + Send + Unpin,
+        W: Writer + Send + Unpin,
     {
         Ok(())
     }
@@ -103,7 +102,7 @@ macro_rules! impl_filesystem_body {
             'cx: 'async_trait,
             'w: 'async_trait,
             T: Send + 'async_trait,
-            W: AsyncWrite + Send + Unpin + 'async_trait,
+            W: Writer + Send + Unpin + 'async_trait,
         {
             (**self).reply(cx, op, writer)
         }

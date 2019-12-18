@@ -143,7 +143,7 @@ impl<T> Filesystem<T> for Hello {
     ) -> io::Result<()>
     where
         T: Send + 'async_trait,
-        W: AsyncWrite + Unpin + Send,
+        W: Writer + Unpin + Send,
     {
         match op {
             Operation::Lookup(op) => match self.lookup(op.parent(), op.name()) {

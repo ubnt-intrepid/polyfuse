@@ -4,16 +4,16 @@ use crate::{
     common::{Forget, StatFs},
     fs::{Context, Filesystem},
     init::ConnectionInfo,
+    io::{Buffer, Reader, ReaderExt, Writer},
     kernel::{fuse_forget_one, fuse_opcode},
     notify::Notifier,
     op::{self, Operation},
     reply::ReplyWriter,
-    request::{Buffer, BufferExt, RequestKind},
+    request::RequestKind,
 };
 use futures::{
     channel::oneshot,
     future::{Fuse, FusedFuture, Future, FutureExt},
-    io::{AsyncRead, AsyncWrite},
     lock::Mutex,
 };
 use std::{
@@ -78,14 +78,14 @@ impl Session {
         notifier: &Notifier<B::Data>,
     ) -> io::Result<()>
     where
-        R: AsyncRead + Unpin,
-        B: Buffer,
+        R: Reader<Buffer = B> + Unpin,
+        B: Buffer + Unpin,
     {
         loop {
-            buf.receive(reader, self.buffer_size()).await?;
+            reader.receive_msg(buf).await?;
 
             {
-                let header = buf.header().unwrap();
+                let header = buf.header();
                 match header.opcode() {
                     Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
                     _ => {
@@ -104,16 +104,19 @@ impl Session {
                 }
             }
 
-            let (header, kind) = buf.extract()?.into_inner();
+            let (header, kind, data) = buf.extract();
+            let kind = crate::request::Parser::new(kind).parse(header.opcode().unwrap())?;
             match kind {
                 RequestKind::Interrupt { arg } => {
                     tracing::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
                     self.send_interrupt(arg.unique).await;
                 }
-                RequestKind::NotifyReply { arg, data } => {
+                RequestKind::NotifyReply { arg } => {
                     let unique = header.unique();
                     tracing::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
-                    notifier.send_notify_reply(unique, arg.offset, data).await;
+                    notifier
+                        .send_notify_reply(unique, arg.offset, data.expect("empty data"))
+                        .await;
                 }
                 _ => unreachable!(),
             }
@@ -130,8 +133,8 @@ impl Session {
     ) -> io::Result<()>
     where
         F: Filesystem<B::Data>,
-        W: AsyncWrite + Send + Unpin,
-        B: Buffer,
+        W: Writer + Send + Unpin,
+        B: Buffer + Unpin,
         B::Data: Send,
     {
         if self.exited() {
@@ -139,7 +142,9 @@ impl Session {
             return Ok(());
         }
 
-        let (header, kind) = buf.extract()?.into_inner();
+        let (header, kind, data) = buf.extract();
+        let kind = crate::request::Parser::new(kind).parse(header.opcode().unwrap())?;
+
         let ino = header.nodeid();
         tracing::debug!(
             "Handle a request: unique={}, opcode={:?}",
@@ -243,8 +248,11 @@ impl Session {
             RequestKind::Read { arg } => {
                 do_reply!(Operation::Read(op::Read { header, arg }));
             }
-            RequestKind::Write { arg, data } => {
-                do_reply!(Operation::Write(op::Write { header, arg }, data));
+            RequestKind::Write { arg } => {
+                do_reply!(Operation::Write(
+                    op::Write { header, arg },
+                    data.expect("empty remains")
+                ));
             }
             RequestKind::Release { arg } => {
                 do_reply!(Operation::Release(op::Release { header, arg }));
@@ -256,7 +264,7 @@ impl Session {
                     st.set_bsize(512);
                     let out = crate::reply::ReplyStatfs::new(st);
                     writer
-                        .reply_raw(&[unsafe { crate::reply::as_bytes(&out) }])
+                        .reply_raw(&[unsafe { crate::util::as_bytes(&out) }])
                         .await?;
                 });
             }

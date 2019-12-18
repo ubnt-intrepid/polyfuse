@@ -3,6 +3,7 @@
 #![allow(clippy::needless_update)]
 
 use crate::{
+    io::{Writer, WriterExt},
     kernel::{
         fuse_notify_code, //
         fuse_notify_delete_out,
@@ -12,13 +13,12 @@ use crate::{
         fuse_notify_retrieve_out,
         fuse_notify_store_out,
     },
-    reply::{as_bytes, send_msg},
     session::Session,
+    util::as_bytes,
 };
 use futures::{
     channel::oneshot,
     future::{Fuse, FusedFuture, Future, FutureExt},
-    io::AsyncWrite,
     lock::Mutex,
 };
 use smallvec::SmallVec;
@@ -65,7 +65,7 @@ impl<T> Notifier<T> {
         len: i64,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -97,7 +97,7 @@ impl<T> Notifier<T> {
         name: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -136,7 +136,7 @@ impl<T> Notifier<T> {
         name: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -171,7 +171,7 @@ impl<T> Notifier<T> {
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -204,7 +204,7 @@ impl<T> Notifier<T> {
         size: u32,
     ) -> io::Result<RetrieveHandle<T>>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -246,7 +246,7 @@ impl<T> Notifier<T> {
         kh: u64,
     ) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
+        W: Writer + Unpin,
     {
         if session.exited() {
             return Err(io::Error::new(
@@ -309,8 +309,8 @@ async fn send_notify<W: ?Sized>(
     data: &[&[u8]],
 ) -> io::Result<()>
 where
-    W: AsyncWrite + Unpin,
+    W: Writer + Unpin,
 {
     let code = unsafe { mem::transmute::<_, i32>(code) };
-    send_msg(writer, 0, code, data).await
+    writer.send_msg(0, code, data).await
 }

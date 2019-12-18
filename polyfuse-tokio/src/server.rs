@@ -1,13 +1,13 @@
 //! Serve FUSE filesystem.
 
-use crate::channel::Channel;
+use crate::channel::{Channel, ChannelBuffer};
 use bytes::Bytes;
 use futures::{
     future::{Future, FutureExt},
     select,
 };
 use libc::c_int;
-use polyfuse::{request::BytesBuffer, Filesystem, Session, SessionInitializer};
+use polyfuse::{Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -23,8 +23,10 @@ impl Server {
     /// Create a FUSE server mounted on the specified path.
     pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<Self> {
         let mut channel = Channel::open(mountpoint.as_ref(), mountopts)?;
-        let session = SessionInitializer::default() //
-            .init(&mut channel)
+        let initializer = SessionInitializer::default();
+        let mut buf = ChannelBuffer::new(initializer.init_buf_size());
+        let session = initializer //
+            .init(&mut channel, &mut buf)
             .await?;
         Ok(Server {
             session: Arc::new(session),
@@ -69,11 +71,11 @@ impl Server {
 
         let mut main_loop = Box::pin(async move {
             loop {
-                let mut buf = BytesBuffer::new(session.buffer_size());
+                let mut buf = ChannelBuffer::new(session.buffer_size());
                 if let Err(err) = session.receive(&mut *channel, &mut buf, &notifier).await {
                     match err.raw_os_error() {
                         Some(libc::ENODEV) => {
-                            tracing::debug!("connection was closed by the kernel");
+                            tracing::debug!("connection is closed");
                             return Ok(());
                         }
                         _ => return Err(err),

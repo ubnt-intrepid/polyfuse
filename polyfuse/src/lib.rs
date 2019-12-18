@@ -15,17 +15,19 @@
 )]
 #![forbid(clippy::unimplemented)]
 
+pub mod io;
 pub mod notify;
 pub mod op;
 pub mod reply;
-pub mod request;
 
 mod common;
 mod dirent;
 mod fs;
 mod init;
 mod kernel;
+mod request;
 mod session;
+mod util;
 
 #[doc(inline)]
 pub use crate::{
@@ -35,7 +37,6 @@ pub use crate::{
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
     notify::Notifier,
     op::Operation,
-    request::Buffer,
     session::{Interrupt, Session},
 };
 
