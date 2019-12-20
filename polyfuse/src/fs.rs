@@ -6,14 +6,12 @@ use crate::{
     io::{InHeader, Writer},
     op::Operation,
     reply::ReplyWriter,
-    session::{Interrupt, Session},
 };
 use std::{fmt, future::Future, io, pin::Pin};
 
 /// Contextural information about an incoming request.
 pub struct Context<'a> {
     header: &'a InHeader,
-    session: &'a Session,
 }
 
 impl fmt::Debug for Context<'_> {
@@ -23,8 +21,8 @@ impl fmt::Debug for Context<'_> {
 }
 
 impl<'a> Context<'a> {
-    pub(crate) fn new(header: &'a InHeader, session: &'a Session) -> Self {
-        Self { header, session }
+    pub(crate) fn new(header: &'a InHeader) -> Self {
+        Self { header }
     }
 
     /// Return the user ID of the calling process.
@@ -40,12 +38,6 @@ impl<'a> Context<'a> {
     /// Return the process ID of the calling process.
     pub fn pid(&self) -> u32 {
         self.header.pid()
-    }
-
-    /// Register the request with the sesssion and get a signal
-    /// that will be notified when the request is canceld by the kernel.
-    pub async fn on_interrupt(&mut self) -> Interrupt {
-        self.session.enable_interrupt(self.header.unique()).await
     }
 }
 

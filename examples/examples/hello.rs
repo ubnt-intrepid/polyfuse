@@ -3,10 +3,9 @@
 
 use polyfuse_examples::prelude::*;
 
-use futures::select;
 use polyfuse::{
     reply::{ReplyAttr, ReplyEntry},
-    DirEntry, FileAttr, Interrupt,
+    DirEntry, FileAttr,
 };
 use std::io;
 
@@ -83,25 +82,10 @@ impl Hello {
         }
     }
 
-    async fn read(
-        &self,
-        ino: u64,
-        offset: usize,
-        size: usize,
-        mut intr: Interrupt,
-    ) -> Result<&[u8], libc::c_int> {
+    async fn read(&self, ino: u64, offset: usize, size: usize) -> Result<&[u8], libc::c_int> {
         match ino {
             1 => Err(libc::EISDIR),
             2 => {
-                let mut fetch_task = Box::pin(async {
-                    tokio::time::delay_for(std::time::Duration::from_secs(10)).await;
-                })
-                .fuse();
-                select! {
-                    _ = fetch_task => (),
-                    _ = intr => return Err(libc::EINTR),
-                }
-
                 if offset >= self.content.len() {
                     return Ok(&[] as &[u8]);
                 }
@@ -137,7 +121,7 @@ impl Hello {
 impl<T> Filesystem<T> for Hello {
     async fn reply<'a, 'cx, 'w, W: ?Sized>(
         &'a self,
-        cx: &'a mut Context<'cx>,
+        _: &'a mut Context<'cx>,
         op: Operation<'cx, T>,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
@@ -166,9 +150,8 @@ impl<T> Filesystem<T> for Hello {
             },
 
             Operation::Read(op) => {
-                let intr = cx.on_interrupt().await;
                 match self
-                    .read(op.ino(), op.offset() as usize, op.size() as usize, intr)
+                    .read(op.ino(), op.offset() as usize, op.size() as usize)
                     .await
                 {
                     Ok(data) => op.reply(writer, data).await?,

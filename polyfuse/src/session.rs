@@ -11,17 +11,9 @@ use crate::{
     reply::ReplyWriter,
     request::RequestKind,
 };
-use futures::{
-    channel::oneshot,
-    future::{Fuse, FusedFuture, Future, FutureExt},
-    lock::Mutex,
-};
 use std::{
-    collections::{HashMap, HashSet},
     io,
-    pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
-    task::{self, Poll},
 };
 
 /// FUSE session driver.
@@ -30,13 +22,6 @@ pub struct Session {
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
-    interrupt_state: Mutex<InterruptState>,
-}
-
-#[derive(Debug)]
-struct InterruptState {
-    remains: HashMap<u64, oneshot::Sender<()>>,
-    interrupted: HashSet<u64>,
 }
 
 impl Session {
@@ -45,10 +30,6 @@ impl Session {
             conn,
             bufsize,
             exited: AtomicBool::new(false),
-            interrupt_state: Mutex::new(InterruptState {
-                remains: HashMap::new(),
-                interrupted: HashSet::new(),
-            }),
         }
     }
 
@@ -76,32 +57,17 @@ impl Session {
         reader: &mut R,
         buf: &mut B,
         notifier: &Notifier<B::Data>,
-    ) -> io::Result<()>
+    ) -> io::Result<Vec<Interrupt>>
     where
         R: Reader<Buffer = B> + Unpin,
         B: Buffer + Unpin,
     {
+        let mut interrupts = vec![];
         loop {
             reader.receive_msg(buf).await?;
-
-            {
-                let header = buf.header();
-                match header.opcode() {
-                    Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
-                    _ => {
-                        // check if the request is already interrupted by the kernel.
-                        let mut state = self.interrupt_state.lock().await;
-                        if state.interrupted.remove(&header.unique()) {
-                            tracing::debug!(
-                                "The request was interrupted (unique={})",
-                                header.unique()
-                            );
-                            continue;
-                        }
-
-                        return Ok(());
-                    }
-                }
+            match buf.header().opcode() {
+                Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
+                _ => return Ok(interrupts),
             }
 
             let (header, kind, data) = buf.extract();
@@ -109,7 +75,10 @@ impl Session {
             match kind {
                 RequestKind::Interrupt { arg } => {
                     tracing::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
-                    self.send_interrupt(arg.unique).await;
+                    interrupts.push(Interrupt {
+                        unique: arg.unique,
+                        interrupt_unique: header.unique(),
+                    });
                 }
                 RequestKind::NotifyReply { arg } => {
                     let unique = header.unique();
@@ -152,7 +121,7 @@ impl Session {
             header.opcode(),
         );
 
-        let mut cx = Context::new(&header, &*self);
+        let mut cx = Context::new(&header);
         let mut writer = ReplyWriter::new(header.unique(), &mut *writer);
 
         macro_rules! do_reply {
@@ -363,39 +332,32 @@ impl Session {
 
         Ok(())
     }
-
-    pub(crate) async fn enable_interrupt(&self, unique: u64) -> Interrupt {
-        let (tx, rx) = oneshot::channel();
-        let mut state = self.interrupt_state.lock().await;
-        state.remains.insert(unique, tx);
-        Interrupt(rx.fuse())
-    }
-
-    async fn send_interrupt(&self, unique: u64) {
-        let mut state = self.interrupt_state.lock().await;
-        if let Some(tx) = state.remains.remove(&unique) {
-            state.interrupted.insert(unique);
-            let _ = tx.send(());
-            tracing::debug!("Sent interrupt signal to unique={}", unique);
-        }
-    }
+}
+/// Information about an interrupt request.
+#[derive(Debug, Copy, Clone)]
+pub struct Interrupt {
+    unique: u64,
+    interrupt_unique: u64,
 }
 
-/// A future for awaiting an interrupt signal sent to a request.
-#[derive(Debug)]
-pub struct Interrupt(Fuse<oneshot::Receiver<()>>);
-
-impl Future for Interrupt {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
-        let _res = futures::ready!(self.0.poll_unpin(cx));
-        Poll::Ready(())
+impl Interrupt {
+    /// Return the unique ID of the interrupted request.
+    ///
+    /// The implementation of FUSE filesystem deamon library should
+    /// handle this interrupt request by sending a reply with an EINTR error,
+    /// and terminate the background task processing the corresponding request.
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.unique
     }
-}
 
-impl FusedFuture for Interrupt {
-    fn is_terminated(&self) -> bool {
-        self.0.is_terminated()
+    /// Return the unique ID of the interrupt request itself.
+    ///
+    /// If the filesystem daemon is not ready to handle this interrupt
+    /// request, sending a reply using this unique with EAGAIN error causes
+    /// the kernel to requeue its interrupt request.
+    #[inline]
+    pub fn interrupt_unique(&self) -> u64 {
+        self.interrupt_unique
     }
 }
