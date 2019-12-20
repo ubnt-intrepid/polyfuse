@@ -71,7 +71,7 @@ fn do_run(command: OsString, args: Vec<OsString>) -> anyhow::Result<()> {
     script.stdout(Stdio::inherit());
     script.stderr(Stdio::inherit());
     if let Some(orig_path) = std::env::var_os("PATH") {
-        let paths: Vec<_> = Some(bin_dir.clone())
+        let paths: Vec<_> = Some(bin_dir)
             .into_iter()
             .chain(std::env::split_paths(&orig_path))
             .collect();
