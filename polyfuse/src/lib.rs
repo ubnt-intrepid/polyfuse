@@ -16,7 +16,6 @@
 #![forbid(clippy::unimplemented)]
 
 pub mod io;
-pub mod notify;
 pub mod op;
 pub mod reply;
 
@@ -34,9 +33,8 @@ pub use crate::{
     dirent::DirEntry,
     fs::Filesystem,
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
-    notify::Notifier,
     op::Operation,
-    session::{Interrupt, Session},
+    session::{Interrupt, RetrieveHandle, Session},
 };
 
 /// A re-export of [`async_trait`] for implementing `Filesystem`.

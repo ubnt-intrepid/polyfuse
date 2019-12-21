@@ -139,7 +139,11 @@ impl SessionInitializer {
     /// This function receives an INIT request from the kernel and replies
     /// after initializing the connection parameters.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn init<I: ?Sized, B: ?Sized>(self, io: &mut I, buf: &mut B) -> io::Result<Session>
+    pub async fn init<I: ?Sized, B: ?Sized, T>(
+        self,
+        io: &mut I,
+        buf: &mut B,
+    ) -> io::Result<Session<T>>
     where
         I: Reader<Buffer = B> + Writer + Unpin,
         B: Buffer + Unpin,
