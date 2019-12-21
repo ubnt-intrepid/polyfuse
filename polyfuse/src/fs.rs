@@ -4,7 +4,7 @@ use crate::{
     async_trait, //
     common::Forget,
     io::Writer,
-    op::{NotifyReply, Operation},
+    op::{Interrupt, NotifyReply, Operation},
     reply::ReplyWriter,
 };
 use std::{future::Future, io, pin::Pin};
@@ -47,6 +47,20 @@ pub trait Filesystem<T>: Sync {
     async fn notify_reply<'a, 'cx>(&'a self, arg: NotifyReply<'cx>, data: T) -> io::Result<()>
     where
         T: Send + 'async_trait,
+    {
+        Ok(())
+    }
+
+    /// Handle an INTERRUPT request.
+    #[allow(unused_variables)]
+    async fn interrupt<'a, 'cx, 'w, W: ?Sized>(
+        &'a self,
+        op: Interrupt<'cx>,
+        writer: &'a mut ReplyWriter<'w, W>,
+    ) -> io::Result<()>
+    where
+        T: 'async_trait,
+        W: Writer + Send + Unpin,
     {
         Ok(())
     }
@@ -94,6 +108,22 @@ macro_rules! impl_filesystem_body {
             T: Send + 'async_trait,
         {
             (**self).notify_reply(arg, data)
+        }
+
+        #[inline]
+        fn interrupt<'a, 'cx, 'w, 'async_trait, W: ?Sized>(
+            &'a self,
+            op: Interrupt<'cx>,
+            writer: &'a mut ReplyWriter<'w, W>,
+        ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
+        where
+            'a: 'async_trait,
+            'cx: 'async_trait,
+            'w: 'async_trait,
+            T: 'async_trait,
+            W: Writer + Send + Unpin + 'async_trait,
+        {
+            (**self).interrupt(op, writer)
         }
     };
 }

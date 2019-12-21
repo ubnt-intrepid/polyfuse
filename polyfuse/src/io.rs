@@ -48,7 +48,8 @@ where
     }
 }
 
-pub(crate) trait ReaderExt: Reader {
+#[allow(missing_docs)]
+pub trait ReaderExt: Reader {
     fn receive_msg<'r>(
         &'r mut self,
         buf: &'r mut Self::Buffer,
@@ -62,8 +63,10 @@ pub(crate) trait ReaderExt: Reader {
 
 impl<R: Reader + ?Sized> ReaderExt for R {}
 
+#[doc(hidden)]
+#[derive(Debug)]
 #[must_use]
-pub(crate) struct ReceiveMsg<'r, R: ?Sized, B: ?Sized> {
+pub struct ReceiveMsg<'r, R: ?Sized, B: ?Sized> {
     reader: &'r mut R,
     buf: &'r mut B,
 }

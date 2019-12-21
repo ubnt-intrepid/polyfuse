@@ -6,7 +6,7 @@ use crate::{
     common::StatFs,
     fs::Filesystem,
     init::ConnectionInfo,
-    io::{Buffer, Reader, ReaderExt, Writer, WriterExt},
+    io::{Buffer, Writer, WriterExt},
     kernel::{
         fuse_notify_code, //
         fuse_notify_delete_out,
@@ -15,7 +15,6 @@ use crate::{
         fuse_notify_poll_wakeup_out,
         fuse_notify_retrieve_out,
         fuse_notify_store_out,
-        fuse_opcode,
     },
     op::{Operation, OperationKind},
     reply::ReplyWriter,
@@ -69,39 +68,6 @@ impl Session {
     /// Returns the buffer size required to receive one request.
     pub fn buffer_size(&self) -> usize {
         self.bufsize
-    }
-
-    /// Receive one or more requests from the kernel.
-    pub async fn receive<R: ?Sized, B: ?Sized>(
-        &self,
-        reader: &mut R,
-        buf: &mut B,
-    ) -> io::Result<Vec<Interrupt>>
-    where
-        R: Reader<Buffer = B> + Unpin,
-        B: Buffer + Unpin,
-    {
-        let mut interrupts = vec![];
-        loop {
-            reader.receive_msg(buf).await?;
-            match buf.header().opcode() {
-                Some(fuse_opcode::FUSE_INTERRUPT) => (),
-                _ => return Ok(interrupts),
-            }
-
-            let (header, kind, data) = buf.extract();
-            let kind = OperationKind::parse(header, kind, data)?;
-            match kind {
-                OperationKind::Interrupt { arg } => {
-                    tracing::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
-                    interrupts.push(Interrupt {
-                        unique: arg.unique,
-                        interrupt_unique: header.unique(),
-                    });
-                }
-                _ => unreachable!(),
-            }
-        }
     }
 
     /// Process an incoming request using the specified filesystem operations.
@@ -163,6 +129,9 @@ impl Session {
                 // no reply.
                 return fs.forget(forgets.as_ref()).await;
             }
+            OperationKind::Interrupt(op) => {
+                fs.interrupt(op, &mut writer).await?;
+            }
             OperationKind::NotifyReply(op, data) => {
                 if self.retrieves.lock().remove(&op.unique()) {
                     return fs.notify_reply(op, data).await;
@@ -172,12 +141,6 @@ impl Session {
             OperationKind::Init { .. } => {
                 tracing::warn!("ignore an INIT request after initializing the session");
                 writer.reply_err(libc::EIO).await?;
-            }
-            OperationKind::Interrupt { .. } => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "unexpected request kind",
-                ));
             }
 
             OperationKind::Unknown => {
@@ -384,35 +347,6 @@ impl Session {
             &[unsafe { as_bytes(&out) }],
         )
         .await
-    }
-}
-
-/// Information about an interrupt request.
-#[derive(Debug, Copy, Clone)]
-pub struct Interrupt {
-    unique: u64,
-    interrupt_unique: u64,
-}
-
-impl Interrupt {
-    /// Return the unique ID of the interrupted request.
-    ///
-    /// The implementation of FUSE filesystem deamon library should
-    /// handle this interrupt request by sending a reply with an EINTR error,
-    /// and terminate the background task processing the corresponding request.
-    #[inline]
-    pub fn unique(&self) -> u64 {
-        self.unique
-    }
-
-    /// Return the unique ID of the interrupt request itself.
-    ///
-    /// If the filesystem daemon is not ready to handle this interrupt
-    /// request, sending a reply using this unique with EAGAIN error causes
-    /// the kernel to requeue its interrupt request.
-    #[inline]
-    pub fn interrupt_unique(&self) -> u64 {
-        self.interrupt_unique
     }
 }
 

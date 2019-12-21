@@ -7,7 +7,7 @@ use futures::{
     select,
 };
 use libc::c_int;
-use polyfuse::{Filesystem, Session, SessionInitializer};
+use polyfuse::{io::ReaderExt, Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -68,7 +68,7 @@ impl Server {
         let mut main_loop = Box::pin(async move {
             loop {
                 let mut buf = ChannelBuffer::new(session.buffer_size());
-                if let Err(err) = session.receive(&mut *channel, &mut buf).await {
+                if let Err(err) = channel.receive_msg(&mut buf).await {
                     match err.raw_os_error() {
                         Some(libc::ENODEV) => {
                             tracing::debug!("connection is closed");

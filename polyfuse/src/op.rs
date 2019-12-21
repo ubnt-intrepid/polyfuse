@@ -1647,6 +1647,19 @@ impl<'a> NotifyReply<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct Interrupt<'a> {
+    header: &'a InHeader,
+    arg: &'a fuse_interrupt_in,
+}
+
+impl Interrupt<'_> {
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.arg.unique
+    }
+}
+
 // ==== parse ====
 
 #[derive(Debug)]
@@ -1655,7 +1668,7 @@ pub(crate) enum OperationKind<'a, T> {
     Forget(Forgets<'a>),
     Init { arg: &'a fuse_init_in },
     Destroy,
-    Interrupt { arg: &'a fuse_interrupt_in },
+    Interrupt(Interrupt<'a>),
     NotifyReply(NotifyReply<'a>, T),
     Unknown,
     // TODO: Ioctl
@@ -1736,7 +1749,7 @@ impl<'a> Parser<'a> {
             }
             Some(fuse_opcode::FUSE_INTERRUPT) => {
                 let arg = self.fetch()?;
-                Ok(OperationKind::Interrupt { arg })
+                Ok(OperationKind::Interrupt(Interrupt { header, arg }))
             }
             Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
                 let arg = self.fetch()?;
