@@ -29,7 +29,7 @@ impl MemFS {
         }
     }
 
-    fn make_attr(&self, cx: &Context<'_>, mode: u32) -> FileAttr {
+    fn make_attr(&self, uid: u32, gid: u32, mode: u32) -> FileAttr {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
@@ -39,8 +39,8 @@ impl MemFS {
         let mut attr = FileAttr::default();
         attr.set_nlink(1);
         attr.set_mode(mode);
-        attr.set_uid(cx.uid());
-        attr.set_gid(cx.gid());
+        attr.set_uid(uid);
+        attr.set_gid(gid);
         attr.set_atime(sec, nsec);
         attr.set_mtime(sec, nsec);
         attr.set_ctime(sec, nsec);
@@ -235,16 +235,17 @@ impl MemFS {
 
     async fn do_mknod<W: ?Sized>(
         &self,
-        cx: &Context<'_>,
         writer: &mut ReplyWriter<'_, W>,
         op: op::Mknod<'_>,
+        uid: u32,
+        gid: u32,
     ) -> io::Result<()>
     where
         W: Writer + Unpin,
     {
         match op.mode() & libc::S_IFMT {
             libc::S_IFREG => {
-                let attr = self.make_attr(cx, op.mode());
+                let attr = self.make_attr(uid, gid, op.mode());
                 match self
                     .inodes
                     .insert_file(op.parent(), op.name(), attr, vec![])
@@ -266,14 +267,15 @@ impl MemFS {
 
     async fn do_mkdir<W: ?Sized>(
         &self,
-        cx: &Context<'_>,
         writer: &mut ReplyWriter<'_, W>,
         op: op::Mkdir<'_>,
+        uid: u32,
+        gid: u32,
     ) -> io::Result<()>
     where
         W: Writer + Unpin,
     {
-        let attr = self.make_attr(cx, op.mode());
+        let attr = self.make_attr(uid, gid, op.mode());
         match self.inodes.insert_dir(op.parent(), op.name(), attr).await {
             Ok(inode) => {
                 let attr = inode.load_attr();
@@ -294,7 +296,6 @@ where
 {
     async fn reply<'a, 'cx, 'w, W: ?Sized>(
         &'a self,
-        cx: &'a mut Context<'cx>,
         op: Operation<'cx, T>,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
@@ -302,6 +303,8 @@ where
         W: Writer + Send + Unpin + 'async_trait,
         T: Send + 'async_trait,
     {
+        let uid = op.uid();
+        let gid = op.gid();
         match op {
             Operation::Lookup(op) => self.do_lookup(writer, op).await?,
             Operation::Getattr(op) => self.do_getattr(writer, op).await?,
@@ -309,8 +312,8 @@ where
             Operation::Read(op) => self.do_read(writer, op).await?,
             Operation::Write(op, data) => self.do_write(writer, op, data).await?,
             Operation::Readdir(op) => self.do_readdir(writer, op).await?,
-            Operation::Mknod(op) => self.do_mknod(cx, writer, op).await?,
-            Operation::Mkdir(op) => self.do_mkdir(cx, writer, op).await?,
+            Operation::Mknod(op) => self.do_mknod(writer, op, uid, gid).await?,
+            Operation::Mkdir(op) => self.do_mkdir(writer, op, uid, gid).await?,
             Operation::Unlink(op) => match self.inodes.remove(op.parent(), op.name()).await {
                 Ok(()) => op.reply(writer).await?,
                 Err(errno) => writer.reply_err(errno).await?,

@@ -1,45 +1,13 @@
 //! Filesystem abstraction.
 
 use crate::{
-    async_trait,
+    async_trait, //
     common::Forget,
-    io::{InHeader, Writer},
+    io::Writer,
     op::Operation,
     reply::ReplyWriter,
 };
-use std::{fmt, future::Future, io, pin::Pin};
-
-/// Contextural information about an incoming request.
-pub struct Context<'a> {
-    header: &'a InHeader,
-}
-
-impl fmt::Debug for Context<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Context").finish()
-    }
-}
-
-impl<'a> Context<'a> {
-    pub(crate) fn new(header: &'a InHeader) -> Self {
-        Self { header }
-    }
-
-    /// Return the user ID of the calling process.
-    pub fn uid(&self) -> u32 {
-        self.header.uid()
-    }
-
-    /// Return the group ID of the calling process.
-    pub fn gid(&self) -> u32 {
-        self.header.gid()
-    }
-
-    /// Return the process ID of the calling process.
-    pub fn pid(&self) -> u32 {
-        self.header.pid()
-    }
-}
+use std::{future::Future, io, pin::Pin};
 
 /// The filesystem running on the user space.
 #[async_trait]
@@ -55,7 +23,6 @@ pub trait Filesystem<T>: Sync {
     #[allow(unused_variables)]
     async fn reply<'a, 'cx, 'w, W: ?Sized>(
         &'a self,
-        cx: &'a mut Context<'cx>,
         op: Operation<'cx, T>,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
@@ -68,11 +35,7 @@ pub trait Filesystem<T>: Sync {
 
     /// Forget about inodes removed from the kernel's internal caches.
     #[allow(unused_variables)]
-    async fn forget<'a, 'cx>(
-        &'a self,
-        cx: &'a mut Context<'cx>,
-        forgets: &'a [Forget],
-    ) -> io::Result<()>
+    async fn forget<'a>(&'a self, forgets: &'a [Forget]) -> io::Result<()>
     where
         T: 'async_trait,
     {
@@ -85,7 +48,6 @@ macro_rules! impl_filesystem_body {
         #[inline]
         fn reply<'a, 'cx, 'w, 'async_trait, W: ?Sized>(
             &'a self,
-            cx: &'a mut Context<'cx>,
             op: Operation<'cx, T>,
             writer: &'a mut ReplyWriter<'w, W>,
         ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
@@ -96,21 +58,19 @@ macro_rules! impl_filesystem_body {
             T: Send + 'async_trait,
             W: Writer + Send + Unpin + 'async_trait,
         {
-            (**self).reply(cx, op, writer)
+            (**self).reply(op, writer)
         }
 
         #[inline]
-        fn forget<'a, 'cx, 'async_trait>(
+        fn forget<'a, 'async_trait>(
             &'a self,
-            cx: &'a mut Context<'cx>,
             forgets: &'a [Forget],
         ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
         where
             'a: 'async_trait,
-            'cx: 'async_trait,
             T: 'async_trait,
         {
-            (**self).forget(cx, forgets)
+            (**self).forget(forgets)
         }
     };
 }

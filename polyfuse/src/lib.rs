@@ -32,7 +32,7 @@ mod util;
 pub use crate::{
     common::{FileAttr, FileLock, Forget, StatFs},
     dirent::DirEntry,
-    fs::{Context, Filesystem},
+    fs::Filesystem,
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
     notify::Notifier,
     op::Operation,

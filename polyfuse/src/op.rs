@@ -1537,6 +1537,73 @@ impl<'a> Poll<'a> {
     }
 }
 
+macro_rules! impl_header {
+    ($($t:ident),*$(,)?) => {
+        impl<T> Operation<'_, T> {
+            fn header(&self) -> &InHeader {
+                match self {
+                    $(
+                        Self::$t(op) => op.header,
+                    )*
+                    Self::Write(op, ..) => op.header,
+                }
+            }
+
+            /// Return the user ID of the calling process.
+            pub fn uid(&self) -> u32 {
+                self.header().uid()
+            }
+
+            /// Return the group ID of the calling process.
+            pub fn gid(&self) -> u32 {
+                self.header().gid()
+            }
+
+            /// Return the process ID of the calling process.
+            pub fn pid(&self) -> u32 {
+                self.header().pid()
+            }
+        }
+    }
+}
+
+impl_header! {
+    Lookup,
+    Getattr,
+    Setattr,
+    Readlink,
+    Symlink,
+    Mknod,
+    Mkdir,
+    Unlink,
+    Rmdir,
+    Rename,
+    Link,
+    Open,
+    Read,
+    Release,
+    Statfs,
+    Fsync,
+    Setxattr,
+    Getxattr,
+    Listxattr,
+    Removexattr,
+    Flush,
+    Opendir,
+    Readdir,
+    Releasedir,
+    Fsyncdir,
+    Getlk,
+    Setlk,
+    Flock,
+    Access,
+    Create,
+    Bmap,
+    Fallocate,
+    CopyFileRange,
+    Poll,
+}
+
 // ==== parse ====
 
 #[derive(Debug)]

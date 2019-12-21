@@ -2,7 +2,7 @@
 
 use crate::{
     common::StatFs,
-    fs::{Context, Filesystem},
+    fs::Filesystem,
     init::ConnectionInfo,
     io::{Buffer, Reader, ReaderExt, Writer},
     kernel::fuse_opcode,
@@ -116,7 +116,6 @@ impl Session {
             header.opcode(),
         );
 
-        let mut cx = Context::new(&header);
         let mut writer = ReplyWriter::new(header.unique(), &mut *writer);
 
         match kind {
@@ -126,11 +125,11 @@ impl Session {
             }
             OperationKind::Forget(forgets) => {
                 // no reply.
-                return fs.forget(&mut cx, forgets.as_ref()).await;
+                return fs.forget(forgets.as_ref()).await;
             }
             OperationKind::Operation(op) => match op {
                 op @ Operation::Statfs(..) => {
-                    fs.reply(&mut cx, op, &mut writer).await?;
+                    fs.reply(op, &mut writer).await?;
                     if !writer.replied() {
                         let mut st = StatFs::default();
                         st.set_namelen(255);
@@ -142,7 +141,7 @@ impl Session {
                     }
                 }
                 op => {
-                    fs.reply(&mut cx, op, &mut writer).await?;
+                    fs.reply(op, &mut writer).await?;
                     if !writer.replied() {
                         writer.reply_err(libc::ENOSYS).await?;
                     }

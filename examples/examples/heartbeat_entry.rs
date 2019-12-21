@@ -118,7 +118,6 @@ impl<T> Filesystem<T> for Heartbeat {
     #[allow(clippy::cognitive_complexity)]
     async fn reply<'a, 'cx, 'w, W: ?Sized>(
         &'a self,
-        _: &'a mut Context<'cx>,
         op: Operation<'cx, T>,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
@@ -179,11 +178,7 @@ impl<T> Filesystem<T> for Heartbeat {
         Ok(())
     }
 
-    async fn forget<'a, 'cx>(
-        &'a self,
-        _: &'a mut Context<'cx>,
-        forgets: &'a [Forget],
-    ) -> io::Result<()>
+    async fn forget<'a>(&'a self, forgets: &'a [Forget]) -> io::Result<()>
     where
         T: 'async_trait,
     {

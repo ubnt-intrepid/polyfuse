@@ -149,7 +149,6 @@ impl Heartbeat {
 impl<T> Filesystem<T> for Heartbeat {
     async fn reply<'a, 'cx, 'w, W: ?Sized>(
         &'a self,
-        _: &'a mut Context<'cx>,
         op: Operation<'cx, T>,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
