@@ -1,5 +1,7 @@
 //! Lowlevel interface to handle FUSE requests.
 
+#![allow(clippy::needless_update)]
+
 use crate::{
     common::StatFs,
     fs::Filesystem,
@@ -103,6 +105,7 @@ impl Session {
     }
 
     /// Process an incoming request using the specified filesystem operations.
+    #[allow(clippy::cognitive_complexity)]
     pub async fn process<F: ?Sized, W: ?Sized, B: ?Sized>(
         &self,
         fs: &F,
