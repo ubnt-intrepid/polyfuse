@@ -14,7 +14,7 @@ use tokio::signal::unix::{signal, SignalKind};
 /// A FUSE filesystem server running on Tokio runtime.
 #[derive(Debug)]
 pub struct Server {
-    session: Arc<Session<Bytes>>,
+    session: Arc<Session>,
     channel: Channel,
 }
 
@@ -137,14 +137,10 @@ impl Server {
     }
 
     /// Retrieve the value of the cache data with the specified range.
-    pub async fn notify_retrieve(&mut self, ino: u64, offset: u64, size: u32) -> io::Result<Bytes> {
-        let handle = self
-            .session
+    pub async fn notify_retrieve(&mut self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
+        self.session
             .notify_retrieve(&mut self.channel, ino, offset, size)
-            .await?;
-        let (in_offset, data) = handle.await;
-        debug_assert_eq!(offset, in_offset);
-        Ok(data)
+            .await
     }
 
     /// Notify an I/O readiness.

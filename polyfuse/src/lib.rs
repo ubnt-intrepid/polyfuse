@@ -34,7 +34,7 @@ pub use crate::{
     fs::Filesystem,
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
     op::Operation,
-    session::{Interrupt, RetrieveHandle, Session},
+    session::{Interrupt, Session},
 };
 
 /// A re-export of [`async_trait`] for implementing `Filesystem`.

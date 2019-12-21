@@ -9,14 +9,16 @@
 
 use polyfuse_examples::prelude::*;
 
+use bytes::Bytes;
 use chrono::Local;
-use futures::lock::Mutex;
+use futures::{channel::oneshot, lock::Mutex};
 use polyfuse::{
+    op::NotifyReply,
     reply::{ReplyAttr, ReplyOpen},
     FileAttr,
 };
 use polyfuse_tokio::Server;
-use std::{io, sync::Arc, time::Duration};
+use std::{collections::HashMap, io, sync::Arc, time::Duration};
 
 const ROOT_INO: u64 = 1;
 
@@ -88,6 +90,7 @@ enum NotifyKind {
 
 struct Heartbeat {
     inner: Mutex<Inner>,
+    retrieves: Mutex<HashMap<u64, oneshot::Sender<Bytes>>>,
 }
 
 struct Inner {
@@ -106,6 +109,7 @@ impl Heartbeat {
 
         Self {
             inner: Mutex::new(Inner { content, attr }),
+            retrieves: Mutex::default(),
         }
     }
 
@@ -128,7 +132,12 @@ impl Heartbeat {
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
-        let data = server.notify_retrieve(ROOT_INO, 0, 1024).await?;
+        let data = {
+            let unique = server.notify_retrieve(ROOT_INO, 0, 1024).await?;
+            let (tx, rx) = oneshot::channel();
+            self.retrieves.lock().await.insert(unique, tx);
+            rx.await.unwrap()
+        };
         tracing::info!("--> content={:?}", data);
 
         if data[..content.len()] != *content.as_bytes() {
@@ -146,14 +155,13 @@ impl Heartbeat {
 }
 
 #[async_trait]
-impl<T> Filesystem<T> for Heartbeat {
+impl Filesystem<Bytes> for Heartbeat {
     async fn reply<'a, 'cx, 'w, W: ?Sized>(
         &'a self,
-        op: Operation<'cx, T>,
+        op: Operation<'cx, Bytes>,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        T: Send + 'async_trait,
         W: Writer + Unpin + Send,
     {
         match op {
@@ -191,6 +199,13 @@ impl<T> Filesystem<T> for Heartbeat {
             _ => (),
         }
 
+        Ok(())
+    }
+
+    async fn notify_reply<'a, 'cx>(&'a self, arg: NotifyReply<'cx>, data: Bytes) -> io::Result<()> {
+        if let Some(tx) = self.retrieves.lock().await.remove(&arg.unique()) {
+            let _ = tx.send(data);
+        }
         Ok(())
     }
 }

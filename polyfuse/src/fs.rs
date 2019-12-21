@@ -4,7 +4,7 @@ use crate::{
     async_trait, //
     common::Forget,
     io::Writer,
-    op::Operation,
+    op::{NotifyReply, Operation},
     reply::ReplyWriter,
 };
 use std::{future::Future, io, pin::Pin};
@@ -41,6 +41,15 @@ pub trait Filesystem<T>: Sync {
     {
         Ok(())
     }
+
+    /// Receive a reply for a `NOTIFY_RETRIEVE` notification.
+    #[allow(unused_variables)]
+    async fn notify_reply<'a, 'cx>(&'a self, arg: NotifyReply<'cx>, data: T) -> io::Result<()>
+    where
+        T: Send + 'async_trait,
+    {
+        Ok(())
+    }
 }
 
 macro_rules! impl_filesystem_body {
@@ -71,6 +80,20 @@ macro_rules! impl_filesystem_body {
             T: 'async_trait,
         {
             (**self).forget(forgets)
+        }
+
+        #[inline]
+        fn notify_reply<'a, 'cx, 'async_trait>(
+            &'a self,
+            arg: NotifyReply<'cx>,
+            data: T,
+        ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
+        where
+            'a: 'async_trait,
+            'cx: 'async_trait,
+            T: Send + 'async_trait,
+        {
+            (**self).notify_reply(arg, data)
         }
     };
 }

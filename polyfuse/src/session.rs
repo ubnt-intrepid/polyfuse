@@ -19,34 +19,28 @@ use crate::{
     reply::ReplyWriter,
     util::as_bytes,
 };
-use futures::{
-    channel::oneshot,
-    future::{Fuse, FusedFuture, Future, FutureExt},
-};
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     convert::TryFrom,
     ffi::OsStr,
     io, mem,
     os::unix::ffi::OsStrExt,
-    pin::Pin,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    task::{self, Poll},
 };
 
 /// FUSE session driver.
 #[derive(Debug)]
-pub struct Session<T> {
+pub struct Session {
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
     notify_unique: AtomicU64,
-    retrieves: Mutex<HashMap<u64, oneshot::Sender<(u64, T)>>>,
+    retrieves: Mutex<HashSet<u64>>,
 }
 
-impl<T> Session<T> {
+impl Session {
     pub(crate) fn new(conn: ConnectionInfo, bufsize: usize) -> Self {
         Self {
             conn,
@@ -83,13 +77,13 @@ impl<T> Session<T> {
     ) -> io::Result<Vec<Interrupt>>
     where
         R: Reader<Buffer = B> + Unpin,
-        B: Buffer<Data = T> + Unpin,
+        B: Buffer + Unpin,
     {
         let mut interrupts = vec![];
         loop {
             reader.receive_msg(buf).await?;
             match buf.header().opcode() {
-                Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
+                Some(fuse_opcode::FUSE_INTERRUPT) => (),
                 _ => return Ok(interrupts),
             }
 
@@ -102,11 +96,6 @@ impl<T> Session<T> {
                         unique: arg.unique,
                         interrupt_unique: header.unique(),
                     });
-                }
-                OperationKind::NotifyReply { arg, data } => {
-                    let unique = header.unique();
-                    tracing::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
-                    self.send_notify_reply(unique, arg.offset, data);
                 }
                 _ => unreachable!(),
             }
@@ -147,10 +136,6 @@ impl<T> Session<T> {
                 self.exit();
                 return Ok(());
             }
-            OperationKind::Forget(forgets) => {
-                // no reply.
-                return fs.forget(forgets.as_ref()).await;
-            }
             OperationKind::Operation(op) => match op {
                 op @ Operation::Statfs(..) => {
                     fs.reply(op, &mut writer).await?;
@@ -171,12 +156,21 @@ impl<T> Session<T> {
                     }
                 }
             },
+            OperationKind::Forget(forgets) => {
+                // no reply.
+                return fs.forget(forgets.as_ref()).await;
+            }
+            OperationKind::NotifyReply(op, data) => {
+                if self.retrieves.lock().remove(&op.unique()) {
+                    return fs.notify_reply(op, data).await;
+                }
+            }
 
             OperationKind::Init { .. } => {
                 tracing::warn!("ignore an INIT request after initializing the session");
                 writer.reply_err(libc::EIO).await?;
             }
-            OperationKind::Interrupt { .. } | OperationKind::NotifyReply { .. } => {
+            OperationKind::Interrupt { .. } => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "unexpected request kind",
@@ -334,7 +328,7 @@ impl<T> Session<T> {
         ino: u64,
         offset: u64,
         size: u32,
-    ) -> io::Result<RetrieveHandle<T>>
+    ) -> io::Result<u64>
     where
         W: Writer + Unpin,
     {
@@ -346,9 +340,7 @@ impl<T> Session<T> {
         }
 
         let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
-
-        let (tx, rx) = oneshot::channel();
-        self.retrieves.lock().insert(unique, tx);
+        self.retrieves.lock().insert(unique);
 
         let out = fuse_notify_retrieve_out {
             notify_unique: unique,
@@ -364,10 +356,7 @@ impl<T> Session<T> {
         )
         .await?;
 
-        Ok(RetrieveHandle {
-            unique,
-            rx: rx.fuse(),
-        })
+        Ok(unique)
     }
 
     /// Send I/O readiness to the kernel.
@@ -392,12 +381,6 @@ impl<T> Session<T> {
             &[unsafe { as_bytes(&out) }],
         )
         .await
-    }
-
-    fn send_notify_reply(&self, unique: u64, offset: u64, data: T) {
-        if let Some(tx) = self.retrieves.lock().remove(&unique) {
-            let _ = tx.send((offset, data));
-        }
     }
 }
 
@@ -427,34 +410,6 @@ impl Interrupt {
     #[inline]
     pub fn interrupt_unique(&self) -> u64 {
         self.interrupt_unique
-    }
-}
-
-/// A handle for awaiting a result of `notify_retrieve`.
-#[derive(Debug)]
-pub struct RetrieveHandle<T> {
-    unique: u64,
-    rx: Fuse<oneshot::Receiver<(u64, T)>>,
-}
-
-impl<T> RetrieveHandle<T> {
-    /// Return the unique ID of the notification.
-    pub fn unique(&self) -> u64 {
-        self.unique
-    }
-}
-
-impl<T> Future for RetrieveHandle<T> {
-    type Output = (u64, T);
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Self::Output> {
-        self.rx.poll_unpin(cx).map(|res| res.expect("canceled"))
-    }
-}
-
-impl<T> FusedFuture for RetrieveHandle<T> {
-    fn is_terminated(&self) -> bool {
-        self.rx.is_terminated()
     }
 }
 
