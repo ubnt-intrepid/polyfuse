@@ -1604,37 +1604,6 @@ impl_header! {
     Poll,
 }
 
-// ==== parse ====
-
-#[derive(Debug)]
-pub(crate) enum OperationKind<'a, T> {
-    Operation(Operation<'a, T>),
-    Forget(Forgets<'a>),
-    Init {
-        arg: &'a fuse_init_in,
-    },
-    Destroy,
-    Interrupt {
-        arg: &'a fuse_interrupt_in,
-    },
-    NotifyReply {
-        arg: &'a fuse_notify_retrieve_in,
-        data: T,
-    },
-    Unknown,
-    // TODO: Ioctl
-}
-
-impl<'a, T> OperationKind<'a, T> {
-    pub(crate) fn parse(
-        header: &'a InHeader,
-        bytes: &'a [u8],
-        mut data: Option<T>,
-    ) -> io::Result<Self> {
-        Parser::new(header, bytes).parse(&mut data)
-    }
-}
-
 #[derive(Debug)]
 pub(crate) enum Forgets<'a> {
     Single(Forget),
@@ -1647,6 +1616,58 @@ impl AsRef<[Forget]> for Forgets<'_> {
             Self::Single(forget) => unsafe { std::slice::from_raw_parts(forget, 1) },
             Self::Batch(forgets) => &*forgets,
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct NotifyReply<'a> {
+    header: &'a InHeader,
+    arg: &'a fuse_notify_retrieve_in,
+}
+
+impl<'a> NotifyReply<'a> {
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.header.unique()
+    }
+
+    #[inline]
+    pub fn ino(&self) -> u64 {
+        self.header.nodeid()
+    }
+
+    #[inline]
+    pub fn offset(&self) -> u64 {
+        self.arg.offset
+    }
+
+    #[inline]
+    pub fn size(&self) -> u32 {
+        self.arg.size
+    }
+}
+
+// ==== parse ====
+
+#[derive(Debug)]
+pub(crate) enum OperationKind<'a, T> {
+    Operation(Operation<'a, T>),
+    Forget(Forgets<'a>),
+    Init { arg: &'a fuse_init_in },
+    Destroy,
+    Interrupt { arg: &'a fuse_interrupt_in },
+    NotifyReply(NotifyReply<'a>, T),
+    Unknown,
+    // TODO: Ioctl
+}
+
+impl<'a, T> OperationKind<'a, T> {
+    pub(crate) fn parse(
+        header: &'a InHeader,
+        bytes: &'a [u8],
+        mut data: Option<T>,
+    ) -> io::Result<Self> {
+        Parser::new(header, bytes).parse(&mut data)
     }
 }
 
@@ -1720,7 +1741,10 @@ impl<'a> Parser<'a> {
             Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
                 let arg = self.fetch()?;
                 let data = data.take().expect("empty notify reply data");
-                Ok(OperationKind::NotifyReply { arg, data })
+                Ok(OperationKind::NotifyReply(
+                    NotifyReply { header, arg },
+                    data,
+                ))
             }
 
             Some(fuse_opcode::FUSE_LOOKUP) => {

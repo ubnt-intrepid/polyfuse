@@ -1,18 +1,35 @@
 //! Lowlevel interface to handle FUSE requests.
 
+#![allow(clippy::needless_update)]
+
 use crate::{
     common::StatFs,
     fs::Filesystem,
     init::ConnectionInfo,
-    io::{Buffer, Reader, ReaderExt, Writer},
-    kernel::fuse_opcode,
-    notify::Notifier,
+    io::{Buffer, Reader, ReaderExt, Writer, WriterExt},
+    kernel::{
+        fuse_notify_code, //
+        fuse_notify_delete_out,
+        fuse_notify_inval_entry_out,
+        fuse_notify_inval_inode_out,
+        fuse_notify_poll_wakeup_out,
+        fuse_notify_retrieve_out,
+        fuse_notify_store_out,
+        fuse_opcode,
+    },
     op::{Operation, OperationKind},
     reply::ReplyWriter,
+    util::as_bytes,
 };
+use parking_lot::Mutex;
+use smallvec::SmallVec;
 use std::{
-    io,
-    sync::atomic::{AtomicBool, Ordering},
+    collections::HashSet,
+    convert::TryFrom,
+    ffi::OsStr,
+    io, mem,
+    os::unix::ffi::OsStrExt,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// FUSE session driver.
@@ -21,6 +38,8 @@ pub struct Session {
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
+    notify_unique: AtomicU64,
+    retrieves: Mutex<HashSet<u64>>,
 }
 
 impl Session {
@@ -29,6 +48,8 @@ impl Session {
             conn,
             bufsize,
             exited: AtomicBool::new(false),
+            notify_unique: AtomicU64::new(0),
+            retrieves: Mutex::default(),
         }
     }
 
@@ -55,7 +76,6 @@ impl Session {
         &self,
         reader: &mut R,
         buf: &mut B,
-        notifier: &Notifier<B::Data>,
     ) -> io::Result<Vec<Interrupt>>
     where
         R: Reader<Buffer = B> + Unpin,
@@ -65,7 +85,7 @@ impl Session {
         loop {
             reader.receive_msg(buf).await?;
             match buf.header().opcode() {
-                Some(fuse_opcode::FUSE_INTERRUPT) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => (),
+                Some(fuse_opcode::FUSE_INTERRUPT) => (),
                 _ => return Ok(interrupts),
             }
 
@@ -79,17 +99,13 @@ impl Session {
                         interrupt_unique: header.unique(),
                     });
                 }
-                OperationKind::NotifyReply { arg, data } => {
-                    let unique = header.unique();
-                    tracing::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
-                    notifier.send_notify_reply(unique, arg.offset, data).await;
-                }
                 _ => unreachable!(),
             }
         }
     }
 
     /// Process an incoming request using the specified filesystem operations.
+    #[allow(clippy::cognitive_complexity)]
     pub async fn process<F: ?Sized, W: ?Sized, B: ?Sized>(
         &self,
         fs: &F,
@@ -123,10 +139,6 @@ impl Session {
                 self.exit();
                 return Ok(());
             }
-            OperationKind::Forget(forgets) => {
-                // no reply.
-                return fs.forget(forgets.as_ref()).await;
-            }
             OperationKind::Operation(op) => match op {
                 op @ Operation::Statfs(..) => {
                     fs.reply(op, &mut writer).await?;
@@ -147,12 +159,21 @@ impl Session {
                     }
                 }
             },
+            OperationKind::Forget(forgets) => {
+                // no reply.
+                return fs.forget(forgets.as_ref()).await;
+            }
+            OperationKind::NotifyReply(op, data) => {
+                if self.retrieves.lock().remove(&op.unique()) {
+                    return fs.notify_reply(op, data).await;
+                }
+            }
 
             OperationKind::Init { .. } => {
                 tracing::warn!("ignore an INIT request after initializing the session");
                 writer.reply_err(libc::EIO).await?;
             }
-            OperationKind::Interrupt { .. } | OperationKind::NotifyReply { .. } => {
+            OperationKind::Interrupt { .. } => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "unexpected request kind",
@@ -167,7 +188,205 @@ impl Session {
 
         Ok(())
     }
+
+    /// Notify the cache invalidation about an inode to the kernel.
+    pub async fn notify_inval_inode<W: ?Sized>(
+        &self,
+        writer: &mut W,
+        ino: u64,
+        off: i64,
+        len: i64,
+    ) -> io::Result<()>
+    where
+        W: Writer + Unpin,
+    {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
+        let out = fuse_notify_inval_inode_out {
+            ino,
+            off,
+            len,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+            &[unsafe { as_bytes(&out) }],
+        )
+        .await
+    }
+
+    /// Notify the invalidation about a directory entry to the kernel.
+    pub async fn notify_inval_entry<W: ?Sized>(
+        &self,
+        writer: &mut W,
+        parent: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
+    where
+        W: Writer + Unpin,
+    {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
+        let name = name.as_ref();
+        let namelen = u32::try_from(name.len()).unwrap();
+        let out = fuse_notify_inval_entry_out {
+            parent,
+            namelen,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+            &[unsafe { as_bytes(&out) }, name.as_bytes(), &[0]],
+        )
+        .await
+    }
+
+    /// Notify the invalidation about a directory entry to the kernel.
+    ///
+    /// The role of this notification is similar to `notify_inval_entry`.
+    /// Additionally, when the provided `child` inode matches the inode
+    /// in the dentry cache, the inotify will inform the deletion to
+    /// watchers if exists.
+    pub async fn notify_delete<W: ?Sized>(
+        &self,
+        writer: &mut W,
+        parent: u64,
+        child: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
+    where
+        W: Writer + Unpin,
+    {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
+        let name = name.as_ref();
+        let namelen = u32::try_from(name.len()).unwrap();
+        let out = fuse_notify_delete_out {
+            parent,
+            child,
+            namelen,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_DELETE,
+            &[unsafe { as_bytes(&out) }, name.as_bytes(), &[0]],
+        )
+        .await
+    }
+
+    /// Push the data in an inode for updating the kernel cache.
+    pub async fn notify_store<W: ?Sized>(
+        &self,
+        writer: &mut W,
+        ino: u64,
+        offset: u64,
+        data: &[&[u8]],
+    ) -> io::Result<()>
+    where
+        W: Writer + Unpin,
+    {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
+        let size = u32::try_from(data.iter().map(|t| t.len()).sum::<usize>()).unwrap();
+        let out = fuse_notify_store_out {
+            nodeid: ino,
+            offset,
+            size,
+            ..Default::default()
+        };
+        let data: SmallVec<[_; 4]> = Some(unsafe { as_bytes(&out) })
+            .into_iter()
+            .chain(data.iter().copied())
+            .collect();
+        send_notify(writer, fuse_notify_code::FUSE_NOTIFY_STORE, &*data).await
+    }
+
+    /// Retrieve data in an inode from the kernel cache.
+    pub async fn notify_retrieve<W: ?Sized>(
+        &self,
+        writer: &mut W,
+        ino: u64,
+        offset: u64,
+        size: u32,
+    ) -> io::Result<u64>
+    where
+        W: Writer + Unpin,
+    {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
+        let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
+        self.retrieves.lock().insert(unique);
+
+        let out = fuse_notify_retrieve_out {
+            notify_unique: unique,
+            nodeid: ino,
+            offset,
+            size,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+            &[unsafe { as_bytes(&out) }],
+        )
+        .await?;
+
+        Ok(unique)
+    }
+
+    /// Send I/O readiness to the kernel.
+    pub async fn notify_poll_wakeup<W: ?Sized>(&self, writer: &mut W, kh: u64) -> io::Result<()>
+    where
+        W: Writer + Unpin,
+    {
+        if self.exited() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ));
+        }
+
+        let out = fuse_notify_poll_wakeup_out {
+            kh,
+            ..Default::default()
+        };
+        send_notify(
+            writer,
+            fuse_notify_code::FUSE_NOTIFY_POLL,
+            &[unsafe { as_bytes(&out) }],
+        )
+        .await
+    }
 }
+
 /// Information about an interrupt request.
 #[derive(Debug, Copy, Clone)]
 pub struct Interrupt {
@@ -195,4 +414,17 @@ impl Interrupt {
     pub fn interrupt_unique(&self) -> u64 {
         self.interrupt_unique
     }
+}
+
+#[inline]
+async fn send_notify<W: ?Sized>(
+    writer: &mut W,
+    code: fuse_notify_code,
+    data: &[&[u8]],
+) -> io::Result<()>
+where
+    W: Writer + Unpin,
+{
+    let code = unsafe { mem::transmute::<_, i32>(code) };
+    writer.send_msg(0, code, data).await
 }

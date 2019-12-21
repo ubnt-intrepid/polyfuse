@@ -19,6 +19,7 @@ futures = { version = "0.3.0", features = [ "unstable", "async-await" ] }
 lazy_static = "1"
 libc = "0.2"
 memoffset = "0.5"
+parking_lot = "0.9"
 smallvec = "0.6"
 tracing = "0.1"
 

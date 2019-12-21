@@ -15,7 +15,6 @@ use tokio::signal::unix::{signal, SignalKind};
 #[derive(Debug)]
 pub struct Server {
     session: Arc<Session>,
-    notifier: Arc<polyfuse::Notifier<Bytes>>,
     channel: Channel,
 }
 
@@ -30,7 +29,6 @@ impl Server {
             .await?;
         Ok(Server {
             session: Arc::new(session),
-            notifier: Arc::new(polyfuse::Notifier::new()),
             channel,
         })
     }
@@ -39,7 +37,6 @@ impl Server {
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             session: self.session.clone(),
-            notifier: self.notifier.clone(),
             channel: self.channel.try_clone()?,
         })
     }
@@ -63,7 +60,6 @@ impl Server {
     {
         let Self {
             session,
-            notifier,
             ref mut channel,
         } = self;
         let fs = Arc::new(fs);
@@ -72,7 +68,7 @@ impl Server {
         let mut main_loop = Box::pin(async move {
             loop {
                 let mut buf = ChannelBuffer::new(session.buffer_size());
-                if let Err(err) = session.receive(&mut *channel, &mut buf, &notifier).await {
+                if let Err(err) = session.receive(&mut *channel, &mut buf).await {
                     match err.raw_os_error() {
                         Some(libc::ENODEV) => {
                             tracing::debug!("connection is closed");
@@ -105,8 +101,8 @@ impl Server {
     /// When the kernel receives this notification, some requests are queued to read
     /// the updated data.
     pub async fn notify_inval_inode(&mut self, ino: u64, off: i64, len: i64) -> io::Result<()> {
-        self.notifier
-            .inval_inode(&mut self.channel, &*self.session, ino, off, len)
+        self.session
+            .notify_inval_inode(&mut self.channel, ino, off, len)
             .await
     }
 
@@ -116,8 +112,8 @@ impl Server {
         parent: u64,
         name: impl AsRef<OsStr>,
     ) -> io::Result<()> {
-        self.notifier
-            .inval_entry(&mut self.channel, &*self.session, parent, name)
+        self.session
+            .notify_inval_entry(&mut self.channel, parent, name)
             .await
     }
 
@@ -128,34 +124,28 @@ impl Server {
         child: u64,
         name: impl AsRef<OsStr>,
     ) -> io::Result<()> {
-        self.notifier
-            .delete(&mut self.channel, &*self.session, parent, child, name)
+        self.session
+            .notify_delete(&mut self.channel, parent, child, name)
             .await
     }
 
     /// Replace the specified range of cache data with a new value.
     pub async fn notify_store(&mut self, ino: u64, offset: u64, data: &[&[u8]]) -> io::Result<()> {
-        self.notifier
-            .store(&mut self.channel, &*self.session, ino, offset, data)
+        self.session
+            .notify_store(&mut self.channel, ino, offset, data)
             .await
     }
 
     /// Retrieve the value of the cache data with the specified range.
-    pub async fn notify_retrieve(&mut self, ino: u64, offset: u64, size: u32) -> io::Result<Bytes> {
-        let handle = self
-            .notifier
-            .retrieve(&mut self.channel, &*self.session, ino, offset, size)
-            .await?;
-        let (in_offset, data) = handle.await;
-        debug_assert_eq!(offset, in_offset);
-        Ok(data)
+    pub async fn notify_retrieve(&mut self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
+        self.session
+            .notify_retrieve(&mut self.channel, ino, offset, size)
+            .await
     }
 
     /// Notify an I/O readiness.
     pub async fn notify_poll_wakeup(&mut self, kh: u64) -> io::Result<()> {
-        self.notifier
-            .poll_wakeup(&mut self.channel, &*self.session, kh)
-            .await
+        self.session.notify_poll_wakeup(&mut self.channel, kh).await
     }
 }
 
