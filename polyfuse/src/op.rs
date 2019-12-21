@@ -3,22 +3,28 @@
 #![allow(missing_docs)]
 
 use crate::{
-    common::FileLock,
+    common::{FileLock, Forget},
     io::{InHeader, Writer},
     kernel::{
         fuse_access_in, //
+        fuse_batch_forget_in,
         fuse_bmap_in,
         fuse_copy_file_range_in,
         fuse_create_in,
         fuse_fallocate_in,
         fuse_flush_in,
+        fuse_forget_in,
         fuse_fsync_in,
         fuse_getattr_in,
         fuse_getxattr_in,
+        fuse_init_in,
+        fuse_interrupt_in,
         fuse_link_in,
         fuse_lk_in,
         fuse_mkdir_in,
         fuse_mknod_in,
+        fuse_notify_retrieve_in,
+        fuse_opcode,
         fuse_open_in,
         fuse_poll_in,
         fuse_read_in,
@@ -28,6 +34,7 @@ use crate::{
         fuse_setattr_in,
         fuse_setxattr_in,
         fuse_write_in,
+        FUSE_LK_FLOCK,
     },
     reply::{
         ReplyAttr, //
@@ -44,7 +51,12 @@ use crate::{
     },
     util::as_bytes,
 };
-use std::{ffi::OsStr, io, os::unix::ffi::OsStrExt};
+use std::{
+    ffi::OsStr, //
+    io,
+    mem,
+    os::unix::ffi::OsStrExt,
+};
 
 /// The kind of FUSE requests received from the kernel.
 #[derive(Debug)]
@@ -185,8 +197,8 @@ pub enum Operation<'a, T> {
 
 #[derive(Debug)]
 pub struct Lookup<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) name: &'a OsStr,
+    header: &'a InHeader,
+    name: &'a OsStr,
 }
 
 impl<'a> Lookup<'a> {
@@ -213,8 +225,8 @@ impl<'a> Lookup<'a> {
 
 #[derive(Debug)]
 pub struct Getattr<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_getattr_in,
+    header: &'a InHeader,
+    arg: &'a fuse_getattr_in,
 }
 
 impl<'a> Getattr<'a> {
@@ -245,8 +257,8 @@ impl<'a> Getattr<'a> {
 
 #[derive(Debug)]
 pub struct Setattr<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_setattr_in,
+    header: &'a InHeader,
+    arg: &'a fuse_setattr_in,
 }
 
 impl<'a> Setattr<'a> {
@@ -326,7 +338,7 @@ impl<'a> Setattr<'a> {
 
 #[derive(Debug)]
 pub struct Readlink<'a> {
-    pub(crate) header: &'a InHeader,
+    header: &'a InHeader,
 }
 
 impl Readlink<'_> {
@@ -349,9 +361,9 @@ impl Readlink<'_> {
 
 #[derive(Debug)]
 pub struct Symlink<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) name: &'a OsStr,
-    pub(crate) link: &'a OsStr,
+    header: &'a InHeader,
+    name: &'a OsStr,
+    link: &'a OsStr,
 }
 
 impl<'a> Symlink<'a> {
@@ -382,9 +394,9 @@ impl<'a> Symlink<'a> {
 
 #[derive(Debug)]
 pub struct Mknod<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_mknod_in,
-    pub(crate) name: &'a OsStr,
+    header: &'a InHeader,
+    arg: &'a fuse_mknod_in,
+    name: &'a OsStr,
 }
 
 impl<'a> Mknod<'a> {
@@ -423,9 +435,9 @@ impl<'a> Mknod<'a> {
 
 #[derive(Debug)]
 pub struct Mkdir<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_mkdir_in,
-    pub(crate) name: &'a OsStr,
+    header: &'a InHeader,
+    arg: &'a fuse_mkdir_in,
+    name: &'a OsStr,
 }
 
 impl<'a> Mkdir<'a> {
@@ -460,8 +472,8 @@ impl<'a> Mkdir<'a> {
 
 #[derive(Debug)]
 pub struct Unlink<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) name: &'a OsStr,
+    header: &'a InHeader,
+    name: &'a OsStr,
 }
 
 impl<'a> Unlink<'a> {
@@ -483,8 +495,8 @@ impl<'a> Unlink<'a> {
 
 #[derive(Debug)]
 pub struct Rmdir<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) name: &'a OsStr,
+    header: &'a InHeader,
+    name: &'a OsStr,
 }
 
 impl<'a> Rmdir<'a> {
@@ -506,14 +518,14 @@ impl<'a> Rmdir<'a> {
 
 #[derive(Debug)]
 pub struct Rename<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: RenameKind<'a>,
-    pub(crate) name: &'a OsStr,
-    pub(crate) newname: &'a OsStr,
+    header: &'a InHeader,
+    arg: RenameKind<'a>,
+    name: &'a OsStr,
+    newname: &'a OsStr,
 }
 
 #[derive(Debug)]
-pub(crate) enum RenameKind<'a> {
+enum RenameKind<'a> {
     V1(&'a fuse_rename_in),
     V2(&'a fuse_rename2_in),
 }
@@ -567,9 +579,9 @@ impl<'a> Rename<'a> {
 
 #[derive(Debug)]
 pub struct Link<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_link_in,
-    pub(crate) newname: &'a OsStr,
+    header: &'a InHeader,
+    arg: &'a fuse_link_in,
+    newname: &'a OsStr,
 }
 
 impl<'a> Link<'a> {
@@ -600,8 +612,8 @@ impl<'a> Link<'a> {
 
 #[derive(Debug)]
 pub struct Open<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_open_in,
+    header: &'a InHeader,
+    arg: &'a fuse_open_in,
 }
 
 impl<'a> Open<'a> {
@@ -628,8 +640,8 @@ impl<'a> Open<'a> {
 
 #[derive(Debug)]
 pub struct Read<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_read_in,
+    header: &'a InHeader,
+    arg: &'a fuse_read_in,
 }
 
 impl<'a> Read<'a> {
@@ -697,8 +709,8 @@ impl<'a> Read<'a> {
 
 #[derive(Debug)]
 pub struct Write<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_write_in,
+    header: &'a InHeader,
+    arg: &'a fuse_write_in,
 }
 
 impl<'a> Write<'a> {
@@ -745,8 +757,8 @@ impl<'a> Write<'a> {
 
 #[derive(Debug)]
 pub struct Release<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_release_in,
+    header: &'a InHeader,
+    arg: &'a fuse_release_in,
 }
 
 impl<'a> Release<'a> {
@@ -785,7 +797,7 @@ impl<'a> Release<'a> {
 
 #[derive(Debug)]
 pub struct Statfs<'a> {
-    pub(crate) header: &'a InHeader,
+    header: &'a InHeader,
 }
 
 impl Statfs<'_> {
@@ -808,8 +820,8 @@ impl Statfs<'_> {
 
 #[derive(Debug)]
 pub struct Fsync<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_fsync_in,
+    header: &'a InHeader,
+    arg: &'a fuse_fsync_in,
 }
 
 impl<'a> Fsync<'a> {
@@ -835,10 +847,10 @@ impl<'a> Fsync<'a> {
 
 #[derive(Debug)]
 pub struct Setxattr<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_setxattr_in,
-    pub(crate) name: &'a OsStr,
-    pub(crate) value: &'a [u8],
+    header: &'a InHeader,
+    arg: &'a fuse_setxattr_in,
+    name: &'a OsStr,
+    value: &'a [u8],
 }
 
 impl<'a> Setxattr<'a> {
@@ -868,9 +880,9 @@ impl<'a> Setxattr<'a> {
 
 #[derive(Debug)]
 pub struct Getxattr<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_getxattr_in,
-    pub(crate) name: &'a OsStr,
+    header: &'a InHeader,
+    arg: &'a fuse_getxattr_in,
+    name: &'a OsStr,
 }
 
 impl<'a> Getxattr<'a> {
@@ -934,8 +946,8 @@ impl<'a> Getxattr<'a> {
 
 #[derive(Debug)]
 pub struct Listxattr<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_getxattr_in,
+    header: &'a InHeader,
+    arg: &'a fuse_getxattr_in,
 }
 
 impl<'a> Listxattr<'a> {
@@ -994,8 +1006,8 @@ impl<'a> Listxattr<'a> {
 }
 #[derive(Debug)]
 pub struct Removexattr<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) name: &'a OsStr,
+    header: &'a InHeader,
+    name: &'a OsStr,
 }
 
 impl<'a> Removexattr<'a> {
@@ -1017,8 +1029,8 @@ impl<'a> Removexattr<'a> {
 
 #[derive(Debug)]
 pub struct Flush<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_flush_in,
+    header: &'a InHeader,
+    arg: &'a fuse_flush_in,
 }
 
 impl<'a> Flush<'a> {
@@ -1044,8 +1056,8 @@ impl<'a> Flush<'a> {
 
 #[derive(Debug)]
 pub struct Opendir<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_open_in,
+    header: &'a InHeader,
+    arg: &'a fuse_open_in,
 }
 
 impl<'a> Opendir<'a> {
@@ -1078,9 +1090,9 @@ pub enum ReaddirMode {
 
 #[derive(Debug)]
 pub struct Readdir<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_read_in,
-    pub(crate) mode: ReaddirMode,
+    header: &'a InHeader,
+    arg: &'a fuse_read_in,
+    mode: ReaddirMode,
 }
 
 impl<'a> Readdir<'a> {
@@ -1140,8 +1152,8 @@ impl<'a> Readdir<'a> {
 
 #[derive(Debug)]
 pub struct Releasedir<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_release_in,
+    header: &'a InHeader,
+    arg: &'a fuse_release_in,
 }
 
 impl<'a> Releasedir<'a> {
@@ -1167,8 +1179,8 @@ impl<'a> Releasedir<'a> {
 
 #[derive(Debug)]
 pub struct Fsyncdir<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_fsync_in,
+    header: &'a InHeader,
+    arg: &'a fuse_fsync_in,
 }
 
 impl<'a> Fsyncdir<'a> {
@@ -1194,8 +1206,8 @@ impl<'a> Fsyncdir<'a> {
 
 #[derive(Debug)]
 pub struct Getlk<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_lk_in,
+    header: &'a InHeader,
+    arg: &'a fuse_lk_in,
 }
 
 impl<'a> Getlk<'a> {
@@ -1230,9 +1242,9 @@ impl<'a> Getlk<'a> {
 
 #[derive(Debug)]
 pub struct Setlk<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_lk_in,
-    pub(crate) sleep: bool,
+    header: &'a InHeader,
+    arg: &'a fuse_lk_in,
+    sleep: bool,
 }
 
 impl<'a> Setlk<'a> {
@@ -1266,9 +1278,9 @@ impl<'a> Setlk<'a> {
 
 #[derive(Debug)]
 pub struct Flock<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_lk_in,
-    pub(crate) sleep: bool,
+    header: &'a InHeader,
+    arg: &'a fuse_lk_in,
+    sleep: bool,
 }
 
 impl<'a> Flock<'a> {
@@ -1313,8 +1325,8 @@ impl<'a> Flock<'a> {
 
 #[derive(Debug)]
 pub struct Access<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_access_in,
+    header: &'a InHeader,
+    arg: &'a fuse_access_in,
 }
 
 impl<'a> Access<'a> {
@@ -1336,9 +1348,9 @@ impl<'a> Access<'a> {
 
 #[derive(Debug)]
 pub struct Create<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_create_in,
-    pub(crate) name: &'a OsStr,
+    header: &'a InHeader,
+    arg: &'a fuse_create_in,
+    name: &'a OsStr,
 }
 
 impl<'a> Create<'a> {
@@ -1384,8 +1396,8 @@ impl<'a> Create<'a> {
 
 #[derive(Debug)]
 pub struct Bmap<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_bmap_in,
+    header: &'a InHeader,
+    arg: &'a fuse_bmap_in,
 }
 
 impl<'a> Bmap<'a> {
@@ -1416,8 +1428,8 @@ impl<'a> Bmap<'a> {
 
 #[derive(Debug)]
 pub struct Fallocate<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_fallocate_in,
+    header: &'a InHeader,
+    arg: &'a fuse_fallocate_in,
 }
 
 impl<'a> Fallocate<'a> {
@@ -1451,8 +1463,8 @@ impl<'a> Fallocate<'a> {
 
 #[derive(Debug)]
 pub struct CopyFileRange<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_copy_file_range_in,
+    header: &'a InHeader,
+    arg: &'a fuse_copy_file_range_in,
 }
 
 impl<'a> CopyFileRange<'a> {
@@ -1487,8 +1499,8 @@ impl<'a> CopyFileRange<'a> {
 
 #[derive(Debug)]
 pub struct Poll<'a> {
-    pub(crate) header: &'a InHeader,
-    pub(crate) arg: &'a fuse_poll_in,
+    header: &'a InHeader,
+    arg: &'a fuse_poll_in,
 }
 
 impl<'a> Poll<'a> {
@@ -1522,5 +1534,410 @@ impl<'a> Poll<'a> {
     {
         let out = out.as_ref();
         writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+    }
+}
+
+// ==== parse ====
+
+#[derive(Debug)]
+pub(crate) enum OperationKind<'a, T> {
+    Operation(Operation<'a, T>),
+    Forget(Forgets<'a>),
+    Init {
+        arg: &'a fuse_init_in,
+    },
+    Destroy,
+    Interrupt {
+        arg: &'a fuse_interrupt_in,
+    },
+    NotifyReply {
+        arg: &'a fuse_notify_retrieve_in,
+        data: T,
+    },
+    Unknown,
+    // TODO: Ioctl
+}
+
+impl<'a, T> OperationKind<'a, T> {
+    pub(crate) fn parse(
+        header: &'a InHeader,
+        bytes: &'a [u8],
+        mut data: Option<T>,
+    ) -> io::Result<Self> {
+        Parser::new(header, bytes).parse(&mut data)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Forgets<'a> {
+    Single(Forget),
+    Batch(&'a [Forget]),
+}
+
+impl AsRef<[Forget]> for Forgets<'_> {
+    fn as_ref(&self) -> &[Forget] {
+        match self {
+            Self::Single(forget) => unsafe { std::slice::from_raw_parts(forget, 1) },
+            Self::Batch(forgets) => &*forgets,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Parser<'a> {
+    header: &'a InHeader,
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn new(header: &'a InHeader, bytes: &'a [u8]) -> Self {
+        Self {
+            header,
+            bytes,
+            offset: 0,
+        }
+    }
+
+    fn fetch_bytes(&mut self, count: usize) -> io::Result<&'a [u8]> {
+        if self.bytes.len() < self.offset + count {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "fetch"));
+        }
+        let bytes = &self.bytes[self.offset..self.offset + count];
+        self.offset += count;
+        Ok(bytes)
+    }
+
+    fn fetch_array<T>(&mut self, count: usize) -> io::Result<&'a [T]> {
+        self.fetch_bytes(mem::size_of::<T>() * count)
+            .map(|bytes| unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, count) })
+    }
+
+    fn fetch_str(&mut self) -> io::Result<&'a OsStr> {
+        let len = self.bytes[self.offset..]
+            .iter()
+            .position(|&b| b == b'\0')
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fetch_str: missing \\0"))?;
+        self.fetch_bytes(len).map(OsStr::from_bytes)
+    }
+
+    fn fetch<T>(&mut self) -> io::Result<&'a T> {
+        self.fetch_bytes(mem::size_of::<T>())
+            .map(|data| unsafe { &*(data.as_ptr() as *const T) })
+    }
+
+    fn parse<T>(&mut self, data: &mut Option<T>) -> io::Result<OperationKind<'a, T>> {
+        let header = self.header;
+        match header.opcode() {
+            Some(fuse_opcode::FUSE_INIT) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Init { arg })
+            }
+            Some(fuse_opcode::FUSE_DESTROY) => Ok(OperationKind::Destroy),
+            Some(fuse_opcode::FUSE_FORGET) => {
+                let arg = self.fetch::<fuse_forget_in>()?;
+                Ok(OperationKind::Forget(Forgets::Single(Forget::new(
+                    header.nodeid(),
+                    arg.nlookup,
+                ))))
+            }
+            Some(fuse_opcode::FUSE_BATCH_FORGET) => {
+                let arg = self.fetch::<fuse_batch_forget_in>()?;
+                let forgets = self.fetch_array(arg.count as usize)?;
+                Ok(OperationKind::Forget(Forgets::Batch(forgets)))
+            }
+            Some(fuse_opcode::FUSE_INTERRUPT) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Interrupt { arg })
+            }
+            Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
+                let arg = self.fetch()?;
+                let data = data.take().expect("empty notify reply data");
+                Ok(OperationKind::NotifyReply { arg, data })
+            }
+
+            Some(fuse_opcode::FUSE_LOOKUP) => {
+                let name = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Lookup(Lookup {
+                    header,
+                    name,
+                })))
+            }
+            Some(fuse_opcode::FUSE_GETATTR) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Getattr(Getattr {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_SETATTR) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Setattr(Setattr {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_READLINK) => {
+                Ok(OperationKind::Operation(Operation::Readlink(Readlink {
+                    header,
+                })))
+            }
+            Some(fuse_opcode::FUSE_SYMLINK) => {
+                let name = self.fetch_str()?;
+                let link = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Symlink(Symlink {
+                    header,
+                    name,
+                    link,
+                })))
+            }
+            Some(fuse_opcode::FUSE_MKNOD) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Mknod(Mknod {
+                    header,
+                    arg,
+                    name,
+                })))
+            }
+            Some(fuse_opcode::FUSE_MKDIR) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Mkdir(Mkdir {
+                    header,
+                    arg,
+                    name,
+                })))
+            }
+            Some(fuse_opcode::FUSE_UNLINK) => {
+                let name = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Unlink(Unlink {
+                    header,
+                    name,
+                })))
+            }
+            Some(fuse_opcode::FUSE_RMDIR) => {
+                let name = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Rmdir(Rmdir {
+                    header,
+                    name,
+                })))
+            }
+            Some(fuse_opcode::FUSE_RENAME) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                let newname = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Rename(Rename {
+                    header,
+                    arg: RenameKind::V1(arg),
+                    name,
+                    newname,
+                })))
+            }
+            Some(fuse_opcode::FUSE_LINK) => {
+                let arg = self.fetch()?;
+                let newname = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Link(Link {
+                    header,
+                    arg,
+                    newname,
+                })))
+            }
+            Some(fuse_opcode::FUSE_OPEN) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Open(Open {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_READ) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Read(Read {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_WRITE) => {
+                let arg = self.fetch()?;
+                let data = data.take().expect("missing data");
+                Ok(OperationKind::Operation(Operation::Write(
+                    Write { header, arg },
+                    data,
+                )))
+            }
+            Some(fuse_opcode::FUSE_RELEASE) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Release(Release {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_STATFS) => {
+                Ok(OperationKind::Operation(Operation::Statfs(Statfs {
+                    header,
+                })))
+            }
+            Some(fuse_opcode::FUSE_FSYNC) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Fsync(Fsync {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_SETXATTR) => {
+                let arg = self.fetch::<fuse_setxattr_in>()?;
+                let name = self.fetch_str()?;
+                let value = self.fetch_bytes(arg.size as usize)?;
+                Ok(OperationKind::Operation(Operation::Setxattr(Setxattr {
+                    header,
+                    arg,
+                    name,
+                    value,
+                })))
+            }
+            Some(fuse_opcode::FUSE_GETXATTR) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Getxattr(Getxattr {
+                    header,
+                    arg,
+                    name,
+                })))
+            }
+            Some(fuse_opcode::FUSE_LISTXATTR) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Listxattr(Listxattr {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_REMOVEXATTR) => {
+                let name = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Removexattr(
+                    Removexattr { header, name },
+                )))
+            }
+            Some(fuse_opcode::FUSE_FLUSH) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Flush(Flush {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_OPENDIR) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Opendir(Opendir {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_READDIR) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Readdir(Readdir {
+                    header,
+                    arg,
+                    mode: ReaddirMode::Normal,
+                })))
+            }
+            Some(fuse_opcode::FUSE_RELEASEDIR) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Releasedir(
+                    Releasedir { header, arg },
+                )))
+            }
+            Some(fuse_opcode::FUSE_FSYNCDIR) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Fsyncdir(Fsyncdir {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_GETLK) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Getlk(Getlk {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_SETLK) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(new_lock_op(header, arg, false)))
+            }
+            Some(fuse_opcode::FUSE_SETLKW) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(new_lock_op(header, arg, true)))
+            }
+            Some(fuse_opcode::FUSE_ACCESS) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Access(Access {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_CREATE) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Create(Create {
+                    header,
+                    arg,
+                    name,
+                })))
+            }
+            Some(fuse_opcode::FUSE_BMAP) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Bmap(Bmap {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_FALLOCATE) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Fallocate(Fallocate {
+                    header,
+                    arg,
+                })))
+            }
+            Some(fuse_opcode::FUSE_READDIRPLUS) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Readdir(Readdir {
+                    header,
+                    arg,
+                    mode: ReaddirMode::Plus,
+                })))
+            }
+            Some(fuse_opcode::FUSE_RENAME2) => {
+                let arg = self.fetch()?;
+                let name = self.fetch_str()?;
+                let newname = self.fetch_str()?;
+                Ok(OperationKind::Operation(Operation::Rename(Rename {
+                    header,
+                    arg: RenameKind::V2(arg),
+                    name,
+                    newname,
+                })))
+            }
+            Some(fuse_opcode::FUSE_COPY_FILE_RANGE) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::CopyFileRange(
+                    CopyFileRange { header, arg },
+                )))
+            }
+            Some(fuse_opcode::FUSE_POLL) => {
+                let arg = self.fetch()?;
+                Ok(OperationKind::Operation(Operation::Poll(Poll {
+                    header,
+                    arg,
+                })))
+            }
+            _ => Ok(OperationKind::Unknown),
+        }
+    }
+}
+
+fn new_lock_op<'a, T>(header: &'a InHeader, arg: &'a fuse_lk_in, sleep: bool) -> Operation<'a, T> {
+    if arg.lk_flags & FUSE_LK_FLOCK != 0 {
+        Operation::Flock(Flock { header, arg, sleep })
+    } else {
+        Operation::Setlk(Setlk { header, arg, sleep })
     }
 }

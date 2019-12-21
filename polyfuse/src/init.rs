@@ -16,7 +16,7 @@ use crate::{
         FUSE_NO_OPENDIR_SUPPORT,
         FUSE_NO_OPEN_SUPPORT,
     },
-    request::RequestKind,
+    op::OperationKind,
     session::Session,
     util::as_bytes,
 };
@@ -146,10 +146,10 @@ impl SessionInitializer {
     {
         loop {
             io.receive_msg(buf).await?;
-            let (header, kind, _data) = buf.extract();
-            let kind = crate::request::Parser::new(kind).parse(header.opcode().unwrap())?;
+            let (header, kind, data) = buf.extract();
+            let kind = OperationKind::parse(header, kind, data)?;
             match kind {
-                RequestKind::Init { arg: init_in } => {
+                OperationKind::Init { arg: init_in } => {
                     let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
                     tracing::debug!("INIT request:");
                     tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);

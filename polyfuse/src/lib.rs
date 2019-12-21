@@ -25,7 +25,6 @@ mod dirent;
 mod fs;
 mod init;
 mod kernel;
-mod request;
 mod session;
 mod util;
 

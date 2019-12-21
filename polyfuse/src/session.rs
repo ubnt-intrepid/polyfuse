@@ -1,15 +1,14 @@
 //! Lowlevel interface to handle FUSE requests.
 
 use crate::{
-    common::{Forget, StatFs},
+    common::StatFs,
     fs::{Context, Filesystem},
     init::ConnectionInfo,
     io::{Buffer, Reader, ReaderExt, Writer},
-    kernel::{fuse_forget_one, fuse_opcode},
+    kernel::fuse_opcode,
     notify::Notifier,
-    op::{self, Operation},
+    op::{Operation, OperationKind},
     reply::ReplyWriter,
-    request::RequestKind,
 };
 use std::{
     io,
@@ -71,21 +70,19 @@ impl Session {
             }
 
             let (header, kind, data) = buf.extract();
-            let kind = crate::request::Parser::new(kind).parse(header.opcode().unwrap())?;
+            let kind = OperationKind::parse(header, kind, data)?;
             match kind {
-                RequestKind::Interrupt { arg } => {
+                OperationKind::Interrupt { arg } => {
                     tracing::debug!("Receive INTERRUPT (unique = {:?})", arg.unique);
                     interrupts.push(Interrupt {
                         unique: arg.unique,
                         interrupt_unique: header.unique(),
                     });
                 }
-                RequestKind::NotifyReply { arg } => {
+                OperationKind::NotifyReply { arg, data } => {
                     let unique = header.unique();
                     tracing::debug!("Receive NOTIFY_REPLY (notify_unique = {:?})", unique);
-                    notifier
-                        .send_notify_reply(unique, arg.offset, data.expect("empty data"))
-                        .await;
+                    notifier.send_notify_reply(unique, arg.offset, data).await;
                 }
                 _ => unreachable!(),
             }
@@ -93,7 +90,6 @@ impl Session {
     }
 
     /// Process an incoming request using the specified filesystem operations.
-    #[allow(clippy::cognitive_complexity)]
     pub async fn process<F: ?Sized, W: ?Sized, B: ?Sized>(
         &self,
         fs: &F,
@@ -112,9 +108,8 @@ impl Session {
         }
 
         let (header, kind, data) = buf.extract();
-        let kind = crate::request::Parser::new(kind).parse(header.opcode().unwrap())?;
+        let kind = OperationKind::parse(header, kind, data)?;
 
-        let ino = header.nodeid();
         tracing::debug!(
             "Handle a request: unique={}, opcode={:?}",
             header.unique(),
@@ -124,207 +119,48 @@ impl Session {
         let mut cx = Context::new(&header);
         let mut writer = ReplyWriter::new(header.unique(), &mut *writer);
 
-        macro_rules! do_reply {
-            ($op:expr) => {
-                do_reply!($op, {
-                    writer.reply_err(libc::ENOSYS).await?;
-                })
-            };
-            ($op:expr, $after:stmt) => {
-                fs.reply(&mut cx, $op, &mut writer).await?;
-                if !writer.replied() {
-                    $after
-                }
-            };
-        }
-
         match kind {
-            RequestKind::Destroy => {
+            OperationKind::Destroy => {
                 self.exit();
                 return Ok(());
             }
-            RequestKind::Lookup { name } => {
-                do_reply!(Operation::Lookup(op::Lookup { header, name }));
-            }
-            RequestKind::Forget { arg } => {
+            OperationKind::Forget(forgets) => {
                 // no reply.
-                return fs.forget(&mut cx, &[Forget::new(ino, arg.nlookup)]).await;
+                return fs.forget(&mut cx, forgets.as_ref()).await;
             }
-            RequestKind::BatchForget { forgets, .. } => {
-                #[inline(always)]
-                fn make_forgets(forgets: &[fuse_forget_one]) -> &[Forget] {
-                    unsafe {
-                        std::slice::from_raw_parts(
-                            forgets.as_ptr() as *const Forget, //
-                            forgets.len(),
-                        )
+            OperationKind::Operation(op) => match op {
+                op @ Operation::Statfs(..) => {
+                    fs.reply(&mut cx, op, &mut writer).await?;
+                    if !writer.replied() {
+                        let mut st = StatFs::default();
+                        st.set_namelen(255);
+                        st.set_bsize(512);
+                        let out = crate::reply::ReplyStatfs::new(st);
+                        writer
+                            .reply_raw(&[unsafe { crate::util::as_bytes(&out) }])
+                            .await?;
                     }
                 }
-
-                // no reply.
-                return fs.forget(&mut cx, make_forgets(&*forgets)).await;
-            }
-            RequestKind::Getattr { arg } => {
-                do_reply!(Operation::Getattr(op::Getattr { header, arg }));
-            }
-            RequestKind::Setattr { arg } => {
-                do_reply!(Operation::Setattr(op::Setattr { header, arg }));
-            }
-            RequestKind::Readlink => {
-                do_reply!(Operation::Readlink(op::Readlink { header }));
-            }
-            RequestKind::Symlink { name, link } => {
-                do_reply!(Operation::Symlink(op::Symlink { header, name, link }));
-            }
-            RequestKind::Mknod { arg, name } => {
-                do_reply!(Operation::Mknod(op::Mknod { header, arg, name }));
-            }
-            RequestKind::Mkdir { arg, name } => {
-                do_reply!(Operation::Mkdir(op::Mkdir { header, arg, name }));
-            }
-            RequestKind::Unlink { name } => {
-                do_reply!(Operation::Unlink(op::Unlink { header, name }));
-            }
-            RequestKind::Rmdir { name } => {
-                do_reply!(Operation::Rmdir(op::Rmdir { header, name }));
-            }
-            RequestKind::Rename { arg, name, newname } => {
-                do_reply!(Operation::Rename(op::Rename {
-                    header,
-                    arg: arg.into(),
-                    name,
-                    newname,
-                }));
-            }
-            RequestKind::Rename2 { arg, name, newname } => {
-                do_reply!(Operation::Rename(op::Rename {
-                    header,
-                    arg: arg.into(),
-                    name,
-                    newname,
-                }));
-            }
-            RequestKind::Link { arg, newname } => {
-                do_reply!(Operation::Link(op::Link {
-                    header,
-                    arg,
-                    newname,
-                }));
-            }
-            RequestKind::Open { arg } => {
-                do_reply!(Operation::Open(op::Open { header, arg }));
-            }
-            RequestKind::Read { arg } => {
-                do_reply!(Operation::Read(op::Read { header, arg }));
-            }
-            RequestKind::Write { arg } => {
-                do_reply!(Operation::Write(
-                    op::Write { header, arg },
-                    data.expect("empty remains")
-                ));
-            }
-            RequestKind::Release { arg } => {
-                do_reply!(Operation::Release(op::Release { header, arg }));
-            }
-            RequestKind::Statfs => {
-                do_reply!(Operation::Statfs(op::Statfs { header }), {
-                    let mut st = StatFs::default();
-                    st.set_namelen(255);
-                    st.set_bsize(512);
-                    let out = crate::reply::ReplyStatfs::new(st);
-                    writer
-                        .reply_raw(&[unsafe { crate::util::as_bytes(&out) }])
-                        .await?;
-                });
-            }
-            RequestKind::Fsync { arg } => {
-                do_reply!(Operation::Fsync(op::Fsync { header, arg }));
-            }
-            RequestKind::Setxattr { arg, name, value } => {
-                do_reply!(Operation::Setxattr(op::Setxattr {
-                    header,
-                    arg,
-                    name,
-                    value,
-                }));
-            }
-            RequestKind::Getxattr { arg, name } => {
-                do_reply!(Operation::Getxattr(op::Getxattr { header, arg, name }));
-            }
-            RequestKind::Listxattr { arg } => {
-                do_reply!(Operation::Listxattr(op::Listxattr { header, arg }));
-            }
-            RequestKind::Removexattr { name } => {
-                do_reply!(Operation::Removexattr(op::Removexattr { header, name }));
-            }
-            RequestKind::Flush { arg } => {
-                do_reply!(Operation::Flush(op::Flush { header, arg }));
-            }
-            RequestKind::Opendir { arg } => {
-                do_reply!(Operation::Opendir(op::Opendir { header, arg }));
-            }
-            RequestKind::Readdir { arg } => {
-                do_reply!(Operation::Readdir(op::Readdir {
-                    header,
-                    arg,
-                    mode: op::ReaddirMode::Normal,
-                }));
-            }
-            RequestKind::Readdirplus { arg } => {
-                do_reply!(Operation::Readdir(op::Readdir {
-                    header,
-                    arg,
-                    mode: op::ReaddirMode::Plus,
-                }));
-            }
-            RequestKind::Releasedir { arg } => {
-                do_reply!(Operation::Releasedir(op::Releasedir { header, arg }));
-            }
-            RequestKind::Fsyncdir { arg } => {
-                do_reply!(Operation::Fsyncdir(op::Fsyncdir { header, arg }));
-            }
-            RequestKind::Getlk { arg } => {
-                do_reply!(Operation::Getlk(op::Getlk { header, arg }));
-            }
-            RequestKind::Setlk { arg, sleep } => {
-                if arg.lk_flags & crate::kernel::FUSE_LK_FLOCK != 0 {
-                    do_reply!(Operation::Flock(op::Flock { header, arg, sleep }));
-                } else {
-                    do_reply!(Operation::Setlk(op::Setlk { header, arg, sleep }));
+                op => {
+                    fs.reply(&mut cx, op, &mut writer).await?;
+                    if !writer.replied() {
+                        writer.reply_err(libc::ENOSYS).await?;
+                    }
                 }
-            }
-            RequestKind::Access { arg } => {
-                do_reply!(Operation::Access(op::Access { header, arg }));
-            }
-            RequestKind::Create { arg, name } => {
-                do_reply!(Operation::Create(op::Create { header, arg, name }));
-            }
-            RequestKind::Bmap { arg } => {
-                do_reply!(Operation::Bmap(op::Bmap { header, arg }));
-            }
-            RequestKind::Fallocate { arg } => {
-                do_reply!(Operation::Fallocate(op::Fallocate { header, arg }));
-            }
-            RequestKind::CopyFileRange { arg } => {
-                do_reply!(Operation::CopyFileRange(op::CopyFileRange { header, arg }));
-            }
-            RequestKind::Poll { arg } => {
-                do_reply!(Operation::Poll(op::Poll { header, arg }));
-            }
+            },
 
-            RequestKind::Init { .. } => {
+            OperationKind::Init { .. } => {
                 tracing::warn!("ignore an INIT request after initializing the session");
                 writer.reply_err(libc::EIO).await?;
             }
-
-            RequestKind::Interrupt { .. } | RequestKind::NotifyReply { .. } => {
+            OperationKind::Interrupt { .. } | OperationKind::NotifyReply { .. } => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "unexpected request kind",
                 ));
             }
 
-            RequestKind::Unknown => {
+            OperationKind::Unknown => {
                 tracing::warn!("unsupported opcode: {:?}", header.opcode());
                 writer.reply_err(libc::ENOSYS).await?;
             }
