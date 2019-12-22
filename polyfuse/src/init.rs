@@ -6,7 +6,7 @@
 )]
 
 use crate::{
-    io::{Buffer, Reader, ReaderExt, Writer, WriterExt},
+    io::{Reader, ReaderExt, RequestReader, Writer, WriterExt},
     kernel::{
         fuse_init_out, //
         FUSE_KERNEL_MINOR_VERSION,
@@ -21,6 +21,7 @@ use crate::{
     util::as_bytes,
 };
 use bitflags::bitflags;
+use futures::io::AsyncRead;
 use lazy_static::lazy_static;
 use std::{cmp, io};
 
@@ -142,13 +143,14 @@ impl SessionInitializer {
     pub async fn init<I: ?Sized, B: ?Sized>(self, io: &mut I, buf: &mut B) -> io::Result<Session>
     where
         I: Reader<Buffer = B> + Writer + Unpin,
-        B: Buffer + Unpin,
+        B: AsyncRead + Unpin,
     {
         loop {
             io.receive_msg(buf).await?;
-            let (header, kind, data) = buf.extract();
-            let kind = OperationKind::parse(header, kind, data)?;
-            match kind {
+            let request = buf.read_request().await?;
+            let header = request.header();
+            let arg = request.arg()?;
+            match arg {
                 OperationKind::Init { arg: init_in } => {
                     let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
                     tracing::debug!("INIT request:");

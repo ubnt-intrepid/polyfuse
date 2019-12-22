@@ -61,7 +61,7 @@ use std::{
 /// The kind of FUSE requests received from the kernel.
 #[derive(Debug)]
 #[allow(missing_docs)]
-pub enum Operation<'a, T> {
+pub enum Operation<'a> {
     /// Look up a directory entry by name.
     Lookup(Lookup<'a>),
 
@@ -102,7 +102,7 @@ pub enum Operation<'a, T> {
     Read(Read<'a>),
 
     /// Write data to an opened file.
-    Write(Write<'a>, T),
+    Write(Write<'a>),
 
     /// Release an opened file.
     Release(Release<'a>),
@@ -1539,13 +1539,12 @@ impl<'a> Poll<'a> {
 
 macro_rules! impl_header {
     ($($t:ident),*$(,)?) => {
-        impl<T> Operation<'_, T> {
+        impl Operation<'_> {
             fn header(&self) -> &InHeader {
                 match self {
                     $(
                         Self::$t(op) => op.header,
                     )*
-                    Self::Write(op, ..) => op.header,
                 }
             }
 
@@ -1581,6 +1580,7 @@ impl_header! {
     Link,
     Open,
     Read,
+    Write,
     Release,
     Statfs,
     Fsync,
@@ -1663,24 +1663,20 @@ impl Interrupt<'_> {
 // ==== parse ====
 
 #[derive(Debug)]
-pub(crate) enum OperationKind<'a, T> {
-    Operation(Operation<'a, T>),
+pub(crate) enum OperationKind<'a> {
+    Operation(Operation<'a>),
     Forget(Forgets<'a>),
     Init { arg: &'a fuse_init_in },
     Destroy,
     Interrupt(Interrupt<'a>),
-    NotifyReply(NotifyReply<'a>, T),
+    NotifyReply(NotifyReply<'a>),
     Unknown,
     // TODO: Ioctl
 }
 
-impl<'a, T> OperationKind<'a, T> {
-    pub(crate) fn parse(
-        header: &'a InHeader,
-        bytes: &'a [u8],
-        mut data: Option<T>,
-    ) -> io::Result<Self> {
-        Parser::new(header, bytes).parse(&mut data)
+impl<'a> OperationKind<'a> {
+    pub(crate) fn parse(header: &'a InHeader, bytes: &'a [u8]) -> io::Result<Self> {
+        Parser::new(header, bytes).parse()
     }
 }
 
@@ -1727,7 +1723,7 @@ impl<'a> Parser<'a> {
             .map(|data| unsafe { &*(data.as_ptr() as *const T) })
     }
 
-    fn parse<T>(&mut self, data: &mut Option<T>) -> io::Result<OperationKind<'a, T>> {
+    fn parse(&mut self) -> io::Result<OperationKind<'a>> {
         let header = self.header;
         match header.opcode() {
             Some(fuse_opcode::FUSE_INIT) => {
@@ -1753,11 +1749,7 @@ impl<'a> Parser<'a> {
             }
             Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
                 let arg = self.fetch()?;
-                let data = data.take().expect("empty notify reply data");
-                Ok(OperationKind::NotifyReply(
-                    NotifyReply { header, arg },
-                    data,
-                ))
+                Ok(OperationKind::NotifyReply(NotifyReply { header, arg }))
             }
 
             Some(fuse_opcode::FUSE_LOOKUP) => {
@@ -1863,11 +1855,10 @@ impl<'a> Parser<'a> {
             }
             Some(fuse_opcode::FUSE_WRITE) => {
                 let arg = self.fetch()?;
-                let data = data.take().expect("missing data");
-                Ok(OperationKind::Operation(Operation::Write(
-                    Write { header, arg },
-                    data,
-                )))
+                Ok(OperationKind::Operation(Operation::Write(Write {
+                    header,
+                    arg,
+                })))
             }
             Some(fuse_opcode::FUSE_RELEASE) => {
                 let arg = self.fetch()?;
@@ -2038,7 +2029,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn new_lock_op<'a, T>(header: &'a InHeader, arg: &'a fuse_lk_in, sleep: bool) -> Operation<'a, T> {
+fn new_lock_op<'a>(header: &'a InHeader, arg: &'a fuse_lk_in, sleep: bool) -> Operation<'a> {
     if arg.lk_flags & FUSE_LK_FLOCK != 0 {
         Operation::Flock(Flock { header, arg, sleep })
     } else {

@@ -6,7 +6,7 @@ use crate::{
     common::StatFs,
     fs::Filesystem,
     init::ConnectionInfo,
-    io::{Buffer, Writer, WriterExt},
+    io::{RequestReader, Writer, WriterExt},
     kernel::{
         fuse_notify_code, //
         fuse_notify_delete_out,
@@ -20,6 +20,7 @@ use crate::{
     reply::ReplyWriter,
     util::as_bytes,
 };
+use futures::io::AsyncRead;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
@@ -72,25 +73,25 @@ impl Session {
 
     /// Process an incoming request using the specified filesystem operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<F: ?Sized, W: ?Sized, B: ?Sized>(
+    pub async fn process<F: ?Sized, R: ?Sized, W: ?Sized>(
         &self,
         fs: &F,
-        buf: &mut B,
+        reader: &mut R,
         writer: &mut W,
     ) -> io::Result<()>
     where
-        F: Filesystem<B::Data>,
+        F: Filesystem,
+        R: AsyncRead + Send + Unpin,
         W: Writer + Send + Unpin,
-        B: Buffer + Unpin,
-        B::Data: Send,
     {
         if self.exited() {
             tracing::warn!("The sesson has already been exited");
             return Ok(());
         }
 
-        let (header, kind, data) = buf.extract();
-        let kind = OperationKind::parse(header, kind, data)?;
+        let request = reader.read_request().await?;
+        let header = request.header();
+        let arg = request.arg()?;
 
         tracing::debug!(
             "Handle a request: unique={}, opcode={:?}",
@@ -100,14 +101,14 @@ impl Session {
 
         let mut writer = ReplyWriter::new(header.unique(), &mut *writer);
 
-        match kind {
+        match arg {
             OperationKind::Destroy => {
                 self.exit();
                 return Ok(());
             }
             OperationKind::Operation(op) => match op {
                 op @ Operation::Statfs(..) => {
-                    fs.reply(op, &mut writer).await?;
+                    fs.reply(op, &mut *reader, &mut writer).await?;
                     if !writer.replied() {
                         let mut st = StatFs::default();
                         st.set_namelen(255);
@@ -119,7 +120,7 @@ impl Session {
                     }
                 }
                 op => {
-                    fs.reply(op, &mut writer).await?;
+                    fs.reply(op, &mut *reader, &mut writer).await?;
                     if !writer.replied() {
                         writer.reply_err(libc::ENOSYS).await?;
                     }
@@ -132,9 +133,9 @@ impl Session {
             OperationKind::Interrupt(op) => {
                 fs.interrupt(op, &mut writer).await?;
             }
-            OperationKind::NotifyReply(op, data) => {
+            OperationKind::NotifyReply(op) => {
                 if self.retrieves.lock().remove(&op.unique()) {
-                    return fs.notify_reply(op, data).await;
+                    return fs.notify_reply(op, &mut *reader).await;
                 }
             }
 

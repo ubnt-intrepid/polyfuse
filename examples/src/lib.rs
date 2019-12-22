@@ -5,7 +5,10 @@ pub mod memfs;
 
 pub mod prelude {
     pub use anyhow::{anyhow, ensure};
-    pub use futures::future::{Future, FutureExt};
+    pub use futures::{
+        future::{Future, FutureExt},
+        io::AsyncRead,
+    };
     pub use polyfuse::{async_trait, io::Writer, op::Operation, reply::ReplyWriter, Filesystem};
     pub use std::{
         ffi::{OsStr, OsString},

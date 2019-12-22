@@ -1,7 +1,6 @@
 //! Serve FUSE filesystem.
 
 use crate::channel::{Channel, ChannelBuffer};
-use bytes::Bytes;
 use futures::{
     future::{Future, FutureExt},
     select,
@@ -44,7 +43,7 @@ impl Server {
     /// Run a FUSE filesystem daemon.
     pub async fn run<F>(&mut self, fs: F) -> io::Result<()>
     where
-        F: Filesystem<Bytes> + Send + 'static,
+        F: Filesystem + Send + 'static,
     {
         let sig = default_shutdown_signal()?;
         let _sig = self.run_until(fs, sig).await?;
@@ -55,7 +54,7 @@ impl Server {
     #[allow(clippy::unnecessary_mut_passed)]
     pub async fn run_until<F, S>(&mut self, fs: F, sig: S) -> io::Result<Option<S::Output>>
     where
-        F: Filesystem<Bytes> + Send + 'static,
+        F: Filesystem + Send + 'static,
         S: Future + Unpin,
     {
         let Self {

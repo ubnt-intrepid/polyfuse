@@ -9,9 +9,8 @@
 
 use polyfuse_examples::prelude::*;
 
-use bytes::Bytes;
 use chrono::Local;
-use futures::{channel::oneshot, lock::Mutex};
+use futures::{channel::oneshot, io::AsyncReadExt, lock::Mutex};
 use polyfuse::{
     op::NotifyReply,
     reply::{ReplyAttr, ReplyOpen},
@@ -90,7 +89,7 @@ enum NotifyKind {
 
 struct Heartbeat {
     inner: Mutex<Inner>,
-    retrieves: Mutex<HashMap<u64, oneshot::Sender<Bytes>>>,
+    retrieves: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
 }
 
 struct Inner {
@@ -155,13 +154,15 @@ impl Heartbeat {
 }
 
 #[async_trait]
-impl Filesystem<Bytes> for Heartbeat {
-    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+impl Filesystem for Heartbeat {
+    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
         &'a self,
-        op: Operation<'cx, Bytes>,
+        op: Operation<'cx>,
+        _: &'a mut R,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
+        R: AsyncRead + Send + Unpin,
         W: Writer + Unpin + Send,
     {
         match op {
@@ -202,8 +203,17 @@ impl Filesystem<Bytes> for Heartbeat {
         Ok(())
     }
 
-    async fn notify_reply<'a, 'cx>(&'a self, arg: NotifyReply<'cx>, data: Bytes) -> io::Result<()> {
+    async fn notify_reply<'a, 'cx, R: ?Sized>(
+        &'a self,
+        arg: NotifyReply<'cx>,
+        reader: &'a mut R,
+    ) -> io::Result<()>
+    where
+        R: AsyncRead + Send + Unpin,
+    {
         if let Some(tx) = self.retrieves.lock().await.remove(&arg.unique()) {
+            let mut data = vec![0u8; arg.size() as usize];
+            reader.read_exact(&mut data).await?;
             let _ = tx.send(data);
         }
         Ok(())
