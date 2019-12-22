@@ -1,14 +1,18 @@
 //! I/O abstraction specialized for FUSE.
 
-use crate::kernel::{
-    fuse_in_header, //
-    fuse_notify_retrieve_in,
-    fuse_opcode,
-    fuse_out_header,
-    fuse_write_in,
+use crate::{
+    kernel::{
+        fuse_in_header, //
+        fuse_notify_retrieve_in,
+        fuse_opcode,
+        fuse_out_header,
+        fuse_write_in,
+    },
+    op::OperationKind,
 };
 use futures::{
     future::Future,
+    io::AsyncRead,
     task::{self, Poll},
 };
 use std::{convert::TryFrom, io, mem, pin::Pin};
@@ -83,38 +87,122 @@ where
     }
 }
 
-/// A received FUSE message to be processed.
-///
-/// It holds the raw data for a single FUSE request message received from the kernel.
-pub trait Buffer {
-    /// The rest of the request message.
-    type Data;
-
-    /// Return a reference to `InHeader` corresponding to this request.
-    fn header(&self) -> &InHeader;
-
-    /// Extract the request message data.
-    ///
-    /// The extracted data consists of three parts: the header part,
-    /// the raw data of argument part, and additional data that may
-    /// not have been transferred from the kernel space.
-    fn extract(&mut self) -> (&InHeader, &[u8], Option<Self::Data>);
+pub(crate) trait RequestReader: AsyncRead {
+    fn read_request(&mut self) -> ReadRequest<'_, Self>
+    where
+        Self: Unpin,
+    {
+        ReadRequest {
+            buffer: self,
+            header: None,
+            arg: None,
+            state: ReadRequestState::Init,
+        }
+    }
 }
 
-impl<B: ?Sized> Buffer for &mut B
+impl<B: AsyncRead + ?Sized> RequestReader for B {}
+
+#[allow(missing_debug_implementations)]
+pub(crate) struct ReadRequest<'b, B: ?Sized> {
+    buffer: &'b mut B,
+    header: Option<InHeader>,
+    arg: Option<Vec<u8>>,
+    state: ReadRequestState,
+}
+
+#[derive(Copy, Clone)]
+enum ReadRequestState {
+    Init,
+    ReadingHeader,
+    ReadingArg,
+    Done,
+}
+
+impl<B: ?Sized> Future for ReadRequest<'_, B>
 where
-    B: Buffer + Unpin,
+    B: AsyncRead + Unpin,
 {
-    type Data = B::Data;
+    type Output = io::Result<Request>;
 
     #[inline]
-    fn header(&self) -> &InHeader {
-        (**self).header()
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
+        let me = self.get_mut();
+        loop {
+            match me.state {
+                ReadRequestState::Init => {
+                    me.header
+                        .get_or_insert_with(|| unsafe { mem::MaybeUninit::zeroed().assume_init() });
+                    me.state = ReadRequestState::ReadingHeader;
+                    continue;
+                }
+                ReadRequestState::ReadingHeader => {
+                    let header = me.header.as_mut().expect("header is empty");
+                    let count =
+                        futures::ready!(Pin::new(&mut me.buffer).poll_read(cx, header.as_mut()))?;
+                    if count < mem::size_of::<InHeader>() {
+                        return Poll::Ready(Err(io::Error::from_raw_os_error(libc::EINVAL)));
+                    }
+                    me.state = ReadRequestState::ReadingArg;
+                    me.arg
+                        .get_or_insert_with(|| Vec::with_capacity(header.arg_len()));
+                    continue;
+                }
+                ReadRequestState::ReadingArg => {
+                    {
+                        struct Guard<'a>(&'a mut Vec<u8>);
+                        impl Drop for Guard<'_> {
+                            fn drop(&mut self) {
+                                unsafe {
+                                    self.0.set_len(0);
+                                }
+                            }
+                        }
+
+                        let arg = Guard(me.arg.as_mut().expect("arg is empty"));
+                        unsafe {
+                            arg.0.set_len(arg.0.capacity());
+                        }
+
+                        let count = futures::ready!(
+                            Pin::new(&mut me.buffer) //
+                                .poll_read(cx, &mut arg.0[..])
+                        )?;
+                        if count < arg.0.len() {
+                            return Poll::Ready(Err(io::Error::from_raw_os_error(libc::EINVAL)));
+                        }
+
+                        unsafe {
+                            arg.0.set_len(count);
+                        }
+                        mem::forget(arg);
+                    }
+
+                    me.state = ReadRequestState::Done;
+                    let header = me.header.take().unwrap();
+                    let arg = me.arg.take().unwrap();
+
+                    return Poll::Ready(Ok(Request { header, arg }));
+                }
+                ReadRequestState::Done => unreachable!(),
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Request {
+    header: InHeader,
+    arg: Vec<u8>,
+}
+
+impl Request {
+    pub(crate) fn header(&self) -> &InHeader {
+        &self.header
     }
 
-    #[inline]
-    fn extract(&mut self) -> (&InHeader, &[u8], Option<Self::Data>) {
-        (**self).extract()
+    pub(crate) fn arg(&self) -> io::Result<OperationKind<'_>> {
+        OperationKind::parse(&self.header, &self.arg)
     }
 }
 

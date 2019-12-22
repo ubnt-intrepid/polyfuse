@@ -118,14 +118,15 @@ impl Hello {
 }
 
 #[async_trait]
-impl<T> Filesystem<T> for Hello {
-    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+impl Filesystem for Hello {
+    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
         &'a self,
-        op: Operation<'cx, T>,
+        op: Operation<'cx>,
+        _: &'a mut R,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        T: Send + 'async_trait,
+        R: AsyncRead + Send + Unpin,
         W: Writer + Unpin + Send,
     {
         match op {

@@ -114,15 +114,16 @@ impl Heartbeat {
 }
 
 #[async_trait]
-impl<T> Filesystem<T> for Heartbeat {
+impl Filesystem for Heartbeat {
     #[allow(clippy::cognitive_complexity)]
-    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
         &'a self,
-        op: Operation<'cx, T>,
+        op: Operation<'cx>,
+        _: &'a mut R,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        T: Send + 'async_trait,
+        R: AsyncRead + Unpin + Send,
         W: Writer + Unpin + Send,
     {
         match op {
@@ -178,10 +179,7 @@ impl<T> Filesystem<T> for Heartbeat {
         Ok(())
     }
 
-    async fn forget<'a>(&'a self, forgets: &'a [Forget]) -> io::Result<()>
-    where
-        T: 'async_trait,
-    {
+    async fn forget<'a>(&'a self, forgets: &'a [Forget]) -> io::Result<()> {
         let mut current = self.current.lock().await;
         for forget in forgets {
             if forget.ino() == FILE_INO {

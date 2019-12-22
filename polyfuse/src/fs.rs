@@ -7,11 +7,12 @@ use crate::{
     op::{Interrupt, NotifyReply, Operation},
     reply::ReplyWriter,
 };
+use futures::io::AsyncRead;
 use std::{future::Future, io, pin::Pin};
 
 /// The filesystem running on the user space.
 #[async_trait]
-pub trait Filesystem<T>: Sync {
+pub trait Filesystem: Sync {
     /// Reply to a FUSE request.
     ///
     /// This callback is invoked when a request is received from the kernel
@@ -21,13 +22,14 @@ pub trait Filesystem<T>: Sync {
     /// If there is no reply in the callback, the default reply (typically
     /// an `ENOSYS` error code) is automatically sent to the kernel.
     #[allow(unused_variables)]
-    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
         &'a self,
-        op: Operation<'cx, T>,
+        op: Operation<'cx>,
+        reader: &'a mut R,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        T: Send + 'async_trait,
+        R: AsyncRead + Send + Unpin,
         W: Writer + Send + Unpin,
     {
         Ok(())
@@ -35,18 +37,19 @@ pub trait Filesystem<T>: Sync {
 
     /// Forget about inodes removed from the kernel's internal caches.
     #[allow(unused_variables)]
-    async fn forget<'a>(&'a self, forgets: &'a [Forget]) -> io::Result<()>
-    where
-        T: 'async_trait,
-    {
+    async fn forget<'a>(&'a self, forgets: &'a [Forget]) -> io::Result<()> {
         Ok(())
     }
 
     /// Receive a reply for a `NOTIFY_RETRIEVE` notification.
     #[allow(unused_variables)]
-    async fn notify_reply<'a, 'cx>(&'a self, arg: NotifyReply<'cx>, data: T) -> io::Result<()>
+    async fn notify_reply<'a, 'cx, R: ?Sized>(
+        &'a self,
+        arg: NotifyReply<'cx>,
+        reader: &'a mut R,
+    ) -> io::Result<()>
     where
-        T: Send + 'async_trait,
+        R: AsyncRead + Send + Unpin,
     {
         Ok(())
     }
@@ -59,7 +62,6 @@ pub trait Filesystem<T>: Sync {
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        T: 'async_trait,
         W: Writer + Send + Unpin,
     {
         Ok(())
@@ -69,19 +71,20 @@ pub trait Filesystem<T>: Sync {
 macro_rules! impl_filesystem_body {
     () => {
         #[inline]
-        fn reply<'a, 'cx, 'w, 'async_trait, W: ?Sized>(
+        fn reply<'a, 'cx, 'w, 'async_trait, R:?Sized, W: ?Sized>(
             &'a self,
-            op: Operation<'cx, T>,
+            op: Operation<'cx>,
+            reader: &'a mut R,
             writer: &'a mut ReplyWriter<'w, W>,
         ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
         where
             'a: 'async_trait,
             'cx: 'async_trait,
             'w: 'async_trait,
-            T: Send + 'async_trait,
+            R: AsyncRead + Send + Unpin + 'async_trait,
             W: Writer + Send + Unpin + 'async_trait,
         {
-            (**self).reply(op, writer)
+            (**self).reply(op, reader, writer)
         }
 
         #[inline]
@@ -91,23 +94,22 @@ macro_rules! impl_filesystem_body {
         ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
         where
             'a: 'async_trait,
-            T: 'async_trait,
         {
             (**self).forget(forgets)
         }
 
         #[inline]
-        fn notify_reply<'a, 'cx, 'async_trait>(
+        fn notify_reply<'a, 'cx, 'async_trait, R:?Sized>(
             &'a self,
             arg: NotifyReply<'cx>,
-            data: T,
+            reader: &'a mut R,
         ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'async_trait>>
         where
             'a: 'async_trait,
             'cx: 'async_trait,
-            T: Send + 'async_trait,
+            R: AsyncRead + Send + Unpin + 'async_trait,
         {
-            (**self).notify_reply(arg, data)
+            (**self).notify_reply(arg, reader)
         }
 
         #[inline]
@@ -120,7 +122,6 @@ macro_rules! impl_filesystem_body {
             'a: 'async_trait,
             'cx: 'async_trait,
             'w: 'async_trait,
-            T: 'async_trait,
             W: Writer + Send + Unpin + 'async_trait,
         {
             (**self).interrupt(op, writer)
@@ -128,23 +129,23 @@ macro_rules! impl_filesystem_body {
     };
 }
 
-impl<F: ?Sized, T> Filesystem<T> for &F
+impl<F: ?Sized> Filesystem for &F
 where
-    F: Filesystem<T>,
+    F: Filesystem,
 {
     impl_filesystem_body!();
 }
 
-impl<F: ?Sized, T> Filesystem<T> for Box<F>
+impl<F: ?Sized> Filesystem for Box<F>
 where
-    F: Filesystem<T>,
+    F: Filesystem,
 {
     impl_filesystem_body!();
 }
 
-impl<F: ?Sized, T> Filesystem<T> for std::sync::Arc<F>
+impl<F: ?Sized> Filesystem for std::sync::Arc<F>
 where
-    F: Filesystem<T> + Send,
+    F: Filesystem + Send,
 {
     impl_filesystem_body!();
 }

@@ -21,14 +21,13 @@ mod server;
 
 pub use crate::server::Server;
 
-use bytes::Bytes;
 use polyfuse::Filesystem;
 use std::{ffi::OsStr, io, path::Path};
 
 /// Run a FUSE filesystem mounted onto the specified path.
 pub async fn mount<F>(fs: F, mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<()>
 where
-    F: Filesystem<Bytes> + Send + 'static,
+    F: Filesystem + Send + 'static,
 {
     let mut server = Server::mount(mountpoint, mountopts).await?;
     server.run(fs).await?;

@@ -6,7 +6,6 @@
     clippy::cast_sign_loss
 )]
 
-use bytes::{Bytes, BytesMut};
 use futures::{
     io::{AsyncRead, AsyncWrite},
     ready,
@@ -17,12 +16,12 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Evented, PollOpt, Ready, Token,
 };
-use polyfuse::io::{Buffer, InHeader, OutHeader, Reader, Writer};
+use polyfuse::io::{OutHeader, Reader, Writer};
 use smallvec::SmallVec;
 use std::{
     cmp,
     ffi::OsStr,
-    io::{self, IoSlice, IoSliceMut},
+    io::{self, IoSlice, IoSliceMut, Read},
     mem::{self, MaybeUninit},
     os::unix::{
         io::{AsRawFd, IntoRawFd, RawFd},
@@ -377,20 +376,11 @@ impl Writer for Channel {
 }
 
 #[derive(Debug)]
-pub struct ChannelBuffer {
-    header: InHeader,
-    data: ChannelBufferData,
-    bufsize: usize,
-}
+pub struct ChannelBuffer(io::Cursor<Vec<u8>>);
 
 impl ChannelBuffer {
     pub fn new(bufsize: usize) -> Self {
-        let bufsize = bufsize - mem::size_of::<InHeader>();
-        Self {
-            header: unsafe { mem::zeroed() },
-            data: ChannelBufferData::Unique(BytesMut::with_capacity(bufsize)),
-            bufsize,
-        }
+        Self(io::Cursor::new(Vec::with_capacity(bufsize)))
     }
 
     fn poll_receive_from(
@@ -398,124 +388,53 @@ impl ChannelBuffer {
         cx: &mut task::Context<'_>,
         reader: &mut Channel,
     ) -> Poll<io::Result<()>> {
-        let data = self.data.make_unique(self.bufsize);
-        unsafe {
-            data.set_len(data.capacity());
-        }
-
-        let mut vec = [
-            IoSliceMut::new(self.header.as_mut()),
-            IoSliceMut::new(data.as_mut()),
-        ];
-
-        loop {
-            match ready!(Pin::new(&mut *reader).poll_read_vectored(cx, &mut vec[..])) {
-                Ok(len) => {
-                    if len < mem::size_of::<InHeader>() {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "the received data from the kernel is too short",
-                        )));
-                    }
-                    if self.header.len() as usize != len {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "the payload length is mismatched to the header value",
-                        )));
-                    }
-
+        {
+            let vec = self.0.get_mut();
+            let old_len = vec.len();
+            struct Guard<'a>(&'a mut Vec<u8>, usize);
+            impl Drop for Guard<'_> {
+                fn drop(&mut self) {
                     unsafe {
-                        data.set_len(len - mem::size_of::<InHeader>());
+                        self.0.set_len(self.1);
                     }
-
-                    return Poll::Ready(Ok(()));
                 }
-
-                Err(err) => match err.raw_os_error() {
-                    Some(libc::ENOENT) | Some(libc::EINTR) => {
-                        tracing::debug!("continue reading from the kernel");
-                        continue;
-                    }
-                    _ => {
-                        tracing::error!("receive error: {}", err);
-                        return Poll::Ready(Err(err));
-                    }
-                },
             }
+            let vec = Guard(vec, old_len);
+            unsafe {
+                vec.0.set_len(vec.0.capacity());
+            }
+
+            let count = futures::ready!(Pin::new(reader).poll_read(cx, &mut vec.0[..]))?;
+            if count < vec.0.len() {
+                return Poll::Ready(Err(io::Error::from_raw_os_error(libc::EINVAL)));
+            }
+
+            unsafe {
+                vec.0.set_len(count);
+            }
+            mem::forget(vec);
         }
+
+        self.0.set_position(0);
+
+        Poll::Ready(Ok(()))
     }
 }
 
-impl Buffer for ChannelBuffer {
-    type Data = Bytes;
-
-    fn header(&self) -> &InHeader {
-        &self.header
+impl AsyncRead for ChannelBuffer {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut task::Context<'_>,
+        dst: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(self.get_mut().0.read(dst))
     }
 
-    fn extract(&mut self) -> (&InHeader, &[u8], Option<Self::Data>) {
-        let header = &self.header;
-        let mut data = None;
-        let arg = if header.arg_len() < self.data.len() {
-            let bytes = self.data.make_shared();
-            data.replace(bytes.slice(header.arg_len()..));
-            &bytes[..header.arg_len()]
-        } else {
-            &self.data.as_slice()[..header.arg_len()]
-        };
-        (header, arg, data)
-    }
-}
-
-#[derive(Debug)]
-enum ChannelBufferData {
-    Unique(BytesMut),
-    Shared(Bytes),
-    Empty,
-}
-
-impl ChannelBufferData {
-    fn make_unique(&mut self, bufsize: usize) -> &mut BytesMut {
-        if let Self::Unique(bytes) = self {
-            let cap = bytes.capacity();
-            if cap < bufsize {
-                bytes.reserve(bufsize - cap);
-            }
-            return bytes;
-        }
-
-        *self = Self::Unique(BytesMut::with_capacity(bufsize));
-        match self {
-            Self::Unique(bytes) => bytes,
-            _ => unreachable!(),
-        }
-    }
-
-    fn make_shared(&mut self) -> &Bytes {
-        loop {
-            match self {
-                Self::Shared(bytes) => return bytes,
-                Self::Unique(..) => match mem::replace(self, Self::Empty) {
-                    Self::Unique(bytes) => {
-                        *self = Self::Shared(bytes.freeze());
-                        continue;
-                    }
-                    _ => unreachable!(),
-                },
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Unique(bytes) => bytes.as_ref(),
-            Self::Shared(bytes) => bytes.as_ref(),
-            Self::Empty => unreachable!(),
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.as_slice().len()
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        _: &mut task::Context<'_>,
+        dst: &mut [IoSliceMut<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(self.get_mut().0.read_vectored(dst))
     }
 }

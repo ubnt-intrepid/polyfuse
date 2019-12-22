@@ -5,6 +5,7 @@ pub use inode::{Directory, File, INode};
 pub use table::INodeTable;
 
 use crate::prelude::*;
+use futures::io::AsyncReadExt;
 use polyfuse::{
     op,
     reply::{ReplyAttr, ReplyEntry, ReplyWrite},
@@ -166,15 +167,15 @@ impl MemFS {
         }
     }
 
-    async fn do_write<W: ?Sized, T>(
+    async fn do_write<R: ?Sized, W: ?Sized>(
         &self,
+        reader: &mut R,
         writer: &mut ReplyWriter<'_, W>,
         op: op::Write<'_>,
-        data: T,
     ) -> io::Result<()>
     where
+        R: AsyncRead + Unpin,
         W: Writer + Unpin,
-        T: AsRef<[u8]>,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
@@ -186,10 +187,11 @@ impl MemFS {
             None => return writer.reply_err(libc::EPERM).await,
         };
 
-        let data = data.as_ref();
+        let mut data = vec![0u8; op.size() as usize];
+        reader.read_exact(&mut data).await?;
         let offset = op.offset();
 
-        file.write(offset as usize, data).await;
+        file.write(offset as usize, &data).await;
 
         let mut attr = inode.load_attr();
         attr.set_size(offset + data.len() as u64);
@@ -290,18 +292,16 @@ impl MemFS {
 }
 
 #[async_trait]
-impl<T> Filesystem<T> for MemFS
-where
-    T: AsRef<[u8]>,
-{
-    async fn reply<'a, 'cx, 'w, W: ?Sized>(
+impl Filesystem for MemFS {
+    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
         &'a self,
-        op: Operation<'cx, T>,
+        op: Operation<'cx>,
+        reader: &'a mut R,
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        W: Writer + Send + Unpin + 'async_trait,
-        T: Send + 'async_trait,
+        R: AsyncRead + Send + Unpin,
+        W: Writer + Send + Unpin,
     {
         let uid = op.uid();
         let gid = op.gid();
@@ -310,7 +310,7 @@ where
             Operation::Getattr(op) => self.do_getattr(writer, op).await?,
             Operation::Setattr(op) => self.do_setattr(writer, op).await?,
             Operation::Read(op) => self.do_read(writer, op).await?,
-            Operation::Write(op, data) => self.do_write(writer, op, data).await?,
+            Operation::Write(op) => self.do_write(reader, writer, op).await?,
             Operation::Readdir(op) => self.do_readdir(writer, op).await?,
             Operation::Mknod(op) => self.do_mknod(writer, op, uid, gid).await?,
             Operation::Mkdir(op) => self.do_mkdir(writer, op, uid, gid).await?,
