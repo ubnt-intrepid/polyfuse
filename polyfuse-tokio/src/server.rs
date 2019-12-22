@@ -6,7 +6,7 @@ use futures::{
     select,
 };
 use libc::c_int;
-use polyfuse::{io::ReaderExt, Filesystem, Session, SessionInitializer};
+use polyfuse::{io::ReceiverExt, Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -22,10 +22,7 @@ impl Server {
     pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<Self> {
         let mut channel = Channel::open(mountpoint.as_ref(), mountopts)?;
         let initializer = SessionInitializer::default();
-        let mut buf = ChannelBuffer::new(initializer.init_buf_size());
-        let session = initializer //
-            .init(&mut channel, &mut buf)
-            .await?;
+        let session = initializer.init(&mut channel).await?;
         Ok(Server {
             session: Arc::new(session),
             channel,
@@ -67,7 +64,7 @@ impl Server {
         let mut main_loop = Box::pin(async move {
             loop {
                 let mut buf = ChannelBuffer::new(session.buffer_size());
-                if let Err(err) = channel.receive_msg(&mut buf).await {
+                if let Err(err) = channel.receive(&mut buf).await {
                     match err.raw_os_error() {
                         Some(libc::ENODEV) => {
                             tracing::debug!("connection is closed");

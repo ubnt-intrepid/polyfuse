@@ -4,7 +4,7 @@
 
 use crate::{
     common::{FileLock, Forget},
-    io::{InHeader, Writer},
+    io::Writer,
     kernel::{
         fuse_access_in, //
         fuse_batch_forget_in,
@@ -17,6 +17,7 @@ use crate::{
         fuse_fsync_in,
         fuse_getattr_in,
         fuse_getxattr_in,
+        fuse_in_header,
         fuse_init_in,
         fuse_interrupt_in,
         fuse_link_in,
@@ -52,7 +53,8 @@ use crate::{
     util::as_bytes,
 };
 use std::{
-    ffi::OsStr, //
+    convert::TryFrom, //
+    ffi::OsStr,
     io,
     mem,
     os::unix::ffi::OsStrExt,
@@ -197,13 +199,13 @@ pub enum Operation<'a> {
 
 #[derive(Debug)]
 pub struct Lookup<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     name: &'a OsStr,
 }
 
 impl<'a> Lookup<'a> {
     pub fn parent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -225,13 +227,13 @@ impl<'a> Lookup<'a> {
 
 #[derive(Debug)]
 pub struct Getattr<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_getattr_in,
 }
 
 impl<'a> Getattr<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> Option<u64> {
@@ -257,13 +259,13 @@ impl<'a> Getattr<'a> {
 
 #[derive(Debug)]
 pub struct Setattr<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_setattr_in,
 }
 
 impl<'a> Setattr<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     #[inline(always)]
@@ -338,12 +340,12 @@ impl<'a> Setattr<'a> {
 
 #[derive(Debug)]
 pub struct Readlink<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
 }
 
 impl Readlink<'_> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     /// Reply to the kernel with the specified link value.
@@ -361,14 +363,14 @@ impl Readlink<'_> {
 
 #[derive(Debug)]
 pub struct Symlink<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     name: &'a OsStr,
     link: &'a OsStr,
 }
 
 impl<'a> Symlink<'a> {
     pub fn parent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -394,14 +396,14 @@ impl<'a> Symlink<'a> {
 
 #[derive(Debug)]
 pub struct Mknod<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_mknod_in,
     name: &'a OsStr,
 }
 
 impl<'a> Mknod<'a> {
     pub fn parent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -435,14 +437,14 @@ impl<'a> Mknod<'a> {
 
 #[derive(Debug)]
 pub struct Mkdir<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_mkdir_in,
     name: &'a OsStr,
 }
 
 impl<'a> Mkdir<'a> {
     pub fn parent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -472,13 +474,13 @@ impl<'a> Mkdir<'a> {
 
 #[derive(Debug)]
 pub struct Unlink<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     name: &'a OsStr,
 }
 
 impl<'a> Unlink<'a> {
     pub fn parent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -495,13 +497,13 @@ impl<'a> Unlink<'a> {
 
 #[derive(Debug)]
 pub struct Rmdir<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     name: &'a OsStr,
 }
 
 impl<'a> Rmdir<'a> {
     pub fn parent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -518,7 +520,7 @@ impl<'a> Rmdir<'a> {
 
 #[derive(Debug)]
 pub struct Rename<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: RenameKind<'a>,
     name: &'a OsStr,
     newname: &'a OsStr,
@@ -544,7 +546,7 @@ impl<'a> From<&'a fuse_rename2_in> for RenameKind<'a> {
 
 impl<'a> Rename<'a> {
     pub fn parent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -579,7 +581,7 @@ impl<'a> Rename<'a> {
 
 #[derive(Debug)]
 pub struct Link<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_link_in,
     newname: &'a OsStr,
 }
@@ -590,7 +592,7 @@ impl<'a> Link<'a> {
     }
 
     pub fn newparent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn newname(&self) -> &OsStr {
@@ -612,13 +614,13 @@ impl<'a> Link<'a> {
 
 #[derive(Debug)]
 pub struct Open<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_open_in,
 }
 
 impl<'a> Open<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn flags(&self) -> u32 {
@@ -640,13 +642,13 @@ impl<'a> Open<'a> {
 
 #[derive(Debug)]
 pub struct Read<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_read_in,
 }
 
 impl<'a> Read<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -709,13 +711,13 @@ impl<'a> Read<'a> {
 
 #[derive(Debug)]
 pub struct Write<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_write_in,
 }
 
 impl<'a> Write<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -757,13 +759,13 @@ impl<'a> Write<'a> {
 
 #[derive(Debug)]
 pub struct Release<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_release_in,
 }
 
 impl<'a> Release<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -797,12 +799,12 @@ impl<'a> Release<'a> {
 
 #[derive(Debug)]
 pub struct Statfs<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
 }
 
 impl Statfs<'_> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub async fn reply<W: ?Sized>(
@@ -820,13 +822,13 @@ impl Statfs<'_> {
 
 #[derive(Debug)]
 pub struct Fsync<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_fsync_in,
 }
 
 impl<'a> Fsync<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -847,7 +849,7 @@ impl<'a> Fsync<'a> {
 
 #[derive(Debug)]
 pub struct Setxattr<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_setxattr_in,
     name: &'a OsStr,
     value: &'a [u8],
@@ -855,7 +857,7 @@ pub struct Setxattr<'a> {
 
 impl<'a> Setxattr<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -880,14 +882,14 @@ impl<'a> Setxattr<'a> {
 
 #[derive(Debug)]
 pub struct Getxattr<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_getxattr_in,
     name: &'a OsStr,
 }
 
 impl<'a> Getxattr<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -946,13 +948,13 @@ impl<'a> Getxattr<'a> {
 
 #[derive(Debug)]
 pub struct Listxattr<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_getxattr_in,
 }
 
 impl<'a> Listxattr<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn size(&self) -> u32 {
@@ -1006,13 +1008,13 @@ impl<'a> Listxattr<'a> {
 }
 #[derive(Debug)]
 pub struct Removexattr<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     name: &'a OsStr,
 }
 
 impl<'a> Removexattr<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -1029,13 +1031,13 @@ impl<'a> Removexattr<'a> {
 
 #[derive(Debug)]
 pub struct Flush<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_flush_in,
 }
 
 impl<'a> Flush<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1056,13 +1058,13 @@ impl<'a> Flush<'a> {
 
 #[derive(Debug)]
 pub struct Opendir<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_open_in,
 }
 
 impl<'a> Opendir<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn flags(&self) -> u32 {
@@ -1090,14 +1092,14 @@ pub enum ReaddirMode {
 
 #[derive(Debug)]
 pub struct Readdir<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_read_in,
     mode: ReaddirMode,
 }
 
 impl<'a> Readdir<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1152,13 +1154,13 @@ impl<'a> Readdir<'a> {
 
 #[derive(Debug)]
 pub struct Releasedir<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_release_in,
 }
 
 impl<'a> Releasedir<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1179,13 +1181,13 @@ impl<'a> Releasedir<'a> {
 
 #[derive(Debug)]
 pub struct Fsyncdir<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_fsync_in,
 }
 
 impl<'a> Fsyncdir<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1206,13 +1208,13 @@ impl<'a> Fsyncdir<'a> {
 
 #[derive(Debug)]
 pub struct Getlk<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_lk_in,
 }
 
 impl<'a> Getlk<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1242,14 +1244,14 @@ impl<'a> Getlk<'a> {
 
 #[derive(Debug)]
 pub struct Setlk<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_lk_in,
     sleep: bool,
 }
 
 impl<'a> Setlk<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1278,14 +1280,14 @@ impl<'a> Setlk<'a> {
 
 #[derive(Debug)]
 pub struct Flock<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_lk_in,
     sleep: bool,
 }
 
 impl<'a> Flock<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1325,13 +1327,13 @@ impl<'a> Flock<'a> {
 
 #[derive(Debug)]
 pub struct Access<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_access_in,
 }
 
 impl<'a> Access<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn mask(&self) -> u32 {
@@ -1348,14 +1350,14 @@ impl<'a> Access<'a> {
 
 #[derive(Debug)]
 pub struct Create<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_create_in,
     name: &'a OsStr,
 }
 
 impl<'a> Create<'a> {
     pub fn parent(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn name(&self) -> &OsStr {
@@ -1396,13 +1398,13 @@ impl<'a> Create<'a> {
 
 #[derive(Debug)]
 pub struct Bmap<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_bmap_in,
 }
 
 impl<'a> Bmap<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn block(&self) -> u64 {
@@ -1428,13 +1430,13 @@ impl<'a> Bmap<'a> {
 
 #[derive(Debug)]
 pub struct Fallocate<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_fallocate_in,
 }
 
 impl<'a> Fallocate<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1463,13 +1465,13 @@ impl<'a> Fallocate<'a> {
 
 #[derive(Debug)]
 pub struct CopyFileRange<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_copy_file_range_in,
 }
 
 impl<'a> CopyFileRange<'a> {
     pub fn input(&self) -> (u64, u64, u64) {
-        (self.header.nodeid(), self.arg.fh_in, self.arg.off_in)
+        (self.header.nodeid, self.arg.fh_in, self.arg.off_in)
     }
 
     pub fn output(&self) -> (u64, u64, u64) {
@@ -1499,13 +1501,13 @@ impl<'a> CopyFileRange<'a> {
 
 #[derive(Debug)]
 pub struct Poll<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_poll_in,
 }
 
 impl<'a> Poll<'a> {
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     pub fn fh(&self) -> u64 {
@@ -1540,7 +1542,7 @@ impl<'a> Poll<'a> {
 macro_rules! impl_header {
     ($($t:ident),*$(,)?) => {
         impl Operation<'_> {
-            fn header(&self) -> &InHeader {
+            fn header(&self) -> &fuse_in_header {
                 match self {
                     $(
                         Self::$t(op) => op.header,
@@ -1550,17 +1552,17 @@ macro_rules! impl_header {
 
             /// Return the user ID of the calling process.
             pub fn uid(&self) -> u32 {
-                self.header().uid()
+                self.header().uid
             }
 
             /// Return the group ID of the calling process.
             pub fn gid(&self) -> u32 {
-                self.header().gid()
+                self.header().gid
             }
 
             /// Return the process ID of the calling process.
             pub fn pid(&self) -> u32 {
-                self.header().pid()
+                self.header().pid
             }
         }
     }
@@ -1621,19 +1623,19 @@ impl AsRef<[Forget]> for Forgets<'_> {
 
 #[derive(Debug)]
 pub struct NotifyReply<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_notify_retrieve_in,
 }
 
 impl<'a> NotifyReply<'a> {
     #[inline]
     pub fn unique(&self) -> u64 {
-        self.header.unique()
+        self.header.unique
     }
 
     #[inline]
     pub fn ino(&self) -> u64 {
-        self.header.nodeid()
+        self.header.nodeid
     }
 
     #[inline]
@@ -1649,7 +1651,7 @@ impl<'a> NotifyReply<'a> {
 
 #[derive(Debug)]
 pub struct Interrupt<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     arg: &'a fuse_interrupt_in,
 }
 
@@ -1675,20 +1677,20 @@ pub(crate) enum OperationKind<'a> {
 }
 
 impl<'a> OperationKind<'a> {
-    pub(crate) fn parse(header: &'a InHeader, bytes: &'a [u8]) -> io::Result<Self> {
+    pub(crate) fn parse(header: &'a fuse_in_header, bytes: &'a [u8]) -> io::Result<Self> {
         Parser::new(header, bytes).parse()
     }
 }
 
 #[derive(Debug)]
 struct Parser<'a> {
-    header: &'a InHeader,
+    header: &'a fuse_in_header,
     bytes: &'a [u8],
     offset: usize,
 }
 
 impl<'a> Parser<'a> {
-    fn new(header: &'a InHeader, bytes: &'a [u8]) -> Self {
+    fn new(header: &'a fuse_in_header, bytes: &'a [u8]) -> Self {
         Self {
             header,
             bytes,
@@ -1725,7 +1727,7 @@ impl<'a> Parser<'a> {
 
     fn parse(&mut self) -> io::Result<OperationKind<'a>> {
         let header = self.header;
-        match header.opcode() {
+        match fuse_opcode::try_from(header.opcode).ok() {
             Some(fuse_opcode::FUSE_INIT) => {
                 let arg = self.fetch()?;
                 Ok(OperationKind::Init { arg })
@@ -1734,7 +1736,7 @@ impl<'a> Parser<'a> {
             Some(fuse_opcode::FUSE_FORGET) => {
                 let arg = self.fetch::<fuse_forget_in>()?;
                 Ok(OperationKind::Forget(Forgets::Single(Forget::new(
-                    header.nodeid(),
+                    header.nodeid,
                     arg.nlookup,
                 ))))
             }
@@ -2029,7 +2031,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn new_lock_op<'a>(header: &'a InHeader, arg: &'a fuse_lk_in, sleep: bool) -> Operation<'a> {
+fn new_lock_op<'a>(header: &'a fuse_in_header, arg: &'a fuse_lk_in, sleep: bool) -> Operation<'a> {
     if arg.lk_flags & FUSE_LK_FLOCK != 0 {
         Operation::Flock(Flock { header, arg, sleep })
     } else {

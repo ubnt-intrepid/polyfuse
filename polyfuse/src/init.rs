@@ -6,7 +6,7 @@
 )]
 
 use crate::{
-    io::{Reader, ReaderExt, RequestReader, Writer, WriterExt},
+    io::{ReaderExt, Receiver, ReceiverExt, Writer, WriterExt},
     kernel::{
         fuse_init_out, //
         FUSE_KERNEL_MINOR_VERSION,
@@ -21,9 +21,16 @@ use crate::{
     util::as_bytes,
 };
 use bitflags::bitflags;
-use futures::io::AsyncRead;
+use futures::{
+    io::AsyncRead,
+    task::{self, Poll},
+};
 use lazy_static::lazy_static;
-use std::{cmp, io};
+use std::{
+    cmp,
+    io::{self, IoSliceMut},
+    pin::Pin,
+};
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -130,24 +137,23 @@ impl SessionInitializer {
         self
     }
 
-    #[doc(hidden)] // TODO: dox
-    pub fn init_buf_size(&self) -> usize {
-        BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES
-    }
-
     /// Start a new FUSE session.
     ///
     /// This function receives an INIT request from the kernel and replies
     /// after initializing the connection parameters.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn init<I: ?Sized, B: ?Sized>(self, io: &mut I, buf: &mut B) -> io::Result<Session>
+    pub async fn init<I: ?Sized>(self, io: &mut I) -> io::Result<Session>
     where
-        I: Reader<Buffer = B> + Writer + Unpin,
-        B: AsyncRead + Unpin,
+        I: Receiver<Vec<u8>> + Writer + Unpin,
     {
+        let init_buf_size = BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES;
+        let mut buf = vec![0u8; init_buf_size];
+
         loop {
-            io.receive_msg(buf).await?;
-            let request = buf.read_request().await?;
+            io.receive(&mut buf).await?;
+
+            let mut reader = BytesReader(io::Cursor::new(&buf[..]));
+            let request = reader.read_request().await?;
             let header = request.header();
             let arg = request.arg()?;
             match arg {
@@ -173,7 +179,7 @@ impl SessionInitializer {
 
                     if init_in.major > 7 {
                         tracing::debug!("wait for a second INIT request with an older version.");
-                        io.send_msg(header.unique(), 0, &[unsafe { as_bytes(&init_out) }])
+                        io.send_msg(header.unique, 0, &[unsafe { as_bytes(&init_out) }])
                             .await?;
                         continue;
                     }
@@ -185,7 +191,7 @@ impl SessionInitializer {
                             init_in.major,
                             init_in.minor
                         );
-                        io.send_msg(header.unique(), -libc::EPROTO, &[]).await?;
+                        io.send_msg(header.unique, -libc::EPROTO, &[]).await?;
                         continue;
                     }
 
@@ -226,7 +232,7 @@ impl SessionInitializer {
                         init_out.congestion_threshold
                     );
                     tracing::debug!("  time_gran = {}", init_out.time_gran);
-                    io.send_msg(header.unique(), 0, &[unsafe { as_bytes(&init_out) }])
+                    io.send_msg(header.unique, 0, &[unsafe { as_bytes(&init_out) }])
                         .await?;
 
                     let conn = ConnectionInfo(init_out);
@@ -237,13 +243,35 @@ impl SessionInitializer {
                 _ => {
                     tracing::warn!(
                         "ignoring an operation before init (opcode={:?})",
-                        header.opcode()
+                        header.opcode
                     );
-                    io.send_msg(header.unique(), -libc::EIO, &[]).await?;
+                    io.send_msg(header.unique, -libc::EIO, &[]).await?;
                     continue;
                 }
             }
         }
+    }
+}
+
+struct BytesReader<'a>(io::Cursor<&'a [u8]>);
+
+impl AsyncRead for BytesReader<'_> {
+    #[inline]
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut task::Context<'_>,
+        dst: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(io::Read::read(&mut self.get_mut().0, dst))
+    }
+
+    #[inline]
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        _: &mut task::Context<'_>,
+        dst: &mut [IoSliceMut<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(io::Read::read_vectored(&mut self.get_mut().0, dst))
     }
 }
 

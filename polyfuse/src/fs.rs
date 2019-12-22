@@ -3,11 +3,10 @@
 use crate::{
     async_trait, //
     common::Forget,
-    io::Writer,
+    io::{Reader, Writer},
     op::{Interrupt, NotifyReply, Operation},
     reply::ReplyWriter,
 };
-use futures::io::AsyncRead;
 use std::{future::Future, io, pin::Pin};
 
 /// The filesystem running on the user space.
@@ -29,7 +28,7 @@ pub trait Filesystem: Sync {
         writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        R: AsyncRead + Send + Unpin,
+        R: Reader + Send + Unpin,
         W: Writer + Send + Unpin,
     {
         Ok(())
@@ -49,7 +48,7 @@ pub trait Filesystem: Sync {
         reader: &'a mut R,
     ) -> io::Result<()>
     where
-        R: AsyncRead + Send + Unpin,
+        R: Reader + Send + Unpin,
     {
         Ok(())
     }
@@ -81,7 +80,7 @@ macro_rules! impl_filesystem_body {
             'a: 'async_trait,
             'cx: 'async_trait,
             'w: 'async_trait,
-            R: AsyncRead + Send + Unpin + 'async_trait,
+            R: Reader + Send + Unpin + 'async_trait,
             W: Writer + Send + Unpin + 'async_trait,
         {
             (**self).reply(op, reader, writer)
@@ -107,7 +106,7 @@ macro_rules! impl_filesystem_body {
         where
             'a: 'async_trait,
             'cx: 'async_trait,
-            R: AsyncRead + Send + Unpin + 'async_trait,
+            R: Reader + Send + Unpin + 'async_trait,
         {
             (**self).notify_reply(arg, reader)
         }

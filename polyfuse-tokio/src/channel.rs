@@ -16,8 +16,7 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Evented, PollOpt, Ready, Token,
 };
-use polyfuse::io::{OutHeader, Reader, Writer};
-use smallvec::SmallVec;
+use polyfuse::io::Receiver;
 use std::{
     cmp,
     ffi::OsStr,
@@ -337,39 +336,47 @@ impl AsyncWrite for Channel {
     }
 }
 
-impl Reader for Channel {
-    type Buffer = ChannelBuffer;
-
-    fn poll_receive_msg(
+impl Receiver<ChannelBuffer> for Channel {
+    fn poll_receive(
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
-        buf: &mut Self::Buffer,
+        buf: &mut ChannelBuffer,
     ) -> Poll<io::Result<()>> {
-        buf.poll_receive_from(cx, self.get_mut())
+        futures::ready!(self.poll_receive(cx, buf.0.get_mut()))?;
+        buf.0.set_position(0);
+        Poll::Ready(Ok(()))
     }
 }
 
-impl Writer for Channel {
-    fn poll_write_msg(
-        self: Pin<&mut Self>,
+impl Receiver<Vec<u8>> for Channel {
+    fn poll_receive(
+        mut self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
-        header: &OutHeader,
-        data: &[&[u8]],
+        buf: &mut Vec<u8>,
     ) -> Poll<io::Result<()>> {
-        // Unfortunately, IoSlice<'_> does not implement Send and
-        // the data vector must be created in `poll` function.
-        let vec: SmallVec<[_; 4]> = Some(IoSlice::new(header.as_ref()))
-            .into_iter()
-            .chain(data.iter().map(|t| IoSlice::new(&*t)))
-            .collect();
-
-        let count = ready!(self.poll_write_vectored(cx, &*vec))?;
-        if count < header.len() as usize {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Other,
-                "written data is too short",
-            )));
+        let old_len = buf.len();
+        struct Guard<'a>(&'a mut Vec<u8>, usize);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                unsafe {
+                    self.0.set_len(self.1);
+                }
+            }
         }
+        let buf = Guard(buf, old_len);
+        unsafe {
+            buf.0.set_len(buf.0.capacity());
+        }
+
+        let count = futures::ready!(self.as_mut().poll_read(cx, &mut buf.0[..]))?;
+        if count < buf.0.len() {
+            return Poll::Ready(Err(io::Error::from_raw_os_error(libc::EINVAL)));
+        }
+
+        unsafe {
+            buf.0.set_len(count);
+        }
+        mem::forget(buf);
 
         Poll::Ready(Ok(()))
     }
@@ -381,43 +388,6 @@ pub struct ChannelBuffer(io::Cursor<Vec<u8>>);
 impl ChannelBuffer {
     pub fn new(bufsize: usize) -> Self {
         Self(io::Cursor::new(Vec::with_capacity(bufsize)))
-    }
-
-    fn poll_receive_from(
-        &mut self,
-        cx: &mut task::Context<'_>,
-        reader: &mut Channel,
-    ) -> Poll<io::Result<()>> {
-        {
-            let vec = self.0.get_mut();
-            let old_len = vec.len();
-            struct Guard<'a>(&'a mut Vec<u8>, usize);
-            impl Drop for Guard<'_> {
-                fn drop(&mut self) {
-                    unsafe {
-                        self.0.set_len(self.1);
-                    }
-                }
-            }
-            let vec = Guard(vec, old_len);
-            unsafe {
-                vec.0.set_len(vec.0.capacity());
-            }
-
-            let count = futures::ready!(Pin::new(reader).poll_read(cx, &mut vec.0[..]))?;
-            if count < vec.0.len() {
-                return Poll::Ready(Err(io::Error::from_raw_os_error(libc::EINVAL)));
-            }
-
-            unsafe {
-                vec.0.set_len(count);
-            }
-            mem::forget(vec);
-        }
-
-        self.0.set_position(0);
-
-        Poll::Ready(Ok(()))
     }
 }
 

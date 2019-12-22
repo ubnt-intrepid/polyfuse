@@ -6,7 +6,7 @@ use crate::{
     common::StatFs,
     fs::Filesystem,
     init::ConnectionInfo,
-    io::{RequestReader, Writer, WriterExt},
+    io::{Reader, ReaderExt, Writer, WriterExt},
     kernel::{
         fuse_notify_code, //
         fuse_notify_delete_out,
@@ -15,12 +15,12 @@ use crate::{
         fuse_notify_poll_wakeup_out,
         fuse_notify_retrieve_out,
         fuse_notify_store_out,
+        fuse_opcode,
     },
     op::{Operation, OperationKind},
     reply::ReplyWriter,
     util::as_bytes,
 };
-use futures::io::AsyncRead;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
@@ -81,7 +81,7 @@ impl Session {
     ) -> io::Result<()>
     where
         F: Filesystem,
-        R: AsyncRead + Send + Unpin,
+        R: Reader + Send + Unpin,
         W: Writer + Send + Unpin,
     {
         if self.exited() {
@@ -95,11 +95,11 @@ impl Session {
 
         tracing::debug!(
             "Handle a request: unique={}, opcode={:?}",
-            header.unique(),
-            header.opcode(),
+            header.unique,
+            fuse_opcode::try_from(header.opcode).ok(),
         );
 
-        let mut writer = ReplyWriter::new(header.unique(), &mut *writer);
+        let mut writer = ReplyWriter::new(header.unique, &mut *writer);
 
         match arg {
             OperationKind::Destroy => {
@@ -145,7 +145,10 @@ impl Session {
             }
 
             OperationKind::Unknown => {
-                tracing::warn!("unsupported opcode: {:?}", header.opcode());
+                tracing::warn!(
+                    "unsupported opcode: {:?}",
+                    fuse_opcode::try_from(header.opcode).ok()
+                );
                 writer.reply_err(libc::ENOSYS).await?;
             }
         }
