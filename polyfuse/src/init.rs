@@ -373,10 +373,16 @@ bitflags! {
         /// Indicates that the kernel uses the adaptive readdirplus.
         const READDIRPLUS_AUTO = crate::kernel::FUSE_READDIRPLUS_AUTO;
 
-        // TODO: splice read/write
+        /// The kernel allows the use of `splice` syscall when receiving
+        /// request messages.
+        ///
+        /// When the filesystem daemon implementation supports splice reading,
+        /// this flag might be automatically enabled.
+        const SPLICE_READ = crate::kernel::FUSE_SPLICE_READ;
+
+        // TODO: splice write
         // const SPLICE_WRITE = crate::kernel::FUSE_SPLICE_WRITE;
         // const SPLICE_MOVE = crate::kernel::FUSE_SPLICE_MOVE;
-        // const SPLICE_READ = crate::kernel::FUSE_SPLICE_READ;
 
         // TODO: ioctl
         // const IOCTL_DIR = crate::kernel::FUSE_IOCTL_DIR;
