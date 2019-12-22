@@ -4,6 +4,7 @@
 
 use crate::{
     common::StatFs,
+    context::Context,
     fs::Filesystem,
     init::ConnectionInfo,
     io::{Reader, ReaderExt, Writer, WriterExt},
@@ -18,13 +19,10 @@ use crate::{
         fuse_opcode,
     },
     op::{Operation, OperationKind},
-    reply::ReplyWriter,
     util::as_bytes,
 };
-use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
-    collections::HashSet,
     convert::TryFrom,
     ffi::OsStr,
     io, mem,
@@ -39,7 +37,6 @@ pub struct Session {
     bufsize: usize,
     exited: AtomicBool,
     notify_unique: AtomicU64,
-    retrieves: Mutex<HashSet<u64>>,
 }
 
 impl Session {
@@ -49,7 +46,6 @@ impl Session {
             bufsize,
             exited: AtomicBool::new(false),
             notify_unique: AtomicU64::new(0),
-            retrieves: Mutex::default(),
         }
     }
 
@@ -73,23 +69,17 @@ impl Session {
 
     /// Process an incoming request using the specified filesystem operations.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process<F: ?Sized, R: ?Sized, W: ?Sized>(
-        &self,
-        fs: &F,
-        reader: &mut R,
-        writer: &mut W,
-    ) -> io::Result<()>
+    pub async fn process<F: ?Sized, T: ?Sized>(&self, fs: &F, io: &mut T) -> io::Result<()>
     where
         F: Filesystem,
-        R: Reader + Send + Unpin,
-        W: Writer + Send + Unpin,
+        T: Reader + Writer + Send + Unpin,
     {
         if self.exited() {
             tracing::warn!("The sesson has already been exited");
             return Ok(());
         }
 
-        let request = reader.read_request().await?;
+        let request = io.read_request().await?;
         let header = request.header();
         let arg = request.arg()?;
 
@@ -99,7 +89,7 @@ impl Session {
             fuse_opcode::try_from(header.opcode).ok(),
         );
 
-        let mut writer = ReplyWriter::new(header.unique, &mut *writer);
+        let mut cx = Context::new(header, &mut *io);
 
         match arg {
             OperationKind::Destroy => {
@@ -107,49 +97,39 @@ impl Session {
                 return Ok(());
             }
             OperationKind::Operation(op) => match op {
+                op @ Operation::Forget(..) => {
+                    cx.disable_writer();
+                    fs.call(&mut cx, op).await?;
+                }
+                op @ Operation::Interrupt(..) => {
+                    fs.call(&mut cx, op).await?;
+                }
+                op @ Operation::NotifyReply(..) => {
+                    cx.disable_writer();
+                    fs.call(&mut cx, op).await?;
+                }
                 op @ Operation::Statfs(..) => {
-                    fs.reply(op, &mut *reader, &mut writer).await?;
-                    if !writer.replied() {
+                    fs.call(&mut cx, op).await?;
+                    if !cx.replied() {
                         let mut st = StatFs::default();
                         st.set_namelen(255);
                         st.set_bsize(512);
                         let out = crate::reply::ReplyStatfs::new(st);
-                        writer
-                            .reply_raw(&[unsafe { crate::util::as_bytes(&out) }])
+                        cx.reply_raw(&[unsafe { crate::util::as_bytes(&out) }])
                             .await?;
                     }
                 }
                 op => {
-                    fs.reply(op, &mut *reader, &mut writer).await?;
-                    if !writer.replied() {
-                        writer.reply_err(libc::ENOSYS).await?;
+                    fs.call(&mut cx, op).await?;
+                    if !cx.replied() {
+                        cx.reply_err(libc::ENOSYS).await?;
                     }
                 }
             },
-            OperationKind::Forget(forgets) => {
-                // no reply.
-                return fs.forget(forgets.as_ref()).await;
-            }
-            OperationKind::Interrupt(op) => {
-                fs.interrupt(op, &mut writer).await?;
-            }
-            OperationKind::NotifyReply(op) => {
-                if self.retrieves.lock().remove(&op.unique()) {
-                    return fs.notify_reply(op, &mut *reader).await;
-                }
-            }
 
             OperationKind::Init { .. } => {
                 tracing::warn!("ignore an INIT request after initializing the session");
-                writer.reply_err(libc::EIO).await?;
-            }
-
-            OperationKind::Unknown => {
-                tracing::warn!(
-                    "unsupported opcode: {:?}",
-                    fuse_opcode::try_from(header.opcode).ok()
-                );
-                writer.reply_err(libc::ENOSYS).await?;
+                cx.reply_err(libc::EIO).await?;
             }
         }
 
@@ -310,8 +290,6 @@ impl Session {
         }
 
         let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
-        self.retrieves.lock().insert(unique);
-
         let out = fuse_notify_retrieve_out {
             notify_unique: unique,
             nodeid: ino,

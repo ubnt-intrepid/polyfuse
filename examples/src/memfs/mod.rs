@@ -48,13 +48,13 @@ impl MemFS {
         attr
     }
 
-    async fn do_lookup<W: ?Sized>(
+    async fn do_lookup<T: ?Sized>(
         &self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         op: op::Lookup<'_>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         match self.inodes.lookup(op.parent(), op.name()).await {
             Some(inode) => {
@@ -62,43 +62,43 @@ impl MemFS {
                 let mut entry = ReplyEntry::new(attr);
                 entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
                 entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                op.reply(writer, entry).await
+                op.reply(cx, entry).await
             }
-            None => writer.reply_err(libc::ENOENT).await,
+            None => cx.reply_err(libc::ENOENT).await,
         }
     }
 
-    async fn do_getattr<W: ?Sized>(
+    async fn do_getattr<T: ?Sized>(
         &self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         op: op::Getattr<'_>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
-            None => return writer.reply_err(libc::ENOENT).await,
+            None => return cx.reply_err(libc::ENOENT).await,
         };
 
         let attr = inode.load_attr();
 
         let mut attr = ReplyAttr::new(attr);
         attr.attr_valid(self.attr_valid.0, self.attr_valid.1);
-        op.reply(writer, attr).await
+        op.reply(cx, attr).await
     }
 
-    async fn do_setattr<W: ?Sized>(
+    async fn do_setattr<T: ?Sized>(
         &self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         op: polyfuse::op::Setattr<'_>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
-            None => return writer.reply_err(libc::ENOENT).await,
+            None => return cx.reply_err(libc::ENOENT).await,
         };
 
         let mut attr = inode.load_attr();
@@ -140,55 +140,49 @@ impl MemFS {
 
         let mut attr = ReplyAttr::new(attr);
         attr.attr_valid(self.attr_valid.0, self.attr_valid.1);
-        op.reply(writer, attr).await
+        op.reply(cx, attr).await
     }
 
-    async fn do_read<W: ?Sized>(
-        &self,
-        writer: &mut ReplyWriter<'_, W>,
-        op: op::Read<'_>,
-    ) -> io::Result<()>
+    async fn do_read<T: ?Sized>(&self, cx: &mut Context<'_, T>, op: op::Read<'_>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
-            None => return writer.reply_err(libc::ENOENT).await,
+            None => return cx.reply_err(libc::ENOENT).await,
         };
 
         let file = match inode.downcast_ref::<File>() {
             Some(file) => file,
-            None => return writer.reply_err(libc::EPERM).await,
+            None => return cx.reply_err(libc::EPERM).await,
         };
 
         match file.read(op.offset() as usize, op.size() as usize).await {
-            Some(data) => op.reply(writer, &data).await,
-            None => op.reply(writer, &[]).await,
+            Some(data) => op.reply(cx, &data).await,
+            None => op.reply(cx, &[]).await,
         }
     }
 
-    async fn do_write<R: ?Sized, W: ?Sized>(
+    async fn do_write<T: ?Sized>(
         &self,
-        reader: &mut R,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         op: op::Write<'_>,
     ) -> io::Result<()>
     where
-        R: AsyncRead + Unpin,
-        W: Writer + Unpin,
+        T: Reader + Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
-            None => return writer.reply_err(libc::ENOENT).await,
+            None => return cx.reply_err(libc::ENOENT).await,
         };
 
         let file = match inode.downcast_ref::<File>() {
             Some(file) => file,
-            None => return writer.reply_err(libc::EPERM).await,
+            None => return cx.reply_err(libc::EPERM).await,
         };
 
         let mut data = vec![0u8; op.size() as usize];
-        reader.read_exact(&mut data).await?;
+        cx.reader().read_exact(&mut data).await?;
         let offset = op.offset();
 
         file.write(offset as usize, &data).await;
@@ -197,25 +191,25 @@ impl MemFS {
         attr.set_size(offset + data.len() as u64);
         inode.store_attr(attr);
 
-        op.reply(writer, ReplyWrite::new(data.len() as u32)).await
+        op.reply(cx, ReplyWrite::new(data.len() as u32)).await
     }
 
-    async fn do_readdir<W: ?Sized>(
+    async fn do_readdir<T: ?Sized>(
         &self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         op: op::Readdir<'_>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let inode = match self.inodes.get(op.ino()).await {
             Some(inode) => inode,
-            None => return writer.reply_err(libc::ENOENT).await,
+            None => return cx.reply_err(libc::ENOENT).await,
         };
 
         let dir = match inode.downcast_ref::<Directory>() {
             Some(dir) => dir,
-            None => return writer.reply_err(libc::ENOTDIR).await,
+            None => return cx.reply_err(libc::ENOTDIR).await,
         };
 
         // FIXME: polish
@@ -232,18 +226,18 @@ impl MemFS {
             .collect();
         let entries: Vec<_> = entries.iter().map(|entry| entry.as_ref()).collect();
 
-        op.reply_vectored(writer, &*entries).await
+        op.reply_vectored(cx, &*entries).await
     }
 
-    async fn do_mknod<W: ?Sized>(
+    async fn do_mknod<T: ?Sized>(
         &self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         op: op::Mknod<'_>,
         uid: u32,
         gid: u32,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         match op.mode() & libc::S_IFMT {
             libc::S_IFREG => {
@@ -258,24 +252,24 @@ impl MemFS {
                         let mut entry = ReplyEntry::new(attr);
                         entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
                         entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                        op.reply(writer, entry).await
+                        op.reply(cx, entry).await
                     }
-                    Err(errno) => writer.reply_err(errno).await,
+                    Err(errno) => cx.reply_err(errno).await,
                 }
             }
-            _ => writer.reply_err(libc::ENOTSUP).await,
+            _ => cx.reply_err(libc::ENOTSUP).await,
         }
     }
 
-    async fn do_mkdir<W: ?Sized>(
+    async fn do_mkdir<T: ?Sized>(
         &self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         op: op::Mkdir<'_>,
         uid: u32,
         gid: u32,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let attr = self.make_attr(uid, gid, op.mode());
         match self.inodes.insert_dir(op.parent(), op.name(), attr).await {
@@ -284,43 +278,41 @@ impl MemFS {
                 let mut entry = ReplyEntry::new(attr);
                 entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
                 entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                op.reply(writer, entry).await
+                op.reply(cx, entry).await
             }
-            Err(errno) => writer.reply_err(errno).await,
+            Err(errno) => cx.reply_err(errno).await,
         }
     }
 }
 
 #[async_trait]
 impl Filesystem for MemFS {
-    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
+    async fn call<'a, 'cx, T: ?Sized>(
         &'a self,
+        cx: &'a mut Context<'cx, T>,
         op: Operation<'cx>,
-        reader: &'a mut R,
-        writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        R: AsyncRead + Send + Unpin,
-        W: Writer + Send + Unpin,
+        T: Reader + Writer + Send + Unpin,
     {
-        let uid = op.uid();
-        let gid = op.gid();
+        let uid = cx.uid();
+        let gid = cx.gid();
         match op {
-            Operation::Lookup(op) => self.do_lookup(writer, op).await?,
-            Operation::Getattr(op) => self.do_getattr(writer, op).await?,
-            Operation::Setattr(op) => self.do_setattr(writer, op).await?,
-            Operation::Read(op) => self.do_read(writer, op).await?,
-            Operation::Write(op) => self.do_write(reader, writer, op).await?,
-            Operation::Readdir(op) => self.do_readdir(writer, op).await?,
-            Operation::Mknod(op) => self.do_mknod(writer, op, uid, gid).await?,
-            Operation::Mkdir(op) => self.do_mkdir(writer, op, uid, gid).await?,
+            Operation::Lookup(op) => self.do_lookup(cx, op).await?,
+            Operation::Getattr(op) => self.do_getattr(cx, op).await?,
+            Operation::Setattr(op) => self.do_setattr(cx, op).await?,
+            Operation::Read(op) => self.do_read(cx, op).await?,
+            Operation::Write(op) => self.do_write(cx, op).await?,
+            Operation::Readdir(op) => self.do_readdir(cx, op).await?,
+            Operation::Mknod(op) => self.do_mknod(cx, op, uid, gid).await?,
+            Operation::Mkdir(op) => self.do_mkdir(cx, op, uid, gid).await?,
             Operation::Unlink(op) => match self.inodes.remove(op.parent(), op.name()).await {
-                Ok(()) => op.reply(writer).await?,
-                Err(errno) => writer.reply_err(errno).await?,
+                Ok(()) => op.reply(cx).await?,
+                Err(errno) => cx.reply_err(errno).await?,
             },
             Operation::Rmdir(op) => match self.inodes.remove(op.parent(), op.name()).await {
-                Ok(()) => op.reply(writer).await?,
-                Err(errno) => writer.reply_err(errno).await?,
+                Ok(()) => op.reply(cx).await?,
+                Err(errno) => cx.reply_err(errno).await?,
             },
 
             _ => (),

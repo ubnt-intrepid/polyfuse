@@ -4,7 +4,6 @@
 
 use crate::{
     common::{FileAttr, FileLock, StatFs},
-    io::{Writer, WriterExt},
     kernel::{
         fuse_attr_out, //
         fuse_bmap_out,
@@ -17,60 +16,6 @@ use crate::{
         fuse_write_out,
     },
 };
-use std::{fmt, io};
-
-/// A reply sender to the kernel.
-pub struct ReplyWriter<'w, W: ?Sized> {
-    unique: u64,
-    writer: Option<&'w mut W>,
-}
-
-impl<W: ?Sized> fmt::Debug for ReplyWriter<'_, W> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ReplyWriter").finish()
-    }
-}
-
-impl<'w, W: ?Sized> ReplyWriter<'w, W> {
-    pub(crate) fn new(unique: u64, writer: &'w mut W) -> Self {
-        Self {
-            unique,
-            writer: Some(writer),
-        }
-    }
-
-    /// Return whether the writer has already sent a reply to the kernel or not.
-    #[inline]
-    pub fn replied(&self) -> bool {
-        self.writer.is_none()
-    }
-
-    /// Reply to the kernel with an arbitrary bytes of data.
-    pub async fn reply_raw(&mut self, data: &[&[u8]]) -> io::Result<()>
-    where
-        W: Writer + Unpin,
-    {
-        self.send_reply(0, data).await
-    }
-
-    /// Reply to the kernel with an error code.
-    pub async fn reply_err(&mut self, error: i32) -> io::Result<()>
-    where
-        W: Writer + Unpin,
-    {
-        self.send_reply(error, &[]).await
-    }
-
-    async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()>
-    where
-        W: Writer + Unpin,
-    {
-        if let Some(ref mut writer) = self.writer.take() {
-            writer.send_msg(self.unique, -error, data).await?;
-        }
-        Ok(())
-    }
-}
 
 /// Reply with the inode attributes.
 #[derive(Debug)]

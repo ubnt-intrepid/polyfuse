@@ -3,11 +3,20 @@
 use crate::channel::{Channel, ChannelBuffer};
 use futures::{
     future::{Future, FutureExt},
+    io::{AsyncRead, AsyncWrite},
     select,
+    task::{self, Poll},
 };
 use libc::c_int;
+use pin_project::pin_project;
 use polyfuse::{io::ReceiverExt, Filesystem, Session, SessionInitializer};
-use std::{ffi::OsStr, io, path::Path, sync::Arc};
+use std::{
+    ffi::OsStr,
+    io::{self, IoSlice, IoSliceMut},
+    path::Path,
+    pin::Pin,
+    sync::Arc,
+};
 use tokio::signal::unix::{signal, SignalKind};
 
 /// A FUSE filesystem server running on Tokio runtime.
@@ -78,7 +87,10 @@ impl Server {
                 let fs = fs.clone();
                 let mut writer = channel.try_clone()?;
                 tokio::spawn(async move {
-                    if let Err(e) = session.process(&*fs, &mut buf, &mut writer).await {
+                    if let Err(e) = session
+                        .process(&*fs, &mut unite(&mut buf, &mut writer))
+                        .await
+                    {
                         tracing::error!("error during handling a request: {}", e);
                     }
                 });
@@ -180,4 +192,66 @@ fn default_shutdown_signal() -> io::Result<impl Future<Output = c_int> + Unpin> 
             }
         }
     }))
+}
+
+fn unite<R, W>(reader: R, writer: W) -> Unite<R, W> {
+    Unite { reader, writer }
+}
+
+#[pin_project]
+struct Unite<R, W> {
+    #[pin]
+    reader: R,
+    #[pin]
+    writer: W,
+}
+
+impl<R, W> AsyncRead for Unite<R, W>
+where
+    R: AsyncRead,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        dst: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        self.project().reader.poll_read(cx, dst)
+    }
+
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        dst: &mut [IoSliceMut<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.project().reader.poll_read_vectored(cx, dst)
+    }
+}
+
+impl<R, W> AsyncWrite for Unite<R, W>
+where
+    W: AsyncWrite,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        src: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.project().writer.poll_write(cx, src)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        src: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.project().writer.poll_write_vectored(cx, src)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+        self.project().writer.poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+        self.project().writer.poll_close(cx)
+    }
 }

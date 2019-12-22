@@ -20,6 +20,7 @@ pub mod op;
 pub mod reply;
 
 mod common;
+mod context;
 mod dirent;
 mod fs;
 mod init;
@@ -30,6 +31,7 @@ mod util;
 #[doc(inline)]
 pub use crate::{
     common::{FileAttr, FileLock, Forget, StatFs},
+    context::Context,
     dirent::DirEntry,
     fs::Filesystem,
     init::{CapabilityFlags, ConnectionInfo, SessionInitializer},

@@ -12,7 +12,6 @@ use polyfuse_examples::prelude::*;
 use chrono::Local;
 use futures::{channel::oneshot, io::AsyncReadExt, lock::Mutex};
 use polyfuse::{
-    op::NotifyReply,
     reply::{ReplyAttr, ReplyOpen},
     FileAttr,
 };
@@ -155,31 +154,29 @@ impl Heartbeat {
 
 #[async_trait]
 impl Filesystem for Heartbeat {
-    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
+    async fn call<'a, 'cx, T: ?Sized>(
         &'a self,
+        cx: &'a mut Context<'cx, T>,
         op: Operation<'cx>,
-        _: &'a mut R,
-        writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        R: AsyncRead + Send + Unpin,
-        W: Writer + Unpin + Send,
+        T: Reader + Writer + Unpin + Send,
     {
         match op {
             Operation::Getattr(op) => match op.ino() {
                 ROOT_INO => {
                     let inner = self.inner.lock().await;
-                    op.reply(writer, ReplyAttr::new(inner.attr)).await?;
+                    op.reply(cx, ReplyAttr::new(inner.attr)).await?;
                 }
-                _ => writer.reply_err(libc::ENOENT).await?,
+                _ => cx.reply_err(libc::ENOENT).await?,
             },
             Operation::Open(op) => match op.ino() {
                 ROOT_INO => {
                     let mut reply = ReplyOpen::new(0);
                     reply.keep_cache(true);
-                    op.reply(writer, reply).await?;
+                    op.reply(cx, reply).await?;
                 }
-                _ => writer.reply_err(libc::ENOENT).await?,
+                _ => cx.reply_err(libc::ENOENT).await?,
             },
             Operation::Read(op) => match op.ino() {
                 ROOT_INO => {
@@ -187,35 +184,26 @@ impl Filesystem for Heartbeat {
 
                     let offset = op.offset() as usize;
                     if offset >= inner.content.len() {
-                        op.reply(writer, &[]).await?;
+                        op.reply(cx, &[]).await?;
                     } else {
                         let size = op.size() as usize;
                         let data = &inner.content.as_bytes()[offset..];
                         let data = &data[..std::cmp::min(data.len(), size)];
-                        op.reply(writer, data).await?;
+                        op.reply(cx, data).await?;
                     }
                 }
-                _ => writer.reply_err(libc::ENOENT).await?,
+                _ => cx.reply_err(libc::ENOENT).await?,
             },
+            Operation::NotifyReply(op) => {
+                if let Some(tx) = self.retrieves.lock().await.remove(&op.unique()) {
+                    let mut data = vec![0u8; op.size() as usize];
+                    cx.reader().read_exact(&mut data).await?;
+                    let _ = tx.send(data);
+                }
+            }
             _ => (),
         }
 
-        Ok(())
-    }
-
-    async fn notify_reply<'a, 'cx, R: ?Sized>(
-        &'a self,
-        arg: NotifyReply<'cx>,
-        reader: &'a mut R,
-    ) -> io::Result<()>
-    where
-        R: AsyncRead + Send + Unpin,
-    {
-        if let Some(tx) = self.retrieves.lock().await.remove(&arg.unique()) {
-            let mut data = vec![0u8; arg.size() as usize];
-            reader.read_exact(&mut data).await?;
-            let _ = tx.send(data);
-        }
         Ok(())
     }
 }

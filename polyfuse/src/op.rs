@@ -1,9 +1,8 @@
 //! Filesystem operations.
 
-#![allow(missing_docs)]
-
 use crate::{
     common::{FileLock, Forget},
+    context::Context,
     io::Writer,
     kernel::{
         fuse_access_in, //
@@ -47,7 +46,6 @@ use crate::{
         ReplyPoll,
         ReplyStatfs,
         ReplyWrite,
-        ReplyWriter,
         ReplyXattr,
     },
     util::as_bytes,
@@ -63,146 +61,62 @@ use std::{
 /// The kind of FUSE requests received from the kernel.
 #[derive(Debug)]
 #[allow(missing_docs)]
+#[non_exhaustive]
 pub enum Operation<'a> {
-    /// Look up a directory entry by name.
     Lookup(Lookup<'a>),
-
-    /// Get file attributes.
+    Forget(Forgets<'a>),
     Getattr(Getattr<'a>),
-
-    /// Set file attributes.
     Setattr(Setattr<'a>),
-
-    /// Read a symbolic link.
     Readlink(Readlink<'a>),
-
-    /// Create a symbolic link
     Symlink(Symlink<'a>),
-
-    /// Create a file node.
     Mknod(Mknod<'a>),
-
-    /// Create a directory.
     Mkdir(Mkdir<'a>),
-
-    /// Remove a file.
     Unlink(Unlink<'a>),
-
-    /// Remove a directory.
     Rmdir(Rmdir<'a>),
-
-    /// Rename a file.
     Rename(Rename<'a>),
-
-    /// Create a hard link.
     Link(Link<'a>),
-
-    /// Open a file.
     Open(Open<'a>),
-
-    /// Read data from an opened file.
     Read(Read<'a>),
-
-    /// Write data to an opened file.
     Write(Write<'a>),
-
-    /// Release an opened file.
     Release(Release<'a>),
-
-    /// Get the filesystem statistics.
     Statfs(Statfs<'a>),
-
-    /// Synchronize the file contents of an opened file.
-    ///
-    /// When the parameter `datasync` is true, only the
-    /// file contents should be flushed and the metadata
-    /// does not have to be flushed.
     Fsync(Fsync<'a>),
-
-    /// Set an extended attribute.
     Setxattr(Setxattr<'a>),
-
-    /// Get an extended attribute.
-    ///
-    /// The operation should send the length of attribute's value
-    /// with `reply.size(n)` when `size` is equal to zero.
     Getxattr(Getxattr<'a>),
-
-    /// List extended attribute names.
-    ///
-    /// The attribute names must be seperated by a null character
-    /// (i.e. `b'\0'`).
-    ///
-    /// The operation should send the length of attribute names
-    /// with `reply.size(n)` when `size` is equal to zero.
     Listxattr(Listxattr<'a>),
-
-    /// Remove an extended attribute.
     Removexattr(Removexattr<'a>),
-
-    /// Close a file descriptor.
     Flush(Flush<'a>),
-
-    /// Open a directory.
     Opendir(Opendir<'a>),
-
-    /// Read contents from an opened directory.
     Readdir(Readdir<'a>),
-
-    /// Release an opened directory.
     Releasedir(Releasedir<'a>),
-
-    /// Synchronize an opened directory contents.
-    ///
-    /// When the parameter `datasync` is true, only the
-    /// directory contents should be flushed and the metadata
-    /// does not have to be flushed.
     Fsyncdir(Fsyncdir<'a>),
-
-    /// Test for a POSIX file lock.
     Getlk(Getlk<'a>),
-
-    /// Acquire, modify or release a POSIX file lock.
     Setlk(Setlk<'a>),
-
-    /// Acquire, modify or release a BSD file lock.
     Flock(Flock<'a>),
-
-    /// Check file access permissions.
     Access(Access<'a>),
-
-    /// Create and open a file.
     Create(Create<'a>),
-
-    /// Map block index within a file to block index within device.
-    ///
-    /// This operation makes sense only for filesystems that use
-    /// block devices, and is called only when the mount options
-    /// contains `blkdev`.
     Bmap(Bmap<'a>),
-
-    /// Allocate requested space to an opened file.
     Fallocate(Fallocate<'a>),
-
-    /// Copy a range of data from an opened file to another.
     CopyFileRange(CopyFileRange<'a>),
-
-    /// Poll for readiness.
-    ///
-    /// When `kh` is not `None`, the filesystem should send
-    /// the notification about I/O readiness to the kernel.
     Poll(Poll<'a>),
+    Interrupt(Interrupt<'a>),
+    NotifyReply(NotifyReply<'a>),
+
+    #[doc(hidden)]
+    Unknown,
 }
 
 // TODO: add operations:
 // Ioctl
 
+/// Look up a directory entry by name.
 #[derive(Debug)]
 pub struct Lookup<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Lookup<'a> {
     pub fn parent(&self) -> u64 {
         self.header.nodeid
@@ -212,25 +126,27 @@ impl<'a> Lookup<'a> {
         self.name
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
+/// Get file attributes.
 #[derive(Debug)]
 pub struct Getattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_getattr_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Getattr<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -244,25 +160,27 @@ impl<'a> Getattr<'a> {
         }
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         attr: impl AsRef<ReplyAttr>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let attr = attr.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(attr) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(attr) }]).await
     }
 }
 
+/// Set file attributes.
 #[derive(Debug)]
 pub struct Setattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_setattr_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Setattr<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -325,42 +243,45 @@ impl<'a> Setattr<'a> {
         self.get(crate::kernel::FATTR_LOCKOWNER, |arg| arg.lock_owner)
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         attr: impl AsRef<ReplyAttr>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let attr = attr.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(attr) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(attr) }]).await
     }
 }
 
+/// Read a symbolic link.
 #[derive(Debug)]
 pub struct Readlink<'a> {
     header: &'a fuse_in_header,
 }
 
+#[allow(missing_docs)]
 impl Readlink<'_> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     /// Reply to the kernel with the specified link value.
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         value: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[value.as_ref().as_bytes()]).await
+        cx.reply_raw(&[value.as_ref().as_bytes()]).await
     }
 }
 
+/// Create a symbolic link.
 #[derive(Debug)]
 pub struct Symlink<'a> {
     header: &'a fuse_in_header,
@@ -368,6 +289,7 @@ pub struct Symlink<'a> {
     link: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Symlink<'a> {
     pub fn parent(&self) -> u64 {
         self.header.nodeid
@@ -381,19 +303,20 @@ impl<'a> Symlink<'a> {
         &*self.link
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
+/// Create a file node.
 #[derive(Debug)]
 pub struct Mknod<'a> {
     header: &'a fuse_in_header,
@@ -401,6 +324,7 @@ pub struct Mknod<'a> {
     name: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Mknod<'a> {
     pub fn parent(&self) -> u64 {
         self.header.nodeid
@@ -422,19 +346,20 @@ impl<'a> Mknod<'a> {
         self.arg.umask
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
+/// Create a directory.
 #[derive(Debug)]
 pub struct Mkdir<'a> {
     header: &'a fuse_in_header,
@@ -442,6 +367,7 @@ pub struct Mkdir<'a> {
     name: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Mkdir<'a> {
     pub fn parent(&self) -> u64 {
         self.header.nodeid
@@ -459,25 +385,27 @@ impl<'a> Mkdir<'a> {
         self.arg.umask
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
+/// Remove a file.
 #[derive(Debug)]
 pub struct Unlink<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Unlink<'a> {
     pub fn parent(&self) -> u64 {
         self.header.nodeid
@@ -487,20 +415,22 @@ impl<'a> Unlink<'a> {
         &*self.name
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Remove a directory.
 #[derive(Debug)]
 pub struct Rmdir<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Rmdir<'a> {
     pub fn parent(&self) -> u64 {
         self.header.nodeid
@@ -510,14 +440,15 @@ impl<'a> Rmdir<'a> {
         &*self.name
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Rename a file.
 #[derive(Debug)]
 pub struct Rename<'a> {
     header: &'a fuse_in_header,
@@ -544,6 +475,7 @@ impl<'a> From<&'a fuse_rename2_in> for RenameKind<'a> {
     }
 }
 
+#[allow(missing_docs)]
 impl<'a> Rename<'a> {
     pub fn parent(&self) -> u64 {
         self.header.nodeid
@@ -571,14 +503,15 @@ impl<'a> Rename<'a> {
         }
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Create a hard link.
 #[derive(Debug)]
 pub struct Link<'a> {
     header: &'a fuse_in_header,
@@ -586,6 +519,7 @@ pub struct Link<'a> {
     newname: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Link<'a> {
     pub fn ino(&self) -> u64 {
         self.arg.oldnodeid
@@ -599,25 +533,27 @@ impl<'a> Link<'a> {
         &*self.newname
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         entry: impl AsRef<ReplyEntry>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let entry = entry.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(entry) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
 
+/// Open a file.
 #[derive(Debug)]
 pub struct Open<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_open_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Open<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -627,25 +563,27 @@ impl<'a> Open<'a> {
         self.arg.flags
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyOpen>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
+/// Read data from an opened file.
 #[derive(Debug)]
 pub struct Read<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_read_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Read<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -675,46 +613,48 @@ impl<'a> Read<'a> {
         }
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            writer.reply_raw(&[data]).await
+            cx.reply_raw(&[data]).await
         } else {
-            writer.reply_err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 
-    pub async fn reply_vectored<W: ?Sized>(
+    pub async fn reply_vectored<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            writer.reply_raw(data).await
+            cx.reply_raw(data).await
         } else {
-            writer.reply_err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 }
 
+/// Write data to an opened file.
 #[derive(Debug)]
 pub struct Write<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_write_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Write<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -744,25 +684,27 @@ impl<'a> Write<'a> {
         }
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyWrite>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
+/// Release an opened file.
 #[derive(Debug)]
 pub struct Release<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_release_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Release<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -789,43 +731,51 @@ impl<'a> Release<'a> {
         self.arg.release_flags & crate::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Get the filesystem statistics.
 #[derive(Debug)]
 pub struct Statfs<'a> {
     header: &'a fuse_in_header,
 }
 
+#[allow(missing_docs)]
 impl Statfs<'_> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyStatfs>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
+/// Synchronize the file contents of an opened file.
+///
+/// When the parameter `datasync` is true, only the
+/// file contents should be flushed and the metadata
+/// does not have to be flushed.
 #[derive(Debug)]
 pub struct Fsync<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fsync_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Fsync<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -839,14 +789,15 @@ impl<'a> Fsync<'a> {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Set an extended attribute.
 #[derive(Debug)]
 pub struct Setxattr<'a> {
     header: &'a fuse_in_header,
@@ -855,6 +806,7 @@ pub struct Setxattr<'a> {
     value: &'a [u8],
 }
 
+#[allow(missing_docs)]
 impl<'a> Setxattr<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -872,14 +824,18 @@ impl<'a> Setxattr<'a> {
         self.arg.flags
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Get an extended attribute.
+///
+/// The operation should send the length of attribute's value
+/// with `reply.size(n)` when `size` is equal to zero.
 #[derive(Debug)]
 pub struct Getxattr<'a> {
     header: &'a fuse_in_header,
@@ -887,6 +843,7 @@ pub struct Getxattr<'a> {
     name: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Getxattr<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -900,58 +857,66 @@ impl<'a> Getxattr<'a> {
         self.arg.size
     }
 
-    pub async fn reply_size<W: ?Sized>(
+    pub async fn reply_size<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyXattr>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            writer.reply_raw(&[data]).await
+            cx.reply_raw(&[data]).await
         } else {
-            writer.reply_err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 
-    pub async fn reply_vectored<W: ?Sized>(
+    pub async fn reply_vectored<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            writer.reply_raw(data).await
+            cx.reply_raw(data).await
         } else {
-            writer.reply_err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 }
 
+/// List extended attribute names.
+///
+/// The attribute names must be seperated by a null character
+/// (i.e. `b'\0'`).
+///
+/// The operation should send the length of attribute names
+/// with `reply.size(n)` when `size` is equal to zero.#[derive(Debug)]
 #[derive(Debug)]
 pub struct Listxattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_getxattr_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Listxattr<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -961,57 +926,60 @@ impl<'a> Listxattr<'a> {
         self.arg.size
     }
 
-    pub async fn reply_size<W: ?Sized>(
+    pub async fn reply_size<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyXattr>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            writer.reply_raw(&[data]).await
+            cx.reply_raw(&[data]).await
         } else {
-            writer.reply_err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 
-    pub async fn reply_vectored<W: ?Sized>(
+    pub async fn reply_vectored<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            writer.reply_raw(data).await
+            cx.reply_raw(data).await
         } else {
-            writer.reply_err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 }
+
+/// Remove an extended attribute.
 #[derive(Debug)]
 pub struct Removexattr<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Removexattr<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1021,20 +989,22 @@ impl<'a> Removexattr<'a> {
         &*self.name
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Close a file descriptor.
 #[derive(Debug)]
 pub struct Flush<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_flush_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Flush<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1048,20 +1018,22 @@ impl<'a> Flush<'a> {
         self.arg.lock_owner
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Open a directory.
 #[derive(Debug)]
 pub struct Opendir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_open_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Opendir<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1071,32 +1043,28 @@ impl<'a> Opendir<'a> {
         self.arg.flags
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyOpendir>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum ReaddirMode {
-    Normal,
-    Plus,
-}
-
+/// Read contents from an opened directory.
 #[derive(Debug)]
 pub struct Readdir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_read_in,
-    mode: ReaddirMode,
+    is_plus: bool,
 }
 
+#[allow(missing_docs)]
 impl<'a> Readdir<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1114,50 +1082,52 @@ impl<'a> Readdir<'a> {
         self.arg.size
     }
 
-    pub fn mode(&self) -> ReaddirMode {
-        self.mode
+    pub fn is_plus(&self) -> bool {
+        self.is_plus
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         data: impl AsRef<[u8]>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let data = data.as_ref();
 
         if data.len() <= self.size() as usize {
-            writer.reply_raw(&[data]).await
+            cx.reply_raw(&[data]).await
         } else {
-            writer.reply_err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 
-    pub async fn reply_vectored<W: ?Sized>(
+    pub async fn reply_vectored<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let data_len: usize = data.iter().map(|t| t.len()).sum();
         if data_len <= self.size() as usize {
-            writer.reply_raw(data).await
+            cx.reply_raw(data).await
         } else {
-            writer.reply_err(libc::ERANGE).await
+            cx.reply_err(libc::ERANGE).await
         }
     }
 }
 
+/// Release an opened directory.
 #[derive(Debug)]
 pub struct Releasedir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_release_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Releasedir<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1171,20 +1141,26 @@ impl<'a> Releasedir<'a> {
         self.arg.flags
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Synchronize an opened directory contents.
+///
+/// When the parameter `datasync` is true, only the
+/// directory contents should be flushed and the metadata
+/// does not have to be flushed.
 #[derive(Debug)]
 pub struct Fsyncdir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fsync_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Fsyncdir<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1198,20 +1174,22 @@ impl<'a> Fsyncdir<'a> {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Test for a POSIX file lock.
 #[derive(Debug)]
 pub struct Getlk<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_lk_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Getlk<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1229,19 +1207,20 @@ impl<'a> Getlk<'a> {
         FileLock::new(&self.arg.lk)
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyLk>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
+/// Acquire, modify or release a POSIX file lock.
 #[derive(Debug)]
 pub struct Setlk<'a> {
     header: &'a fuse_in_header,
@@ -1249,6 +1228,7 @@ pub struct Setlk<'a> {
     sleep: bool,
 }
 
+#[allow(missing_docs)]
 impl<'a> Setlk<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1270,14 +1250,15 @@ impl<'a> Setlk<'a> {
         self.sleep
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Acquire, modify or release a BSD file lock.
 #[derive(Debug)]
 pub struct Flock<'a> {
     header: &'a fuse_in_header,
@@ -1285,6 +1266,7 @@ pub struct Flock<'a> {
     sleep: bool,
 }
 
+#[allow(missing_docs)]
 impl<'a> Flock<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1317,20 +1299,22 @@ impl<'a> Flock<'a> {
         Some(op)
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Check file access permissions.
 #[derive(Debug)]
 pub struct Access<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_access_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Access<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1340,14 +1324,15 @@ impl<'a> Access<'a> {
         self.arg.mask
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Create and open a file.
 #[derive(Debug)]
 pub struct Create<'a> {
     header: &'a fuse_in_header,
@@ -1355,6 +1340,7 @@ pub struct Create<'a> {
     name: &'a OsStr,
 }
 
+#[allow(missing_docs)]
 impl<'a> Create<'a> {
     pub fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1376,32 +1362,37 @@ impl<'a> Create<'a> {
         self.arg.flags
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         entry: impl AsRef<ReplyEntry>,
         open: impl AsRef<ReplyOpen>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let entry = entry.as_ref();
         let open = open.as_ref();
-        writer
-            .reply_raw(&[
-                unsafe { as_bytes(entry) }, //
-                unsafe { as_bytes(open) },
-            ])
-            .await
+        cx.reply_raw(&[
+            unsafe { as_bytes(entry) }, //
+            unsafe { as_bytes(open) },
+        ])
+        .await
     }
 }
 
+/// Map block index within a file to block index within device.
+///
+/// This operation makes sense only for filesystems that use
+/// block devices, and is called only when the mount options
+/// contains `blkdev`.
 #[derive(Debug)]
 pub struct Bmap<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_bmap_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Bmap<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1415,25 +1406,27 @@ impl<'a> Bmap<'a> {
         self.arg.blocksize
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyBmap>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
+/// Allocate requested space to an opened file.
 #[derive(Debug)]
 pub struct Fallocate<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fallocate_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Fallocate<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1455,20 +1448,22 @@ impl<'a> Fallocate<'a> {
         self.arg.mode
     }
 
-    pub async fn reply<W: ?Sized>(self, writer: &mut ReplyWriter<'_, W>) -> io::Result<()>
+    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
-        writer.reply_raw(&[]).await
+        cx.reply_raw(&[]).await
     }
 }
 
+/// Copy a range of data from an opened file to another.
 #[derive(Debug)]
 pub struct CopyFileRange<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_copy_file_range_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> CopyFileRange<'a> {
     pub fn input(&self) -> (u64, u64, u64) {
         (self.header.nodeid, self.arg.fh_in, self.arg.off_in)
@@ -1486,25 +1481,30 @@ impl<'a> CopyFileRange<'a> {
         self.arg.flags
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyWrite>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
+/// Poll for readiness.
+///
+/// When `kh` is not `None`, the filesystem should send
+/// the notification about I/O readiness to the kernel.
 #[derive(Debug)]
 pub struct Poll<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_poll_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> Poll<'a> {
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1526,88 +1526,23 @@ impl<'a> Poll<'a> {
         }
     }
 
-    pub async fn reply<W: ?Sized>(
+    pub async fn reply<T: ?Sized>(
         self,
-        writer: &mut ReplyWriter<'_, W>,
+        cx: &mut Context<'_, T>,
         out: impl AsRef<ReplyPoll>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        T: Writer + Unpin,
     {
         let out = out.as_ref();
-        writer.reply_raw(&[unsafe { as_bytes(out) }]).await
+        cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 }
 
-macro_rules! impl_header {
-    ($($t:ident),*$(,)?) => {
-        impl Operation<'_> {
-            fn header(&self) -> &fuse_in_header {
-                match self {
-                    $(
-                        Self::$t(op) => op.header,
-                    )*
-                }
-            }
-
-            /// Return the user ID of the calling process.
-            pub fn uid(&self) -> u32 {
-                self.header().uid
-            }
-
-            /// Return the group ID of the calling process.
-            pub fn gid(&self) -> u32 {
-                self.header().gid
-            }
-
-            /// Return the process ID of the calling process.
-            pub fn pid(&self) -> u32 {
-                self.header().pid
-            }
-        }
-    }
-}
-
-impl_header! {
-    Lookup,
-    Getattr,
-    Setattr,
-    Readlink,
-    Symlink,
-    Mknod,
-    Mkdir,
-    Unlink,
-    Rmdir,
-    Rename,
-    Link,
-    Open,
-    Read,
-    Write,
-    Release,
-    Statfs,
-    Fsync,
-    Setxattr,
-    Getxattr,
-    Listxattr,
-    Removexattr,
-    Flush,
-    Opendir,
-    Readdir,
-    Releasedir,
-    Fsyncdir,
-    Getlk,
-    Setlk,
-    Flock,
-    Access,
-    Create,
-    Bmap,
-    Fallocate,
-    CopyFileRange,
-    Poll,
-}
-
+/// A set of `Forget`s removed from the kernel's internal caches.
+#[allow(missing_docs)]
 #[derive(Debug)]
-pub(crate) enum Forgets<'a> {
+pub enum Forgets<'a> {
     Single(Forget),
     Batch(&'a [Forget]),
 }
@@ -1621,12 +1556,14 @@ impl AsRef<[Forget]> for Forgets<'_> {
     }
 }
 
+/// Receive the reply for a `NOTIFY_RETRIEVE` notification.
 #[derive(Debug)]
 pub struct NotifyReply<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_notify_retrieve_in,
 }
 
+#[allow(missing_docs)]
 impl<'a> NotifyReply<'a> {
     #[inline]
     pub fn unique(&self) -> u64 {
@@ -1649,6 +1586,7 @@ impl<'a> NotifyReply<'a> {
     }
 }
 
+/// Interrupt a previous FUSE request.
 #[derive(Debug)]
 pub struct Interrupt<'a> {
     header: &'a fuse_in_header,
@@ -1656,6 +1594,7 @@ pub struct Interrupt<'a> {
 }
 
 impl Interrupt<'_> {
+    /// Return the target unique ID to interrupt.
     #[inline]
     pub fn unique(&self) -> u64 {
         self.arg.unique
@@ -1667,13 +1606,8 @@ impl Interrupt<'_> {
 #[derive(Debug)]
 pub(crate) enum OperationKind<'a> {
     Operation(Operation<'a>),
-    Forget(Forgets<'a>),
     Init { arg: &'a fuse_init_in },
     Destroy,
-    Interrupt(Interrupt<'a>),
-    NotifyReply(NotifyReply<'a>),
-    Unknown,
-    // TODO: Ioctl
 }
 
 impl<'a> OperationKind<'a> {
@@ -1735,23 +1669,29 @@ impl<'a> Parser<'a> {
             Some(fuse_opcode::FUSE_DESTROY) => Ok(OperationKind::Destroy),
             Some(fuse_opcode::FUSE_FORGET) => {
                 let arg = self.fetch::<fuse_forget_in>()?;
-                Ok(OperationKind::Forget(Forgets::Single(Forget::new(
-                    header.nodeid,
-                    arg.nlookup,
-                ))))
+                Ok(OperationKind::Operation(Operation::Forget(
+                    Forgets::Single(Forget::new(header.nodeid, arg.nlookup)),
+                )))
             }
             Some(fuse_opcode::FUSE_BATCH_FORGET) => {
                 let arg = self.fetch::<fuse_batch_forget_in>()?;
                 let forgets = self.fetch_array(arg.count as usize)?;
-                Ok(OperationKind::Forget(Forgets::Batch(forgets)))
+                Ok(OperationKind::Operation(Operation::Forget(Forgets::Batch(
+                    forgets,
+                ))))
             }
             Some(fuse_opcode::FUSE_INTERRUPT) => {
                 let arg = self.fetch()?;
-                Ok(OperationKind::Interrupt(Interrupt { header, arg }))
+                Ok(OperationKind::Operation(Operation::Interrupt(Interrupt {
+                    header,
+                    arg,
+                })))
             }
             Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
                 let arg = self.fetch()?;
-                Ok(OperationKind::NotifyReply(NotifyReply { header, arg }))
+                Ok(OperationKind::Operation(Operation::NotifyReply(
+                    NotifyReply { header, arg },
+                )))
             }
 
             Some(fuse_opcode::FUSE_LOOKUP) => {
@@ -1933,7 +1873,7 @@ impl<'a> Parser<'a> {
                 Ok(OperationKind::Operation(Operation::Readdir(Readdir {
                     header,
                     arg,
-                    mode: ReaddirMode::Normal,
+                    is_plus: false,
                 })))
             }
             Some(fuse_opcode::FUSE_RELEASEDIR) => {
@@ -1999,7 +1939,7 @@ impl<'a> Parser<'a> {
                 Ok(OperationKind::Operation(Operation::Readdir(Readdir {
                     header,
                     arg,
-                    mode: ReaddirMode::Plus,
+                    is_plus: true,
                 })))
             }
             Some(fuse_opcode::FUSE_RENAME2) => {
@@ -2026,7 +1966,7 @@ impl<'a> Parser<'a> {
                     arg,
                 })))
             }
-            _ => Ok(OperationKind::Unknown),
+            _ => Ok(OperationKind::Operation(Operation::Unknown)),
         }
     }
 }

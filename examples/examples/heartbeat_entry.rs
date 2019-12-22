@@ -7,7 +7,7 @@ use chrono::Local;
 use futures::lock::Mutex;
 use polyfuse::{
     reply::{ReplyAttr, ReplyEntry},
-    DirEntry, FileAttr, Forget,
+    DirEntry, FileAttr,
 };
 use polyfuse_tokio::Server;
 use std::{io, mem, sync::Arc};
@@ -116,15 +116,13 @@ impl Heartbeat {
 #[async_trait]
 impl Filesystem for Heartbeat {
     #[allow(clippy::cognitive_complexity)]
-    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
+    async fn call<'a, 'cx, T: ?Sized>(
         &'a self,
+        cx: &'a mut Context<'cx, T>,
         op: Operation<'cx>,
-        _: &'a mut R,
-        writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        R: AsyncRead + Unpin + Send,
-        W: Writer + Unpin + Send,
+        T: Reader + Writer + Unpin + Send,
     {
         match op {
             Operation::Lookup(op) => match op.parent() {
@@ -134,30 +132,39 @@ impl Filesystem for Heartbeat {
                         let mut reply = ReplyEntry::new(self.file_attr);
                         reply.entry_valid(self.timeout, 0);
                         reply.attr_valid(self.timeout, 0);
-                        op.reply(writer, reply).await?;
+                        op.reply(cx, reply).await?;
                         current.nlookup += 1;
                     } else {
-                        writer.reply_err(libc::ENOENT).await?;
+                        cx.reply_err(libc::ENOENT).await?;
                     }
                 }
-                _ => writer.reply_err(libc::ENOTDIR).await?,
+                _ => cx.reply_err(libc::ENOTDIR).await?,
             },
+
+            Operation::Forget(forgets) => {
+                let mut current = self.current.lock().await;
+                for forget in forgets.as_ref() {
+                    if forget.ino() == FILE_INO {
+                        current.nlookup -= forget.nlookup();
+                    }
+                }
+            }
 
             Operation::Getattr(op) => {
                 let attr = match op.ino() {
                     ROOT_INO => self.root_attr,
                     FILE_INO => self.file_attr,
-                    _ => return writer.reply_err(libc::ENOENT).await,
+                    _ => return cx.reply_err(libc::ENOENT).await,
                 };
                 let mut reply = ReplyAttr::new(attr);
                 reply.attr_valid(self.timeout, 0);
-                op.reply(writer, reply).await?
+                op.reply(cx, reply).await?
             }
 
             Operation::Read(op) => match op.ino() {
-                ROOT_INO => writer.reply_err(libc::EISDIR).await?,
-                FILE_INO => op.reply(writer, &[]).await?,
-                _ => writer.reply_err(libc::ENOENT).await?,
+                ROOT_INO => cx.reply_err(libc::EISDIR).await?,
+                FILE_INO => op.reply(cx, &[]).await?,
+                _ => cx.reply_err(libc::ENOENT).await?,
             },
 
             Operation::Readdir(op) => match op.ino() {
@@ -165,27 +172,17 @@ impl Filesystem for Heartbeat {
                     if op.offset() == 0 {
                         let current = self.current.lock().await;
                         let dirent = DirEntry::file(&current.filename, FILE_INO, 1);
-                        op.reply(writer, dirent).await?;
+                        op.reply(cx, dirent).await?;
                     } else {
-                        op.reply(writer, &[]).await?;
+                        op.reply(cx, &[]).await?;
                     }
                 }
-                _ => writer.reply_err(libc::ENOTDIR).await?,
+                _ => cx.reply_err(libc::ENOTDIR).await?,
             },
 
             _ => (),
         }
 
-        Ok(())
-    }
-
-    async fn forget<'a>(&'a self, forgets: &'a [Forget]) -> io::Result<()> {
-        let mut current = self.current.lock().await;
-        for forget in forgets {
-            if forget.ino() == FILE_INO {
-                current.nlookup -= forget.nlookup();
-            }
-        }
         Ok(())
     }
 }

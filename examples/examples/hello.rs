@@ -119,15 +119,13 @@ impl Hello {
 
 #[async_trait]
 impl Filesystem for Hello {
-    async fn reply<'a, 'cx, 'w, R: ?Sized, W: ?Sized>(
+    async fn call<'a, 'cx, T: ?Sized>(
         &'a self,
+        cx: &'a mut Context<'cx, T>,
         op: Operation<'cx>,
-        _: &'a mut R,
-        writer: &'a mut ReplyWriter<'w, W>,
     ) -> io::Result<()>
     where
-        R: AsyncRead + Send + Unpin,
-        W: Writer + Unpin + Send,
+        T: Reader + Writer + Unpin + Send,
     {
         match op {
             Operation::Lookup(op) => match self.lookup(op.parent(), op.name()) {
@@ -135,18 +133,18 @@ impl Filesystem for Hello {
                     let mut reply = ReplyEntry::new(attr);
                     reply.attr_valid(u64::max_value(), u32::max_value());
                     reply.entry_valid(u64::max_value(), u32::max_value());
-                    op.reply(writer, reply).await?;
+                    op.reply(cx, reply).await?;
                 }
-                None => writer.reply_err(libc::ENOENT).await?,
+                None => cx.reply_err(libc::ENOENT).await?,
             },
 
             Operation::Getattr(op) => match self.getattr(op.ino()) {
                 Some(attr) => {
                     let mut reply = ReplyAttr::new(attr);
                     reply.attr_valid(u64::max_value(), u32::max_value());
-                    op.reply(writer, reply).await?;
+                    op.reply(cx, reply).await?;
                 }
-                None => writer.reply_err(libc::ENOENT).await?,
+                None => cx.reply_err(libc::ENOENT).await?,
             },
 
             Operation::Read(op) => {
@@ -154,15 +152,15 @@ impl Filesystem for Hello {
                     .read(op.ino(), op.offset() as usize, op.size() as usize)
                     .await
                 {
-                    Ok(data) => op.reply(writer, data).await?,
-                    Err(errno) => writer.reply_err(errno).await?,
+                    Ok(data) => op.reply(cx, data).await?,
+                    Err(errno) => cx.reply_err(errno).await?,
                 }
             }
 
             Operation::Readdir(op) => match self.readdir(op.ino(), op.offset(), op.size() as usize)
             {
-                Ok(entries) => op.reply_vectored(writer, &*entries).await?,
-                Err(errno) => writer.reply_err(errno).await?,
+                Ok(entries) => op.reply_vectored(cx, &*entries).await?,
+                Err(errno) => cx.reply_err(errno).await?,
             },
 
             _ => (),
