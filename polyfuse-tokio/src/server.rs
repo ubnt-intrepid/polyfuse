@@ -11,6 +11,53 @@ use polyfuse::{io::unite, Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
+/// A builder for `Server`.
+#[derive(Debug, Default)]
+pub struct Builder {
+    initializer: SessionInitializer,
+}
+
+impl Builder {
+    /// Return a reference to the session initializer.
+    #[inline]
+    pub fn session(&mut self) -> &mut SessionInitializer {
+        &mut self.initializer
+    }
+
+    /// Build a `Server` mounted on the specified path.
+    pub async fn mount<'a>(
+        &'a self,
+        mountpoint: impl AsRef<Path>,
+        mountopts: &'a [&'a OsStr],
+    ) -> io::Result<Server> {
+        // FIXME: make async.
+        let mut channel = tokio::task::block_in_place(|| {
+            Channel::open(
+                mountpoint.as_ref(), //
+                mountopts,
+            )
+        })?;
+
+        let mut buf = vec![0u8; self.initializer.init_buf_size()];
+        let session = loop {
+            channel.read(&mut buf[..]).await?;
+            match self
+                .initializer
+                .try_init(&mut unite(&mut &buf[..], &mut channel))
+                .await?
+            {
+                Some(session) => break session,
+                None => continue,
+            }
+        };
+
+        Ok(Server {
+            session: Arc::new(session),
+            channel,
+        })
+    }
+}
+
 /// A FUSE filesystem server running on Tokio runtime.
 #[derive(Debug)]
 pub struct Server {
@@ -20,28 +67,13 @@ pub struct Server {
 
 impl Server {
     /// Create a FUSE server mounted on the specified path.
-    pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<Self> {
-        let mut channel = Channel::open(mountpoint.as_ref(), mountopts)?;
-
-        let initializer = SessionInitializer::default();
-        let mut buf = vec![0u8; initializer.init_buf_size()];
-        let session = loop {
-            channel.read(&mut buf[..]).await?;
-            match initializer
-                .try_init(&mut unite(&mut &buf[..], &mut channel))
-                .await?
-            {
-                Some(session) => break session,
-                None => continue,
-            }
-        };
-
-        let channel = channel;
-
-        Ok(Server {
-            session: Arc::new(session),
-            channel,
-        })
+    pub async fn mount<'a>(
+        mountpoint: impl AsRef<Path>,
+        mountopts: &'a [&'a OsStr],
+    ) -> io::Result<Self> {
+        Builder::default() //
+            .mount(mountpoint, mountopts)
+            .await
     }
 
     /// Attempt to make a clone of this instance.
@@ -107,6 +139,28 @@ impl Server {
         select! {
             _ = main_loop => Ok(None),
             sig = sig => Ok(Some(sig)),
+        }
+    }
+
+    /// Run a FUSE filesystem without spawning the new task for each request.
+    pub async fn run_single<'a, F>(&'a mut self, fs: &'a F) -> io::Result<()>
+    where
+        F: Filesystem,
+    {
+        let mut buf = vec![0u8; self.session.buffer_size()];
+        loop {
+            if let Err(err) = self.channel.read(&mut buf[..]).await {
+                match err.raw_os_error() {
+                    Some(libc::ENODEV) => {
+                        tracing::debug!("connection is closed");
+                        return Ok(());
+                    }
+                    _ => return Err(err),
+                }
+            }
+            self.session
+                .process(&*fs, &mut unite(&mut &buf[..], &mut self.channel))
+                .await?;
         }
     }
 

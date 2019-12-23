@@ -19,7 +19,7 @@
 mod channel;
 mod server;
 
-pub use crate::server::Server;
+pub use crate::server::{Builder, Server};
 
 use polyfuse::Filesystem;
 use std::{ffi::OsStr, io, path::Path};
