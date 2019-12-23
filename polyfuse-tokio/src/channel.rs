@@ -16,6 +16,7 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Evented, PollOpt, Ready, Token,
 };
+use polyfuse::io::Writer;
 use std::{
     cmp,
     ffi::OsStr,
@@ -334,3 +335,5 @@ impl AsyncWrite for Channel {
         Poll::Ready(Ok(()))
     }
 }
+
+impl Writer for Channel {}

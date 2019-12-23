@@ -16,6 +16,7 @@
 )]
 #![cfg_attr(test, deny(warnings))]
 
+mod buf;
 mod channel;
 mod server;
 

@@ -1,6 +1,6 @@
 //! Serve FUSE filesystem.
 
-use crate::channel::Channel;
+use crate::{buf::RequestBuffer, channel::Channel};
 use futures::{
     future::{Future, FutureExt},
     io::AsyncReadExt,
@@ -110,15 +110,9 @@ impl Server {
 
         let mut main_loop = Box::pin(async move {
             loop {
-                let mut buf = vec![0u8; session.buffer_size()];
-                if let Err(err) = channel.read(&mut buf[..]).await {
-                    match err.raw_os_error() {
-                        Some(libc::ENODEV) => {
-                            tracing::debug!("connection is closed");
-                            return Ok(());
-                        }
-                        _ => return Err(err),
-                    }
+                let mut buf = RequestBuffer::new(session.buffer_size());
+                if buf.receive_from(&mut *channel).await? {
+                    return Ok::<_, io::Error>(());
                 }
 
                 let session = session.clone();
@@ -126,7 +120,7 @@ impl Server {
                 let mut writer = channel.try_clone()?;
                 tokio::spawn(async move {
                     if let Err(e) = session
-                        .process(&*fs, &mut unite(&mut &buf[..], &mut writer))
+                        .process(&*fs, &mut unite(&mut buf, &mut writer))
                         .await
                     {
                         tracing::error!("error during handling a request: {}", e);
@@ -147,19 +141,14 @@ impl Server {
     where
         F: Filesystem,
     {
-        let mut buf = vec![0u8; self.session.buffer_size()];
+        let mut buf = RequestBuffer::new(self.session.buffer_size());
         loop {
-            if let Err(err) = self.channel.read(&mut buf[..]).await {
-                match err.raw_os_error() {
-                    Some(libc::ENODEV) => {
-                        tracing::debug!("connection is closed");
-                        return Ok(());
-                    }
-                    _ => return Err(err),
-                }
+            buf.reset_position();
+            if buf.receive_from(&mut self.channel).await? {
+                return Ok::<_, io::Error>(());
             }
             self.session
-                .process(&*fs, &mut unite(&mut &buf[..], &mut self.channel))
+                .process(&*fs, &mut unite(&mut buf, &mut self.channel))
                 .await?;
         }
     }

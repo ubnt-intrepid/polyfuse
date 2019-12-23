@@ -21,13 +21,25 @@ use std::{
     convert::TryFrom,
     io::{self, IoSlice, IoSliceMut},
     mem,
+    ops::DerefMut,
     pin::Pin,
 };
 
 /// A reader for an FUSE request message.
 pub trait Reader: AsyncRead {}
 
-impl<R: AsyncRead + ?Sized> Reader for R {}
+impl<R: ?Sized> Reader for &mut R where R: Reader + Unpin {}
+
+impl<R: ?Sized> Reader for Box<R> where R: Reader + Unpin {}
+
+impl<P, R: ?Sized> Reader for Pin<P>
+where
+    P: DerefMut<Target = R> + Unpin,
+    R: Reader,
+{
+}
+
+impl Reader for &[u8] {}
 
 pub(crate) trait ReaderExt: Reader {
     fn read_request(&mut self) -> ReadRequest<'_, Self>
@@ -157,7 +169,18 @@ impl Request {
 /// The writer of FUSE responses and notifications.
 pub trait Writer: AsyncWrite {}
 
-impl<W: AsyncWrite + ?Sized> Writer for W {}
+impl<W: ?Sized> Writer for &mut W where W: Writer + Unpin {}
+
+impl<W: ?Sized> Writer for Box<W> where W: Writer + Unpin {}
+
+impl<P, W: ?Sized> Writer for Pin<P>
+where
+    P: DerefMut<Target = W> + Unpin,
+    W: Writer,
+{
+}
+
+impl Writer for Vec<u8> {}
 
 pub(crate) trait WriterExt: Writer {
     fn send_msg<'w>(
@@ -294,10 +317,22 @@ where
     }
 }
 
+impl<R, W> Reader for Unite<R, W> where R: Reader {}
+
+impl<R, W> Writer for Unite<R, W> where W: Writer {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::executor::block_on;
+    use futures::{
+        executor::block_on,
+        task::{self, Poll},
+    };
+    use std::{
+        io::{self, IoSlice},
+        ops::Index,
+        pin::Pin,
+    };
 
     #[inline]
     fn bytes(bytes: &[u8]) -> &[u8] {
@@ -307,9 +342,56 @@ mod tests {
         ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
     }
 
+    pin_project! {
+        #[derive(Default)]
+        struct DummyWriter {
+            #[pin]
+            vec: Vec<u8>,
+        }
+    }
+
+    impl<I> Index<I> for DummyWriter
+    where
+        Vec<u8>: Index<I>,
+    {
+        type Output = <Vec<u8> as Index<I>>::Output;
+
+        fn index(&self, index: I) -> &Self::Output {
+            self.vec.index(index)
+        }
+    }
+
+    impl AsyncWrite for DummyWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            src: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.project().vec.poll_write(cx, src)
+        }
+
+        fn poll_write_vectored(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            src: &[IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.project().vec.poll_write_vectored(cx, src)
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+            self.project().vec.poll_flush(cx)
+        }
+
+        fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+            self.project().vec.poll_close(cx)
+        }
+    }
+
+    impl Writer for DummyWriter {}
+
     #[test]
     fn send_msg_empty() {
-        let mut writer = Vec::<u8>::new();
+        let mut writer = DummyWriter::default();
         block_on(writer.send_msg(42, 4, &[])).unwrap();
         assert_eq!(writer[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(writer[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
@@ -322,7 +404,7 @@ mod tests {
 
     #[test]
     fn send_msg_single_data() {
-        let mut writer = Vec::<u8>::new();
+        let mut writer = DummyWriter::default();
         block_on(writer.send_msg(42, 0, &["hello".as_ref()])).unwrap();
         assert_eq!(writer[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(writer[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
@@ -342,7 +424,7 @@ mod tests {
             "is a ".as_ref(),
             "message.".as_ref(),
         ];
-        let mut writer = Vec::<u8>::new();
+        let mut writer = DummyWriter::default();
         block_on(writer.send_msg(26, 0, payload)).unwrap();
         assert_eq!(writer[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(writer[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
