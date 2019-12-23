@@ -6,7 +6,7 @@
 )]
 
 use crate::{
-    io::{ReaderExt, Receiver, ReceiverExt, Writer, WriterExt},
+    io::{Reader, ReaderExt, Writer, WriterExt},
     kernel::{
         fuse_init_out, //
         FUSE_KERNEL_MINOR_VERSION,
@@ -21,16 +21,8 @@ use crate::{
     util::as_bytes,
 };
 use bitflags::bitflags;
-use futures::{
-    io::AsyncRead,
-    task::{self, Poll},
-};
 use lazy_static::lazy_static;
-use std::{
-    cmp,
-    io::{self, IoSliceMut},
-    pin::Pin,
-};
+use std::{cmp, io};
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -137,141 +129,115 @@ impl SessionInitializer {
         self
     }
 
-    /// Start a new FUSE session.
-    ///
-    /// This function receives an INIT request from the kernel and replies
-    /// after initializing the connection parameters.
+    #[doc(hidden)] // TODO: dox
+    pub fn init_buf_size(&self) -> usize {
+        BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES
+    }
+
+    /// Handle a `FUSE_INIT` request and create a new `Session`.
     #[allow(clippy::cognitive_complexity)]
-    pub async fn init<I: ?Sized>(self, io: &mut I) -> io::Result<Session>
+    pub async fn try_init<I: ?Sized>(&self, io: &mut I) -> io::Result<Option<Session>>
     where
-        I: Receiver<Vec<u8>> + Writer + Unpin,
+        I: Reader + Writer + Unpin,
     {
-        let init_buf_size = BUFFER_HEADER_SIZE + *PAGE_SIZE * MAX_MAX_PAGES;
-        let mut buf = vec![0u8; init_buf_size];
+        let request = io.read_request().await?;
 
-        loop {
-            io.receive(&mut buf).await?;
+        let header = request.header();
+        let arg = request.arg()?;
 
-            let mut reader = BytesReader(io::Cursor::new(&buf[..]));
-            let request = reader.read_request().await?;
-            let header = request.header();
-            let arg = request.arg()?;
-            match arg {
-                OperationKind::Init { arg: init_in } => {
-                    let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
-                    tracing::debug!("INIT request:");
-                    tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
-                    tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
-                    tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
-                    tracing::debug!("  max_pages = {}", init_in.flags & FUSE_MAX_PAGES != 0);
-                    tracing::debug!(
-                        "  no_open_support = {}",
-                        init_in.flags & FUSE_NO_OPEN_SUPPORT != 0
-                    );
-                    tracing::debug!(
-                        "  no_opendir_support = {}",
-                        init_in.flags & FUSE_NO_OPENDIR_SUPPORT != 0
-                    );
+        match arg {
+            OperationKind::Init { arg: init_in } => {
+                let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
+                tracing::debug!("INIT request:");
+                tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
+                tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
+                tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
+                tracing::debug!("  max_pages = {}", init_in.flags & FUSE_MAX_PAGES != 0);
+                tracing::debug!(
+                    "  no_open_support = {}",
+                    init_in.flags & FUSE_NO_OPEN_SUPPORT != 0
+                );
+                tracing::debug!(
+                    "  no_opendir_support = {}",
+                    init_in.flags & FUSE_NO_OPENDIR_SUPPORT != 0
+                );
 
-                    let mut init_out = fuse_init_out::default();
-                    init_out.major = FUSE_KERNEL_VERSION;
-                    init_out.minor = FUSE_KERNEL_MINOR_VERSION;
+                let mut init_out = fuse_init_out::default();
+                init_out.major = FUSE_KERNEL_VERSION;
+                init_out.minor = FUSE_KERNEL_MINOR_VERSION;
 
-                    if init_in.major > 7 {
-                        tracing::debug!("wait for a second INIT request with an older version.");
-                        io.send_msg(header.unique, 0, &[unsafe { as_bytes(&init_out) }])
-                            .await?;
-                        continue;
-                    }
-
-                    if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
-                        tracing::warn!(
-                            "polyfuse supports only ABI 7.{} or later. {}.{} is not supported",
-                            MINIMUM_SUPPORTED_MINOR_VERSION,
-                            init_in.major,
-                            init_in.minor
-                        );
-                        io.send_msg(header.unique, -libc::EPROTO, &[]).await?;
-                        continue;
-                    }
-
-                    init_out.minor = cmp::min(init_out.minor, init_in.minor);
-
-                    init_out.flags = (self.flags & capable).bits();
-                    init_out.flags |= crate::kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
-
-                    init_out.max_readahead = cmp::min(self.max_readahead, init_in.max_readahead);
-                    init_out.max_write = self.max_write;
-                    init_out.max_background = self.max_background;
-                    init_out.congestion_threshold = self.congestion_threshold;
-                    init_out.time_gran = self.time_gran;
-
-                    if init_in.flags & FUSE_MAX_PAGES != 0 {
-                        init_out.flags |= FUSE_MAX_PAGES;
-                        init_out.max_pages = cmp::min(
-                            (init_out.max_write - 1) / (*PAGE_SIZE as u32) + 1,
-                            u16::max_value() as u32,
-                        ) as u16;
-                    }
-
-                    debug_assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
-                    debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
-
-                    tracing::debug!("Reply to INIT:");
-                    tracing::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
-                    tracing::debug!(
-                        "  flags = 0x{:08x} ({:?})",
-                        init_out.flags,
-                        CapabilityFlags::from_bits_truncate(init_out.flags)
-                    );
-                    tracing::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
-                    tracing::debug!("  max_write = 0x{:08X}", init_out.max_write);
-                    tracing::debug!("  max_background = 0x{:04X}", init_out.max_background);
-                    tracing::debug!(
-                        "  congestion_threshold = 0x{:04X}",
-                        init_out.congestion_threshold
-                    );
-                    tracing::debug!("  time_gran = {}", init_out.time_gran);
+                if init_in.major > 7 {
+                    tracing::debug!("wait for a second INIT request with an older version.");
                     io.send_msg(header.unique, 0, &[unsafe { as_bytes(&init_out) }])
                         .await?;
-
-                    let conn = ConnectionInfo(init_out);
-                    let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
-
-                    return Ok(Session::new(conn, bufsize));
+                    return Ok(None);
                 }
-                _ => {
+
+                if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
                     tracing::warn!(
-                        "ignoring an operation before init (opcode={:?})",
-                        header.opcode
+                        "polyfuse supports only ABI 7.{} or later. {}.{} is not supported",
+                        MINIMUM_SUPPORTED_MINOR_VERSION,
+                        init_in.major,
+                        init_in.minor
                     );
-                    io.send_msg(header.unique, -libc::EIO, &[]).await?;
-                    continue;
+                    io.send_msg(header.unique, -libc::EPROTO, &[]).await?;
+                    return Ok(None);
                 }
+
+                init_out.minor = cmp::min(init_out.minor, init_in.minor);
+
+                init_out.flags = (self.flags & capable).bits();
+                init_out.flags |= crate::kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
+
+                init_out.max_readahead = cmp::min(self.max_readahead, init_in.max_readahead);
+                init_out.max_write = self.max_write;
+                init_out.max_background = self.max_background;
+                init_out.congestion_threshold = self.congestion_threshold;
+                init_out.time_gran = self.time_gran;
+
+                if init_in.flags & FUSE_MAX_PAGES != 0 {
+                    init_out.flags |= FUSE_MAX_PAGES;
+                    init_out.max_pages = cmp::min(
+                        (init_out.max_write - 1) / (*PAGE_SIZE as u32) + 1,
+                        u16::max_value() as u32,
+                    ) as u16;
+                }
+
+                debug_assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+                debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
+
+                tracing::debug!("Reply to INIT:");
+                tracing::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
+                tracing::debug!(
+                    "  flags = 0x{:08x} ({:?})",
+                    init_out.flags,
+                    CapabilityFlags::from_bits_truncate(init_out.flags)
+                );
+                tracing::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
+                tracing::debug!("  max_write = 0x{:08X}", init_out.max_write);
+                tracing::debug!("  max_background = 0x{:04X}", init_out.max_background);
+                tracing::debug!(
+                    "  congestion_threshold = 0x{:04X}",
+                    init_out.congestion_threshold
+                );
+                tracing::debug!("  time_gran = {}", init_out.time_gran);
+                io.send_msg(header.unique, 0, &[unsafe { as_bytes(&init_out) }])
+                    .await?;
+
+                let conn = ConnectionInfo(init_out);
+                let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
+
+                Ok(Some(Session::new(conn, bufsize)))
+            }
+            _ => {
+                tracing::warn!(
+                    "ignoring an operation before init (opcode={:?})",
+                    header.opcode
+                );
+                io.send_msg(header.unique, -libc::EIO, &[]).await?;
+                Ok(None)
             }
         }
-    }
-}
-
-struct BytesReader<'a>(io::Cursor<&'a [u8]>);
-
-impl AsyncRead for BytesReader<'_> {
-    #[inline]
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _: &mut task::Context<'_>,
-        dst: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(io::Read::read(&mut self.get_mut().0, dst))
-    }
-
-    #[inline]
-    fn poll_read_vectored(
-        self: Pin<&mut Self>,
-        _: &mut task::Context<'_>,
-        dst: &mut [IoSliceMut<'_>],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(io::Read::read_vectored(&mut self.get_mut().0, dst))
     }
 }
 

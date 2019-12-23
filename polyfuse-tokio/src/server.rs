@@ -1,15 +1,15 @@
 //! Serve FUSE filesystem.
 
-use crate::channel::{Channel, ChannelBuffer};
+use crate::channel::Channel;
 use futures::{
     future::{Future, FutureExt},
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite},
     select,
     task::{self, Poll},
 };
 use libc::c_int;
 use pin_project::pin_project;
-use polyfuse::{io::ReceiverExt, Filesystem, Session, SessionInitializer};
+use polyfuse::{Filesystem, Session, SessionInitializer};
 use std::{
     ffi::OsStr,
     io::{self, IoSlice, IoSliceMut},
@@ -30,8 +30,22 @@ impl Server {
     /// Create a FUSE server mounted on the specified path.
     pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<Self> {
         let mut channel = Channel::open(mountpoint.as_ref(), mountopts)?;
+
         let initializer = SessionInitializer::default();
-        let session = initializer.init(&mut channel).await?;
+        let mut buf = vec![0u8; initializer.init_buf_size()];
+        let session = loop {
+            channel.read(&mut buf[..]).await?;
+            match initializer
+                .try_init(&mut unite(&mut &buf[..], &mut channel))
+                .await?
+            {
+                Some(session) => break session,
+                None => continue,
+            }
+        };
+
+        let channel = channel;
+
         Ok(Server {
             session: Arc::new(session),
             channel,
@@ -72,8 +86,8 @@ impl Server {
 
         let mut main_loop = Box::pin(async move {
             loop {
-                let mut buf = ChannelBuffer::new(session.buffer_size());
-                if let Err(err) = channel.receive(&mut buf).await {
+                let mut buf = vec![0u8; session.buffer_size()];
+                if let Err(err) = channel.read(&mut buf[..]).await {
                     match err.raw_os_error() {
                         Some(libc::ENODEV) => {
                             tracing::debug!("connection is closed");
@@ -88,7 +102,7 @@ impl Server {
                 let mut writer = channel.try_clone()?;
                 tokio::spawn(async move {
                     if let Err(e) = session
-                        .process(&*fs, &mut unite(&mut buf, &mut writer))
+                        .process(&*fs, &mut unite(&mut &buf[..], &mut writer))
                         .await
                     {
                         tracing::error!("error during handling a request: {}", e);

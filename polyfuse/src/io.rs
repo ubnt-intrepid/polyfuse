@@ -23,67 +23,6 @@ use std::{
     pin::Pin,
 };
 
-/// The receiver of incoming FUSE request messages.
-///
-/// The role of this trait is similar to `AsyncRead`, except that the message data
-/// is transferred to a specific buffer instance instead of the in-memory buffer.
-pub trait Receiver<B: ?Sized> {
-    /// Receive one FUSE request message from the kernel and store it
-    /// to the buffer.
-    fn poll_receive(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        buf: &mut B,
-    ) -> Poll<io::Result<()>>;
-}
-
-impl<R: ?Sized, B: ?Sized> Receiver<B> for &mut R
-where
-    R: Receiver<B> + Unpin,
-{
-    #[inline]
-    fn poll_receive(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        buf: &mut B,
-    ) -> Poll<io::Result<()>> {
-        let me = Pin::new(&mut **self.get_mut());
-        me.poll_receive(cx, buf)
-    }
-}
-
-#[allow(missing_docs)]
-pub trait ReceiverExt<B: ?Sized>: Receiver<B> {
-    fn receive<'r>(&'r mut self, buf: &'r mut B) -> Receive<'r, Self, B>
-    where
-        Self: Unpin,
-    {
-        Receive { reader: self, buf }
-    }
-}
-
-impl<R: Receiver<B> + ?Sized, B: ?Sized> ReceiverExt<B> for R {}
-
-#[doc(hidden)]
-#[derive(Debug)]
-#[must_use]
-pub struct Receive<'r, R: ?Sized, B: ?Sized> {
-    reader: &'r mut R,
-    buf: &'r mut B,
-}
-
-impl<R: ?Sized, B: ?Sized> Future for Receive<'_, R, B>
-where
-    R: Receiver<B> + Unpin,
-{
-    type Output = io::Result<()>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        let me = self.get_mut();
-        Pin::new(&mut *me.reader).poll_receive(cx, &mut *me.buf)
-    }
-}
-
 /// A reader for an FUSE request message.
 pub trait Reader: AsyncRead {}
 

@@ -16,11 +16,10 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Evented, PollOpt, Ready, Token,
 };
-use polyfuse::io::Receiver;
 use std::{
     cmp,
     ffi::OsStr,
-    io::{self, IoSlice, IoSliceMut, Read},
+    io::{self, IoSlice, IoSliceMut},
     mem::{self, MaybeUninit},
     os::unix::{
         io::{AsRawFd, IntoRawFd, RawFd},
@@ -333,78 +332,5 @@ impl AsyncWrite for Channel {
 
     fn poll_close(self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
-    }
-}
-
-impl Receiver<ChannelBuffer> for Channel {
-    fn poll_receive(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        buf: &mut ChannelBuffer,
-    ) -> Poll<io::Result<()>> {
-        futures::ready!(self.poll_receive(cx, buf.0.get_mut()))?;
-        buf.0.set_position(0);
-        Poll::Ready(Ok(()))
-    }
-}
-
-impl Receiver<Vec<u8>> for Channel {
-    fn poll_receive(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        buf: &mut Vec<u8>,
-    ) -> Poll<io::Result<()>> {
-        let old_len = buf.len();
-        struct Guard<'a>(&'a mut Vec<u8>, usize);
-        impl Drop for Guard<'_> {
-            fn drop(&mut self) {
-                unsafe {
-                    self.0.set_len(self.1);
-                }
-            }
-        }
-        let buf = Guard(buf, old_len);
-        unsafe {
-            buf.0.set_len(buf.0.capacity());
-        }
-
-        let count = futures::ready!(self.as_mut().poll_read(cx, &mut buf.0[..]))?;
-        if count < buf.0.len() {
-            return Poll::Ready(Err(io::Error::from_raw_os_error(libc::EINVAL)));
-        }
-
-        unsafe {
-            buf.0.set_len(count);
-        }
-        mem::forget(buf);
-
-        Poll::Ready(Ok(()))
-    }
-}
-
-#[derive(Debug)]
-pub struct ChannelBuffer(io::Cursor<Vec<u8>>);
-
-impl ChannelBuffer {
-    pub fn new(bufsize: usize) -> Self {
-        Self(io::Cursor::new(Vec::with_capacity(bufsize)))
-    }
-}
-
-impl AsyncRead for ChannelBuffer {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _: &mut task::Context<'_>,
-        dst: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(self.get_mut().0.read(dst))
-    }
-
-    fn poll_read_vectored(
-        self: Pin<&mut Self>,
-        _: &mut task::Context<'_>,
-        dst: &mut [IoSliceMut<'_>],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(self.get_mut().0.read_vectored(dst))
     }
 }
