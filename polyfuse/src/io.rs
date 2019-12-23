@@ -15,10 +15,11 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
     task::{self, Poll},
 };
+use pin_project_lite::pin_project;
 use smallvec::SmallVec;
 use std::{
     convert::TryFrom,
-    io::{self, IoSlice},
+    io::{self, IoSlice, IoSliceMut},
     mem,
     pin::Pin,
 };
@@ -220,6 +221,76 @@ where
         );
 
         Poll::Ready(Ok(()))
+    }
+}
+
+/// Unite a pair of `Reader` and `Writer` as an I/O.
+pub fn unite<R, W>(reader: R, writer: W) -> Unite<R, W>
+where
+    R: Reader,
+    W: Writer,
+{
+    Unite { reader, writer }
+}
+
+pin_project! {
+    /// The united I/O of a pair of `Reader` and `Writer`.
+    #[derive(Debug)]
+    pub struct Unite<R, W> {
+        #[pin]
+        reader: R,
+        #[pin]
+        writer: W,
+    }
+}
+
+impl<R, W> AsyncRead for Unite<R, W>
+where
+    R: AsyncRead,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        dst: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        self.project().reader.poll_read(cx, dst)
+    }
+
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        dst: &mut [IoSliceMut<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.project().reader.poll_read_vectored(cx, dst)
+    }
+}
+
+impl<R, W> AsyncWrite for Unite<R, W>
+where
+    W: AsyncWrite,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        src: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.project().writer.poll_write(cx, src)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        src: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.project().writer.poll_write_vectored(cx, src)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+        self.project().writer.poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+        self.project().writer.poll_close(cx)
     }
 }
 
