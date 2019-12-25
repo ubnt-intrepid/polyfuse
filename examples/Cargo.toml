@@ -21,4 +21,4 @@ polyfuse-tokio = { path = "../polyfuse-tokio" }
 
 [dependencies.tokio]
 version = "0.2"
-features = [ "macros", "rt-threaded", "sync", "time" ]
+features = [ "full" ]

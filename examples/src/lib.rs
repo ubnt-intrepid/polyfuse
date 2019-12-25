@@ -21,14 +21,6 @@ pub mod prelude {
     pub use crate as examples;
 }
 
-pub fn init_tracing() -> anyhow::Result<()> {
-    let subscriber = tracing_subscriber::fmt::Subscriber::builder()
-        .with_max_level(tracing::Level::DEBUG)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
-    Ok(())
-}
-
 pub fn get_mountpoint() -> anyhow::Result<std::path::PathBuf> {
     std::env::args()
         .nth(1)

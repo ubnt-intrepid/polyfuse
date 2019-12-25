@@ -17,7 +17,7 @@ const FILE_INO: u64 = 2;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    examples::init_tracing()?;
+    tracing_subscriber::fmt::init();
 
     let mountpoint = examples::get_mountpoint()?;
     ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");

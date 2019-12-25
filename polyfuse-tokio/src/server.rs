@@ -31,12 +31,10 @@ impl Builder {
         mountopts: &'a [&'a OsStr],
     ) -> io::Result<Server> {
         // FIXME: make async.
-        let mut channel = tokio::task::block_in_place(|| {
-            Channel::open(
-                mountpoint.as_ref(), //
-                mountopts,
-            )
-        })?;
+        let mut channel = Channel::open(
+            mountpoint.as_ref(), //
+            mountopts,
+        )?;
 
         let mut buf = vec![0u8; self.initializer.init_buf_size()];
         let session = loop {

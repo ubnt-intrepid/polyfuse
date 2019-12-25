@@ -22,7 +22,7 @@ const ROOT_INO: u64 = 1;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    examples::init_tracing()?;
+    tracing_subscriber::fmt::init();
 
     let mountpoint = examples::get_mountpoint()?;
     ensure!(
