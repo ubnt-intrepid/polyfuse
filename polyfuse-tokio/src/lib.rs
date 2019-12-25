@@ -18,6 +18,7 @@
 
 mod buf;
 mod channel;
+mod pool;
 mod server;
 
 pub use crate::server::{Builder, Server};

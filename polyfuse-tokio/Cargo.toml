@@ -18,7 +18,7 @@ tracing = "0.1"
 
 [dependencies.tokio]
 version = "0.2"
-features = [ "io-driver", "signal", "rt-core" ]
+features = [ "io-driver", "rt-core", "signal", "sync" ]
 
 [dependencies.polyfuse]
 version = "0.3.0-dev"
