@@ -6,8 +6,45 @@ use futures::{
 use polyfuse::io::Reader;
 use std::{
     io::{self, IoSliceMut, Read},
+    mem, ops,
     pin::Pin,
 };
+
+struct Guard<'a> {
+    vec: &'a mut Vec<u8>,
+    len: usize,
+}
+
+impl<'a> Guard<'a> {
+    fn new(vec: &'a mut Vec<u8>) -> Self {
+        let len = vec.len();
+        Self { vec, len }
+    }
+}
+
+impl Drop for Guard<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            self.vec.set_len(self.len);
+        }
+    }
+}
+
+impl ops::Deref for Guard<'_> {
+    type Target = Vec<u8>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &*self.vec
+    }
+}
+
+impl ops::DerefMut for Guard<'_> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.vec
+    }
+}
 
 #[derive(Debug)]
 pub struct RequestBuffer(io::Cursor<Vec<u8>>);
@@ -17,14 +54,23 @@ impl RequestBuffer {
         Self(io::Cursor::new(vec![0; bufsize]))
     }
 
-    pub fn reset_position(&mut self) {
-        self.0.set_position(0);
-    }
-
     pub async fn receive_from(&mut self, channel: &mut Channel) -> io::Result<bool> {
+        let mut buf = Guard::new(self.0.get_mut());
+        unsafe {
+            let capacity = buf.capacity();
+            buf.set_len(capacity);
+        }
+
         loop {
-            match channel.read(&mut self.0.get_mut()[..]).await {
-                Ok(_) => return Ok(false),
+            match channel.read(&mut buf[..]).await {
+                Ok(len) => {
+                    unsafe {
+                        buf.set_len(len);
+                    }
+                    mem::forget(buf);
+                    self.0.set_position(0);
+                    return Ok(false);
+                }
                 Err(err) => match err.raw_os_error() {
                     Some(libc::ENODEV) => {
                         tracing::debug!("caught ENODEV. closing the connection");

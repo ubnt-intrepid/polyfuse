@@ -111,8 +111,10 @@ impl Server {
         let mut main_loop = Box::pin(async move {
             loop {
                 let mut buf = RequestBuffer::new(session.buffer_size());
-                if buf.receive_from(&mut *channel).await? {
-                    return Ok::<_, io::Error>(());
+                match buf.receive_from(&mut *channel).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => (),
+                    Err(err) => return Err(err),
                 }
 
                 let session = session.clone();
@@ -143,9 +145,10 @@ impl Server {
     {
         let mut buf = RequestBuffer::new(self.session.buffer_size());
         loop {
-            buf.reset_position();
-            if buf.receive_from(&mut self.channel).await? {
-                return Ok::<_, io::Error>(());
+            match buf.receive_from(&mut self.channel).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => (),
+                Err(err) => return Err(err),
             }
             self.session
                 .process(&*fs, &mut unite(&mut buf, &mut self.channel))
