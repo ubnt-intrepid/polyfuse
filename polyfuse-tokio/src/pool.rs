@@ -1,8 +1,6 @@
-use futures::lock::Mutex;
 use std::{
     collections::VecDeque,
     ops::{Deref, DerefMut},
-    sync::{Arc, Weak},
 };
 use tokio::sync::mpsc;
 
@@ -10,27 +8,12 @@ use tokio::sync::mpsc;
 
 type Key = usize;
 
-/// An object pool.
-#[derive(Debug, Clone)]
-pub struct Pool<T>(Arc<PoolInner<T>>);
-
+/// Asynchronous object pool based on MPSC channel.
 #[derive(Debug)]
-struct PoolInner<T> {
+pub struct Pool<T> {
     /// The length of internal buffers.
     bufsize: usize,
 
-    /// A channel sender for returning used entries.
-    ///
-    /// This value must be outside of `PoolState<T>` since
-    /// `state` is locked while acquiring the unused entries.
-    tx_used_entries: mpsc::Sender<EntryInner<T>>,
-
-    /// The mutable state.
-    state: Mutex<PoolState<T>>,
-}
-
-#[derive(Debug)]
-struct PoolState<T> {
     /// A queue for unused entry keys.
     idle_keys: VecDeque<Key>,
 
@@ -38,72 +21,70 @@ struct PoolState<T> {
     idle_entries: VecDeque<EntryInner<T>>,
 
     /// A channel receiver for retrieving used entries.
-    rx_used_entries: mpsc::Receiver<EntryInner<T>>,
+    rx_used: mpsc::Receiver<EntryInner<T>>,
+
+    /// A channel sender for returning used entries.
+    tx_used: mpsc::Sender<EntryInner<T>>,
 }
 
 impl<T> Pool<T> {
     /// Create a new `Pool` with the specified buffer size.
     pub fn new(bufsize: usize) -> Self {
-        let (tx, rx) = mpsc::channel(bufsize);
-        Self(Arc::new(PoolInner {
+        let (tx_used, rx_used) = mpsc::channel(bufsize);
+        Self {
             bufsize,
-            tx_used_entries: tx,
-            state: Mutex::new(PoolState {
-                idle_keys: (0..bufsize).collect(),
-                idle_entries: VecDeque::with_capacity(bufsize),
-                rx_used_entries: rx,
-            }),
-        }))
+            idle_keys: (0..bufsize).collect(),
+            idle_entries: VecDeque::with_capacity(bufsize),
+            tx_used,
+            rx_used,
+        }
     }
 
     pub fn vacant_entry(&mut self) -> Option<VacantEntry<'_, T>> {
-        let inner = Arc::get_mut(&mut self.0).expect("already shared");
-        let state = inner.state.get_mut();
-        let key = state.idle_keys.pop_front()?;
-        Some(VacantEntry { key, state })
+        let key = self.idle_keys.pop_front()?;
+        Some(VacantEntry { key, pool: self })
     }
 
     #[inline]
     fn new_entry(&self, inner: EntryInner<T>) -> PoolEntry<T> {
         PoolEntry {
             inner,
-            pool: Arc::downgrade(&self.0),
+            tx: self.tx_used.clone(),
         }
     }
 
     /// Acquire an entry.
-    pub async fn acquire<F, E>(&self, factory: F) -> Result<PoolEntry<T>, E>
+    pub async fn acquire<F, E>(&mut self, factory: F) -> Result<PoolEntry<T>, E>
     where
         F: Fn() -> Result<T, E>,
     {
-        let mut state = self.0.state.lock().await;
-
-        // First, check if there is an entry available in `idle_values`.
-        if let Some(entry) = state.idle_entries.pop_front() {
+        // First, check if there is an entry available in the idle entries.
+        if let Some(entry) = self.idle_entries.pop_front() {
             return Ok(self.new_entry(entry));
         }
 
-        // Check if any used entries have been returned to `rx_used`.
-        // The check here is optimistic.
-        match state.rx_used_entries.try_recv() {
+        // Check if a entry have been returned to the pool channel.
+        // The check here is optimistic: if the queue is empty, it will create a new
+        // entry using the provided factory function, instead of blocking the current
+        // task to wait for entries to be returned.
+        // Since each entry must contain a unique `Key`, no new entry will be created
+        // if `idle_keys` is exhausted.
+        match self.rx_used.try_recv() {
             Ok(entry) => {
                 return Ok(self.new_entry(entry));
             }
-            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Empty) => {
+                if let Some(key) = self.idle_keys.pop_front() {
+                    let value = factory()?;
+                    return Ok(self.new_entry(EntryInner { key, value }));
+                }
+            }
             Err(mpsc::error::TryRecvError::Closed) => unreachable!("channel is managed by pool"),
         }
 
-        // Create a new entry using the factory function.
-        // Each entry must contain a unique `Key`, and hence no new entry will be created
-        // if `idle_keys` is exhausted.
-        if let Some(key) = state.idle_keys.pop_front() {
-            let value = factory()?;
-            return Ok(self.new_entry(EntryInner { key, value }));
-        }
-
-        // Finally, if the entry keys are exhausted, block the current task
-        // until an used entry is returned in `rx_used`.
-        let entry = state.rx_used_entries.recv().await.unwrap();
+        // Finally, if there are no entries available without blocking the current task,
+        // wait until an existing entry is returned.
+        let entry = self.rx_used.recv().await.unwrap();
         Ok(self.new_entry(entry))
     }
 }
@@ -111,12 +92,12 @@ impl<T> Pool<T> {
 #[derive(Debug)]
 pub struct VacantEntry<'a, T> {
     key: Key,
-    state: &'a mut PoolState<T>,
+    pool: &'a mut Pool<T>,
 }
 
 impl<T> VacantEntry<'_, T> {
     pub fn insert(self, value: T) {
-        self.state.idle_entries.push_back(EntryInner {
+        self.pool.idle_entries.push_back(EntryInner {
             key: self.key,
             value,
         });
@@ -127,7 +108,7 @@ impl<T> VacantEntry<'_, T> {
 #[derive(Debug)]
 pub struct PoolEntry<T> {
     inner: EntryInner<T>,
-    pool: Weak<PoolInner<T>>,
+    tx: mpsc::Sender<EntryInner<T>>,
 }
 
 #[derive(Debug)]
@@ -154,9 +135,7 @@ impl<T> DerefMut for PoolEntry<T> {
 
 impl<T> PoolEntry<T> {
     /// Release the contained value into the pool.
-    pub async fn release(this: Self) {
-        let pool = this.pool.upgrade().expect("The pool is died");
-        let mut tx_used = pool.tx_used_entries.clone();
-        let _ = tx_used.send(this.inner).await;
+    pub async fn release(mut this: Self) {
+        let _ = this.tx.send(this.inner).await;
     }
 }
