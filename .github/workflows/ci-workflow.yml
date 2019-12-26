@@ -125,37 +125,28 @@ jobs:
         sudo apt-get update -yqq
         sudo apt-get install -yqq --no-install-recommends fuse
 
-    - name: Install grcov
+    - name: Install cargo-tarpaulin
       run: |
-        curl -L https://github.com/mozilla/grcov/releases/latest/download/grcov-linux-x86_64.tar.bz2 | tar jxf -
-        mkdir -pv $HOME/.grcov/bin
-        mv -v ./grcov $HOME/.grcov/bin
-        echo ::add-path::$HOME/.grcov/bin
+        curl -L https://github.com/xd009642/tarpaulin/releases/download/0.10.0/cargo-tarpaulin-0.10.0-travis.tar.gz | tar zxf -
+        mkdir -pv $HOME/.cargo/bin
+        mv -v ./cargo-tarpaulin $HOME/.cargo/bin
+        echo ::add-path::$HOME/.cargo/bin
 
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: nightly
+        toolchain: stable
         profile: minimal
         override: true
 
-    - name: Run test (with generating coverage reports)
+    - name: Run tarpaulin
       uses: actions-rs/cargo@v1
       with:
-        command: test
-        args: --workspace
-      env:
-        CARGO_INCREMENTAL: 0
-        RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Zno-landing-pads"
-
-    - name: Collect coverage reports
-      uses: actions-rs/grcov@v0.1.2
-      if: success()
-      id: coverage
+        command: tarpaulin
+        args: --verbose --workspace --out Xml
 
     - name: Send report to Codecov
       uses: codecov/codecov-action@v1.0.3
       if: success()
       with:
-        file: ./lcov.info
         token: ${{ secrets.CODECOV_TOKEN }}
