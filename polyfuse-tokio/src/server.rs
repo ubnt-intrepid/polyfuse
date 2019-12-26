@@ -1,6 +1,10 @@
 //! Serve FUSE filesystem.
 
-use crate::{buf::RequestBuffer, channel::Channel};
+use crate::{
+    buf::RequestBuffer,
+    channel::Channel,
+    pool::{Pool, PoolEntry},
+};
 use futures::{
     future::{Future, FutureExt},
     io::AsyncReadExt,
@@ -11,10 +15,28 @@ use polyfuse::{io::unite, Filesystem, Session, SessionInitializer};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tokio::signal::unix::{signal, SignalKind};
 
+const DEFAULT_POOL_SIZE: usize = 1024;
+
+#[derive(Debug, Clone)]
+struct Config {
+    pool_size: usize,
+    initial_pooled_contexts: Option<usize>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            pool_size: DEFAULT_POOL_SIZE,
+            initial_pooled_contexts: None,
+        }
+    }
+}
+
 /// A builder for `Server`.
 #[derive(Debug, Default)]
 pub struct Builder {
     initializer: SessionInitializer,
+    config: Config,
 }
 
 impl Builder {
@@ -22,6 +44,36 @@ impl Builder {
     #[inline]
     pub fn session(&mut self) -> &mut SessionInitializer {
         &mut self.initializer
+    }
+
+    /// Set the pool size of request contexts.
+    ///
+    /// The default value is `1024`.
+    ///
+    /// # Panic
+    /// The provided value is less than `initial_pooled_contexts`.
+    pub fn pool_size(&mut self, amt: usize) -> &mut Self {
+        assert!(
+            self.config.initial_pooled_contexts.unwrap_or(0) <= amt,
+            "the provided pool size is less than initial_pooled_contexts"
+        );
+        self.config.pool_size = amt;
+        self
+    }
+
+    /// Set the number of request contexts stored in the pool before the start of the main loop.
+    ///
+    /// By default, the pool of request contexts does not contain any entries.
+    ///
+    /// # Panic
+    /// The provided value is greater than `pool_size`.
+    pub fn initial_pooled_contexts(&mut self, amt: usize) -> &mut Self {
+        assert!(
+            amt <= self.config.pool_size,
+            "the provided initial_pooled_contexts is greater than pool_size"
+        );
+        self.config.initial_pooled_contexts = Some(amt);
+        self
     }
 
     /// Build a `Server` mounted on the specified path.
@@ -50,6 +102,7 @@ impl Builder {
         };
 
         Ok(Server {
+            config: Arc::new(self.config.clone()),
             session: Arc::new(session),
             channel,
         })
@@ -59,6 +112,7 @@ impl Builder {
 /// A FUSE filesystem server running on Tokio runtime.
 #[derive(Debug)]
 pub struct Server {
+    config: Arc<Config>,
     session: Arc<Session>,
     channel: Channel,
 }
@@ -79,6 +133,7 @@ impl Server {
         Ok(Self {
             session: self.session.clone(),
             channel: self.channel.try_clone()?,
+            config: self.config.clone(),
         })
     }
 
@@ -92,6 +147,55 @@ impl Server {
         Ok(())
     }
 
+    fn new_request_context<F>(&self, fs: &Arc<F>) -> io::Result<ProcessRequest<F>> {
+        let writer = self.channel.try_clone()?;
+        Ok(ProcessRequest {
+            fs: fs.clone(),
+            session: self.session.clone(),
+            read_buf: RequestBuffer::new(self.session.buffer_size()),
+            writer,
+        })
+    }
+
+    async fn main_loop<F>(&mut self, fs: &Arc<F>) -> io::Result<()>
+    where
+        F: Filesystem + Send + 'static,
+    {
+        // Create a object pool for sharing the request contexts.
+        let mut pool = Pool::new(self.config.pool_size);
+
+        // Prepare the request contexts and store them into the pool.
+        if let Some(amt) = self.config.initial_pooled_contexts {
+            for _ in 0..amt {
+                if let Some(entry) = pool.vacant_entry() {
+                    entry.insert(self.new_request_context(&fs)?);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        loop {
+            // Acquire a value of request context from the pool.
+            let mut cx = pool.acquire(|| self.new_request_context(&fs)).await?;
+
+            // Transfer a FUSE request to the request context.
+            match cx.receive_from(&mut self.channel).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => (),
+                Err(err) => return Err(err),
+            }
+
+            // spawn a task that handles a FUSE request.
+            tokio::spawn(async move {
+                if let Err(e) = cx.process().await {
+                    tracing::error!("error during handling a request: {}", e);
+                }
+                PoolEntry::release(cx).await;
+            });
+        }
+    }
+
     /// Run a FUSE filesystem until the specified signal is received.
     #[allow(clippy::unnecessary_mut_passed)]
     pub async fn run_until<F, S>(&mut self, fs: F, sig: S) -> io::Result<Option<S::Output>>
@@ -99,37 +203,10 @@ impl Server {
         F: Filesystem + Send + 'static,
         S: Future + Unpin,
     {
-        let Self {
-            session,
-            ref mut channel,
-        } = self;
+        // TODO: graceful shutdown.
         let fs = Arc::new(fs);
+        let mut main_loop = Box::pin(self.main_loop(&fs)).fuse();
         let mut sig = sig.fuse();
-
-        let mut main_loop = Box::pin(async move {
-            loop {
-                let mut buf = RequestBuffer::new(session.buffer_size());
-                match buf.receive_from(&mut *channel).await {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => (),
-                    Err(err) => return Err(err),
-                }
-
-                let session = session.clone();
-                let fs = fs.clone();
-                let mut writer = channel.try_clone()?;
-                tokio::spawn(async move {
-                    if let Err(e) = session
-                        .process(&*fs, &mut unite(&mut buf, &mut writer))
-                        .await
-                    {
-                        tracing::error!("error during handling a request: {}", e);
-                    }
-                });
-            }
-        })
-        .fuse();
-
         select! {
             _ = main_loop => Ok(None),
             sig = sig => Ok(Some(sig)),
@@ -204,6 +281,28 @@ impl Server {
     /// Notify an I/O readiness.
     pub async fn notify_poll_wakeup(&mut self, kh: u64) -> io::Result<()> {
         self.session.notify_poll_wakeup(&mut self.channel, kh).await
+    }
+}
+
+struct ProcessRequest<F> {
+    fs: Arc<F>,
+    session: Arc<Session>,
+    read_buf: RequestBuffer,
+    writer: Channel,
+}
+
+impl<F> ProcessRequest<F>
+where
+    F: Filesystem,
+{
+    async fn receive_from(&mut self, channel: &mut Channel) -> io::Result<bool> {
+        self.read_buf.receive_from(channel).await
+    }
+
+    async fn process(&mut self) -> io::Result<()> {
+        self.session
+            .process(&*self.fs, &mut unite(&mut self.read_buf, &mut self.writer))
+            .await
     }
 }
 
