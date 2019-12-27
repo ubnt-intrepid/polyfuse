@@ -1,9 +1,34 @@
-# `polyfuse-tokio`
+<h1 align="center">
+  <code>polyfuse-tokio</code>
+</h1>
 
-[![crates.io](https://img.shields.io/crates/v/polyfuse-tokio.svg?style=flat-square)](https://crates.io/crates/polyfuse-tokio)
-[![master doc](https://img.shields.io/badge/doc-master-informational?style=flat-square)](https://ubnt-intrepid.github.io/polyfuse/polyfuse_tokio)
+<div align="center">
+  <strong>
+    Tokio integration for <code>polyfuse</code>.
+  </strong>
+</div>
 
-Tokio integration for `polyfuse`.
+<br />
+
+<div align="center">
+  <a href="https://crates.io/crates/polyfuse-tokio">
+    <img src="https://img.shields.io/crates/v/polyfuse-tokio.svg?style=flat-square"
+         alt="crates.io" />
+  </a>
+  <a href="https://docs.rs/polyfuse-tokio">
+    <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
+         alt="docs.rs" />
+  </a>
+</div>
+
+<br />
+
+`polyfuse-tokio` provides an implementation of the filesystem daemon for running FUSE (Filesystem in Userspace) filesystems on the [`tokio`](https://crates.io/crates/tokio) runtime.
+
+## Resources
+
+* [API documentation (docs.rs)](https://docs.rs/polyfuse-tokio/)
+* [API documentation (master)](https://ubnt-intrepid.github.io/polyfuse/polyfuse_tokio/)
 
 ## License
 

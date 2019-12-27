@@ -1,7 +1,6 @@
 [package]
 name = "polyfuse-tokio"
-version = "0.2.0-dev"
-publish = false
+version = "0.2.0"
 description = "Tokio integration for polyfuse"
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 repository = "https://github.com/ubnt-intrepid/polyfuse.git"
@@ -21,7 +20,7 @@ version = "0.2"
 features = [ "io-driver", "rt-core", "signal", "sync" ]
 
 [dependencies.polyfuse]
-version = "0.3.0-dev"
+version = "0.3.0"
 path = "../polyfuse"
 
 [dev-dependencies]
