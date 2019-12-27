@@ -16,8 +16,8 @@ use std::{fs::Metadata, io, time::SystemTime};
 /// An in-memory filesystem.
 pub struct MemFS {
     inodes: INodeTable,
-    entry_valid: (u64, u32),
-    attr_valid: (u64, u32),
+    ttl_entry: Duration,
+    ttl_attr: Duration,
 }
 
 impl MemFS {
@@ -25,26 +25,22 @@ impl MemFS {
     pub fn new(metadata: &Metadata) -> Self {
         Self {
             inodes: INodeTable::new(metadata),
-            entry_valid: (u64::max_value(), u32::max_value()),
-            attr_valid: (u64::max_value(), u32::max_value()),
+            ttl_entry: Duration::from_secs(u64::max_value()),
+            ttl_attr: Duration::from_secs(u64::max_value()),
         }
     }
 
     fn make_attr(&self, uid: u32, gid: u32, mode: u32) -> FileAttr {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap();
-        let sec = now.as_secs();
-        let nsec = now.subsec_nanos();
+        let now = SystemTime::now();
 
         let mut attr = FileAttr::default();
         attr.set_nlink(1);
         attr.set_mode(mode);
         attr.set_uid(uid);
         attr.set_gid(gid);
-        attr.set_atime(sec, nsec);
-        attr.set_mtime(sec, nsec);
-        attr.set_ctime(sec, nsec);
+        attr.set_atime(now);
+        attr.set_mtime(now);
+        attr.set_ctime(now);
         attr
     }
 
@@ -61,8 +57,8 @@ impl MemFS {
                 let attr = inode.load_attr();
                 op.reply(cx, {
                     ReplyEntry::new(attr)
-                        .entry_valid(self.entry_valid.0, self.entry_valid.1)
-                        .attr_valid(self.attr_valid.0, self.attr_valid.1)
+                        .ttl_entry(self.ttl_entry)
+                        .ttl_attr(self.ttl_attr)
                 })
                 .await
             }
@@ -86,7 +82,7 @@ impl MemFS {
         let attr = inode.load_attr();
         op.reply(cx, {
             ReplyAttr::new(attr) //
-                .attr_valid(self.attr_valid.0, self.attr_valid.1)
+                .ttl_attr(self.ttl_attr)
         })
         .await
     }
@@ -105,9 +101,6 @@ impl MemFS {
         };
 
         let mut attr = inode.load_attr();
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap();
 
         if let Some(mode) = op.mode() {
             attr.set_mode(mode);
@@ -121,29 +114,21 @@ impl MemFS {
         if let Some(size) = op.size() {
             attr.set_size(size);
         }
-        if let Some((s, ns, is_now)) = op.atime() {
-            if is_now {
-                attr.set_atime(now.as_secs() as u64, now.subsec_nanos());
-            } else {
-                attr.set_atime(s, ns);
-            }
+        if let Some(atime) = op.atime() {
+            attr.set_atime(atime);
         }
-        if let Some((s, ns, is_now)) = op.mtime() {
-            if is_now {
-                attr.set_mtime(now.as_secs() as u64, now.subsec_nanos());
-            } else {
-                attr.set_mtime(s, ns);
-            }
+        if let Some(mtime) = op.mtime() {
+            attr.set_mtime(mtime);
         }
-        if let Some((s, ns)) = op.ctime() {
-            attr.set_ctime(s, ns);
+        if let Some(ctime) = op.ctime() {
+            attr.set_ctime(ctime);
         }
 
         inode.store_attr(attr);
 
         op.reply(cx, {
             ReplyAttr::new(attr) //
-                .attr_valid(self.attr_valid.0, self.attr_valid.1)
+                .ttl_attr(self.ttl_attr)
         })
         .await
     }
@@ -256,8 +241,8 @@ impl MemFS {
                         let attr = inode.load_attr();
                         op.reply(cx, {
                             ReplyEntry::new(attr)
-                                .entry_valid(self.entry_valid.0, self.entry_valid.1)
-                                .attr_valid(self.attr_valid.0, self.attr_valid.1)
+                                .ttl_entry(self.ttl_entry)
+                                .ttl_attr(self.ttl_attr)
                         })
                         .await
                     }
@@ -284,8 +269,8 @@ impl MemFS {
                 let attr = inode.load_attr();
                 op.reply(cx, {
                     ReplyEntry::new(attr)
-                        .entry_valid(self.entry_valid.0, self.entry_valid.1)
-                        .attr_valid(self.attr_valid.0, self.attr_valid.1)
+                        .ttl_entry(self.ttl_entry)
+                        .ttl_attr(self.ttl_attr)
                 })
                 .await
             }

@@ -16,6 +16,7 @@ use crate::{
         fuse_write_out,
     },
 };
+use std::time::Duration;
 
 /// Reply with the inode attributes.
 #[derive(Debug)]
@@ -45,9 +46,9 @@ impl ReplyAttr {
     }
 
     /// Set the validity timeout for attributes.
-    pub fn attr_valid(&mut self, secs: u64, nsecs: u32) -> &mut Self {
-        self.0.attr_valid = secs;
-        self.0.attr_valid_nsec = nsecs;
+    pub fn ttl_attr(&mut self, duration: Duration) -> &mut Self {
+        self.0.attr_valid = duration.as_secs();
+        self.0.attr_valid_nsec = duration.subsec_nanos();
         self
     }
 }
@@ -87,9 +88,9 @@ impl ReplyEntry {
     /// The operations should set this value to very large
     /// when the changes of inode attributes are caused
     /// only by FUSE requests.
-    pub fn attr_valid(&mut self, sec: u64, nsec: u32) -> &mut Self {
-        self.0.attr_valid = sec;
-        self.0.attr_valid_nsec = nsec;
+    pub fn ttl_attr(&mut self, duration: Duration) -> &mut Self {
+        self.0.attr_valid = duration.as_secs();
+        self.0.attr_valid_nsec = duration.subsec_nanos();
         self
     }
 
@@ -98,9 +99,9 @@ impl ReplyEntry {
     /// The operations should set this value to very large
     /// when the changes/deletions of directory entries are
     /// caused only by FUSE requests.
-    pub fn entry_valid(&mut self, sec: u64, nsec: u32) -> &mut Self {
-        self.0.entry_valid = sec;
-        self.0.entry_valid_nsec = nsec;
+    pub fn ttl_entry(&mut self, duration: Duration) -> &mut Self {
+        self.0.entry_valid = duration.as_secs();
+        self.0.entry_valid_nsec = duration.subsec_nanos();
         self
     }
 

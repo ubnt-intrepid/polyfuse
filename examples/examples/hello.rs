@@ -9,6 +9,8 @@ use polyfuse::{
 };
 use std::io;
 
+const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -131,9 +133,9 @@ impl Filesystem for Hello {
             Operation::Lookup(op) => match self.lookup(op.parent(), op.name()) {
                 Some(attr) => {
                     op.reply(cx, {
-                        ReplyEntry::new(attr)
-                            .attr_valid(u64::max_value(), u32::max_value())
-                            .entry_valid(u64::max_value(), u32::max_value())
+                        ReplyEntry::new(attr) //
+                            .ttl_attr(TTL)
+                            .ttl_entry(TTL)
                     })
                     .await?;
                 }
@@ -144,7 +146,7 @@ impl Filesystem for Hello {
                 Some(attr) => {
                     op.reply(cx, {
                         ReplyAttr::new(attr) //
-                            .attr_valid(u64::max_value(), u32::max_value())
+                            .ttl_attr(TTL)
                     })
                     .await?;
                 }

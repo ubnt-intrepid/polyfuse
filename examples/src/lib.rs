@@ -16,6 +16,7 @@ pub mod prelude {
         ffi::{OsStr, OsString},
         os::unix::ffi::OsStrExt,
         path::{Path, PathBuf},
+        time::Duration,
     };
 
     pub use crate as examples;

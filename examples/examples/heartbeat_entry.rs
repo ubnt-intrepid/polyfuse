@@ -64,7 +64,7 @@ fn generate_filename() -> String {
 struct Heartbeat {
     root_attr: FileAttr,
     file_attr: FileAttr,
-    timeout: u64,
+    timeout: Duration,
     current: Mutex<CurrentFile>,
 }
 
@@ -89,7 +89,7 @@ impl Heartbeat {
         Self {
             root_attr,
             file_attr,
-            timeout,
+            timeout: Duration::from_secs(timeout),
             current: Mutex::new(CurrentFile {
                 filename: generate_filename(),
                 nlookup: 0,
@@ -131,8 +131,8 @@ impl Filesystem for Heartbeat {
                     if op.name().as_bytes() == current.filename.as_bytes() {
                         op.reply(cx, {
                             ReplyEntry::new(self.file_attr)
-                                .entry_valid(self.timeout, 0)
-                                .attr_valid(self.timeout, 0)
+                                .ttl_entry(self.timeout)
+                                .ttl_attr(self.timeout)
                         })
                         .await?;
                         current.nlookup += 1;
@@ -160,7 +160,7 @@ impl Filesystem for Heartbeat {
                 };
                 op.reply(cx, {
                     ReplyAttr::new(attr) //
-                        .attr_valid(self.timeout, 0)
+                        .ttl_attr(self.timeout)
                 })
                 .await?
             }

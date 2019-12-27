@@ -1,5 +1,8 @@
-use crate::kernel::{fuse_attr, fuse_file_lock, fuse_forget_one, fuse_kstatfs};
-use std::{convert::TryFrom, error, fmt};
+use crate::{
+    kernel::{fuse_attr, fuse_file_lock, fuse_forget_one, fuse_kstatfs},
+    util::{make_raw_time, make_system_time},
+};
+use std::{convert::TryFrom, error, fmt, time::SystemTime};
 
 /// Attributes about a file.
 ///
@@ -100,34 +103,64 @@ impl FileAttr {
     }
 
     /// Return the last accessed time.
-    pub fn atime(&self) -> (u64, u32) {
+    pub fn atime(&self) -> SystemTime {
+        make_system_time(self.atime_raw())
+    }
+
+    /// Return the last accessed time in raw form.
+    pub fn atime_raw(&self) -> (u64, u32) {
         (self.0.atime, self.0.atimensec)
     }
 
     /// Set the last accessed time.
-    pub fn set_atime(&mut self, sec: u64, nsec: u32) {
+    pub fn set_atime(&mut self, time: SystemTime) {
+        self.set_atime_raw(make_raw_time(time))
+    }
+
+    /// Set the last accessed time by raw form.
+    pub fn set_atime_raw(&mut self, (sec, nsec): (u64, u32)) {
         self.0.atime = sec;
         self.0.atimensec = nsec;
     }
 
     /// Return the last modification time.
-    pub fn mtime(&self) -> (u64, u32) {
+    pub fn mtime(&self) -> SystemTime {
+        make_system_time(self.mtime_raw())
+    }
+
+    /// Return the last modification time in raw form.
+    pub fn mtime_raw(&self) -> (u64, u32) {
         (self.0.mtime, self.0.mtimensec)
     }
 
     /// Set the last modification time.
-    pub fn set_mtime(&mut self, sec: u64, nsec: u32) {
+    pub fn set_mtime(&mut self, time: SystemTime) {
+        self.set_mtime_raw(make_raw_time(time))
+    }
+
+    /// Set the last modification time by raw form.
+    pub fn set_mtime_raw(&mut self, (sec, nsec): (u64, u32)) {
         self.0.mtime = sec;
         self.0.mtimensec = nsec;
     }
 
     /// Return the last created time.
-    pub fn ctime(&self) -> (u64, u32) {
+    pub fn ctime(&self) -> SystemTime {
+        make_system_time(self.ctime_raw())
+    }
+
+    /// Return the last created time in raw form.
+    pub fn ctime_raw(&self) -> (u64, u32) {
         (self.0.ctime, self.0.ctimensec)
     }
 
     /// Set the last created time.
-    pub fn set_ctime(&mut self, sec: u64, nsec: u32) {
+    pub fn set_ctime(&mut self, time: SystemTime) {
+        self.set_ctime_raw(make_raw_time(time))
+    }
+
+    /// Set the last created time by raw form.
+    pub fn set_ctime_raw(&mut self, (sec, nsec): (u64, u32)) {
         self.0.ctime = sec;
         self.0.ctimensec = nsec;
     }

@@ -6,7 +6,7 @@ use polyfuse::FileAttr;
 use std::{
     collections::hash_map::{Entry, HashMap},
     fs::Metadata,
-    os::linux::fs::MetadataExt,
+    os::unix::fs::MetadataExt,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -23,12 +23,12 @@ impl INodeTable {
         let mut attr = FileAttr::default();
         attr.set_ino(1);
         attr.set_nlink(2);
-        attr.set_mode(metadata.st_mode());
-        attr.set_uid(metadata.st_uid());
-        attr.set_gid(metadata.st_gid());
-        attr.set_atime(metadata.st_atime() as u64, metadata.st_atime_nsec() as u32);
-        attr.set_mtime(metadata.st_mtime() as u64, metadata.st_mtime_nsec() as u32);
-        attr.set_ctime(metadata.st_ctime() as u64, metadata.st_ctime_nsec() as u32);
+        attr.set_mode(metadata.mode());
+        attr.set_uid(metadata.uid());
+        attr.set_gid(metadata.gid());
+        attr.set_atime_raw((metadata.atime() as u64, metadata.atime_nsec() as u32));
+        attr.set_mtime_raw((metadata.mtime() as u64, metadata.mtime_nsec() as u32));
+        attr.set_ctime_raw((metadata.ctime() as u64, metadata.ctime_nsec() as u32));
 
         let mut inodes = HashMap::new();
         inodes.insert(1, Arc::new(Directory::new(1, attr, None)) as Arc<dyn INode>);

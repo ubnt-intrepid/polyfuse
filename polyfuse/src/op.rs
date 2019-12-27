@@ -47,7 +47,7 @@ use crate::{
         ReplyWrite,
         ReplyXattr,
     },
-    util::as_bytes,
+    util::{as_bytes, make_system_time},
 };
 use std::{
     convert::TryFrom, //
@@ -55,6 +55,7 @@ use std::{
     io,
     mem,
     os::unix::ffi::OsStrExt,
+    time::SystemTime,
 };
 
 /// The kind of FUSE requests received from the kernel.
@@ -214,7 +215,17 @@ impl<'a> Setattr<'a> {
         self.get(crate::kernel::FATTR_SIZE, |arg| arg.size)
     }
 
-    pub fn atime(&self) -> Option<(u64, u32, bool)> {
+    pub fn atime(&self) -> Option<SystemTime> {
+        self.atime_raw().map(|(sec, nsec, now)| {
+            if now {
+                SystemTime::now()
+            } else {
+                make_system_time((sec, nsec))
+            }
+        })
+    }
+
+    pub fn atime_raw(&self) -> Option<(u64, u32, bool)> {
         self.get(crate::kernel::FATTR_ATIME, |arg| {
             (
                 arg.atime,
@@ -224,7 +235,17 @@ impl<'a> Setattr<'a> {
         })
     }
 
-    pub fn mtime(&self) -> Option<(u64, u32, bool)> {
+    pub fn mtime(&self) -> Option<SystemTime> {
+        self.mtime_raw().map(|(sec, nsec, now)| {
+            if now {
+                SystemTime::now()
+            } else {
+                make_system_time((sec, nsec))
+            }
+        })
+    }
+
+    pub fn mtime_raw(&self) -> Option<(u64, u32, bool)> {
         self.get(crate::kernel::FATTR_MTIME, |arg| {
             (
                 arg.mtime,
@@ -234,7 +255,11 @@ impl<'a> Setattr<'a> {
         })
     }
 
-    pub fn ctime(&self) -> Option<(u64, u32)> {
+    pub fn ctime(&self) -> Option<SystemTime> {
+        self.ctime_raw().map(make_system_time)
+    }
+
+    pub fn ctime_raw(&self) -> Option<(u64, u32)> {
         self.get(crate::kernel::FATTR_CTIME, |arg| (arg.ctime, arg.ctimensec))
     }
 
