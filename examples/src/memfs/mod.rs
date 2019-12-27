@@ -59,10 +59,12 @@ impl MemFS {
         match self.inodes.lookup(op.parent(), op.name()).await {
             Some(inode) => {
                 let attr = inode.load_attr();
-                let mut entry = ReplyEntry::new(attr);
-                entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
-                entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                op.reply(cx, entry).await
+                op.reply(cx, {
+                    ReplyEntry::new(attr)
+                        .entry_valid(self.entry_valid.0, self.entry_valid.1)
+                        .attr_valid(self.attr_valid.0, self.attr_valid.1)
+                })
+                .await
             }
             None => cx.reply_err(libc::ENOENT).await,
         }
@@ -82,10 +84,11 @@ impl MemFS {
         };
 
         let attr = inode.load_attr();
-
-        let mut attr = ReplyAttr::new(attr);
-        attr.attr_valid(self.attr_valid.0, self.attr_valid.1);
-        op.reply(cx, attr).await
+        op.reply(cx, {
+            ReplyAttr::new(attr) //
+                .attr_valid(self.attr_valid.0, self.attr_valid.1)
+        })
+        .await
     }
 
     async fn do_setattr<T: ?Sized>(
@@ -138,9 +141,11 @@ impl MemFS {
 
         inode.store_attr(attr);
 
-        let mut attr = ReplyAttr::new(attr);
-        attr.attr_valid(self.attr_valid.0, self.attr_valid.1);
-        op.reply(cx, attr).await
+        op.reply(cx, {
+            ReplyAttr::new(attr) //
+                .attr_valid(self.attr_valid.0, self.attr_valid.1)
+        })
+        .await
     }
 
     async fn do_read<T: ?Sized>(&self, cx: &mut Context<'_, T>, op: op::Read<'_>) -> io::Result<()>
@@ -249,10 +254,12 @@ impl MemFS {
                 {
                     Ok(inode) => {
                         let attr = inode.load_attr();
-                        let mut entry = ReplyEntry::new(attr);
-                        entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
-                        entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                        op.reply(cx, entry).await
+                        op.reply(cx, {
+                            ReplyEntry::new(attr)
+                                .entry_valid(self.entry_valid.0, self.entry_valid.1)
+                                .attr_valid(self.attr_valid.0, self.attr_valid.1)
+                        })
+                        .await
                     }
                     Err(errno) => cx.reply_err(errno).await,
                 }
@@ -275,10 +282,12 @@ impl MemFS {
         match self.inodes.insert_dir(op.parent(), op.name(), attr).await {
             Ok(inode) => {
                 let attr = inode.load_attr();
-                let mut entry = ReplyEntry::new(attr);
-                entry.entry_valid(self.entry_valid.0, self.entry_valid.1);
-                entry.attr_valid(self.attr_valid.0, self.attr_valid.1);
-                op.reply(cx, entry).await
+                op.reply(cx, {
+                    ReplyEntry::new(attr)
+                        .entry_valid(self.entry_valid.0, self.entry_valid.1)
+                        .attr_valid(self.attr_valid.0, self.attr_valid.1)
+                })
+                .await
             }
             Err(errno) => cx.reply_err(errno).await,
         }

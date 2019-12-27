@@ -39,14 +39,16 @@ impl ReplyAttr {
     }
 
     /// Set the attribute value.
-    pub fn attr(&mut self, attr: FileAttr) {
+    pub fn attr(&mut self, attr: FileAttr) -> &mut Self {
         self.0.attr = attr.into_inner();
+        self
     }
 
     /// Set the validity timeout for attributes.
-    pub fn attr_valid(&mut self, secs: u64, nsecs: u32) {
+    pub fn attr_valid(&mut self, secs: u64, nsecs: u32) -> &mut Self {
         self.0.attr_valid = secs;
         self.0.attr_valid_nsec = nsecs;
+        self
     }
 }
 
@@ -75,8 +77,9 @@ impl ReplyEntry {
     }
 
     /// Set the attribute value of this entry.
-    pub fn attr(&mut self, attr: FileAttr) {
+    pub fn attr(&mut self, attr: FileAttr) -> &mut Self {
         self.0.attr = attr.into_inner();
+        self
     }
 
     /// Set the validity timeout for inode attributes.
@@ -84,9 +87,10 @@ impl ReplyEntry {
     /// The operations should set this value to very large
     /// when the changes of inode attributes are caused
     /// only by FUSE requests.
-    pub fn attr_valid(&mut self, sec: u64, nsec: u32) {
+    pub fn attr_valid(&mut self, sec: u64, nsec: u32) -> &mut Self {
         self.0.attr_valid = sec;
         self.0.attr_valid_nsec = nsec;
+        self
     }
 
     /// Set the validity timeout for the name.
@@ -94,9 +98,10 @@ impl ReplyEntry {
     /// The operations should set this value to very large
     /// when the changes/deletions of directory entries are
     /// caused only by FUSE requests.
-    pub fn entry_valid(&mut self, sec: u64, nsec: u32) {
+    pub fn entry_valid(&mut self, sec: u64, nsec: u32) -> &mut Self {
         self.0.entry_valid = sec;
         self.0.entry_valid_nsec = nsec;
+        self
     }
 
     /// Sets the generation of this entry.
@@ -106,8 +111,9 @@ impl ReplyEntry {
     /// That is, the operations must ensure that the pair of
     /// entry's inode number and `generation` is unique for
     /// the lifetime of filesystem.
-    pub fn generation(&mut self, generation: u64) {
+    pub fn generation(&mut self, generation: u64) -> &mut Self {
         self.0.generation = generation;
+        self
     }
 }
 
@@ -141,24 +147,28 @@ impl ReplyOpen {
     }
 
     /// Set the file handle.
-    pub fn fh(&mut self, fh: u64) {
+    pub fn fh(&mut self, fh: u64) -> &mut Self {
         self.0.fh = fh;
+        self
     }
 
     /// Indicates that the direct I/O is used on this file.
-    pub fn direct_io(&mut self, enabled: bool) {
+    pub fn direct_io(&mut self, enabled: bool) -> &mut Self {
         self.set_flag(crate::kernel::FOPEN_DIRECT_IO, enabled);
+        self
     }
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
-    pub fn keep_cache(&mut self, enabled: bool) {
+    pub fn keep_cache(&mut self, enabled: bool) -> &mut Self {
         self.set_flag(crate::kernel::FOPEN_KEEP_CACHE, enabled);
+        self
     }
 
     /// Indicates that the opened file is not seekable.
-    pub fn nonseekable(&mut self, enabled: bool) {
+    pub fn nonseekable(&mut self, enabled: bool) -> &mut Self {
         self.set_flag(crate::kernel::FOPEN_NONSEEKABLE, enabled);
+        self
     }
 }
 
@@ -184,8 +194,9 @@ impl ReplyWrite {
     }
 
     /// Set the size of written bytes.
-    pub fn size(&mut self, size: u32) {
+    pub fn size(&mut self, size: u32) -> &mut Self {
         self.0.size = size;
+        self
     }
 }
 
@@ -226,8 +237,9 @@ impl ReplyOpendir {
     // MEMO: should we add direct_io()?
 
     /// Enable caching of entries returned by `readdir`.
-    pub fn cache_dir(&mut self, enabled: bool) {
+    pub fn cache_dir(&mut self, enabled: bool) -> &mut Self {
         self.set_flag(crate::kernel::FOPEN_CACHE_DIR, enabled);
+        self
     }
 }
 
@@ -253,8 +265,9 @@ impl ReplyXattr {
     }
 
     /// Set the actual size of attribute value.
-    pub fn size(&mut self, size: u32) {
+    pub fn size(&mut self, size: u32) -> &mut Self {
         self.0.size = size;
+        self
     }
 }
 
@@ -280,8 +293,9 @@ impl ReplyStatfs {
     }
 
     /// Set the value of filesystem statistics.
-    pub fn stat(&mut self, st: StatFs) {
+    pub fn stat(&mut self, st: StatFs) -> &mut Self {
         self.0.st = st.into_inner();
+        self
     }
 }
 
@@ -307,8 +321,9 @@ impl ReplyLk {
     }
 
     /// Set the lock information.
-    pub fn lock(&mut self, lk: FileLock) {
+    pub fn lock(&mut self, lk: FileLock) -> &mut Self {
         self.0.lk = lk.into_inner();
+        self
     }
 }
 
@@ -334,8 +349,9 @@ impl ReplyBmap {
     }
 
     /// Set the index of mapped block.
-    pub fn block(&mut self, block: u64) {
+    pub fn block(&mut self, block: u64) -> &mut Self {
         self.0.block = block;
+        self
     }
 }
 
@@ -361,7 +377,8 @@ impl ReplyPoll {
     }
 
     /// Set the mask of ready events.
-    pub fn revents(&mut self, revents: u32) {
+    pub fn revents(&mut self, revents: u32) -> &mut Self {
         self.0.revents = revents;
+        self
     }
 }

@@ -130,19 +130,23 @@ impl Filesystem for Hello {
         match op {
             Operation::Lookup(op) => match self.lookup(op.parent(), op.name()) {
                 Some(attr) => {
-                    let mut reply = ReplyEntry::new(attr);
-                    reply.attr_valid(u64::max_value(), u32::max_value());
-                    reply.entry_valid(u64::max_value(), u32::max_value());
-                    op.reply(cx, reply).await?;
+                    op.reply(cx, {
+                        ReplyEntry::new(attr)
+                            .attr_valid(u64::max_value(), u32::max_value())
+                            .entry_valid(u64::max_value(), u32::max_value())
+                    })
+                    .await?;
                 }
                 None => cx.reply_err(libc::ENOENT).await?,
             },
 
             Operation::Getattr(op) => match self.getattr(op.ino()) {
                 Some(attr) => {
-                    let mut reply = ReplyAttr::new(attr);
-                    reply.attr_valid(u64::max_value(), u32::max_value());
-                    op.reply(cx, reply).await?;
+                    op.reply(cx, {
+                        ReplyAttr::new(attr) //
+                            .attr_valid(u64::max_value(), u32::max_value())
+                    })
+                    .await?;
                 }
                 None => cx.reply_err(libc::ENOENT).await?,
             },
