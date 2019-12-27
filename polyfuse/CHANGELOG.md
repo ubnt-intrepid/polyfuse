@@ -5,6 +5,33 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+Only the characteristic changes are listed here.
+See the commit log for a detailed change history.
+
+## Added
+
+* Add `Reader` and `Writer` for representing the FUSE-specific I/O abstraction.
+* Add `NotifyReply` and `Interrupt` variants to `Operation`.  In the previous version,
+  these requests are automatically handled by `Session::receive`.
+
+## Changed
+
+* Reform the definition of `Filesystem` based on `Reader` and `Writer`.
+* `Notifier` is integrated into `Session`.
+* `notify_retrieve` returns the unique ID of the reply message, instead of a channel for
+   awaiting the received cache data. The filesystem needs to handle the corresponding
+   `NotifyReply` operation and forward the cache data returned from the kernel to the
+   appropriate end.
+* The representation of time / time instant are changed to use the `std::time` types.
+  In order to avoid the conversion overhead, some methods using the *raw* time values
+  are still retained.
+* `SessionInitializer`
+
+## Removed
+
+* The module `request` and the older `Buffer` trait are removed. These features are replaced
+  with the new `io` module.
+
 ## [0.2.1] (2019-12-02)
 
 ### Fixed

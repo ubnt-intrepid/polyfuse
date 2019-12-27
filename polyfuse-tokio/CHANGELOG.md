@@ -5,6 +5,23 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## Added
+
+* Add `Builder` for building `Server`.
+* Add `Server::run_single` for the single-threaded use.
+
+## Changed
+
+* Bump `polyfuse` to 0.3
+* The main loop of server now uses a context pool for concurrently
+  processing requests. The loop will create the context value for
+  processing the incoming requests by need, and will reuse the created
+  contexts after reaching the specified limit.
+
+## Removed
+
+* `Notifier` is integrated into `Server`.
+
 ## [0.1.0] (2019-12-04)
 
 * initial release
