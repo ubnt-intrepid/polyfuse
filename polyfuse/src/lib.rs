@@ -1,6 +1,6 @@
-#![doc(html_root_url = "https://docs.rs/polyfuse/0.3.0-dev")]
+#![doc(html_root_url = "https://docs.rs/polyfuse/0.3.0")]
 
-//! A FUSE (Filesystem in userspace) framework.
+//! A FUSE (Filesystem in userspace) library for Rust.
 
 #![warn(clippy::checked_conversions)]
 #![deny(
@@ -43,3 +43,8 @@ pub use crate::{
 ///
 /// [`async_trait`]: https://docs.rs/async-trait
 pub use async_trait::async_trait;
+
+#[test]
+fn test_html_root_url() {
+    version_sync::assert_html_root_url_updated!("src/lib.rs");
+}

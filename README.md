@@ -3,7 +3,7 @@
 </h1>
 <div align="center">
   <strong>
-    A FUSE (Filesystem in Userspace) framework for Rust.
+    A FUSE (Filesystem in Userspace) library for Rust.
   </strong>
 </div>
 
@@ -28,7 +28,7 @@
 
 <br />
 
-`polyfuse` is a framework for implementing filesystems based on [Filesystem in Userspace (FUSE)](https://en.wikipedia.org/wiki/Filesystem_in_Userspace) in Rust.
+`polyfuse` is a library for implementing filesystems based on [Filesystem in Userspace (FUSE)](https://en.wikipedia.org/wiki/Filesystem_in_Userspace) in Rust.
 
 The goal of this project is to provide a Rust FUSE library that has a high affinity with the `async`/`.await` syntax stabilized in Rust 1.39.
 
@@ -37,7 +37,7 @@ The goal of this project is to provide a Rust FUSE library that has a high affin
 Add a dependency to your package using [`cargo-edit`](https://github.com/killercup/cargo-edit) as follows:
 
 ```shell-session
-$ cargo add polyfuse@0.2
+$ cargo add polyfuse
 ```
 
 To run FUSE daemon, it is necessary to choose appropriate supporting package according to the asynchronous runtime to be used.
@@ -71,6 +71,12 @@ On Arch Linux or other Pacman based distributions:
 ```shell-session
 $ sudo pacman -S fuse2
 ```
+
+## Resources
+
+* [Examples](./examples)
+* [API documentation (docs.rs)](https://docs.rs/polyfuse)
+* [API documentation (master)](https://ubnt-intrepid.github.io/polyfuse/)
 
 ## License
 
