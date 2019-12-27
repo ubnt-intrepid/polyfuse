@@ -324,6 +324,7 @@ impl<R, W> Writer for Unite<R, W> where W: Writer {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::fuse_init_in;
     use futures::{
         executor::block_on,
         task::{self, Poll},
@@ -340,6 +341,78 @@ mod tests {
     }
     macro_rules! b {
         ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
+    }
+
+    #[test]
+    fn read_request_simple() {
+        #[allow(clippy::cast_possible_truncation)]
+        let in_header = fuse_in_header {
+            len: (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>()) as u32,
+            opcode: crate::kernel::FUSE_INIT,
+            unique: 2,
+            nodeid: 0,
+            uid: 100,
+            gid: 100,
+            pid: 12,
+            padding: 0,
+        };
+        let init_in = fuse_init_in {
+            major: 7,
+            minor: 23,
+            max_readahead: 40,
+            flags: crate::kernel::FUSE_AUTO_INVAL_DATA | crate::kernel::FUSE_DO_READDIRPLUS,
+        };
+
+        let mut input = vec![];
+        input.extend_from_slice(unsafe { crate::util::as_bytes(&in_header) });
+        input.extend_from_slice(unsafe { crate::util::as_bytes(&init_in) });
+
+        let mut reader = &input[..];
+
+        let request = block_on(reader.read_request()).expect("parser failed");
+        assert_eq!(request.header().len, in_header.len);
+        assert_eq!(request.header().opcode, in_header.opcode);
+        assert_eq!(request.header().unique, in_header.unique);
+        assert_eq!(request.header().nodeid, in_header.nodeid);
+        assert_eq!(request.header().uid, in_header.uid);
+        assert_eq!(request.header().gid, in_header.gid);
+        assert_eq!(request.header().pid, in_header.pid);
+
+        let arg = request.arg().expect("failed to parse argument");
+        match arg {
+            OperationKind::Init { arg, .. } => {
+                assert_eq!(arg.major, init_in.major);
+                assert_eq!(arg.minor, init_in.minor);
+                assert_eq!(arg.max_readahead, init_in.max_readahead);
+                assert_eq!(arg.flags, init_in.flags);
+            }
+            _ => panic!("operation mismachd"),
+        }
+    }
+
+    #[test]
+    fn read_request_too_short() {
+        #[allow(clippy::cast_possible_truncation)]
+        let in_header = fuse_in_header {
+            len: (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>()) as u32,
+            opcode: crate::kernel::FUSE_INIT,
+            unique: 2,
+            nodeid: 0,
+            uid: 100,
+            gid: 100,
+            pid: 12,
+            padding: 0,
+        };
+
+        let mut input = vec![];
+        input.extend_from_slice(unsafe { &crate::util::as_bytes(&in_header)[0..10] });
+
+        let mut reader = &input[..];
+
+        assert!(
+            block_on(reader.read_request()).is_err(),
+            "parser should fail"
+        );
     }
 
     pin_project! {

@@ -253,7 +253,7 @@ impl ConnectionInfo {
 
     /// Returns the minor version of the protocol.
     pub fn proto_minor(&self) -> u32 {
-        self.0.major
+        self.0.minor
     }
 
     /// Return a set of capability flags sent to the kernel driver.
@@ -392,5 +392,60 @@ impl Default for CapabilityFlags {
             | Self::HANDLE_KILLPRIV
             | Self::ASYNC_DIO
             | Self::ATOMIC_O_TRUNC
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::{fuse_in_header, fuse_init_in};
+    use futures::executor::block_on;
+    use std::mem;
+
+    #[test]
+    fn init_default() {
+        #[allow(clippy::cast_possible_truncation)]
+        let in_header = fuse_in_header {
+            len: (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>()) as u32,
+            opcode: crate::kernel::FUSE_INIT,
+            unique: 2,
+            nodeid: 0,
+            uid: 100,
+            gid: 100,
+            pid: 12,
+            padding: 0,
+        };
+        let init_in = fuse_init_in {
+            major: 7,
+            minor: 23,
+            max_readahead: 40,
+            flags: CapabilityFlags::all().bits() | FUSE_MAX_PAGES,
+        };
+
+        let mut input = vec![];
+        input.extend_from_slice(unsafe { crate::util::as_bytes(&in_header) });
+        input.extend_from_slice(unsafe { crate::util::as_bytes(&init_in) });
+
+        let mut reader = &input[..];
+        let mut writer = Vec::<u8>::new();
+        let mut io = crate::io::unite(&mut reader, &mut writer);
+
+        let init_session = SessionInitializer::default();
+        let session = block_on(init_session.try_init(&mut io))
+            .expect("initialization failed") // Result<Option<Session>>
+            .expect("empty session"); // Option<Session>
+
+        let conn = session.connection_info();
+        assert_eq!(conn.proto_major(), 7);
+        assert_eq!(conn.proto_minor(), 23);
+        assert_eq!(conn.max_readahead(), 40);
+        assert_eq!(conn.max_background(), 0);
+        assert_eq!(conn.congestion_threshold(), 0);
+        assert_eq!(conn.max_write(), DEFAULT_MAX_WRITE);
+        assert_eq!(
+            conn.max_pages(),
+            Some((DEFAULT_MAX_WRITE / (*PAGE_SIZE as u32)) as u16)
+        );
+        assert_eq!(conn.time_gran(), 1);
     }
 }
