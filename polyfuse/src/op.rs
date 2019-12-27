@@ -42,7 +42,6 @@ use crate::{
         ReplyEntry,
         ReplyLk,
         ReplyOpen,
-        ReplyOpendir,
         ReplyPoll,
         ReplyStatfs,
         ReplyWrite,
@@ -1046,7 +1045,7 @@ impl<'a> Opendir<'a> {
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyOpendir>,
+        out: impl AsRef<ReplyOpen>,
     ) -> io::Result<()>
     where
         T: Writer + Unpin,

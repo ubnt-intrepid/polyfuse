@@ -170,6 +170,14 @@ impl ReplyOpen {
         self.set_flag(crate::kernel::FOPEN_NONSEEKABLE, enabled);
         self
     }
+
+    /// Enable caching of entries returned by `readdir`.
+    ///
+    /// This flag is meaningful only for `opendir` operations.
+    pub fn cache_dir(&mut self, enabled: bool) -> &mut Self {
+        self.set_flag(crate::kernel::FOPEN_CACHE_DIR, enabled);
+        self
+    }
 }
 
 /// Reply with the information about written data.
@@ -196,49 +204,6 @@ impl ReplyWrite {
     /// Set the size of written bytes.
     pub fn size(&mut self, size: u32) -> &mut Self {
         self.0.size = size;
-        self
-    }
-}
-
-/// Reply with an opened directory.
-#[derive(Debug)]
-#[must_use]
-pub struct ReplyOpendir(fuse_open_out);
-
-impl AsRef<Self> for ReplyOpendir {
-    #[inline]
-    fn as_ref(&self) -> &Self {
-        self
-    }
-}
-
-impl ReplyOpendir {
-    /// Create a new `ReplyOpendir`
-    pub fn new(fh: u64) -> Self {
-        Self(fuse_open_out {
-            fh,
-            ..Default::default()
-        })
-    }
-
-    fn set_flag(&mut self, flag: u32, enabled: bool) {
-        if enabled {
-            self.0.open_flags |= flag;
-        } else {
-            self.0.open_flags &= !flag;
-        }
-    }
-
-    /// Set the file handle.
-    pub fn fh(&mut self, fh: u64) {
-        self.0.fh = fh;
-    }
-
-    // MEMO: should we add direct_io()?
-
-    /// Enable caching of entries returned by `readdir`.
-    pub fn cache_dir(&mut self, enabled: bool) -> &mut Self {
-        self.set_flag(crate::kernel::FOPEN_CACHE_DIR, enabled);
         self
     }
 }
