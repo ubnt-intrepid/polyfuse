@@ -10,13 +10,13 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 Only the characteristic changes are listed here.
 See the commit log for a detailed change history.
 
-## Added
+### Added
 
 * Add `Reader` and `Writer` for representing the FUSE-specific I/O abstraction.
 * Add `NotifyReply` and `Interrupt` variants to `Operation`.  In the previous version,
   these requests are automatically handled by `Session::receive`.
 
-## Changed
+### Changed
 
 * Reform the definition of `Filesystem` based on `Reader` and `Writer`.
 * `Notifier` is integrated into `Session`.
@@ -28,7 +28,7 @@ See the commit log for a detailed change history.
   In order to avoid the conversion overhead, some methods using the *raw* time values
   are still retained.
 
-## Removed
+### Removed
 
 * The module `request` and the older `Buffer` trait are removed. These features are replaced
   with the new `io` module.
