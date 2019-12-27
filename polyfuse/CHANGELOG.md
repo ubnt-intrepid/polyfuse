@@ -5,6 +5,8 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.3.0] (2019-12-28)
+
 Only the characteristic changes are listed here.
 See the commit log for a detailed change history.
 
@@ -25,7 +27,6 @@ See the commit log for a detailed change history.
 * The representation of time / time instant are changed to use the `std::time` types.
   In order to avoid the conversion overhead, some methods using the *raw* time values
   are still retained.
-* `SessionInitializer`
 
 ## Removed
 
@@ -65,7 +66,8 @@ See the commit log for a detailed change history.
 
 <!-- links -->
 
-[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.1.0...v0.1.1
