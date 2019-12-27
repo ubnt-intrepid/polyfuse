@@ -129,10 +129,12 @@ impl Filesystem for Heartbeat {
                 ROOT_INO => {
                     let mut current = self.current.lock().await;
                     if op.name().as_bytes() == current.filename.as_bytes() {
-                        let mut reply = ReplyEntry::new(self.file_attr);
-                        reply.entry_valid(self.timeout, 0);
-                        reply.attr_valid(self.timeout, 0);
-                        op.reply(cx, reply).await?;
+                        op.reply(cx, {
+                            ReplyEntry::new(self.file_attr)
+                                .entry_valid(self.timeout, 0)
+                                .attr_valid(self.timeout, 0)
+                        })
+                        .await?;
                         current.nlookup += 1;
                     } else {
                         cx.reply_err(libc::ENOENT).await?;
@@ -156,9 +158,11 @@ impl Filesystem for Heartbeat {
                     FILE_INO => self.file_attr,
                     _ => return cx.reply_err(libc::ENOENT).await,
                 };
-                let mut reply = ReplyAttr::new(attr);
-                reply.attr_valid(self.timeout, 0);
-                op.reply(cx, reply).await?
+                op.reply(cx, {
+                    ReplyAttr::new(attr) //
+                        .attr_valid(self.timeout, 0)
+                })
+                .await?
             }
 
             Operation::Read(op) => match op.ino() {

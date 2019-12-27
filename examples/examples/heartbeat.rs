@@ -172,9 +172,11 @@ impl Filesystem for Heartbeat {
             },
             Operation::Open(op) => match op.ino() {
                 ROOT_INO => {
-                    let mut reply = ReplyOpen::new(0);
-                    reply.keep_cache(true);
-                    op.reply(cx, reply).await?;
+                    op.reply(cx, {
+                        ReplyOpen::new(0) //
+                            .keep_cache(true)
+                    })
+                    .await?;
                 }
                 _ => cx.reply_err(libc::ENOENT).await?,
             },
