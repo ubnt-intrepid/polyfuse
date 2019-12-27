@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/polyfuse-tokio/0.2.0-dev")]
+#![doc(html_root_url = "https://docs.rs/polyfuse-tokio/0.2.0")]
 
 //! Tokio integration for `polyfuse`.
 
