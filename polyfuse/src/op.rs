@@ -116,16 +116,21 @@ pub struct Lookup<'a> {
     name: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Lookup<'a> {
+    /// Return the inode number of the parent directory.
+    #[inline]
     pub fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the name of the entry to be looked up.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         self.name
     }
 
+    /// Reply with the entry information.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -146,12 +151,13 @@ pub struct Getattr<'a> {
     arg: &'a fuse_getattr_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Getattr<'a> {
+    /// Return the inode number for obtaining the attribute value.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file, if specified.
     pub fn fh(&self) -> Option<u64> {
         if self.arg.getattr_flags & crate::kernel::FUSE_GETATTR_FH != 0 {
             Some(self.arg.fh)
@@ -160,6 +166,10 @@ impl<'a> Getattr<'a> {
         }
     }
 
+    /// Reply with the obtained attribute values.
+    ///
+    /// If writeback caching is enabled, the kernel might ignore
+    /// some of the attribute values specified here (like `st_size`).
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -180,8 +190,9 @@ pub struct Setattr<'a> {
     arg: &'a fuse_setattr_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Setattr<'a> {
+    /// Return the inode number to be set the attribute values.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -195,26 +206,38 @@ impl<'a> Setattr<'a> {
         }
     }
 
+    /// Return the handle of opened file, if specified.
+    #[inline]
     pub fn fh(&self) -> Option<u64> {
         self.get(crate::kernel::FATTR_FH, |arg| arg.fh)
     }
 
+    /// Return the file mode to be set.
+    #[inline]
     pub fn mode(&self) -> Option<u32> {
         self.get(crate::kernel::FATTR_MODE, |arg| arg.mode)
     }
 
+    /// Return the user id to be set.
+    #[inline]
     pub fn uid(&self) -> Option<u32> {
         self.get(crate::kernel::FATTR_UID, |arg| arg.uid)
     }
 
+    /// Return the group id to be set.
+    #[inline]
     pub fn gid(&self) -> Option<u32> {
         self.get(crate::kernel::FATTR_GID, |arg| arg.gid)
     }
 
+    /// Return the size of the file content to be set.
+    #[inline]
     pub fn size(&self) -> Option<u64> {
         self.get(crate::kernel::FATTR_SIZE, |arg| arg.size)
     }
 
+    /// Return the last accessed time to be set.
+    #[inline]
     pub fn atime(&self) -> Option<SystemTime> {
         self.atime_raw().map(|(sec, nsec, now)| {
             if now {
@@ -225,6 +248,8 @@ impl<'a> Setattr<'a> {
         })
     }
 
+    /// Return the last accessed time to be set, in raw form.
+    #[inline]
     pub fn atime_raw(&self) -> Option<(u64, u32, bool)> {
         self.get(crate::kernel::FATTR_ATIME, |arg| {
             (
@@ -235,6 +260,8 @@ impl<'a> Setattr<'a> {
         })
     }
 
+    /// Return the last modified time to be set.
+    #[inline]
     pub fn mtime(&self) -> Option<SystemTime> {
         self.mtime_raw().map(|(sec, nsec, now)| {
             if now {
@@ -245,6 +272,8 @@ impl<'a> Setattr<'a> {
         })
     }
 
+    /// Return the last modified time to be set, in raw form.
+    #[inline]
     pub fn mtime_raw(&self) -> Option<(u64, u32, bool)> {
         self.get(crate::kernel::FATTR_MTIME, |arg| {
             (
@@ -255,18 +284,26 @@ impl<'a> Setattr<'a> {
         })
     }
 
+    /// Return the last creation time to be set.
+    #[inline]
     pub fn ctime(&self) -> Option<SystemTime> {
         self.ctime_raw().map(make_system_time)
     }
 
+    /// Return the last creation time to be set, in raw form.
+    #[inline]
     pub fn ctime_raw(&self) -> Option<(u64, u32)> {
         self.get(crate::kernel::FATTR_CTIME, |arg| (arg.ctime, arg.ctimensec))
     }
 
+    #[doc(hidden)] // TODO: dox
+    #[inline]
     pub fn lock_owner(&self) -> Option<u64> {
         self.get(crate::kernel::FATTR_LOCKOWNER, |arg| arg.lock_owner)
     }
 
+    /// Reply with the modified attribute values.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -286,13 +323,13 @@ pub struct Readlink<'a> {
     header: &'a fuse_in_header,
 }
 
-#[allow(missing_docs)]
 impl Readlink<'_> {
+    /// Return the inode number to be read the link value.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
-    /// Reply to the kernel with the specified link value.
+    /// Reply with the obtained link value.
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -313,20 +350,27 @@ pub struct Symlink<'a> {
     link: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Symlink<'a> {
+    /// Return the inode number of the parent directory.
+    #[inline]
     pub fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the name of the symbolic link to create.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Return the contents of the symbolic link.
+    #[inline]
     pub fn link(&self) -> &OsStr {
         &*self.link
     }
 
+    /// Reply with the entry information.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -348,28 +392,41 @@ pub struct Mknod<'a> {
     name: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Mknod<'a> {
+    /// Return the inode number of the parent directory.
+    #[inline]
     pub fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the file name to create.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Return the file type and permissions used when creating the new file.
+    #[inline]
     pub fn mode(&self) -> u32 {
         self.arg.mode
     }
 
+    /// Return the device number for special file.
+    ///
+    /// This value is only meaningful only if the created node is a device file
+    /// (i.e. the file type is specified either `S_IFCHR` or `S_IFBLK`).
+    #[inline]
     pub fn rdev(&self) -> u32 {
         self.arg.rdev
     }
 
+    #[doc(hidden)] // TODO: dox
+    #[inline]
     pub fn umask(&self) -> u32 {
         self.arg.umask
     }
 
+    /// Reply with the entry information about the created node.
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -383,7 +440,7 @@ impl<'a> Mknod<'a> {
     }
 }
 
-/// Create a directory.
+/// Create a directory node.
 #[derive(Debug)]
 pub struct Mkdir<'a> {
     header: &'a fuse_in_header,
@@ -391,24 +448,33 @@ pub struct Mkdir<'a> {
     name: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Mkdir<'a> {
+    /// Return the inode number of the parent directory where the directory is created.
+    #[inline]
     pub fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the name of the directory to be created.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Return the file type and permissions used when creating the new directory.
+    #[inline]
     pub fn mode(&self) -> u32 {
         self.arg.mode
     }
 
+    #[doc(hidden)] // TODO: dox
+    #[inline]
     pub fn umask(&self) -> u32 {
         self.arg.umask
     }
 
+    /// Reply with the entry information about the created directory.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -421,6 +487,8 @@ impl<'a> Mkdir<'a> {
         cx.reply_raw(&[unsafe { as_bytes(entry) }]).await
     }
 }
+
+// TODO: description about lookup count.
 
 /// Remove a file.
 #[derive(Debug)]
@@ -429,16 +497,21 @@ pub struct Unlink<'a> {
     name: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Unlink<'a> {
+    /// Return the inode number of the parent directory.
+    #[inline]
     pub fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the file name to be removed.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Reply that the file is successfully removed.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -454,16 +527,23 @@ pub struct Rmdir<'a> {
     name: &'a OsStr,
 }
 
-#[allow(missing_docs)]
+// TODO: description about lookup count.
+
 impl<'a> Rmdir<'a> {
+    /// Return the inode number of the parent directory.
+    #[inline]
     pub fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the directory name to be removed.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Reply that the directory is successfully removed.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -499,16 +579,21 @@ impl<'a> From<&'a fuse_rename2_in> for RenameKind<'a> {
     }
 }
 
-#[allow(missing_docs)]
 impl<'a> Rename<'a> {
+    /// Return the inode number of the old parent directory.
+    #[inline]
     pub fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the old name of the target node.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Return the inode number of the new parent directory.
+    #[inline]
     pub fn newparent(&self) -> u64 {
         match self.arg {
             RenameKind::V1(arg) => arg.newdir,
@@ -516,10 +601,14 @@ impl<'a> Rename<'a> {
         }
     }
 
+    /// Return the new name of the target node.
+    #[inline]
     pub fn newname(&self) -> &OsStr {
         &*self.newname
     }
 
+    /// Return the rename flags.
+    #[inline]
     pub fn flags(&self) -> u32 {
         match self.arg {
             RenameKind::V1(..) => 0,
@@ -527,6 +616,8 @@ impl<'a> Rename<'a> {
         }
     }
 
+    /// Reply that the target node is successfully renamed.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -543,20 +634,26 @@ pub struct Link<'a> {
     newname: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Link<'a> {
+    /// Return the *original* inode number which links to the created hard link.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.arg.oldnodeid
     }
 
+    /// Return the inode number of the parent directory where the hard link is created.
+    #[inline]
     pub fn newparent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the name of the hard link to be created.
+    #[inline]
     pub fn newname(&self) -> &OsStr {
         &*self.newname
     }
 
+    /// Reply with the entry information about the created hard link.
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -577,16 +674,35 @@ pub struct Open<'a> {
     arg: &'a fuse_open_in,
 }
 
-#[allow(missing_docs)]
+// TODO: Description of behavior when writeback caching is enabled.
+
 impl<'a> Open<'a> {
+    /// Return the inode number to be opened.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the open flags.
+    ///
+    /// The creating flags (`O_CREAT`, `O_EXCL` and `O_NOCTTY`) are removed and
+    /// these flags are handled by the kernel.
+    ///
+    /// If the mount option contains `-o default_permissions`, the access mode flags
+    /// (`O_RDONLY`, `O_WRONLY` and `O_RDWR`) might be handled by the kernel and in that case,
+    /// these flags are omitted before issuing the request. Otherwise, the filesystem should
+    /// handle these flags and return an `EACCES` error when provided access mode is
+    /// invalid.
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
 
+    /// Reply with the handle of opened file.
+    ///
+    /// The filesystem could have a state used in a series of operations (`read`, `write`,
+    /// etc), with the lifetime from this `open` to the corresponding `release`.
+    /// The `fh` parameter is used to identify the instance of its value in each request.
+    ///
+    /// See the documentation of `ReplyOpen` for details.
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -607,28 +723,39 @@ pub struct Read<'a> {
     arg: &'a fuse_read_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Read<'a> {
+    /// Return the inode number to be read.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the starting position of the content to be read.
+    #[inline]
     pub fn offset(&self) -> u64 {
         self.arg.offset
     }
 
+    /// Return the length of the data to be read.
+    #[inline]
     pub fn size(&self) -> u32 {
         self.arg.size
     }
 
+    /// Return the flags specified at opening the file.
+    #[inline]
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
 
+    /// Return the identifier of lock owner, if specified.
+    #[inline]
     pub fn lock_owner(&self) -> Option<u64> {
         if self.arg.read_flags & crate::kernel::FUSE_READ_LOCKOWNER != 0 {
             Some(self.arg.lock_owner)
@@ -637,6 +764,16 @@ impl<'a> Read<'a> {
         }
     }
 
+    /// Reply with the content of the specified range of file.
+    ///
+    /// When the file is opened in `direct_io` mode, the result replied here will be
+    /// reflected in the caller's result of `read` syscall.
+    ///
+    /// When the file is not opened in `direct_io` mode (i.e., page caching is enabled),
+    /// the filesystem should send *exactly* the specified range of file content to the
+    /// kernel. If the length of the passed data is shorter than `op.size()`, the rest of
+    /// the data will be substituted with zeroes.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -654,6 +791,8 @@ impl<'a> Read<'a> {
         }
     }
 
+    /// Reply with the discontinuous content of the specified range of file.
+    #[inline]
     pub async fn reply_vectored<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -678,28 +817,39 @@ pub struct Write<'a> {
     arg: &'a fuse_write_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Write<'a> {
+    /// Return the inode number to be written.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the starting position of contents to be written.
+    #[inline]
     pub fn offset(&self) -> u64 {
         self.arg.offset
     }
 
+    /// Return the length of contents to be written.
+    #[inline]
     pub fn size(&self) -> u32 {
         self.arg.size
     }
 
+    /// Return the flags specified at opening the file.
+    #[inline]
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
 
+    /// Return the identifier of lock owner.
+    #[inline]
     pub fn lock_owner(&self) -> Option<u64> {
         if self.arg.write_flags & crate::kernel::FUSE_WRITE_LOCKOWNER != 0 {
             Some(self.arg.lock_owner)
@@ -708,6 +858,14 @@ impl<'a> Write<'a> {
         }
     }
 
+    /// Reply with the amount of the written data.
+    ///
+    /// When the file is opened in `direct_io` mode, the result replied here will be reflected
+    /// in the caller's result of `write` syscall.
+    ///
+    /// When the file is not opened in `direct_io` mode (i.e. the page caching is enabled),
+    /// the filesystem should receive *exactly* the specified range of file content from the kernel.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -728,33 +886,46 @@ pub struct Release<'a> {
     arg: &'a fuse_release_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Release<'a> {
+    /// Return the inode number of opened file.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the flags specified at opening the file.
+    #[inline]
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
 
+    /// Return the identifier of lock owner.
+    #[inline]
     pub fn lock_owner(&self) -> u64 {
         // NOTE: fuse_release_in.lock_owner is available since ABI 7.8.
         self.arg.lock_owner
     }
 
+    /// Return whether the operation indicates a flush.
+    #[inline]
     pub fn flush(&self) -> bool {
         self.arg.release_flags & crate::kernel::FUSE_RELEASE_FLUSH != 0
     }
 
+    /// Return whether the `flock` locks for this file should be released.
+    #[inline]
     pub fn flock_release(&self) -> bool {
         self.arg.release_flags & crate::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
     }
 
+    /// Reply that the file is successfully released.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -769,12 +940,15 @@ pub struct Statfs<'a> {
     header: &'a fuse_in_header,
 }
 
-#[allow(missing_docs)]
 impl Statfs<'_> {
+    /// Return the inode number or `0` which means "undefined".
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Reply with the obtained filesystem statistics.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -788,31 +962,33 @@ impl Statfs<'_> {
     }
 }
 
-/// Synchronize the file contents of an opened file.
-///
-/// When the parameter `datasync` is true, only the
-/// file contents should be flushed and the metadata
-/// does not have to be flushed.
+/// Synchronize the file contents.
 #[derive(Debug)]
 pub struct Fsync<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fsync_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Fsync<'a> {
+    /// Return the inode number to be synchronized.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return whether to synchronize only the file contents.
+    ///
+    /// When this method returns `true`, the metadata does not have to be flushed.
+    #[inline]
     pub fn datasync(&self) -> bool {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
+    /// Reply that the content of the file and/or the metadata are successfully synchronized.
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -830,24 +1006,33 @@ pub struct Setxattr<'a> {
     value: &'a [u8],
 }
 
-#[allow(missing_docs)]
 impl<'a> Setxattr<'a> {
+    /// Return the inode number to set the value of extended attribute.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the name of extended attribute to be set.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Return the value of extended attribute.
+    #[inline]
     pub fn value(&self) -> &[u8] {
         &*self.value
     }
 
+    /// Return the flags that specifies the meanings of this operation.
+    #[inline]
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
 
+    /// Reply that the specified extended attribute is succesfully set.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -857,9 +1042,6 @@ impl<'a> Setxattr<'a> {
 }
 
 /// Get an extended attribute.
-///
-/// The operation should send the length of attribute's value
-/// with `reply.size(n)` when `size` is equal to zero.
 #[derive(Debug)]
 pub struct Getxattr<'a> {
     header: &'a fuse_in_header,
@@ -867,20 +1049,25 @@ pub struct Getxattr<'a> {
     name: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Getxattr<'a> {
+    /// Return the inode number to be get the extended attribute.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the name of the extend attribute.
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Return the maximum length of the attribute value to be replied.
     pub fn size(&self) -> u32 {
         self.arg.size
     }
 
+    /// Reply with the size information of the attribute value.
+    ///
+    /// The filesystem should use this method if `op.size()` returns zero.
     pub async fn reply_size<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -893,6 +1080,7 @@ impl<'a> Getxattr<'a> {
         cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 
+    /// Reply with the content of the attribute value.
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -910,6 +1098,7 @@ impl<'a> Getxattr<'a> {
         }
     }
 
+    /// Reply with the discontinuous content of the attribute value.
     pub async fn reply_vectored<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -928,28 +1117,26 @@ impl<'a> Getxattr<'a> {
 }
 
 /// List extended attribute names.
-///
-/// The attribute names must be seperated by a null character
-/// (i.e. `b'\0'`).
-///
-/// The operation should send the length of attribute names
-/// with `reply.size(n)` when `size` is equal to zero.#[derive(Debug)]
 #[derive(Debug)]
 pub struct Listxattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_getxattr_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Listxattr<'a> {
+    /// Return the inode number to be obtained the attribute names.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the maximum length of the attribute names to be replied.
     pub fn size(&self) -> u32 {
         self.arg.size
     }
 
+    /// Reply with the size information about the attribute names.
+    ///
+    /// The filesystem should use this method if `op.size()` returns zero.
     pub async fn reply_size<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -962,6 +1149,9 @@ impl<'a> Listxattr<'a> {
         cx.reply_raw(&[unsafe { as_bytes(out) }]).await
     }
 
+    /// Reply with the content of the attribute names.
+    ///
+    /// The attribute names must be seperated by a null character (i.e. `b'\0'`).
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -979,6 +1169,7 @@ impl<'a> Listxattr<'a> {
         }
     }
 
+    /// Reply with the discontinuous content of the attribute names.
     pub async fn reply_vectored<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1003,16 +1194,21 @@ pub struct Removexattr<'a> {
     name: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Removexattr<'a> {
+    /// Return the inode number to remove the extended attribute.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the name of extended attribute to be removed.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Reply that the specified extended attribute is successfully removed.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1022,26 +1218,38 @@ impl<'a> Removexattr<'a> {
 }
 
 /// Close a file descriptor.
+///
+/// This operation is issued on each `close(2)` syscall
+/// for a file descriptor.
+///
+/// Do not confuse this operation with `Release`.
+/// Since the file descriptor could be duplicated, the multiple
+/// flush operations might be issued for one `Open`.
+/// Also, it is not guaranteed that flush will always be issued
+/// after some writes.
 #[derive(Debug)]
 pub struct Flush<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_flush_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Flush<'a> {
+    /// Return the inode number of target file.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the identifier of lock owner.
     pub fn lock_owner(&self) -> u64 {
         self.arg.lock_owner
     }
 
+    /// Reply that the file descriptor is successfully closed.
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1057,16 +1265,21 @@ pub struct Opendir<'a> {
     arg: &'a fuse_open_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Opendir<'a> {
+    /// Return the inode number to be opened.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the open flags.
+    #[inline]
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
 
+    /// Reply with the handle of opened directory.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1088,28 +1301,41 @@ pub struct Readdir<'a> {
     is_plus: bool,
 }
 
-#[allow(missing_docs)]
+// TODO: description about `offset` and `is_plus`.
+
 impl<'a> Readdir<'a> {
+    /// Return the inode number to be read.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened directory.
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the *offset* value to continue reading the directory stream.
+    #[inline]
     pub fn offset(&self) -> u64 {
         self.arg.offset
     }
 
+    /// Return the maximum length of returned data.
+    #[inline]
     pub fn size(&self) -> u32 {
         self.arg.size
     }
 
+    /// Return whether the operation is "plus" mode or not.
+    #[inline]
     pub fn is_plus(&self) -> bool {
         self.is_plus
     }
 
+    /// Reply with the data of directory stream.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1127,6 +1353,8 @@ impl<'a> Readdir<'a> {
         }
     }
 
+    /// Reply with the discontinus data of directory stream.
+    #[inline]
     pub async fn reply_vectored<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1151,20 +1379,27 @@ pub struct Releasedir<'a> {
     arg: &'a fuse_release_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Releasedir<'a> {
+    /// Return the inode number of opened directory.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened directory.
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the flags specified at opening the directory.
+    #[inline]
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
 
+    /// Reply that the directory is successfully released.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1173,31 +1408,33 @@ impl<'a> Releasedir<'a> {
     }
 }
 
-/// Synchronize an opened directory contents.
-///
-/// When the parameter `datasync` is true, only the
-/// directory contents should be flushed and the metadata
-/// does not have to be flushed.
+/// Synchronize the directory contents.
 #[derive(Debug)]
 pub struct Fsyncdir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fsync_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Fsyncdir<'a> {
+    /// Return the inode number to be synchronized.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened directory.
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return whether to synchronize only the directory contents.
+    ///
+    /// When this method returns `true`, the metadata does not have to be flushed.
+    #[inline]
     pub fn datasync(&self) -> bool {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
+    /// Reply that the content of the directory and/or the metadata are successfully synchronized.
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1213,24 +1450,28 @@ pub struct Getlk<'a> {
     arg: &'a fuse_lk_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Getlk<'a> {
+    /// Return the inode number to be tested the lock.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the identifier of lock owner.
     pub fn owner(&self) -> u64 {
         self.arg.owner
     }
 
+    /// Return the lock information for testing.
     pub fn lk(&self) -> &FileLock {
         FileLock::new(&self.arg.lk)
     }
 
+    /// Reply with the provided lock result.
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1252,28 +1493,39 @@ pub struct Setlk<'a> {
     sleep: bool,
 }
 
-#[allow(missing_docs)]
 impl<'a> Setlk<'a> {
+    /// Return the inode number to be obtained the lock.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the identifier of lock owner.
+    #[inline]
     pub fn owner(&self) -> u64 {
         self.arg.owner
     }
 
+    /// Return the lock information to be obtained.
+    #[inline]
     pub fn lk(&self) -> &FileLock {
         FileLock::new(&self.arg.lk)
     }
 
+    /// Return whether the locking operation might sleep until a lock is obtained.
+    #[inline]
     pub fn sleep(&self) -> bool {
         self.sleep
     }
 
+    /// Reply that the specified file lock is successfully set.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1290,21 +1542,29 @@ pub struct Flock<'a> {
     sleep: bool,
 }
 
-#[allow(missing_docs)]
 impl<'a> Flock<'a> {
+    /// Return the target inode number.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the identifier of lock owner.
     pub fn owner(&self) -> u64 {
         self.arg.owner
     }
 
+    /// Return the locking operation.
+    ///
+    /// See [`flock(2)`][flock] for details.
+    ///
+    /// [flock]: http://man7.org/linux/man-pages/man2/flock.2.html
     #[allow(clippy::cast_possible_wrap)]
+    #[inline]
     pub fn op(&self) -> Option<u32> {
         const F_RDLCK: u32 = libc::F_RDLCK as u32;
         const F_WRLCK: u32 = libc::F_WRLCK as u32;
@@ -1323,6 +1583,7 @@ impl<'a> Flock<'a> {
         Some(op)
     }
 
+    /// Reply that updating the lock is successful.
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1338,16 +1599,18 @@ pub struct Access<'a> {
     arg: &'a fuse_access_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Access<'a> {
+    /// Return the inode number subject to the access permission check.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the requested access mode.
     pub fn mask(&self) -> u32 {
         self.arg.mask
     }
 
+    /// Reply that the provided access mode is valid for the inode.
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1357,6 +1620,9 @@ impl<'a> Access<'a> {
 }
 
 /// Create and open a file.
+///
+/// This operation is a combination of `Mknod` and `Open`. If an `ENOSYS` error is returned
+/// for this operation, those operations will be used instead.
 #[derive(Debug)]
 pub struct Create<'a> {
     header: &'a fuse_in_header,
@@ -1364,28 +1630,46 @@ pub struct Create<'a> {
     name: &'a OsStr,
 }
 
-#[allow(missing_docs)]
 impl<'a> Create<'a> {
+    /// Return the inode number of the parent directory.
+    ///
+    /// This is the same as `Mknod::parent`.
+    #[inline]
     pub fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the file name to crate.
+    ///
+    /// This is the same as `Mknod::name`.
+    #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
 
+    /// Return the file type and permissions used when creating the new file.
+    ///
+    /// This is the same as `Mknod::mode`.
+    #[inline]
     pub fn mode(&self) -> u32 {
         self.arg.mode
     }
 
+    #[doc(hidden)] // TODO: dox
     pub fn umask(&self) -> u32 {
         self.arg.umask
     }
 
+    /// Return the open flags.
+    ///
+    /// This is the same as `Open::flags`.
+    #[inline]
     pub fn open_flags(&self) -> u32 {
         self.arg.flags
     }
 
+    /// Reply with the entry information and a handle of opened file.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1416,20 +1700,23 @@ pub struct Bmap<'a> {
     arg: &'a fuse_bmap_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Bmap<'a> {
+    /// Return the inode number of the file node to be mapped.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the block index to be mapped.
     pub fn block(&self) -> u64 {
         self.arg.block
     }
 
+    /// Returns the unit of block index.
     pub fn blocksize(&self) -> u32 {
         self.arg.blocksize
     }
 
+    /// Reply with the mapped block index.
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1443,35 +1730,54 @@ impl<'a> Bmap<'a> {
     }
 }
 
-/// Allocate requested space to an opened file.
+/// Allocate requested space.
 #[derive(Debug)]
 pub struct Fallocate<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fallocate_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Fallocate<'a> {
+    /// Return the number of target inode to be allocated the space.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle for opened file.
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the starting point of region to be allocated.
+    #[inline]
     pub fn offset(&self) -> u64 {
         self.arg.offset
     }
 
+    /// Return the length of region to be allocated.
+    #[inline]
     pub fn length(&self) -> u64 {
         self.arg.length
     }
 
+    /// Return the mode that specifies how to allocate the region.
+    ///
+    /// See [`fallocate(2)`][fallocate] for details.
+    ///
+    /// [fallocate]: http://man7.org/linux/man-pages/man2/fallocate.2.html
+    #[inline]
     pub fn mode(&self) -> u32 {
         self.arg.mode
     }
 
+    /// Reply that the requested region is successfully allocated.
+    ///
+    /// If this operation is successful, the filesystem shall not report
+    /// the error caused by the lack of free spaces to subsequent write
+    /// requests.
+    #[inline]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1487,24 +1793,75 @@ pub struct CopyFileRange<'a> {
     arg: &'a fuse_copy_file_range_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> CopyFileRange<'a> {
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.1",
+        note = "use `ino_in`, `fh_in` or `offset_in` instead."
+    )]
     pub fn input(&self) -> (u64, u64, u64) {
-        (self.header.nodeid, self.arg.fh_in, self.arg.off_in)
+        (self.ino_in(), self.fh_in(), self.offset_in())
     }
 
+    /// Return the inode number of source file.
+    #[inline]
+    pub fn ino_in(&self) -> u64 {
+        self.header.nodeid
+    }
+
+    /// Return the file handle of source file.
+    #[inline]
+    pub fn fh_in(&self) -> u64 {
+        self.arg.fh_in
+    }
+
+    /// Return the starting point of source file where the data should be read.
+    #[inline]
+    pub fn offset_in(&self) -> u64 {
+        self.arg.fh_in
+    }
+
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.1",
+        note = "use `ino_out`, `fh_out` or `offset_out` instead."
+    )]
     pub fn output(&self) -> (u64, u64, u64) {
         (self.arg.nodeid_out, self.arg.fh_out, self.arg.off_out)
     }
 
+    /// Return the inode number of target file.
+    #[inline]
+    pub fn ino_out(&self) -> u64 {
+        self.arg.nodeid_out
+    }
+
+    /// Return the file handle of target file.
+    #[inline]
+    pub fn fh_out(&self) -> u64 {
+        self.arg.fh_out
+    }
+
+    /// Return the starting point of target file where the data should be written.
+    #[inline]
+    pub fn offset_out(&self) -> u64 {
+        self.arg.fh_out
+    }
+
+    /// Return the maximum size of data to copy.
+    #[inline]
     pub fn length(&self) -> u64 {
         self.arg.len
     }
 
+    /// Return the flag value for `copy_file_range` syscall.
+    #[inline]
     pub fn flags(&self) -> u64 {
         self.arg.flags
     }
 
+    /// Reply with the copied data length.
+    #[inline]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1519,29 +1876,36 @@ impl<'a> CopyFileRange<'a> {
 }
 
 /// Poll for readiness.
-///
-/// When `kh` is not `None`, the filesystem should send
-/// the notification about I/O readiness to the kernel.
 #[derive(Debug)]
 pub struct Poll<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_poll_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> Poll<'a> {
+    /// Return the inode number to check the I/O readiness.
+    #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the handle of opened file.
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.arg.fh
     }
 
+    /// Return the requested poll events.
+    #[inline]
     pub fn events(&self) -> u32 {
         self.arg.events
     }
 
+    /// Return the handle to this poll.
+    ///
+    /// If the returned value is not `None`, the filesystem should send the notification
+    /// when the corresponding I/O will be ready.
+    #[inline]
     pub fn kh(&self) -> Option<u64> {
         if self.arg.flags & crate::kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
             Some(self.arg.kh)
@@ -1550,6 +1914,7 @@ impl<'a> Poll<'a> {
         }
     }
 
+    /// Reply with the mask of ready poll events.
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1564,10 +1929,11 @@ impl<'a> Poll<'a> {
 }
 
 /// A set of `Forget`s removed from the kernel's internal caches.
-#[allow(missing_docs)]
 #[derive(Debug)]
 pub enum Forgets<'a> {
+    #[allow(missing_docs)]
     Single(Forget),
+    #[allow(missing_docs)]
     Batch(&'a [Forget]),
 }
 
@@ -1580,30 +1946,33 @@ impl AsRef<[Forget]> for Forgets<'_> {
     }
 }
 
-/// Receive the reply for a `NOTIFY_RETRIEVE` notification.
+/// A reply to a `NOTIFY_RETRIEVE` notification.
 #[derive(Debug)]
 pub struct NotifyReply<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_notify_retrieve_in,
 }
 
-#[allow(missing_docs)]
 impl<'a> NotifyReply<'a> {
+    /// Return the unique ID of the corresponding notification message.
     #[inline]
     pub fn unique(&self) -> u64 {
         self.header.unique
     }
 
+    /// Return the inode number corresponding with the cache data.
     #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
+    /// Return the starting position of the cache data.
     #[inline]
     pub fn offset(&self) -> u64 {
         self.arg.offset
     }
 
+    /// Return the length of the retrieved cache data.
     #[inline]
     pub fn size(&self) -> u32 {
         self.arg.size
@@ -1618,7 +1987,7 @@ pub struct Interrupt<'a> {
 }
 
 impl Interrupt<'_> {
-    /// Return the target unique ID to interrupt.
+    /// Return the target unique ID to be interrupted.
     #[inline]
     pub fn unique(&self) -> u64 {
         self.arg.unique
