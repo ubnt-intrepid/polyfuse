@@ -65,8 +65,19 @@ impl AsRef<Self> for ReplyEntry {
     }
 }
 
+impl Default for ReplyEntry {
+    fn default() -> Self {
+        Self(fuse_entry_out::default())
+    }
+}
+
 impl ReplyEntry {
-    /// Create a new `ReplyEntry`.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.1",
+        note = "The assumption used here is incorrect. \
+                See also https://github.com/ubnt-intrepid/polyfuse/issues/65."
+    )]
     pub fn new(attr: FileAttr) -> Self {
         let attr = attr.into_inner();
         let nodeid = attr.ino;
@@ -75,6 +86,20 @@ impl ReplyEntry {
             attr,
             ..Default::default()
         })
+    }
+
+    /// Set the inode number of this entry.
+    ///
+    /// If this value is zero, it means that the entry is *negative*.
+    /// Returning a negative entry is also possible with the `ENOENT` error,
+    /// but the *zeroed* entries also have the ability to specify the lifetime
+    /// of the entry cache by using the `ttl_entry` parameter.
+    ///
+    /// The default value is `0`.
+    #[inline]
+    pub fn ino(&mut self, ino: u64) -> &mut Self {
+        self.0.nodeid = ino;
+        self
     }
 
     /// Set the attribute value of this entry.
@@ -110,8 +135,8 @@ impl ReplyEntry {
     /// The parameter `generation` is used to distinguish the inode
     /// from the past one when the filesystem reuse inode numbers.
     /// That is, the operations must ensure that the pair of
-    /// entry's inode number and `generation` is unique for
-    /// the lifetime of filesystem.
+    /// entry's inode number and `generation` are unique for
+    /// the lifetime of the filesystem.
     pub fn generation(&mut self, generation: u64) -> &mut Self {
         self.0.generation = generation;
         self

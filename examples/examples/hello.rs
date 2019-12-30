@@ -66,7 +66,9 @@ impl Hello {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 op.reply(cx, {
-                    ReplyEntry::new(self.hello_attr) //
+                    ReplyEntry::default()
+                        .ino(HELLO_INO)
+                        .attr(self.hello_attr) //
                         .ttl_attr(TTL)
                         .ttl_entry(TTL)
                 })

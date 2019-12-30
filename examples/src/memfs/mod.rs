@@ -56,7 +56,9 @@ impl MemFS {
             Some(inode) => {
                 let attr = inode.load_attr();
                 op.reply(cx, {
-                    ReplyEntry::new(attr)
+                    ReplyEntry::default()
+                        .ino(attr.ino())
+                        .attr(attr)
                         .ttl_entry(self.ttl_entry)
                         .ttl_attr(self.ttl_attr)
                 })
@@ -240,7 +242,9 @@ impl MemFS {
                     Ok(inode) => {
                         let attr = inode.load_attr();
                         op.reply(cx, {
-                            ReplyEntry::new(attr)
+                            ReplyEntry::default()
+                                .ino(attr.ino())
+                                .attr(attr)
                                 .ttl_entry(self.ttl_entry)
                                 .ttl_attr(self.ttl_attr)
                         })
@@ -268,7 +272,9 @@ impl MemFS {
             Ok(inode) => {
                 let attr = inode.load_attr();
                 op.reply(cx, {
-                    ReplyEntry::new(attr)
+                    ReplyEntry::default()
+                        .ino(attr.ino())
+                        .attr(attr)
                         .ttl_entry(self.ttl_entry)
                         .ttl_attr(self.ttl_attr)
                 })

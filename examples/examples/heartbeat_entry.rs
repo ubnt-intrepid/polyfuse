@@ -130,7 +130,9 @@ impl Filesystem for Heartbeat {
                     let mut current = self.current.lock().await;
                     if op.name().as_bytes() == current.filename.as_bytes() {
                         op.reply(cx, {
-                            ReplyEntry::new(self.file_attr)
+                            ReplyEntry::default()
+                                .ino(self.file_attr.ino())
+                                .attr(self.file_attr)
                                 .ttl_entry(self.timeout)
                                 .ttl_attr(self.timeout)
                         })
