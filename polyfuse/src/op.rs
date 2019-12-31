@@ -2044,7 +2044,10 @@ impl<'a> Parser<'a> {
             .iter()
             .position(|&b| b == b'\0')
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fetch_str: missing \\0"))?;
-        self.fetch_bytes(len).map(OsStr::from_bytes)
+        self.fetch_bytes(len).map(|s| {
+            self.offset = std::cmp::min(self.bytes.len(), self.offset + 1);
+            OsStr::from_bytes(s)
+        })
     }
 
     fn fetch<T>(&mut self) -> io::Result<&'a T> {
@@ -2369,5 +2372,75 @@ fn new_lock_op<'a>(header: &'a fuse_in_header, arg: &'a fuse_lk_in, sleep: bool)
         Operation::Flock(Flock { header, arg, sleep })
     } else {
         Operation::Setlk(Setlk { header, arg, sleep })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::cast_possible_truncation)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn parse_lookup() {
+        let name = CString::new("foo").unwrap();
+        let parent = 1;
+
+        let header = fuse_in_header {
+            len: (mem::size_of::<fuse_in_header>() + name.as_bytes_with_nul().len()) as u32,
+            opcode: crate::kernel::FUSE_LOOKUP,
+            unique: 2,
+            nodeid: parent,
+            uid: 1,
+            gid: 1,
+            pid: 42,
+            padding: 0,
+        };
+        let mut payload = vec![];
+        payload.extend_from_slice(name.as_bytes_with_nul());
+
+        let mut parser = Parser::new(&header, &payload[..]);
+        let op = parser.parse().unwrap();
+        match op {
+            OperationKind::Operation(Operation::Lookup(op)) => {
+                assert_eq!(op.parent(), parent);
+                assert_eq!(op.name().as_bytes(), name.as_bytes());
+            }
+            _ => panic!("incorret operation is returned"),
+        }
+    }
+
+    #[test]
+    fn parse_symlink() {
+        let name = CString::new("foo").unwrap();
+        let link = CString::new("bar").unwrap();
+        let parent = 1;
+
+        let header = fuse_in_header {
+            len: (mem::size_of::<fuse_in_header>()
+                + name.as_bytes_with_nul().len()
+                + link.as_bytes_with_nul().len()) as u32,
+            opcode: crate::kernel::FUSE_SYMLINK,
+            unique: 2,
+            nodeid: parent,
+            uid: 1,
+            gid: 1,
+            pid: 42,
+            padding: 0,
+        };
+        let mut payload = vec![];
+        payload.extend_from_slice(name.as_bytes_with_nul());
+        payload.extend_from_slice(link.as_bytes_with_nul());
+
+        let mut parser = Parser::new(&header, &payload[..]);
+        let op = parser.parse().unwrap();
+        match op {
+            OperationKind::Operation(Operation::Symlink(op)) => {
+                assert_eq!(op.parent(), parent);
+                assert_eq!(op.name().as_bytes(), name.as_bytes());
+                assert_eq!(op.link().as_bytes(), link.as_bytes());
+            }
+            _ => panic!("incorret operation is returned"),
+        }
     }
 }
