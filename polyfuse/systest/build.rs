@@ -18,5 +18,5 @@ fn generate_abi_tests() {
     // FUSE_FSYNC_FDATASYNC is defined since libfuse 3.7.0.
     cfg.skip_const(|name| name == "FUSE_FSYNC_FDATASYNC");
 
-    cfg.generate("src/kernel.rs", "kernel.rs");
+    cfg.generate("../src/kernel.rs", "kernel.rs");
 }

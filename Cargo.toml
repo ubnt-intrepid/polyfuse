@@ -1,9 +1,9 @@
 [workspace]
 members = [
   "polyfuse",
+  "polyfuse/systest",
   "polyfuse-tokio",
 
   "examples",
-  "systest",
   "xtask",
 ]

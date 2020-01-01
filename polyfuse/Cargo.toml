@@ -9,6 +9,7 @@ edition = "2018"
 readme = "README.md"
 categories = [ "filesystem" ]
 keywords = [ "fuse", "filesystem", "async", "futures" ]
+exclude = [ "systest/**/*" ]
 
 [dependencies]
 async-trait = "0.1"
