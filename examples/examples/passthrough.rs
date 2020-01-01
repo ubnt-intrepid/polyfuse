@@ -1,10 +1,11 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![warn(clippy::unimplemented, clippy::todo)]
+
 use pico_args::Arguments;
 use polyfuse::{
     io::{Reader, Writer},
     op,
-    reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr},
+    reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr},
     Context, DirEntry, Filesystem, Operation,
 };
 use slab::Slab;
@@ -292,6 +293,56 @@ impl Passthrough {
         inode.fd.readlink("")
     }
 
+    async fn do_link(&self, op: &op::Link<'_>) -> io::Result<ReplyEntry> {
+        let inodes = self.inodes.lock().await;
+
+        let source = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let mut source = source.lock().await;
+
+        let parent = inodes.get(op.newparent()).ok_or_else(no_entry)?;
+        let parent = parent.lock().await;
+
+        let name = CString::new(op.newname().as_bytes())?;
+
+        if source.is_symlink {
+            let dummy = CStr::from_bytes_with_nul(b"\0").unwrap();
+            syscall!(linkat(
+                source.fd.as_raw_fd(),
+                dummy.as_ptr(),
+                parent.fd.as_raw_fd(),
+                name.as_ptr(),
+                libc::AT_EMPTY_PATH
+            ))
+            .map_err(|err| match err.raw_os_error() {
+                Some(libc::ENOENT) | Some(libc::EINVAL) => {
+                    // no race-free way to hard-link a symlink.
+                    io::Error::from_raw_os_error(libc::EOPNOTSUPP)
+                }
+                _ => err,
+            })?;
+        } else {
+            let procname = CString::new(format!("/proc/self/fd/{}", source.fd.as_raw_fd()))?;
+            syscall!(linkat(
+                libc::AT_FDCWD,
+                procname.as_ptr(),
+                parent.fd.as_raw_fd(),
+                name.as_ptr(),
+                libc::AT_SYMLINK_FOLLOW
+            ))?;
+        }
+
+        let stat = source.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+
+        let mut entry = ReplyEntry::default();
+        entry.ino(source.ino);
+        entry.attr(stat.try_into().unwrap());
+        // TODO: timeout
+
+        source.refcount += 1;
+
+        Ok(entry)
+    }
+
     async fn make_node(
         &self,
         parent: Ino,
@@ -548,6 +599,18 @@ impl Passthrough {
         Ok(())
     }
 
+    async fn do_flock(&self, op: &op::Flock<'_>) -> io::Result<()> {
+        let file = self.opened_files.get(op.fh()).await.ok_or_else(no_entry)?;
+        let file = file.lock().await;
+
+        syscall!(flock(
+            file.as_raw_fd(),
+            op.op().expect("invalid lock operation") as i32
+        ))?;
+
+        Ok(())
+    }
+
     async fn do_release(&self, op: &op::Release<'_>) -> io::Result<()> {
         let _file = self.opened_files.remove(op.fh()).await;
         Ok(())
@@ -692,6 +755,18 @@ impl Passthrough {
 
         Ok(())
     }
+
+    async fn do_statfs(&self, op: &op::Statfs<'_>) -> io::Result<ReplyStatfs> {
+        let inodes = self.inodes.lock().await;
+        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inode.lock().await;
+
+        let mut stbuf = mem::MaybeUninit::<libc::statvfs>::zeroed();
+        syscall!(fstatvfs(inode.fd.as_raw_fd(), stbuf.as_mut_ptr()))?;
+        let stbuf = unsafe { stbuf.assume_init() };
+
+        Ok(ReplyStatfs::new(stbuf.try_into().unwrap()))
+    }
 }
 
 #[polyfuse::async_trait]
@@ -715,13 +790,9 @@ impl Filesystem for Passthrough {
         }
 
         // TODOs:
-        // * link
         // * fallocate
         // * readdirplus
         // * create
-        // * statfs
-        // * fallocate
-        // * flock
         match op {
             Operation::Lookup(op) => {
                 let entry = try_reply!(self.do_lookup(op.parent(), op.name()));
@@ -744,6 +815,10 @@ impl Filesystem for Passthrough {
             Operation::Readlink(op) => {
                 let link = try_reply!(self.do_readlink(&op));
                 op.reply(cx, link).await
+            }
+            Operation::Link(op) => {
+                let entry = try_reply!(self.do_link(&op));
+                op.reply(cx, entry).await
             }
 
             Operation::Mknod(op) => {
@@ -807,6 +882,7 @@ impl Filesystem for Passthrough {
                 try_reply!(self.do_releasedir(&op));
                 op.reply(cx).await
             }
+
             Operation::Open(op) => {
                 let open = try_reply!(self.do_open(&op));
                 op.reply(cx, open).await
@@ -825,6 +901,10 @@ impl Filesystem for Passthrough {
             }
             Operation::Fsync(op) => {
                 try_reply!(self.do_fsync(&op));
+                op.reply(cx).await
+            }
+            Operation::Flock(op) => {
+                try_reply!(self.do_flock(&op));
                 op.reply(cx).await
             }
             Operation::Release(op) => {
@@ -859,6 +939,11 @@ impl Filesystem for Passthrough {
             Operation::Removexattr(op) => {
                 try_reply!(self.do_removexattr(&op));
                 op.reply(cx).await
+            }
+
+            Operation::Statfs(op) => {
+                let stat = try_reply!(self.do_statfs(&op));
+                op.reply(cx, stat).await
             }
 
             _ => Ok(()),
