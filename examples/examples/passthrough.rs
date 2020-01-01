@@ -611,6 +611,28 @@ impl Passthrough {
         Ok(())
     }
 
+    async fn do_fallocate(&self, op: &op::Fallocate<'_>) -> io::Result<()> {
+        if op.mode() != 0 {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+        }
+
+        let file = self.opened_files.get(op.fh()).await.ok_or_else(no_entry)?;
+        let file = file.lock().await;
+
+        let err = unsafe {
+            libc::posix_fallocate(
+                file.as_raw_fd(), //
+                op.offset() as i64,
+                op.length() as i64,
+            )
+        };
+        if err != 0 {
+            return Err(io::Error::from_raw_os_error(err));
+        }
+
+        Ok(())
+    }
+
     async fn do_release(&self, op: &op::Release<'_>) -> io::Result<()> {
         let _file = self.opened_files.remove(op.fh()).await;
         Ok(())
@@ -790,7 +812,6 @@ impl Filesystem for Passthrough {
         }
 
         // TODOs:
-        // * fallocate
         // * readdirplus
         // * create
         match op {
@@ -905,6 +926,10 @@ impl Filesystem for Passthrough {
             }
             Operation::Flock(op) => {
                 try_reply!(self.do_flock(&op));
+                op.reply(cx).await
+            }
+            Operation::Fallocate(op) => {
+                try_reply!(self.do_fallocate(&op));
                 op.reply(cx).await
             }
             Operation::Release(op) => {
