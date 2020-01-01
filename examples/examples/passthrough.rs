@@ -6,7 +6,7 @@ use polyfuse::{
     io::{Reader, Writer},
     op,
     reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr},
-    Context, DirEntry, Filesystem, Operation,
+    CapabilityFlags, Context, DirEntry, Filesystem, Operation,
 };
 use slab::Slab;
 use std::{
@@ -18,6 +18,7 @@ use std::{
     path::PathBuf,
     ptr::{self, NonNull},
     sync::Arc,
+    time::Duration,
 };
 use tokio::{
     fs::{File, OpenOptions},
@@ -44,22 +45,37 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| std::env::current_dir().unwrap());
     anyhow::ensure!(source.is_dir(), "the source path must be a directory");
 
+    let timeout = if args.contains("--no-cache") {
+        None
+    } else {
+        Some(Duration::from_secs(60 * 60 * 24)) // one day
+    };
+
     let mountpoint: PathBuf = args
         .free_from_str()?
         .ok_or_else(|| anyhow::anyhow!("missing mountpoint"))?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let fs = Passthrough::new(source)?;
+    let mut server = polyfuse_tokio::Builder::default();
+    *server.session().flags() |= CapabilityFlags::EXPORT_SUPPORT;
+    *server.session().flags() |= CapabilityFlags::FLOCK_LOCKS;
+    if timeout.is_some() {
+        *server.session().flags() |= CapabilityFlags::WRITEBACK_CACHE;
+    }
+    // TODO: splice read/write
 
-    polyfuse_tokio::mount(
-        fs,
-        mountpoint,
-        &[
-            "-o".as_ref(),
-            "default_permissions,fsname=passthrough".as_ref(),
-        ],
-    )
-    .await?;
+    let mut server = server
+        .mount(
+            mountpoint,
+            &[
+                "-o".as_ref(),
+                "default_permissions,fsname=passthrough".as_ref(),
+            ],
+        )
+        .await?;
+
+    let fs = Passthrough::new(source, timeout)?;
+    server.run(fs).await?;
 
     Ok(())
 }
@@ -71,10 +87,11 @@ struct Passthrough {
     inodes: Mutex<INodeTable>,
     opened_dirs: HandlePool<Mutex<ReadDir>>,
     opened_files: HandlePool<Mutex<File>>,
+    timeout: Option<Duration>,
 }
 
 impl Passthrough {
-    fn new(source: PathBuf) -> io::Result<Self> {
+    fn new(source: PathBuf, timeout: Option<Duration>) -> io::Result<Self> {
         let source = source.canonicalize()?;
         tracing::debug!("source={:?}", source);
         let fd = FileDesc::open(&source, libc::O_PATH)?;
@@ -86,7 +103,7 @@ impl Passthrough {
         entry.insert(INode {
             ino: 1,
             fd,
-            refcount: 2,
+            refcount: u64::max_value() / 2, // the root node's cache is never removed.
             src_id: (stat.st_ino, stat.st_dev),
             is_symlink: false,
         });
@@ -95,7 +112,19 @@ impl Passthrough {
             inodes: Mutex::new(inodes),
             opened_dirs: HandlePool::default(),
             opened_files: HandlePool::default(),
+            timeout,
         })
+    }
+
+    fn make_entry_param(&self, ino: u64, attr: libc::stat) -> ReplyEntry {
+        let mut reply = ReplyEntry::default();
+        reply.ino(ino);
+        reply.attr(attr.try_into().unwrap());
+        if let Some(timeout) = self.timeout {
+            reply.ttl_entry(timeout);
+            reply.ttl_attr(timeout);
+        };
+        reply
     }
 
     async fn do_lookup(&self, parent: Ino, name: &OsStr) -> io::Result<ReplyEntry> {
@@ -137,11 +166,7 @@ impl Passthrough {
             }
         }
 
-        let mut reply = ReplyEntry::default();
-        reply.ino(ino);
-        reply.attr(stat.try_into().unwrap());
-
-        Ok(reply)
+        Ok(self.make_entry_param(ino, stat))
     }
 
     async fn forget_one(&self, ino: Ino, nlookup: u64) {
@@ -163,10 +188,17 @@ impl Passthrough {
 
     async fn do_getattr(&self, op: &op::Getattr<'_>) -> io::Result<ReplyAttr> {
         let inodes = self.inodes.lock().await;
+
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
+
         let stat = inode.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
-        Ok(ReplyAttr::new(stat.try_into().unwrap()))
+        let mut attr = ReplyAttr::new(stat.try_into().unwrap());
+        if let Some(timeout) = self.timeout {
+            attr.ttl_attr(timeout);
+        };
+
+        Ok(attr)
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -283,7 +315,12 @@ impl Passthrough {
 
         // finally, acquiring the latest metadata from the source filesystem.
         let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
-        Ok(ReplyAttr::new(stat.try_into().unwrap()))
+        let mut attr = ReplyAttr::new(stat.try_into().unwrap());
+        if let Some(timeout) = self.timeout {
+            attr.ttl_attr(timeout);
+        };
+
+        Ok(attr)
     }
 
     async fn do_readlink(&self, op: &op::Readlink<'_>) -> io::Result<OsString> {
@@ -332,11 +369,7 @@ impl Passthrough {
         }
 
         let stat = source.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
-
-        let mut entry = ReplyEntry::default();
-        entry.ino(source.ino);
-        entry.attr(stat.try_into().unwrap());
-        // TODO: timeout
+        let entry = self.make_entry_param(source.ino, stat);
 
         source.refcount += 1;
 
