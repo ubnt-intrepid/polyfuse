@@ -5,6 +5,17 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.3.1] (2020-01-01)
+
+### Deprecated
+
+* `ReplyEntry::new` ([8e73cb6](https://github.com/ubnt-intrepid/polyfuse/commit/8e73cb6c6a3a698498fd2578ea5c8e669ffa8e74))
+* `op::CopyFileRange::{input,output}` (in [#64](https://github.com/ubnt-intrepid/polyfuse/pull/64))
+
+### Fixed
+
+* fix some wrong cases when parsing requests containing string(s) ([#66](https://github.com/ubnt-intrepid/polyfuse/pull/66)).
+
 ## [0.3.0] (2019-12-28)
 
 Only the characteristic changes are listed here.
@@ -66,7 +77,8 @@ See the commit log for a detailed change history.
 
 <!-- links -->
 
-[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.1.1...v0.2.0

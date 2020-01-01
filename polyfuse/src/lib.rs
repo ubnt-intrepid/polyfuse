@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/polyfuse/0.3.0")]
+#![doc(html_root_url = "https://docs.rs/polyfuse/0.3.1")]
 
 //! A FUSE (Filesystem in userspace) library for Rust.
 
