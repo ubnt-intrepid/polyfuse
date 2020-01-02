@@ -8,15 +8,14 @@ use polyfuse::{
     reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr},
     CapabilityFlags, Context, DirEntry, Filesystem, Operation,
 };
+use polyfuse_examples::fs::{self, FileDesc, ReadDir};
+use polyfuse_examples::prelude::*;
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     convert::TryInto,
-    ffi::{CStr, CString, OsStr, OsString},
-    io, mem,
+    io,
     os::unix::prelude::*,
-    path::PathBuf,
-    ptr::{self, NonNull},
     sync::Arc,
     time::Duration,
 };
@@ -24,15 +23,6 @@ use tokio::{
     fs::{File, OpenOptions},
     sync::Mutex,
 };
-
-macro_rules! syscall {
-    ($name:ident ( $($args:expr),* $(,)? )) => {
-        match unsafe { libc::$name($($args),*) } {
-            -1 => Err(io::Error::last_os_error()),
-            ret => Ok(ret),
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -222,12 +212,9 @@ impl Passthrough {
         // chmod
         if let Some(mode) = op.mode() {
             if let Some(file) = file.as_mut() {
-                let fd = file.as_raw_fd();
-                syscall!(fchmod(fd, mode))?;
+                fs::fchmod(&**file, mode)?;
             } else {
-                let procname = format!("/proc/self/fd/{}", fd.as_raw_fd());
-                let c_procname = CString::new(procname)?;
-                syscall!(chmod(c_procname.as_ptr(), mode))?;
+                fs::chmod(fd.procname(), mode)?;
             }
         }
 
@@ -235,28 +222,16 @@ impl Passthrough {
         match (op.uid(), op.gid()) {
             (None, None) => (),
             (uid, gid) => {
-                let uid = uid.unwrap_or_else(|| 0u32.wrapping_sub(1));
-                let gid = gid.unwrap_or_else(|| 0u32.wrapping_sub(1));
-                let name = CStr::from_bytes_with_nul(b"\0").unwrap();
-                syscall!(fchownat(
-                    fd.as_raw_fd(),
-                    name.as_ptr(),
-                    uid,
-                    gid,
-                    libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW
-                ))?;
+                fd.fchownat("", uid, gid, libc::AT_SYMLINK_NOFOLLOW)?;
             }
         }
 
         // truncate
         if let Some(size) = op.size() {
             if let Some(file) = file.as_mut() {
-                let fd = file.as_raw_fd();
-                syscall!(ftruncate(fd, size as i64))?;
+                fs::ftruncate(&**file, size as libc::off_t)?;
             } else {
-                let procname = format!("/proc/self/fd/{}", fd.as_raw_fd());
-                let c_procname = CString::new(procname)?;
-                syscall!(truncate(c_procname.as_ptr(), size as i64))?;
+                fs::truncate(fd.procname(), size as libc::off_t)?;
             }
         }
 
@@ -280,35 +255,19 @@ impl Passthrough {
         match (op.atime_raw(), op.mtime_raw()) {
             (None, None) => (),
             (atime, mtime) => {
-                let mut tv = Vec::with_capacity(2);
-                tv.push(make_timespec(atime));
-                tv.push(make_timespec(mtime));
+                let tv = [make_timespec(atime), make_timespec(mtime)];
                 if let Some(file) = file.as_mut() {
-                    let fd = file.as_raw_fd();
-                    syscall!(futimens(fd, tv.as_ptr()))?;
+                    fs::futimens(&**file, tv)?;
                 } else if inode.is_symlink {
-                    let name = CStr::from_bytes_with_nul(b"\0").unwrap();
                     // According to libfuse/examples/passthrough_hp.cc, it does not work on
                     // the current kernels, but may in the future.
-                    syscall!(utimensat(
-                        fd.as_raw_fd(),
-                        name.as_ptr(),
-                        tv.as_ptr(),
-                        libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW
-                    ))
-                    .map_err(|err| match err.raw_os_error() {
-                        Some(libc::EINVAL) => io::Error::from_raw_os_error(libc::EPERM),
-                        _ => err,
-                    })?;
+                    fd.futimensat("", tv, libc::AT_SYMLINK_NOFOLLOW)
+                        .map_err(|err| match err.raw_os_error() {
+                            Some(libc::EINVAL) => io::Error::from_raw_os_error(libc::EPERM),
+                            _ => err,
+                        })?;
                 } else {
-                    let procname = format!("/proc/self/fd/{}", fd.as_raw_fd());
-                    let c_procname = CString::new(procname)?;
-                    syscall!(utimensat(
-                        libc::AT_FDCWD,
-                        c_procname.as_ptr(),
-                        tv.as_ptr(),
-                        0
-                    ))?;
+                    fs::utimens(fd.procname(), tv)?;
                 }
             }
         }
@@ -339,33 +298,24 @@ impl Passthrough {
         let parent = inodes.get(op.newparent()).ok_or_else(no_entry)?;
         let parent = parent.lock().await;
 
-        let name = CString::new(op.newname().as_bytes())?;
-
         if source.is_symlink {
-            let dummy = CStr::from_bytes_with_nul(b"\0").unwrap();
-            syscall!(linkat(
-                source.fd.as_raw_fd(),
-                dummy.as_ptr(),
-                parent.fd.as_raw_fd(),
-                name.as_ptr(),
-                libc::AT_EMPTY_PATH
-            ))
-            .map_err(|err| match err.raw_os_error() {
-                Some(libc::ENOENT) | Some(libc::EINVAL) => {
-                    // no race-free way to hard-link a symlink.
-                    io::Error::from_raw_os_error(libc::EOPNOTSUPP)
-                }
-                _ => err,
-            })?;
+            source
+                .fd
+                .linkat("", &parent.fd, op.newname(), 0)
+                .map_err(|err| match err.raw_os_error() {
+                    Some(libc::ENOENT) | Some(libc::EINVAL) => {
+                        // no race-free way to hard-link a symlink.
+                        io::Error::from_raw_os_error(libc::EOPNOTSUPP)
+                    }
+                    _ => err,
+                })?;
         } else {
-            let procname = CString::new(format!("/proc/self/fd/{}", source.fd.as_raw_fd()))?;
-            syscall!(linkat(
-                libc::AT_FDCWD,
-                procname.as_ptr(),
-                parent.fd.as_raw_fd(),
-                name.as_ptr(),
-                libc::AT_SYMLINK_FOLLOW
-            ))?;
+            fs::link(
+                source.fd.procname(),
+                &parent.fd,
+                op.newname(),
+                libc::AT_SYMLINK_FOLLOW,
+            )?;
         }
 
         let stat = source.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
@@ -389,33 +339,18 @@ impl Passthrough {
             let parent = inodes.get(parent).ok_or_else(no_entry)?;
             let parent = parent.lock().await;
 
-            let c_name = CString::new(name.as_bytes())?;
             match mode & libc::S_IFMT {
                 libc::S_IFDIR => {
-                    syscall!(mkdirat(parent.fd.as_raw_fd(), c_name.as_ptr(), mode))?;
+                    parent.fd.mkdirat(name, mode)?;
                 }
                 libc::S_IFLNK => {
                     let link = link.expect("missing 'link'");
-                    tracing::debug!(
-                        "symlink(link={:?}, parent={}, name={:?})",
-                        link,
-                        parent.ino,
-                        name
-                    );
-                    let c_link = CString::new(link.as_bytes())?;
-                    syscall!(symlinkat(
-                        c_link.as_ptr(),
-                        parent.fd.as_raw_fd(),
-                        c_name.as_ptr()
-                    ))?;
+                    parent.fd.symlinkat(name, link)?;
                 }
                 _ => {
-                    syscall!(mknodat(
-                        parent.fd.as_raw_fd(),
-                        c_name.as_ptr(),
-                        mode,
-                        rdev.unwrap_or(0) as u64
-                    ))?;
+                    parent
+                        .fd
+                        .mknodat(name, mode, rdev.unwrap_or(0) as libc::dev_t)?;
                 }
             }
         }
@@ -426,8 +361,7 @@ impl Passthrough {
         let inodes = self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
         let parent = parent.lock().await;
-        let c_name = CString::new(op.name().as_bytes())?;
-        syscall!(unlinkat(parent.fd.as_raw_fd(), c_name.as_ptr(), 0))?;
+        parent.fd.unlinkat(op.name(), 0)?;
         Ok(())
     }
 
@@ -435,12 +369,7 @@ impl Passthrough {
         let inodes = self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
         let parent = parent.lock().await;
-        let c_name = CString::new(op.name().as_bytes())?;
-        syscall!(unlinkat(
-            parent.fd.as_raw_fd(),
-            c_name.as_ptr(),
-            libc::AT_REMOVEDIR
-        ))?;
+        parent.fd.unlinkat(op.name(), libc::AT_REMOVEDIR)?;
         Ok(())
     }
 
@@ -454,25 +383,17 @@ impl Passthrough {
 
         let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
         let newparent = inodes.get(op.newparent()).ok_or_else(no_entry)?;
-        let c_name = CString::new(op.name().as_bytes())?;
-        let c_newname = CString::new(op.newname().as_bytes())?;
 
         let parent = parent.lock().await;
         if op.parent() == op.newparent() {
-            syscall!(renameat(
-                parent.fd.as_raw_fd(),
-                c_name.as_ptr(),
-                parent.fd.as_raw_fd(),
-                c_newname.as_ptr()
-            ))?;
+            parent
+                .fd
+                .renameat(op.name(), None::<&FileDesc>, op.newname())?;
         } else {
             let newparent = newparent.lock().await;
-            syscall!(renameat(
-                parent.fd.as_raw_fd(),
-                c_name.as_ptr(),
-                newparent.fd.as_raw_fd(),
-                c_newname.as_ptr()
-            ))?;
+            parent
+                .fd
+                .renameat(op.name(), Some(&newparent.fd), op.newname())?;
         }
 
         Ok(())
@@ -536,7 +457,6 @@ impl Passthrough {
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        let fdpath = format!("/proc/self/fd/{}", inode.fd.as_raw_fd());
         let options = OpenOptions::from({
             let mut options = std::fs::OpenOptions::new();
             match (op.flags() & 0x03) as i32 {
@@ -554,7 +474,7 @@ impl Passthrough {
             options.custom_flags(op.flags() as i32 & !libc::O_NOFOLLOW);
             options
         });
-        let file = options.open(&fdpath).await?;
+        let file = options.open(&inode.fd.procname()).await?;
         let fh = self.opened_files.insert(Mutex::new(file)).await;
 
         Ok(ReplyOpen::new(fh))
@@ -636,10 +556,9 @@ impl Passthrough {
         let file = self.opened_files.get(op.fh()).await.ok_or_else(no_entry)?;
         let file = file.lock().await;
 
-        syscall!(flock(
-            file.as_raw_fd(),
-            op.op().expect("invalid lock operation") as i32
-        ))?;
+        let op = op.op().expect("invalid lock operation") as i32;
+
+        fs::flock(&*file, op)?;
 
         Ok(())
     }
@@ -652,16 +571,7 @@ impl Passthrough {
         let file = self.opened_files.get(op.fh()).await.ok_or_else(no_entry)?;
         let file = file.lock().await;
 
-        let err = unsafe {
-            libc::posix_fallocate(
-                file.as_raw_fd(), //
-                op.offset() as i64,
-                op.length() as i64,
-            )
-        };
-        if err != 0 {
-            return Err(io::Error::from_raw_os_error(err));
-        }
+        fs::posix_fallocate(&*file, op.offset() as i64, op.length() as i64)?;
 
         Ok(())
     }
@@ -681,17 +591,7 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        let procname = format!("/proc/self/fd/{}", inode.fd.as_raw_fd());
-        let c_procname = CString::new(procname)?;
-
-        let c_name = CString::new(op.name().as_bytes())?;
-
-        let size = syscall!(getxattr(
-            c_procname.as_ptr(),
-            c_name.as_ptr(),
-            ptr::null_mut(),
-            0
-        ))?;
+        let size = fs::getxattr(inode.fd.procname(), op.name(), None)?;
 
         Ok(ReplyXattr::new(size as u32))
     }
@@ -706,18 +606,8 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        let procname = format!("/proc/self/fd/{}", inode.fd.as_raw_fd());
-        let c_procname = CString::new(procname)?;
-
-        let c_name = CString::new(op.name().as_bytes())?;
-
         let mut value = vec![0u8; size as usize];
-        let n = syscall!(getxattr(
-            c_procname.as_ptr(),
-            c_name.as_ptr(),
-            value.as_mut_ptr().cast::<libc::c_void>(),
-            size as usize,
-        ))?;
+        let n = fs::getxattr(inode.fd.procname(), op.name(), Some(&mut value[..]))?;
         value.resize(n as usize, 0);
 
         Ok(value)
@@ -733,10 +623,7 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        let procname = format!("/proc/self/fd/{}", inode.fd.as_raw_fd());
-        let c_procname = CString::new(procname)?;
-
-        let size = syscall!(listxattr(c_procname.as_ptr(), ptr::null_mut(), 0))?;
+        let size = fs::listxattr(inode.fd.procname(), None)?;
 
         Ok(ReplyXattr::new(size as u32))
     }
@@ -751,15 +638,8 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        let procname = format!("/proc/self/fd/{}", inode.fd.as_raw_fd());
-        let c_procname = CString::new(procname)?;
-
         let mut value = vec![0u8; size as usize];
-        let n = syscall!(listxattr(
-            c_procname.as_ptr(),
-            value.as_mut_ptr().cast::<libc::c_char>(),
-            size as usize,
-        ))?;
+        let n = fs::listxattr(inode.fd.procname(), Some(&mut value[..]))?;
         value.resize(n as usize, 0);
 
         Ok(value)
@@ -775,18 +655,12 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        let procname = format!("/proc/self/fd/{}", inode.fd.as_raw_fd());
-        let c_procname = CString::new(procname)?;
-
-        let c_name = CString::new(op.name().as_bytes())?;
-        let value = op.value();
-        syscall!(setxattr(
-            c_procname.as_ptr(),
-            c_name.as_ptr(),
-            value.as_ptr().cast::<libc::c_void>(),
-            value.len(),
+        fs::setxattr(
+            inode.fd.procname(),
+            op.name(),
+            op.value(),
             op.flags() as libc::c_int,
-        ))?;
+        )?;
 
         Ok(())
     }
@@ -801,12 +675,7 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        let procname = format!("/proc/self/fd/{}", inode.fd.as_raw_fd());
-        let c_procname = CString::new(procname)?;
-
-        let c_name = CString::new(op.name().as_bytes())?;
-
-        syscall!(removexattr(c_procname.as_ptr(), c_name.as_ptr(),))?;
+        fs::removexattr(inode.fd.procname(), op.name())?;
 
         Ok(())
     }
@@ -816,11 +685,9 @@ impl Passthrough {
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        let mut stbuf = mem::MaybeUninit::<libc::statvfs>::zeroed();
-        syscall!(fstatvfs(inode.fd.as_raw_fd(), stbuf.as_mut_ptr()))?;
-        let stbuf = unsafe { stbuf.assume_init() };
+        let st = fs::fstatvfs(&inode.fd)?.try_into().unwrap();
 
-        Ok(ReplyStatfs::new(stbuf.try_into().unwrap()))
+        Ok(ReplyStatfs::new(st))
     }
 }
 
@@ -1093,177 +960,6 @@ impl VacantEntry<'_> {
     }
 }
 
-// ==== FileDesc ====
-
-struct FileDesc(RawFd);
-
-impl Drop for FileDesc {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.0);
-        }
-    }
-}
-
-impl FromRawFd for FileDesc {
-    #[inline]
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        Self(fd)
-    }
-}
-
-impl AsRawFd for FileDesc {
-    #[inline]
-    fn as_raw_fd(&self) -> RawFd {
-        self.0
-    }
-}
-
-impl IntoRawFd for FileDesc {
-    #[inline]
-    fn into_raw_fd(self) -> RawFd {
-        self.0
-    }
-}
-
-impl FileDesc {
-    fn open(path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
-        let path = path.as_ref();
-        if path.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
-        }
-        let c_path = CString::new(path.as_bytes())?;
-        let fd = syscall!(open(c_path.as_ptr(), flags))?;
-        Ok(Self(fd))
-    }
-
-    fn openat(&self, path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
-        let path = path.as_ref();
-        if path.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
-        }
-        let c_path = CString::new(path.as_bytes())?;
-        let fd = syscall!(openat(self.0, c_path.as_ptr(), flags))?;
-        Ok(Self(fd))
-    }
-
-    fn fstatat(&self, path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<libc::stat> {
-        let path = path.as_ref();
-        if path.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
-        }
-        let c_path = CString::new(path.as_bytes())?;
-        let mut stat = mem::MaybeUninit::uninit();
-        syscall!(fstatat(self.0, c_path.as_ptr(), stat.as_mut_ptr(), flags))?;
-        Ok(unsafe { stat.assume_init() })
-    }
-
-    fn read_dir(&self) -> io::Result<ReadDir> {
-        let fd = self.openat(".", libc::O_RDONLY)?;
-
-        let dp = NonNull::new(unsafe { libc::fdopendir(fd.0) }) //
-            .ok_or_else(io::Error::last_os_error)?;
-
-        Ok(ReadDir {
-            dir: Dir(dp),
-            offset: 0,
-            fd,
-        })
-    }
-
-    fn readlink(&self, path: impl AsRef<OsStr>) -> io::Result<OsString> {
-        let path = path.as_ref();
-        let c_path = CString::new(path.as_bytes())?;
-
-        let mut buf = vec![0u8; (libc::PATH_MAX + 1) as usize];
-        let len = syscall!(readlinkat(
-            self.0,
-            c_path.as_ptr(),
-            buf.as_mut_ptr().cast::<libc::c_char>(),
-            buf.len()
-        ))? as usize;
-        if len >= buf.len() {
-            return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
-        }
-        unsafe {
-            buf.set_len(len);
-        }
-        Ok(OsString::from_vec(buf))
-    }
-}
-
-// ==== ReadDir ====
-
-struct Dir(NonNull<libc::DIR>);
-
-unsafe impl Send for ReadDir {}
-unsafe impl Sync for ReadDir {}
-
-struct ReadDir {
-    dir: Dir,
-    offset: u64,
-    fd: FileDesc,
-}
-
-impl Drop for ReadDir {
-    fn drop(&mut self) {
-        unsafe {
-            libc::closedir(self.dir.0.as_ptr());
-        }
-    }
-}
-
-impl ReadDir {
-    fn seek(&mut self, offset: u64) {
-        if offset != self.offset {
-            unsafe {
-                libc::seekdir(self.dir.0.as_mut(), offset as libc::off_t);
-            }
-            self.offset = offset;
-        }
-    }
-
-    fn sync_all(&self) -> io::Result<()> {
-        syscall!(fsync(self.fd.as_raw_fd())).map(drop)
-    }
-
-    fn sync_data(&self) -> io::Result<()> {
-        syscall!(fdatasync(self.fd.as_raw_fd())).map(drop)
-    }
-}
-
-impl Iterator for ReadDir {
-    type Item = io::Result<DirEntry>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        unsafe {
-            loop {
-                set_errno(0);
-                let dp = libc::readdir(self.dir.0.as_mut());
-                if dp.is_null() {
-                    match errno() {
-                        0 => return None, // end of stream
-                        errno => return Some(Err(io::Error::from_raw_os_error(errno))),
-                    }
-                }
-
-                let raw_entry = &*dp;
-
-                let name = OsStr::from_bytes(CStr::from_ptr(raw_entry.d_name.as_ptr()).to_bytes());
-                match name.as_bytes() {
-                    b"." | b".." => continue,
-                    _ => (),
-                }
-
-                let mut entry = DirEntry::new(name, raw_entry.d_ino, raw_entry.d_off as u64);
-                entry.set_typ(raw_entry.d_type as u32);
-
-                return Some(Ok(entry));
-            }
-        }
-    }
-}
-
 #[inline]
 fn no_entry() -> io::Error {
     io::Error::from_raw_os_error(libc::ENOENT)
@@ -1272,14 +968,4 @@ fn no_entry() -> io::Error {
 #[inline]
 fn io_to_errno(err: io::Error) -> i32 {
     err.raw_os_error().unwrap_or(libc::EIO)
-}
-
-#[inline]
-unsafe fn errno() -> i32 {
-    *libc::__errno_location()
-}
-
-#[inline]
-unsafe fn set_errno(errno: i32) {
-    *libc::__errno_location() = errno;
 }

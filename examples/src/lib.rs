@@ -1,6 +1,7 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
 
+pub mod fs;
 pub mod memfs;
 
 pub mod prelude {
