@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
 
-    let fs = Passthrough::new(source, timeout)?;
+    let fs = Passthrough::new(source, timeout).await?;
     server.run(fs).await?;
 
     Ok(())
@@ -81,11 +81,11 @@ struct Passthrough {
 }
 
 impl Passthrough {
-    fn new(source: PathBuf, timeout: Option<Duration>) -> io::Result<Self> {
+    async fn new(source: PathBuf, timeout: Option<Duration>) -> io::Result<Self> {
         let source = source.canonicalize()?;
         tracing::debug!("source={:?}", source);
-        let fd = FileDesc::open(&source, libc::O_PATH)?;
-        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let fd = FileDesc::open(&source, libc::O_PATH).await?;
+        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW).await?;
 
         let mut inodes = INodeTable::new();
         let entry = inodes.vacant_entry();
@@ -124,9 +124,12 @@ impl Passthrough {
         let parent = inodes.get(parent).ok_or_else(no_entry)?;
         let parent = parent.lock().await;
 
-        let fd = parent.fd.openat(name, libc::O_PATH | libc::O_NOFOLLOW)?;
+        let fd = parent
+            .fd
+            .openat(name, libc::O_PATH | libc::O_NOFOLLOW)
+            .await?;
 
-        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW).await?;
         let src_id = (stat.st_ino, stat.st_dev);
         let is_symlink = stat.st_mode & libc::S_IFMT == libc::S_IFLNK;
 
@@ -182,7 +185,7 @@ impl Passthrough {
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        let stat = inode.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let stat = inode.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW).await?;
         let mut attr = ReplyAttr::new(stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
             attr.ttl_attr(timeout);
@@ -212,9 +215,9 @@ impl Passthrough {
         // chmod
         if let Some(mode) = op.mode() {
             if let Some(file) = file.as_mut() {
-                fs::fchmod(&**file, mode)?;
+                fs::fchmod(&**file, mode).await?;
             } else {
-                fs::chmod(fd.procname(), mode)?;
+                fs::chmod(fd.procname(), mode).await?;
             }
         }
 
@@ -222,16 +225,16 @@ impl Passthrough {
         match (op.uid(), op.gid()) {
             (None, None) => (),
             (uid, gid) => {
-                fd.fchownat("", uid, gid, libc::AT_SYMLINK_NOFOLLOW)?;
+                fd.fchownat("", uid, gid, libc::AT_SYMLINK_NOFOLLOW).await?;
             }
         }
 
         // truncate
         if let Some(size) = op.size() {
             if let Some(file) = file.as_mut() {
-                fs::ftruncate(&**file, size as libc::off_t)?;
+                fs::ftruncate(&**file, size as libc::off_t).await?;
             } else {
-                fs::truncate(fd.procname(), size as libc::off_t)?;
+                fs::truncate(fd.procname(), size as libc::off_t).await?;
             }
         }
 
@@ -257,23 +260,24 @@ impl Passthrough {
             (atime, mtime) => {
                 let tv = [make_timespec(atime), make_timespec(mtime)];
                 if let Some(file) = file.as_mut() {
-                    fs::futimens(&**file, tv)?;
+                    fs::futimens(&**file, tv).await?;
                 } else if inode.is_symlink {
                     // According to libfuse/examples/passthrough_hp.cc, it does not work on
                     // the current kernels, but may in the future.
                     fd.futimensat("", tv, libc::AT_SYMLINK_NOFOLLOW)
+                        .await
                         .map_err(|err| match err.raw_os_error() {
                             Some(libc::EINVAL) => io::Error::from_raw_os_error(libc::EPERM),
                             _ => err,
                         })?;
                 } else {
-                    fs::utimens(fd.procname(), tv)?;
+                    fs::utimens(fd.procname(), tv).await?;
                 }
             }
         }
 
         // finally, acquiring the latest metadata from the source filesystem.
-        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW).await?;
         let mut attr = ReplyAttr::new(stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
             attr.ttl_attr(timeout);
@@ -286,7 +290,7 @@ impl Passthrough {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
-        inode.fd.readlink("")
+        inode.fd.readlinkat("").await
     }
 
     async fn do_link(&self, op: &op::Link<'_>) -> io::Result<ReplyEntry> {
@@ -302,6 +306,7 @@ impl Passthrough {
             source
                 .fd
                 .linkat("", &parent.fd, op.newname(), 0)
+                .await
                 .map_err(|err| match err.raw_os_error() {
                     Some(libc::ENOENT) | Some(libc::EINVAL) => {
                         // no race-free way to hard-link a symlink.
@@ -315,10 +320,11 @@ impl Passthrough {
                 &parent.fd,
                 op.newname(),
                 libc::AT_SYMLINK_FOLLOW,
-            )?;
+            )
+            .await?;
         }
 
-        let stat = source.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let stat = source.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW).await?;
         let entry = self.make_entry_param(source.ino, stat);
 
         source.refcount += 1;
@@ -341,16 +347,17 @@ impl Passthrough {
 
             match mode & libc::S_IFMT {
                 libc::S_IFDIR => {
-                    parent.fd.mkdirat(name, mode)?;
+                    parent.fd.mkdirat(name, mode).await?;
                 }
                 libc::S_IFLNK => {
                     let link = link.expect("missing 'link'");
-                    parent.fd.symlinkat(name, link)?;
+                    parent.fd.symlinkat(name, link).await?;
                 }
                 _ => {
                     parent
                         .fd
-                        .mknodat(name, mode, rdev.unwrap_or(0) as libc::dev_t)?;
+                        .mknodat(name, mode, rdev.unwrap_or(0) as libc::dev_t)
+                        .await?;
                 }
             }
         }
@@ -361,7 +368,7 @@ impl Passthrough {
         let inodes = self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
         let parent = parent.lock().await;
-        parent.fd.unlinkat(op.name(), 0)?;
+        parent.fd.unlinkat(op.name(), 0).await?;
         Ok(())
     }
 
@@ -369,7 +376,7 @@ impl Passthrough {
         let inodes = self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
         let parent = parent.lock().await;
-        parent.fd.unlinkat(op.name(), libc::AT_REMOVEDIR)?;
+        parent.fd.unlinkat(op.name(), libc::AT_REMOVEDIR).await?;
         Ok(())
     }
 
@@ -388,12 +395,14 @@ impl Passthrough {
         if op.parent() == op.newparent() {
             parent
                 .fd
-                .renameat(op.name(), None::<&FileDesc>, op.newname())?;
+                .renameat(op.name(), None::<&FileDesc>, op.newname())
+                .await?;
         } else {
             let newparent = newparent.lock().await;
             parent
                 .fd
-                .renameat(op.name(), Some(&newparent.fd), op.newname())?;
+                .renameat(op.name(), Some(&newparent.fd), op.newname())
+                .await?;
         }
 
         Ok(())
@@ -403,7 +412,7 @@ impl Passthrough {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
-        let dir = inode.fd.read_dir()?;
+        let dir = inode.fd.read_dir().await?;
         let fh = self.opened_dirs.insert(Mutex::new(dir)).await;
 
         Ok(ReplyOpen::new(fh))
@@ -439,9 +448,9 @@ impl Passthrough {
         let read_dir = read_dir.lock().await;
 
         if op.datasync() {
-            read_dir.sync_data()?;
+            read_dir.sync_data().await?;
         } else {
-            read_dir.sync_all()?;
+            read_dir.sync_all().await?;
         }
 
         Ok(())
@@ -558,7 +567,7 @@ impl Passthrough {
 
         let op = op.op().expect("invalid lock operation") as i32;
 
-        fs::flock(&*file, op)?;
+        fs::flock(&*file, op).await?;
 
         Ok(())
     }
@@ -571,7 +580,7 @@ impl Passthrough {
         let file = self.opened_files.get(op.fh()).await.ok_or_else(no_entry)?;
         let file = file.lock().await;
 
-        fs::posix_fallocate(&*file, op.offset() as i64, op.length() as i64)?;
+        fs::posix_fallocate(&*file, op.offset() as i64, op.length() as i64).await?;
 
         Ok(())
     }
@@ -675,7 +684,7 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        fs::removexattr(inode.fd.procname(), op.name())?;
+        fs::removexattr(inode.fd.procname(), op.name()).await?;
 
         Ok(())
     }
@@ -685,7 +694,7 @@ impl Passthrough {
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        let st = fs::fstatvfs(&inode.fd)?.try_into().unwrap();
+        let st = fs::fstatvfs(&inode.fd).await?.try_into().unwrap();
 
         Ok(ReplyStatfs::new(st))
     }

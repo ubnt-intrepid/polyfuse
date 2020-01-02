@@ -9,12 +9,28 @@ use std::{
     ptr::NonNull,
 };
 
+// copied from https://github.com/tokio-rs/mio/blob/master/mio/src/sys/unix/mod.rs
 macro_rules! syscall {
     ($name:ident ( $($args:expr),* $(,)? )) => {
         match unsafe { libc::$name($($args),*) } {
             -1 => Err(io::Error::last_os_error()),
             ret => Ok(ret),
         }
+    }
+}
+
+// copied from https://github.com/tokio-rs/tokio/blob/master/tokio/src/fs/mod.rs
+async fn asyncify<F, T>(f: F) -> io::Result<T>
+where
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(res) => res,
+        Err(..) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "background task failed",
+        )),
     }
 }
 
@@ -52,27 +68,36 @@ impl IntoRawFd for FileDesc {
 }
 
 impl FileDesc {
-    pub fn open(path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
+    pub async fn open(path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
         let path = path.as_ref();
         if path.is_empty() {
             flags |= libc::AT_EMPTY_PATH;
         }
         let c_path = CString::new(path.as_bytes())?;
-        let fd = syscall!(open(c_path.as_ptr(), flags))?;
+        let fd = asyncify(move || syscall!(open(c_path.as_ptr(), flags))).await?;
         Ok(Self(fd))
     }
 
-    pub fn openat(&self, path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
+    pub fn procname(&self) -> PathBuf {
+        PathBuf::from(format!("/proc/self/fd/{}", self.as_raw_fd()))
+    }
+
+    pub async fn openat(
+        &self,
+        path: impl AsRef<OsStr>,
+        mut flags: libc::c_int,
+    ) -> io::Result<Self> {
         let path = path.as_ref();
         if path.is_empty() {
             flags |= libc::AT_EMPTY_PATH;
         }
+        let fd = self.as_raw_fd();
         let c_path = CString::new(path.as_bytes())?;
-        let fd = syscall!(openat(self.0, c_path.as_ptr(), flags))?;
+        let fd = asyncify(move || syscall!(openat(fd, c_path.as_ptr(), flags))).await?;
         Ok(Self(fd))
     }
 
-    pub fn fstatat(
+    pub async fn fstatat(
         &self,
         path: impl AsRef<OsStr>,
         mut flags: libc::c_int,
@@ -81,15 +106,20 @@ impl FileDesc {
         if path.is_empty() {
             flags |= libc::AT_EMPTY_PATH;
         }
+        let fd = self.as_raw_fd();
         let c_path = CString::new(path.as_bytes())?;
-        let mut stat = mem::MaybeUninit::uninit();
-        syscall!(fstatat(self.0, c_path.as_ptr(), stat.as_mut_ptr(), flags))?;
-        Ok(unsafe { stat.assume_init() })
+        asyncify(move || {
+            let mut stat = mem::MaybeUninit::uninit();
+            syscall!(fstatat(fd, c_path.as_ptr(), stat.as_mut_ptr(), flags))?;
+            Ok(unsafe { stat.assume_init() })
+        })
+        .await
     }
 
-    pub fn read_dir(&self) -> io::Result<ReadDir> {
-        let fd = self.openat(".", libc::O_RDONLY)?;
+    pub async fn read_dir(&self) -> io::Result<ReadDir> {
+        let fd = self.openat(".", libc::O_RDONLY).await?;
 
+        // TODO: asyncify.
         let dp = NonNull::new(unsafe { libc::fdopendir(fd.0) }) //
             .ok_or_else(io::Error::last_os_error)?;
 
@@ -100,31 +130,30 @@ impl FileDesc {
         })
     }
 
-    pub fn readlink(&self, path: impl AsRef<OsStr>) -> io::Result<OsString> {
+    pub async fn readlinkat(&self, path: impl AsRef<OsStr>) -> io::Result<OsString> {
+        let fd = self.as_raw_fd();
         let path = path.as_ref();
         let c_path = CString::new(path.as_bytes())?;
-
-        let mut buf = vec![0u8; (libc::PATH_MAX + 1) as usize];
-        let len = syscall!(readlinkat(
-            self.0,
-            c_path.as_ptr(),
-            buf.as_mut_ptr().cast::<libc::c_char>(),
-            buf.len()
-        ))? as usize;
-        if len >= buf.len() {
-            return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
-        }
-        unsafe {
-            buf.set_len(len);
-        }
-        Ok(OsString::from_vec(buf))
+        asyncify(move || {
+            let mut buf = vec![0u8; (libc::PATH_MAX + 1) as usize];
+            let len = syscall!(readlinkat(
+                fd,
+                c_path.as_ptr(),
+                buf.as_mut_ptr().cast::<libc::c_char>(),
+                buf.len()
+            ))? as usize;
+            if len >= buf.len() {
+                return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+            }
+            unsafe {
+                buf.set_len(len);
+            }
+            Ok(OsString::from_vec(buf))
+        })
+        .await
     }
 
-    pub fn procname(&self) -> PathBuf {
-        PathBuf::from(format!("/proc/self/fd/{}", self.as_raw_fd()))
-    }
-
-    pub fn fchownat(
+    pub async fn fchownat(
         &self,
         name: impl AsRef<OsStr>,
         uid: Option<libc::uid_t>,
@@ -136,16 +165,17 @@ impl FileDesc {
             flags |= libc::AT_EMPTY_PATH;
         }
 
+        let fd = self.as_raw_fd();
         let c_name = CString::new(name.as_bytes())?;
         let uid = uid.unwrap_or_else(|| 0u32.wrapping_sub(1));
         let gid = gid.unwrap_or_else(|| 0u32.wrapping_sub(1));
 
-        syscall!(fchownat(self.as_raw_fd(), c_name.as_ptr(), uid, gid, flags,))?;
+        asyncify(move || syscall!(fchownat(fd, c_name.as_ptr(), uid, gid, flags))).await?;
 
         Ok(())
     }
 
-    pub fn futimensat(
+    pub async fn futimensat(
         &self,
         name: impl AsRef<OsStr>,
         tv: [libc::timespec; 2],
@@ -156,19 +186,15 @@ impl FileDesc {
             flags |= libc::AT_EMPTY_PATH;
         }
 
+        let fd = self.as_raw_fd();
         let c_name = CString::new(name.as_bytes())?;
 
-        syscall!(utimensat(
-            self.as_raw_fd(),
-            c_name.as_ptr(),
-            tv.as_ptr(),
-            flags,
-        ))?;
+        asyncify(move || syscall!(utimensat(fd, c_name.as_ptr(), tv.as_ptr(), flags))).await?;
 
         Ok(())
     }
 
-    pub fn linkat(
+    pub async fn linkat(
         &self,
         name: impl AsRef<OsStr>,
         newparent: &impl AsRawFd,
@@ -181,74 +207,82 @@ impl FileDesc {
             flags |= libc::AT_EMPTY_PATH;
         }
 
+        let parent_fd = self.as_raw_fd();
+        let newparent_fd = newparent.as_raw_fd();
         let c_name = CString::new(name.as_bytes())?;
         let c_newname = CString::new(newname.as_bytes())?;
 
-        syscall!(linkat(
-            self.as_raw_fd(),
-            c_name.as_ptr(),
-            newparent.as_raw_fd(),
-            c_newname.as_ptr(),
-            flags,
-        ))?;
+        asyncify(move || {
+            syscall!(linkat(
+                parent_fd,
+                c_name.as_ptr(),
+                newparent_fd,
+                c_newname.as_ptr(),
+                flags,
+            ))
+        })
+        .await?;
 
         Ok(())
     }
 
-    pub fn mkdirat(&self, name: impl AsRef<OsStr>, mode: libc::mode_t) -> io::Result<()> {
+    pub async fn mkdirat(&self, name: impl AsRef<OsStr>, mode: libc::mode_t) -> io::Result<()> {
+        let fd = self.as_raw_fd();
         let c_name = CString::new(name.as_ref().as_bytes())?;
-        syscall!(mkdirat(self.as_raw_fd(), c_name.as_ptr(), mode))?;
+        asyncify(move || syscall!(mkdirat(fd, c_name.as_ptr(), mode))).await?;
         Ok(())
     }
 
-    pub fn mknodat(
+    pub async fn mknodat(
         &self,
         name: impl AsRef<OsStr>,
         mode: libc::mode_t,
         rdev: libc::dev_t,
     ) -> io::Result<()> {
+        let fd = self.as_raw_fd();
         let c_name = CString::new(name.as_ref().as_bytes())?;
-
-        syscall!(mknodat(self.as_raw_fd(), c_name.as_ptr(), mode, rdev))?;
-
+        asyncify(move || syscall!(mknodat(fd, c_name.as_ptr(), mode, rdev))).await?;
         Ok(())
     }
 
-    pub fn symlinkat(&self, name: impl AsRef<OsStr>, link: impl AsRef<OsStr>) -> io::Result<()> {
+    pub async fn symlinkat(
+        &self,
+        name: impl AsRef<OsStr>,
+        link: impl AsRef<OsStr>,
+    ) -> io::Result<()> {
+        let fd = self.as_raw_fd();
         let c_name = CString::new(name.as_ref().as_bytes())?;
         let c_link = CString::new(link.as_ref().as_bytes())?;
-
-        syscall!(symlinkat(
-            c_link.as_ptr(),
-            self.as_raw_fd(),
-            c_name.as_ptr()
-        ))?;
-
+        asyncify(move || syscall!(symlinkat(c_link.as_ptr(), fd, c_name.as_ptr()))).await?;
         Ok(())
     }
 
-    pub fn unlinkat(&self, name: impl AsRef<OsStr>, flags: libc::c_int) -> io::Result<()> {
+    pub async fn unlinkat(&self, name: impl AsRef<OsStr>, flags: libc::c_int) -> io::Result<()> {
+        let fd = self.as_raw_fd();
         let c_name = CString::new(name.as_ref().as_bytes())?;
-        syscall!(unlinkat(self.as_raw_fd(), c_name.as_ptr(), flags))?;
+        asyncify(move || syscall!(unlinkat(fd, c_name.as_ptr(), flags))).await?;
         Ok(())
     }
 
-    pub fn renameat(
+    pub async fn renameat(
         &self,
         name: impl AsRef<OsStr>,
         newparent: Option<&impl AsRawFd>,
         newname: impl AsRef<OsStr>,
     ) -> io::Result<()> {
+        let parent_fd = self.as_raw_fd();
+        let newparent_fd = newparent.map_or(parent_fd, |p| p.as_raw_fd());
         let c_name = CString::new(name.as_ref().as_bytes())?;
         let c_newname = CString::new(newname.as_ref().as_bytes())?;
-
-        syscall!(renameat(
-            self.as_raw_fd(),
-            c_name.as_ptr(),
-            newparent.map_or(self.as_raw_fd(), |p| p.as_raw_fd()),
-            c_newname.as_ptr()
-        ))?;
-
+        asyncify(move || {
+            syscall!(renameat(
+                parent_fd,
+                c_name.as_ptr(),
+                newparent_fd,
+                c_newname.as_ptr()
+            ))
+        })
+        .await?;
         Ok(())
     }
 }
@@ -257,12 +291,19 @@ impl FileDesc {
 
 struct Dir(NonNull<libc::DIR>);
 
+impl Dir {
+    fn fd(&self) -> RawFd {
+        unsafe { libc::dirfd(self.0.as_ptr()) }
+    }
+}
+
 unsafe impl Send for ReadDir {}
 unsafe impl Sync for ReadDir {}
 
 pub struct ReadDir {
     dir: Dir,
     offset: u64,
+    #[allow(dead_code)]
     fd: FileDesc,
 }
 
@@ -284,15 +325,20 @@ impl ReadDir {
         }
     }
 
-    pub fn sync_all(&self) -> io::Result<()> {
-        syscall!(fsync(self.fd.as_raw_fd())).map(drop)
+    pub async fn sync_all(&self) -> io::Result<()> {
+        let fd = self.dir.fd();
+        asyncify(move || syscall!(fsync(fd))).await?;
+        Ok(())
     }
 
-    pub fn sync_data(&self) -> io::Result<()> {
-        syscall!(fdatasync(self.fd.as_raw_fd())).map(drop)
+    pub async fn sync_data(&self) -> io::Result<()> {
+        let fd = self.dir.fd();
+        asyncify(move || syscall!(fdatasync(fd))).await?;
+        Ok(())
     }
 }
 
+// TODO: switch to Stream
 impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
@@ -325,67 +371,87 @@ impl Iterator for ReadDir {
     }
 }
 
-pub fn chmod(path: impl AsRef<OsStr>, mode: libc::mode_t) -> io::Result<()> {
+pub async fn chmod(path: impl AsRef<OsStr>, mode: libc::mode_t) -> io::Result<()> {
     let c_path = CString::new(path.as_ref().as_bytes())?;
-    syscall!(chmod(c_path.as_ptr(), mode)).map(drop)
+    asyncify(move || syscall!(chmod(c_path.as_ptr(), mode))).await?;
+    Ok(())
 }
 
-pub fn fchmod(fd: &impl AsRawFd, mode: libc::mode_t) -> io::Result<()> {
-    syscall!(fchmod(fd.as_raw_fd(), mode)).map(drop)
+pub async fn fchmod(fd: &impl AsRawFd, mode: libc::mode_t) -> io::Result<()> {
+    let fd = fd.as_raw_fd();
+    asyncify(move || syscall!(fchmod(fd, mode))).await?;
+    Ok(())
 }
 
-pub fn truncate(path: impl AsRef<OsStr>, length: libc::off_t) -> io::Result<()> {
+pub async fn truncate(path: impl AsRef<OsStr>, length: libc::off_t) -> io::Result<()> {
     let c_path = CString::new(path.as_ref().as_bytes())?;
-    syscall!(truncate(c_path.as_ptr(), length)).map(drop)
+    asyncify(move || syscall!(truncate(c_path.as_ptr(), length))).await?;
+    Ok(())
 }
 
-pub fn ftruncate(fd: &impl AsRawFd, length: libc::off_t) -> io::Result<()> {
-    syscall!(ftruncate(fd.as_raw_fd(), length)).map(drop)
+pub async fn ftruncate(fd: &impl AsRawFd, length: libc::off_t) -> io::Result<()> {
+    let fd = fd.as_raw_fd();
+    asyncify(move || syscall!(ftruncate(fd, length))).await?;
+    Ok(())
 }
 
-pub fn utimens(path: impl AsRef<OsStr>, tv: [libc::timespec; 2]) -> io::Result<()> {
+pub async fn utimens(path: impl AsRef<OsStr>, tv: [libc::timespec; 2]) -> io::Result<()> {
     let c_path = CString::new(path.as_ref().as_bytes())?;
-    syscall!(utimensat(libc::AT_FDCWD, c_path.as_ptr(), tv.as_ptr(), 0)).map(drop)
+    asyncify(move || syscall!(utimensat(libc::AT_FDCWD, c_path.as_ptr(), tv.as_ptr(), 0))).await?;
+    Ok(())
 }
 
-pub fn futimens(fd: &impl AsRawFd, tv: [libc::timespec; 2]) -> io::Result<()> {
-    syscall!(futimens(fd.as_raw_fd(), tv.as_ptr())).map(drop)
+pub async fn futimens(fd: &impl AsRawFd, tv: [libc::timespec; 2]) -> io::Result<()> {
+    let fd = fd.as_raw_fd();
+    asyncify(move || syscall!(futimens(fd, tv.as_ptr()))).await?;
+    Ok(())
 }
 
-pub fn link(
+pub async fn link(
     name: impl AsRef<OsStr>,
     parent: &impl AsRawFd,
     newname: impl AsRef<OsStr>,
     flags: libc::c_int,
 ) -> io::Result<()> {
+    let parent_fd = parent.as_raw_fd();
     let c_name = CString::new(name.as_ref().as_bytes())?;
     let c_newname = CString::new(newname.as_ref().as_bytes())?;
-    syscall!(linkat(
-        libc::AT_FDCWD,
-        c_name.as_ptr(),
-        parent.as_raw_fd(),
-        c_newname.as_ptr(),
-        flags,
-    ))
-    .map(drop)
+    asyncify(move || {
+        syscall!(linkat(
+            libc::AT_FDCWD,
+            c_name.as_ptr(),
+            parent_fd,
+            c_newname.as_ptr(),
+            flags,
+        ))
+    })
+    .await?;
+    Ok(())
 }
 
-pub fn flock(fd: &impl AsRawFd, op: libc::c_int) -> io::Result<()> {
-    syscall!(flock(fd.as_raw_fd(), op)).map(drop)
+pub async fn flock(fd: &impl AsRawFd, op: libc::c_int) -> io::Result<()> {
+    let fd = fd.as_raw_fd();
+    asyncify(move || syscall!(flock(fd, op))).await?;
+    Ok(())
 }
 
-pub fn posix_fallocate(
+pub async fn posix_fallocate(
     fd: &impl AsRawFd,
     offset: libc::off_t,
     length: libc::off_t,
 ) -> io::Result<()> {
-    let err = unsafe { libc::posix_fallocate(fd.as_raw_fd(), offset, length) };
-    if err != 0 {
-        return Err(io::Error::from_raw_os_error(err));
-    }
-    Ok(())
+    let fd = fd.as_raw_fd();
+    asyncify(move || {
+        let err = unsafe { libc::posix_fallocate(fd, offset, length) };
+        if err != 0 {
+            return Err(io::Error::from_raw_os_error(err));
+        }
+        Ok(())
+    })
+    .await
 }
 
+// TODO: asyncify
 pub fn getxattr(
     path: impl AsRef<OsStr>,
     name: impl AsRef<OsStr>,
@@ -406,6 +472,7 @@ pub fn getxattr(
     .map(|size| size as usize)
 }
 
+// TODO: asyncify
 pub fn listxattr(path: impl AsRef<OsStr>, value: Option<&mut [u8]>) -> io::Result<usize> {
     let c_path = CString::new(path.as_ref().as_bytes())?;
     let (value_ptr, size) = match value {
@@ -415,6 +482,7 @@ pub fn listxattr(path: impl AsRef<OsStr>, value: Option<&mut [u8]>) -> io::Resul
     syscall!(listxattr(c_path.as_ptr(), value_ptr, size)).map(|size| size as usize)
 }
 
+// TODO: asyncify
 pub fn setxattr(
     path: impl AsRef<OsStr>,
     name: impl AsRef<OsStr>,
@@ -433,17 +501,21 @@ pub fn setxattr(
     Ok(())
 }
 
-pub fn removexattr(path: impl AsRef<OsStr>, name: impl AsRef<OsStr>) -> io::Result<()> {
+pub async fn removexattr(path: impl AsRef<OsStr>, name: impl AsRef<OsStr>) -> io::Result<()> {
     let c_path = CString::new(path.as_ref().as_bytes())?;
     let c_name = CString::new(name.as_ref().as_bytes())?;
-    syscall!(removexattr(c_path.as_ptr(), c_name.as_ptr(),))?;
+    asyncify(move || syscall!(removexattr(c_path.as_ptr(), c_name.as_ptr()))).await?;
     Ok(())
 }
 
-pub fn fstatvfs(fd: &impl AsRawFd) -> io::Result<libc::statvfs> {
-    let mut stbuf = mem::MaybeUninit::<libc::statvfs>::zeroed();
-    syscall!(fstatvfs(fd.as_raw_fd(), stbuf.as_mut_ptr()))?;
-    Ok(unsafe { stbuf.assume_init() })
+pub async fn fstatvfs(fd: &impl AsRawFd) -> io::Result<libc::statvfs> {
+    let fd = fd.as_raw_fd();
+    asyncify(move || {
+        let mut stbuf = mem::MaybeUninit::<libc::statvfs>::zeroed();
+        syscall!(fstatvfs(fd, stbuf.as_mut_ptr()))?;
+        Ok(unsafe { stbuf.assume_init() })
+    })
+    .await
 }
 
 #[inline]
