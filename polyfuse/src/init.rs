@@ -148,6 +148,7 @@ impl SessionInitializer {
         match arg {
             OperationKind::Init { arg: init_in } => {
                 let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
+                let readonly_flags = init_in.flags & !CapabilityFlags::all().bits();
                 tracing::debug!("INIT request:");
                 tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
                 tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
@@ -223,6 +224,8 @@ impl SessionInitializer {
                 tracing::debug!("  time_gran = {}", init_out.time_gran);
                 io.send_msg(header.unique, 0, &[unsafe { as_bytes(&init_out) }])
                     .await?;
+
+                init_out.flags |= readonly_flags;
 
                 let conn = ConnectionInfo(init_out);
                 let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
@@ -419,7 +422,10 @@ mod tests {
             major: 7,
             minor: 23,
             max_readahead: 40,
-            flags: CapabilityFlags::all().bits() | FUSE_MAX_PAGES,
+            flags: CapabilityFlags::all().bits()
+                | FUSE_MAX_PAGES
+                | FUSE_NO_OPEN_SUPPORT
+                | FUSE_NO_OPENDIR_SUPPORT,
         };
 
         let mut input = vec![];
@@ -447,5 +453,7 @@ mod tests {
             Some((DEFAULT_MAX_WRITE / (*PAGE_SIZE as u32)) as u16)
         );
         assert_eq!(conn.time_gran(), 1);
+        assert!(conn.no_open_support());
+        assert!(conn.no_opendir_support());
     }
 }
