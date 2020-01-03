@@ -114,9 +114,7 @@ impl Session {
                         let mut st = StatFs::default();
                         st.set_namelen(255);
                         st.set_bsize(512);
-                        let out = crate::reply::ReplyStatfs::new(st);
-                        cx.reply_raw(&[unsafe { crate::util::as_bytes(&out) }])
-                            .await?;
+                        cx.reply_bytes(crate::reply::ReplyStatfs::new(st)).await?;
                     }
                 }
                 op => {

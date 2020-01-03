@@ -1,4 +1,7 @@
-use crate::kernel::fuse_dirent;
+use crate::{
+    io::{Collector, ScatteredBytes},
+    kernel::fuse_dirent,
+};
 use memoffset::offset_of;
 use std::{convert::TryFrom, ffi::OsStr, mem, os::unix::ffi::OsStrExt, ptr};
 
@@ -155,6 +158,16 @@ impl DirEntry {
 impl AsRef<[u8]> for DirEntry {
     fn as_ref(&self) -> &[u8] {
         self.dirent_buf.as_ref()
+    }
+}
+
+impl ScatteredBytes for DirEntry {
+    #[inline]
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        collector.append(self.as_ref());
     }
 }
 

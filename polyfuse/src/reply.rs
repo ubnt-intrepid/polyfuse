@@ -4,6 +4,7 @@
 
 use crate::{
     common::{FileAttr, FileLock, StatFs},
+    io::{Collector, ScatteredBytes},
     kernel::{
         fuse_attr_out, //
         fuse_bmap_out,
@@ -17,6 +18,32 @@ use crate::{
     },
 };
 use std::time::Duration;
+
+macro_rules! impl_scattered_buf {
+    ($($t:ty),*$(,)?) => {$(
+        impl ScatteredBytes for $t {
+            #[inline]
+            fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
+            where
+                T: Collector<'a>,
+            {
+                collector.append(unsafe { crate::util::as_bytes(self) })
+            }
+        }
+    )*};
+}
+
+impl_scattered_buf! {
+    ReplyAttr,
+    ReplyEntry,
+    ReplyOpen,
+    ReplyWrite,
+    ReplyXattr,
+    ReplyStatfs,
+    ReplyBmap,
+    ReplyLk,
+    ReplyPoll,
+}
 
 /// Reply with the inode attributes.
 #[derive(Debug)]
