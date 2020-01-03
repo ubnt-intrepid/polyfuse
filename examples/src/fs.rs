@@ -1,9 +1,11 @@
 //! Linux-specific filesystem operations.
 
+use mio::{unix::EventedFd, Evented, Poll, PollOpt, Ready, Token};
 use polyfuse::DirEntry;
 use std::{
     ffi::{CStr, CString, OsStr, OsString},
-    io, mem,
+    io::{self, IoSliceMut, Read},
+    mem,
     os::unix::prelude::*,
     path::PathBuf,
     ptr::NonNull,
@@ -284,6 +286,48 @@ impl FileDesc {
         })
         .await?;
         Ok(())
+    }
+}
+
+impl Read for FileDesc {
+    fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
+        let len = syscall!(read(self.as_raw_fd(), dst.as_mut_ptr().cast(), dst.len()))?;
+        Ok(len as usize)
+    }
+
+    fn read_vectored(&mut self, dst: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        let len = syscall!(readv(
+            self.as_raw_fd(),
+            dst.as_mut_ptr().cast(),
+            dst.len() as libc::c_int
+        ))?;
+        Ok(len as usize)
+    }
+}
+
+impl Evented for FileDesc {
+    fn register(
+        &self,
+        poll: &Poll,
+        token: Token,
+        interest: Ready,
+        opts: PollOpt,
+    ) -> io::Result<()> {
+        EventedFd(&self.0).register(poll, token, interest, opts)
+    }
+
+    fn reregister(
+        &self,
+        poll: &Poll,
+        token: Token,
+        interest: Ready,
+        opts: PollOpt,
+    ) -> io::Result<()> {
+        EventedFd(&self.0).reregister(poll, token, interest, opts)
+    }
+
+    fn deregister(&self, poll: &Poll) -> io::Result<()> {
+        EventedFd(&self.0).deregister(poll)
     }
 }
 
