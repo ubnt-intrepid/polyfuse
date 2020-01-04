@@ -2,7 +2,6 @@
 #![deny(clippy::unimplemented)]
 
 pub mod fs;
-pub mod memfs;
 
 pub mod prelude {
     pub use anyhow::{anyhow, ensure};
