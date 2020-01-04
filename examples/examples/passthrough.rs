@@ -8,8 +8,11 @@ use polyfuse::{
     reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr},
     CapabilityFlags, Context, DirEntry, Filesystem, Operation,
 };
-use polyfuse_examples::fs::{self, FileDesc, ReadDir};
-use polyfuse_examples::prelude::*;
+use polyfuse_examples::{
+    fs::{self, FileDesc, ReadDir},
+    prelude::*,
+    Either,
+};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -503,13 +506,13 @@ impl Passthrough {
         Ok(buf)
     }
 
-    async fn do_write<T: ?Sized>(
+    async fn do_write<R: ?Sized>(
         &self,
-        cx: &mut Context<'_, T>,
+        reader: &mut R,
         op: &op::Write<'_>,
     ) -> io::Result<ReplyWrite>
     where
-        T: Reader + Unpin,
+        R: Reader + Unpin,
     {
         let file = self.opened_files.get(op.fh()).await.ok_or_else(no_entry)?;
         let mut file = file.lock().await;
@@ -527,7 +530,6 @@ impl Passthrough {
         let mut buf = Vec::with_capacity(op.size() as usize);
         {
             use futures::io::AsyncReadExt;
-            let mut reader = cx.reader();
             reader.read_to_end(&mut buf).await?;
         }
 
@@ -590,7 +592,7 @@ impl Passthrough {
         Ok(())
     }
 
-    async fn do_getxattr_size(&self, op: &op::Getxattr<'_>) -> io::Result<ReplyXattr> {
+    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl ScatteredBytes> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -600,12 +602,21 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        let size = fs::getxattr(inode.fd.procname(), op.name(), None)?;
-
-        Ok(ReplyXattr::new(size as u32))
+        match op.size() {
+            0 => {
+                let size = fs::getxattr(inode.fd.procname(), op.name(), None)?;
+                Ok(Either::Left(ReplyXattr::new(size as u32)))
+            }
+            size => {
+                let mut value = vec![0u8; size as usize];
+                let n = fs::getxattr(inode.fd.procname(), op.name(), Some(&mut value[..]))?;
+                value.resize(n as usize, 0);
+                Ok(Either::Right(value))
+            }
+        }
     }
 
-    async fn do_getxattr_value(&self, op: &op::Getxattr<'_>, size: u32) -> io::Result<Vec<u8>> {
+    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl ScatteredBytes> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -615,43 +626,18 @@ impl Passthrough {
             return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
 
-        let mut value = vec![0u8; size as usize];
-        let n = fs::getxattr(inode.fd.procname(), op.name(), Some(&mut value[..]))?;
-        value.resize(n as usize, 0);
-
-        Ok(value)
-    }
-
-    async fn do_listxattr_size(&self, op: &op::Listxattr<'_>) -> io::Result<ReplyXattr> {
-        let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
-        let inode = inode.lock().await;
-
-        if inode.is_symlink {
-            // no race-free way to getxattr on symlink.
-            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+        match op.size() {
+            0 => {
+                let size = fs::listxattr(inode.fd.procname(), None)?;
+                Ok(Either::Left(ReplyXattr::new(size as u32)))
+            }
+            size => {
+                let mut value = vec![0u8; size as usize];
+                let n = fs::listxattr(inode.fd.procname(), Some(&mut value[..]))?;
+                value.resize(n as usize, 0);
+                Ok(Either::Right(value))
+            }
         }
-
-        let size = fs::listxattr(inode.fd.procname(), None)?;
-
-        Ok(ReplyXattr::new(size as u32))
-    }
-
-    async fn do_listxattr_value(&self, op: &op::Listxattr<'_>, size: u32) -> io::Result<Vec<u8>> {
-        let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
-        let inode = inode.lock().await;
-
-        if inode.is_symlink {
-            // no race-free way to getxattr on symlink.
-            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
-        }
-
-        let mut value = vec![0u8; size as usize];
-        let n = fs::listxattr(inode.fd.procname(), Some(&mut value[..]))?;
-        value.resize(n as usize, 0);
-
-        Ok(value)
     }
 
     async fn do_setxattr(&self, op: &op::Setxattr<'_>) -> io::Result<()> {
@@ -714,8 +700,8 @@ impl Filesystem for Passthrough {
         macro_rules! try_reply {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(ret) => ret,
-                    Err(err) => return cx.reply_err(io_to_errno(err)).await,
+                    Ok(reply) => cx.reply_bytes(reply).await,
+                    Err(err) => cx.reply_err(io_to_errno(err)).await,
                 }
             };
         }
@@ -724,161 +710,68 @@ impl Filesystem for Passthrough {
         // * readdirplus
         // * create
         match op {
-            Operation::Lookup(op) => {
-                let entry = try_reply!(self.do_lookup(op.parent(), op.name()));
-                op.reply(cx, entry).await
-            }
+            Operation::Lookup(op) => try_reply!(self.do_lookup(op.parent(), op.name())),
             Operation::Forget(forgets) => {
                 for forget in forgets.as_ref() {
                     self.forget_one(forget.ino(), forget.nlookup()).await;
                 }
                 Ok(())
             }
-            Operation::Getattr(op) => {
-                let attr = try_reply!(self.do_getattr(&op));
-                op.reply(cx, attr).await
-            }
-            Operation::Setattr(op) => {
-                let attr = try_reply!(self.do_setattr(&op));
-                op.reply(cx, attr).await
-            }
-            Operation::Readlink(op) => {
-                let link = try_reply!(self.do_readlink(&op));
-                op.reply(cx, link).await
-            }
-            Operation::Link(op) => {
-                let entry = try_reply!(self.do_link(&op));
-                op.reply(cx, entry).await
-            }
+            Operation::Getattr(op) => try_reply!(self.do_getattr(&op)),
+            Operation::Setattr(op) => try_reply!(self.do_setattr(&op)),
+            Operation::Readlink(op) => try_reply!(self.do_readlink(&op)),
+            Operation::Link(op) => try_reply!(self.do_link(&op)),
 
             Operation::Mknod(op) => {
-                let entry = try_reply!(self.make_node(
-                    op.parent(),
-                    op.name(),
-                    op.mode(),
-                    Some(op.rdev()),
-                    None
-                ));
-                op.reply(cx, entry).await
+                try_reply!(self.make_node(op.parent(), op.name(), op.mode(), Some(op.rdev()), None))
             }
-            Operation::Mkdir(op) => {
-                let entry = try_reply!(self.make_node(
-                    op.parent(),
-                    op.name(),
-                    libc::S_IFDIR | op.mode(),
-                    None,
-                    None
-                ));
-                op.reply(cx, entry).await
-            }
-            Operation::Symlink(op) => {
-                let entry = try_reply!(self.make_node(
-                    op.parent(),
-                    op.name(),
-                    libc::S_IFLNK,
-                    None,
-                    Some(op.link())
-                ));
-                op.reply(cx, entry).await
-            }
+            Operation::Mkdir(op) => try_reply!(self.make_node(
+                op.parent(),
+                op.name(),
+                libc::S_IFDIR | op.mode(),
+                None,
+                None
+            )),
+            Operation::Symlink(op) => try_reply!(self.make_node(
+                op.parent(),
+                op.name(),
+                libc::S_IFLNK,
+                None,
+                Some(op.link())
+            )),
 
-            Operation::Unlink(op) => {
-                try_reply!(self.do_unlink(&op));
-                op.reply(cx).await
-            }
-            Operation::Rmdir(op) => {
-                try_reply!(self.do_rmdir(&op));
-                op.reply(cx).await
-            }
-            Operation::Rename(op) => {
-                try_reply!(self.do_rename(&op));
-                op.reply(cx).await
-            }
+            Operation::Unlink(op) => try_reply!(self.do_unlink(&op)),
+            Operation::Rmdir(op) => try_reply!(self.do_rmdir(&op)),
+            Operation::Rename(op) => try_reply!(self.do_rename(&op)),
 
-            Operation::Opendir(op) => {
-                let open = try_reply!(self.do_opendir(&op));
-                op.reply(cx, open).await
-            }
-            Operation::Readdir(op) => {
-                let entries = try_reply!(self.do_readdir(&op));
-                let entries: Vec<&[u8]> = entries.iter().map(|entry| entry.as_ref()).collect();
-                op.reply_vectored(cx, &entries[..]).await
-            }
-            Operation::Fsyncdir(op) => {
-                try_reply!(self.do_fsyncdir(&op));
-                op.reply(cx).await
-            }
-            Operation::Releasedir(op) => {
-                try_reply!(self.do_releasedir(&op));
-                op.reply(cx).await
-            }
+            Operation::Opendir(op) => try_reply!(self.do_opendir(&op)),
+            Operation::Readdir(op) => try_reply!(self.do_readdir(&op)),
+            Operation::Fsyncdir(op) => try_reply!(self.do_fsyncdir(&op)),
+            Operation::Releasedir(op) => try_reply!(self.do_releasedir(&op)),
 
-            Operation::Open(op) => {
-                let open = try_reply!(self.do_open(&op));
-                op.reply(cx, open).await
-            }
-            Operation::Read(op) => {
-                let data = try_reply!(self.do_read(&op));
-                op.reply(cx, data).await
-            }
+            Operation::Open(op) => try_reply!(self.do_open(&op)),
+            Operation::Read(op) => try_reply!(self.do_read(&op)),
             Operation::Write(op) => {
-                let written = try_reply!(self.do_write(&mut *cx, &op));
-                op.reply(cx, written).await
+                let mut reader = cx.reader();
+                let res = self.do_write(&mut reader, &op).await;
+                drop(reader);
+                match res {
+                    Ok(reply) => cx.reply_bytes(reply).await,
+                    Err(err) => cx.reply_err(io_to_errno(err)).await,
+                }
             }
-            Operation::Flush(op) => {
-                try_reply!(self.do_flush(&op));
-                op.reply(cx).await
-            }
-            Operation::Fsync(op) => {
-                try_reply!(self.do_fsync(&op));
-                op.reply(cx).await
-            }
-            Operation::Flock(op) => {
-                try_reply!(self.do_flock(&op));
-                op.reply(cx).await
-            }
-            Operation::Fallocate(op) => {
-                try_reply!(self.do_fallocate(&op));
-                op.reply(cx).await
-            }
-            Operation::Release(op) => {
-                try_reply!(self.do_release(&op));
-                op.reply(cx).await
-            }
+            Operation::Flush(op) => try_reply!(self.do_flush(&op)),
+            Operation::Fsync(op) => try_reply!(self.do_fsync(&op)),
+            Operation::Flock(op) => try_reply!(self.do_flock(&op)),
+            Operation::Fallocate(op) => try_reply!(self.do_fallocate(&op)),
+            Operation::Release(op) => try_reply!(self.do_release(&op)),
 
-            Operation::Getxattr(op) => match op.size() {
-                0 => {
-                    let size = try_reply!(self.do_getxattr_size(&op));
-                    op.reply_size(cx, size).await
-                }
-                n => {
-                    let value = try_reply!(self.do_getxattr_value(&op, n));
-                    op.reply(cx, value).await
-                }
-            },
-            Operation::Listxattr(op) => match op.size() {
-                0 => {
-                    let size = try_reply!(self.do_listxattr_size(&op));
-                    op.reply_size(cx, size).await
-                }
-                n => {
-                    let value = try_reply!(self.do_listxattr_value(&op, n));
-                    op.reply(cx, value).await
-                }
-            },
-            Operation::Setxattr(op) => {
-                try_reply!(self.do_setxattr(&op));
-                op.reply(cx).await
-            }
-            Operation::Removexattr(op) => {
-                try_reply!(self.do_removexattr(&op));
-                op.reply(cx).await
-            }
+            Operation::Getxattr(op) => try_reply!(self.do_getxattr(&op)),
+            Operation::Listxattr(op) => try_reply!(self.do_listxattr(&op)),
+            Operation::Setxattr(op) => try_reply!(self.do_setxattr(&op)),
+            Operation::Removexattr(op) => try_reply!(self.do_removexattr(&op)),
 
-            Operation::Statfs(op) => {
-                let stat = try_reply!(self.do_statfs(&op));
-                op.reply(cx, stat).await
-            }
+            Operation::Statfs(op) => try_reply!(self.do_statfs(&op)),
 
             _ => Ok(()),
         }

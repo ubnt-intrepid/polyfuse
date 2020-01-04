@@ -169,7 +169,7 @@ impl SessionInitializer {
 
                 if init_in.major > 7 {
                     tracing::debug!("wait for a second INIT request with an older version.");
-                    io.send_msg(header.unique, 0, &[unsafe { as_bytes(&init_out) }])
+                    io.send_msg(header.unique, 0, unsafe { as_bytes(&init_out) })
                         .await?;
                     return Ok(None);
                 }
@@ -181,7 +181,7 @@ impl SessionInitializer {
                         init_in.major,
                         init_in.minor
                     );
-                    io.send_msg(header.unique, -libc::EPROTO, &[]).await?;
+                    io.send_msg(header.unique, -libc::EPROTO, &()).await?;
                     return Ok(None);
                 }
 
@@ -222,7 +222,7 @@ impl SessionInitializer {
                     init_out.congestion_threshold
                 );
                 tracing::debug!("  time_gran = {}", init_out.time_gran);
-                io.send_msg(header.unique, 0, &[unsafe { as_bytes(&init_out) }])
+                io.send_msg(header.unique, 0, unsafe { as_bytes(&init_out) })
                     .await?;
 
                 init_out.flags |= readonly_flags;
@@ -237,7 +237,7 @@ impl SessionInitializer {
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode
                 );
-                io.send_msg(header.unique, -libc::EIO, &[]).await?;
+                io.send_msg(header.unique, -libc::EIO, &()).await?;
                 Ok(None)
             }
         }

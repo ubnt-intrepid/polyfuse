@@ -1,5 +1,5 @@
 use crate::{
-    io::{Reader, Writer, WriterExt},
+    io::{Reader, ScatteredBytes, Writer, WriterExt},
     kernel::fuse_in_header,
 };
 use std::{fmt, io};
@@ -59,16 +59,27 @@ impl<'cx, T: ?Sized> Context<'cx, T> {
         &mut *self.io
     }
 
-    /// Reply to the kernel with an arbitrary bytes of data.
-    ///
-    /// This is the basic method for sending a reply to the kernel.
-    /// Typically, it is called via replying method associated with the operation.
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.2", note = "use `reply_bytes` instead.")]
     #[inline]
     pub async fn reply_raw<'a>(&'a mut self, data: &'a [&'a [u8]]) -> io::Result<()>
     where
         T: Writer + Unpin,
     {
         self.send_reply(0, data).await
+    }
+
+    /// Reply to the kernel with an arbitrary bytes of data.
+    ///
+    /// This is the basic method for sending a reply to the kernel.
+    /// Typically, it is called via replying method associated with the operation.
+    #[inline]
+    pub async fn reply_bytes<R>(&mut self, data: R) -> io::Result<()>
+    where
+        T: Writer + Unpin,
+        R: ScatteredBytes,
+    {
+        self.send_reply(0, &data).await
     }
 
     /// Reply to the kernel with an error code.
@@ -86,9 +97,10 @@ impl<'cx, T: ?Sized> Context<'cx, T> {
         self.written
     }
 
-    async fn send_reply(&mut self, error: i32, data: &[&[u8]]) -> io::Result<()>
+    async fn send_reply<R: ?Sized>(&mut self, error: i32, data: &R) -> io::Result<()>
     where
         T: Writer + Unpin,
+        R: ScatteredBytes,
     {
         if !self.written {
             self.written = true;
