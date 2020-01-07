@@ -14,7 +14,7 @@
 use pico_args::Arguments;
 use polyfuse::{
     op,
-    reply::{ReplyAttr, ReplyEntry, ReplyOpen},
+    reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite},
     DirEntry, FileAttr, Forget,
 };
 use polyfuse_examples::prelude::*;
@@ -227,6 +227,78 @@ impl PathThrough {
         Ok(ReplyAttr::new(attr))
     }
 
+    async fn do_setattr(&self, op: &op::Setattr<'_>) -> io::Result<ReplyAttr> {
+        let file = match op.fh() {
+            Some(fh) => {
+                let files = self.files.lock().await;
+                files.get(fh as usize).cloned()
+            }
+            None => None,
+        };
+        let mut file = match file {
+            Some(ref file) => {
+                let mut file = file.lock().await;
+                file.file.sync_all().await?;
+                Some(file) // keep file lock
+            }
+            None => None,
+        };
+
+        let inode = {
+            let inodes = self.inodes.lock().await;
+            inodes.get(op.ino()).ok_or_else(no_entry)?
+        };
+        let inode = inode.lock().await;
+        let path = Arc::new(self.source.join(&inode.path));
+
+        enum FileRef<'a> {
+            Borrowed(&'a mut File),
+            Owned(File),
+        }
+        impl AsMut<File> for FileRef<'_> {
+            fn as_mut(&mut self) -> &mut File {
+                match self {
+                    Self::Borrowed(file) => file,
+                    Self::Owned(file) => file,
+                }
+            }
+        }
+        let mut file = match file {
+            Some(ref mut file) => FileRef::Borrowed(&mut file.file),
+            None => FileRef::Owned(File::open(&*path).await?),
+        };
+
+        // chmod
+        if let Some(mode) = op.mode() {
+            let perm = std::fs::Permissions::from_mode(mode);
+            file.as_mut().set_permissions(perm).await?;
+        }
+
+        // truncate
+        if let Some(size) = op.size() {
+            file.as_mut().set_len(size).await?;
+        }
+
+        // chown
+        match (op.uid(), op.gid()) {
+            (None, None) => (),
+            (uid, gid) => {
+                let path = path.clone();
+                let uid = uid.map(nix::unistd::Uid::from_raw);
+                let gid = gid.map(nix::unistd::Gid::from_raw);
+                tokio::task::spawn_blocking(move || nix::unistd::chown(&*path, uid, gid))
+                    .await?
+                    .map_err(nix_to_io_error)?;
+            }
+        }
+
+        // TODO: utimes
+
+        let attr = self.get_attr(&inode.path).await?;
+
+        Ok(ReplyAttr::new(attr))
+    }
+
     async fn do_readlink(&self, op: &op::Readlink<'_>) -> io::Result<OsString> {
         let inodes = self.inodes.lock().await;
 
@@ -319,7 +391,7 @@ impl PathThrough {
 
         let options = OpenOptions::from({
             let mut options = std::fs::OpenOptions::new();
-            match (op.flags() & 0x03) as i32 {
+            match op.flags() as i32 & libc::O_ACCMODE {
                 libc::O_RDONLY => {
                     options.read(true);
                 }
@@ -363,6 +435,46 @@ impl PathThrough {
         tokio::io::copy(&mut file.take(op.size() as u64), &mut buf).await?;
 
         Ok(buf)
+    }
+
+    async fn do_write<R: ?Sized>(
+        &self,
+        op: &op::Write<'_>,
+        reader: &mut R,
+    ) -> io::Result<ReplyWrite>
+    where
+        R: Reader + Unpin,
+    {
+        let files = self.files.lock().await;
+
+        let file = files
+            .get(op.fh() as usize)
+            .cloned()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
+        let mut file = file.lock().await;
+        let file = &mut file.file;
+
+        file.seek(io::SeekFrom::Start(op.offset())).await?;
+
+        // At here, the data is transferred via the temporary buffer due to
+        // the incompatibility between the I/O abstraction in `futures` and
+        // `tokio`.
+        //
+        // In order to efficiently transfer the large files, both of zero
+        // copying support in `polyfuse` and resolution of impedance mismatch
+        // between `futures::io` and `tokio::io` are required.
+        let mut buf = Vec::with_capacity(op.size() as usize);
+        {
+            use futures::io::AsyncReadExt;
+            reader.read_to_end(&mut buf).await?;
+        }
+
+        use tokio::io::AsyncReadExt;
+        let mut buf = &buf[..];
+        let mut buf = (&mut buf).take(op.size() as u64);
+        let written = tokio::io::copy(&mut buf, &mut *file).await?;
+
+        Ok(ReplyWrite::new(written as u32))
     }
 
     async fn do_flush(&self, op: &op::Flush<'_>) -> io::Result<()> {
@@ -435,12 +547,17 @@ impl Filesystem for PathThrough {
                 Ok(())
             }
             Operation::Getattr(op) => try_reply!(self.do_getattr(&op)),
+            Operation::Setattr(op) => try_reply!(self.do_setattr(&op)),
             Operation::Readlink(op) => try_reply!(self.do_readlink(&op)),
             Operation::Opendir(op) => try_reply!(self.do_opendir(&op)),
             Operation::Readdir(op) => try_reply!(self.do_readdir(&op)),
             Operation::Releasedir(op) => try_reply!(self.do_releasedir(&op)),
             Operation::Open(op) => try_reply!(self.do_open(&op)),
             Operation::Read(op) => try_reply!(self.do_read(&op)),
+            Operation::Write(op) => {
+                let res = self.do_write(&op, &mut cx.reader()).await;
+                try_reply!(async { res })
+            }
             Operation::Flush(op) => try_reply!(self.do_flush(&op)),
             Operation::Fsync(op) => try_reply!(self.do_fsync(&op)),
             Operation::Release(op) => try_reply!(self.do_release(&op)),
@@ -452,4 +569,9 @@ impl Filesystem for PathThrough {
 #[inline]
 fn no_entry() -> io::Error {
     io::Error::from_raw_os_error(libc::ENOENT)
+}
+
+fn nix_to_io_error(err: nix::Error) -> io::Error {
+    let errno = err.as_errno().map_or(libc::EIO, |errno| errno as i32);
+    io::Error::from_raw_os_error(errno)
 }
