@@ -1,12 +1,12 @@
 use futures_intrusive::sync::ManualResetEvent;
 use pico_args::Arguments;
 use polyfuse::{
+    io::{Reader, Writer},
     reply::{ReplyAttr, ReplyOpen, ReplyPoll},
-    FileAttr,
+    Context, FileAttr, Filesystem, Operation,
 };
-use polyfuse_examples::prelude::*;
 use polyfuse_tokio::Server;
-use std::{io, sync::Arc, time::Duration};
+use std::{io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 const CONTENT: &str = "Hello, world!\n";
@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
     let mountpoint: PathBuf = args
         .free_from_str()?
         .ok_or_else(|| anyhow::anyhow!("missing mountpoint"))?;
-    ensure!(
+    anyhow::ensure!(
         mountpoint.is_file(),
         "the mountpoint must be a regular file"
     );
@@ -80,7 +80,7 @@ impl PollFS {
     }
 }
 
-#[async_trait]
+#[polyfuse::async_trait]
 impl Filesystem for PollFS {
     #[allow(clippy::cognitive_complexity)]
     async fn call<'a, 'cx, T: ?Sized>(

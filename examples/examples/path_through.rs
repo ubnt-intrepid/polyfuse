@@ -13,16 +13,18 @@
 
 use pico_args::Arguments;
 use polyfuse::{
+    io::{Reader, ScatteredBytes, Writer},
     op,
     reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite},
-    DirEntry, FileAttr, Forget,
+    Context, DirEntry, FileAttr, Filesystem, Forget, Operation,
 };
-use polyfuse_examples::prelude::*;
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
+    ffi::OsString,
     io,
     os::unix::prelude::*,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use tokio::{

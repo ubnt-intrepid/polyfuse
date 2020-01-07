@@ -1,4 +1,4 @@
 [alias]
 xtask = "run -p polyfuse-xtask --"
 xscript = "xtask script"
-run-example = "run -p polyfuse-examples --example"
+check-all = "check --workspace --all-targets"

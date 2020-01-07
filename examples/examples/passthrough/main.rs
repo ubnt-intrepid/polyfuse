@@ -1,24 +1,24 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![warn(clippy::unimplemented, clippy::todo)]
 
+mod fs;
+
+use crate::fs::{FileDesc, ReadDir};
 use pico_args::Arguments;
 use polyfuse::{
-    io::{Reader, Writer},
+    io::{Collector, Reader, ScatteredBytes, Writer},
     op,
     reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr},
     CapabilityFlags, Context, DirEntry, Filesystem, Operation,
-};
-use polyfuse_examples::{
-    fs::{self, FileDesc, ReadDir},
-    prelude::*,
-    Either,
 };
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     convert::TryInto,
+    ffi::{OsStr, OsString},
     io,
     os::unix::prelude::*,
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -71,6 +71,29 @@ async fn main() -> anyhow::Result<()> {
     server.run(fs).await?;
 
     Ok(())
+}
+
+// FIXME: use either crate.
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<L, R> ScatteredBytes for Either<L, R>
+where
+    L: ScatteredBytes,
+    R: ScatteredBytes,
+{
+    #[inline]
+    fn collect<'a, C: ?Sized>(&'a self, collector: &mut C)
+    where
+        C: Collector<'a>,
+    {
+        match self {
+            Either::Left(l) => l.collect(collector),
+            Either::Right(r) => r.collect(collector),
+        }
+    }
 }
 
 type Ino = u64;

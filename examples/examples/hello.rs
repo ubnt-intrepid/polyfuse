@@ -1,14 +1,13 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
 
-use polyfuse_examples::prelude::*;
-
 use polyfuse::{
+    io::{Reader, Writer},
     op,
     reply::{ReplyAttr, ReplyEntry},
-    DirEntry, FileAttr,
+    Context, DirEntry, FileAttr, Filesystem, Operation,
 };
-use std::io;
+use std::{io, os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const ROOT_INO: u64 = 1;
@@ -20,8 +19,12 @@ const HELLO_CONTENT: &[u8] = b"Hello, world!\n";
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let mountpoint = examples::get_mountpoint()?;
-    ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
+    let mut args = pico_args::Arguments::from_env();
+
+    let mountpoint: PathBuf = args
+        .free_from_str()?
+        .ok_or_else(|| anyhow::anyhow!("missing mountpoint"))?;
+    anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
     polyfuse_tokio::mount(Hello::new(), mountpoint, &[]).await?;
 
@@ -158,7 +161,7 @@ impl Hello {
     }
 }
 
-#[async_trait]
+#[polyfuse::async_trait]
 impl Filesystem for Hello {
     async fn call<'a, 'cx, T: ?Sized>(
         &'a self,

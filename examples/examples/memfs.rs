@@ -2,15 +2,17 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
+    io::{Collector, Reader, ScatteredBytes, Writer},
     op,
     reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr},
-    DirEntry, FileAttr, Forget,
+    Context, DirEntry, FileAttr, Filesystem, Forget, Operation,
 };
-use polyfuse_examples::{prelude::*, Either};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
+    ffi::{OsStr, OsString},
     io,
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -20,7 +22,11 @@ use tokio::sync::Mutex;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let mountpoint = examples::get_mountpoint()?;
+    let mut args = pico_args::Arguments::from_env();
+
+    let mountpoint: PathBuf = args
+        .free_from_str()?
+        .ok_or_else(|| anyhow::anyhow!("missing mountpoint"))?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
     let memfs = MemFS::new();
@@ -698,7 +704,7 @@ impl MemFS {
     }
 }
 
-#[async_trait]
+#[polyfuse::async_trait]
 impl Filesystem for MemFS {
     #[allow(clippy::cognitive_complexity)]
     async fn call<'a, 'cx, T: ?Sized>(
@@ -762,4 +768,27 @@ fn no_entry() -> io::Error {
 
 fn unknown_error() -> io::Error {
     io::Error::from_raw_os_error(libc::EIO)
+}
+
+// FIXME: use either crate.
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<L, R> ScatteredBytes for Either<L, R>
+where
+    L: ScatteredBytes,
+    R: ScatteredBytes,
+{
+    #[inline]
+    fn collect<'a, C: ?Sized>(&'a self, collector: &mut C)
+    where
+        C: Collector<'a>,
+    {
+        match self {
+            Either::Left(l) => l.collect(collector),
+            Either::Right(r) => r.collect(collector),
+        }
+    }
 }

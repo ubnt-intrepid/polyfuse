@@ -7,16 +7,15 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
 
-use polyfuse_examples::prelude::*;
-
 use chrono::Local;
 use futures::{channel::oneshot, io::AsyncReadExt, lock::Mutex};
 use polyfuse::{
+    io::{Reader, Writer},
     reply::{ReplyAttr, ReplyOpen},
-    FileAttr,
+    Context, FileAttr, Filesystem, Operation,
 };
 use polyfuse_tokio::Server;
-use std::{collections::HashMap, io, sync::Arc, time::Duration};
+use std::{collections::HashMap, io, path::PathBuf, sync::Arc, time::Duration};
 
 const ROOT_INO: u64 = 1;
 
@@ -24,13 +23,7 @@ const ROOT_INO: u64 = 1;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let mountpoint = examples::get_mountpoint()?;
-    ensure!(
-        mountpoint.is_file(),
-        "the mountpoint must be a regular file"
-    );
-
-    let mut args = pico_args::Arguments::from_vec(std::env::args_os().skip(2).collect());
+    let mut args = pico_args::Arguments::from_env();
 
     let no_notify = args.contains("--no-notify");
     let notify_kind = args
@@ -41,6 +34,14 @@ async fn main() -> anyhow::Result<()> {
         })?
         .unwrap_or(NotifyKind::Store);
     let update_interval: u64 = args.value_from_str("--update-interval")?;
+
+    let mountpoint: PathBuf = args
+        .free_from_str()?
+        .ok_or_else(|| anyhow::anyhow!("missing mountpoint"))?;
+    anyhow::ensure!(
+        mountpoint.is_file(),
+        "the mountpoint must be a regular file"
+    );
 
     let heartbeat = Arc::new(Heartbeat::now());
 
@@ -152,7 +153,7 @@ impl Heartbeat {
     }
 }
 
-#[async_trait]
+#[polyfuse::async_trait]
 impl Filesystem for Heartbeat {
     async fn call<'a, 'cx, T: ?Sized>(
         &'a self,

@@ -6,7 +6,7 @@ description = "A collection of examples of polyfuse"
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
 
-[dependencies]
+[dev-dependencies]
 anyhow = "1"
 chrono = "0.4"
 crossbeam = "0.7"
@@ -23,6 +23,6 @@ tracing-subscriber = "0.1"
 polyfuse = { path = "../polyfuse" }
 polyfuse-tokio = { path = "../polyfuse-tokio" }
 
-[dependencies.tokio]
+[dev-dependencies.tokio]
 version = "0.2"
 features = [ "full" ]
