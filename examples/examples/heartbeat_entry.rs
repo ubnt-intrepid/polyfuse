@@ -130,13 +130,13 @@ impl Filesystem for Heartbeat {
                 ROOT_INO => {
                     let mut current = self.current.lock().await;
                     if op.name().as_bytes() == current.filename.as_bytes() {
-                        op.reply(cx, {
+                        cx.reply(
                             ReplyEntry::default()
                                 .ino(self.file_attr.ino())
                                 .attr(self.file_attr)
                                 .ttl_entry(self.timeout)
-                                .ttl_attr(self.timeout)
-                        })
+                                .ttl_attr(self.timeout),
+                        )
                         .await?;
                         current.nlookup += 1;
                     } else {
@@ -161,16 +161,16 @@ impl Filesystem for Heartbeat {
                     FILE_INO => self.file_attr,
                     _ => return cx.reply_err(libc::ENOENT).await,
                 };
-                op.reply(cx, {
+                cx.reply(
                     ReplyAttr::new(attr) //
-                        .ttl_attr(self.timeout)
-                })
+                        .ttl_attr(self.timeout),
+                )
                 .await?
             }
 
             Operation::Read(op) => match op.ino() {
                 ROOT_INO => cx.reply_err(libc::EISDIR).await?,
-                FILE_INO => op.reply(cx, &[]).await?,
+                FILE_INO => cx.reply(&[]).await?,
                 _ => cx.reply_err(libc::ENOENT).await?,
             },
 
@@ -179,9 +179,9 @@ impl Filesystem for Heartbeat {
                     if op.offset() == 0 {
                         let current = self.current.lock().await;
                         let dirent = DirEntry::file(&current.filename, FILE_INO, 1);
-                        op.reply(cx, dirent).await?;
+                        cx.reply(dirent).await?;
                     } else {
-                        op.reply(cx, &[]).await?;
+                        cx.reply(&[]).await?;
                     }
                 }
                 _ => cx.reply_err(libc::ENOTDIR).await?,

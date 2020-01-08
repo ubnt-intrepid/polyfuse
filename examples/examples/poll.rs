@@ -92,7 +92,7 @@ impl Filesystem for PollFS {
         T: Reader + Writer + Unpin + Send,
     {
         match op {
-            Operation::Getattr(op) => {
+            Operation::Getattr(_op) => {
                 let mut attr = FileAttr::default();
                 attr.set_ino(1);
                 attr.set_nlink(1);
@@ -101,10 +101,10 @@ impl Filesystem for PollFS {
                 attr.set_uid(unsafe { libc::getuid() });
                 attr.set_gid(unsafe { libc::getgid() });
 
-                op.reply(cx, {
+                cx.reply(
                     ReplyAttr::new(attr) //
-                        .ttl_attr(Duration::from_secs(u64::max_value() / 2))
-                })
+                        .ttl_attr(Duration::from_secs(u64::max_value() / 2)),
+                )
                 .await
             }
 
@@ -128,11 +128,11 @@ impl Filesystem for PollFS {
                     });
                 }
 
-                op.reply(cx, {
+                cx.reply(
                     ReplyOpen::new(0) //
                         .direct_io(true)
-                        .nonseekable(true)
-                })
+                        .nonseekable(true),
+                )
                 .await
             }
 
@@ -156,7 +156,7 @@ impl Filesystem for PollFS {
                 let offset = op.offset() as usize;
                 let bufsize = op.size() as usize;
                 let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
-                op.reply(cx, &content[..std::cmp::min(content.len(), bufsize)])
+                cx.reply(&content[..std::cmp::min(content.len(), bufsize)])
                     .await
             }
 
@@ -164,7 +164,7 @@ impl Filesystem for PollFS {
                 if self.is_ready.is_set() {
                     tracing::info!("the background task is completed and ready to read");
                     let revents = op.events() & libc::POLLIN as u32;
-                    return op.reply(cx, ReplyPoll::new(revents)).await;
+                    return cx.reply(ReplyPoll::new(revents)).await;
                 }
 
                 if let Some(kh) = op.kh() {
@@ -174,13 +174,13 @@ impl Filesystem for PollFS {
                     handle.kh.replace(kh);
                 }
 
-                op.reply(cx, ReplyPoll::new(0)).await
+                cx.reply(ReplyPoll::new(0)).await
             }
 
-            Operation::Release(op) => {
+            Operation::Release(_op) => {
                 let mut handle = self.handle.lock().await;
                 handle.take();
-                op.reply(cx).await
+                cx.reply(()).await
             }
             _ => Ok(()),
         }
