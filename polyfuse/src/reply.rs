@@ -4,7 +4,6 @@
 
 use crate::{
     common::{FileAttr, FileLock, StatFs},
-    io::{Collector, ScatteredBytes},
     kernel::{
         fuse_attr_out, //
         fuse_bmap_out,
@@ -17,38 +16,271 @@ use crate::{
         fuse_write_out,
     },
 };
-use std::time::Duration;
+use std::{
+    ffi::{OsStr, OsString},
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-macro_rules! impl_scattered_buf {
-    ($($t:ty),*$(,)?) => {$(
-        impl ScatteredBytes for $t {
+/// A trait that represents the data structure contained in the reply sent to the kernel.
+///
+/// The trait is roughly a generalization of `AsRef<[u8]>`, representing *scattered* bytes
+/// that are not necessarily in contiguous memory space.
+pub trait Reply {
+    /// Collect the *scattered* bytes in the `collector`.
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>;
+}
+
+// ==== pointer types ====
+
+macro_rules! impl_reply_body_for_pointers {
+    () => {
+        #[inline]
+        fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+        where
+            T: Collector<'a>,
+        {
+            (**self).collect_bytes(collector)
+        }
+    }
+}
+
+impl<R: ?Sized> Reply for &R
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+impl<R: ?Sized> Reply for &mut R
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+impl<R: ?Sized> Reply for Box<R>
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+impl<R: ?Sized> Reply for std::rc::Rc<R>
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+impl<R: ?Sized> Reply for std::sync::Arc<R>
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+// ==== empty bytes ====
+
+impl Reply for () {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, _: &mut T)
+    where
+        T: Collector<'a>,
+    {
+    }
+}
+
+impl Reply for [u8; 0] {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, _: &mut T)
+    where
+        T: Collector<'a>,
+    {
+    }
+}
+
+// ==== compound types ====
+
+macro_rules! impl_reply_for_tuple {
+    ($($T:ident),+ $(,)?) => {
+        impl<$($T),+> Reply for ($($T,)+)
+        where
+            $( $T: Reply, )+
+        {
+            #[allow(nonstandard_style)]
             #[inline]
-            fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
+            fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+            where
+                T: Collector<'a>,
+            {
+                let ($($T,)+) = self;
+                $(
+                    $T.collect_bytes(collector);
+                )+
+            }
+        }
+    }
+}
+
+impl_reply_for_tuple!(T1);
+impl_reply_for_tuple!(T1, T2);
+impl_reply_for_tuple!(T1, T2, T3);
+impl_reply_for_tuple!(T1, T2, T3, T4);
+impl_reply_for_tuple!(T1, T2, T3, T4, T5);
+
+impl<R> Reply for [R]
+where
+    R: Reply,
+{
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        for t in self {
+            t.collect_bytes(collector);
+        }
+    }
+}
+
+impl<R> Reply for Vec<R>
+where
+    R: Reply,
+{
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        for t in self {
+            t.collect_bytes(collector);
+        }
+    }
+}
+
+// ==== Option<T> ====
+
+impl<T> Reply for Option<T>
+where
+    T: Reply,
+{
+    #[inline]
+    fn collect_bytes<'a, C: ?Sized>(&'a self, collector: &mut C)
+    where
+        C: Collector<'a>,
+    {
+        if let Some(ref reply) = self {
+            reply.collect_bytes(collector);
+        }
+    }
+}
+
+// ==== continuous bytes ====
+
+mod impl_scattered_bytes_for_cont {
+    use super::*;
+
+    #[inline(always)]
+    fn as_bytes(t: &(impl AsRef<[u8]> + ?Sized)) -> &[u8] {
+        t.as_ref()
+    }
+
+    macro_rules! impl_reply {
+        ($($t:ty),*$(,)?) => {$(
+            impl Reply for $t {
+                #[inline]
+                fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+                where
+                    T: Collector<'a>,
+                {
+                    let this = as_bytes(self);
+                    if !this.is_empty() {
+                        collector.append(this);
+                    }
+                }
+            }
+        )*};
+    }
+
+    impl_reply! {
+        [u8],
+        str,
+        String,
+        Vec<u8>,
+        std::borrow::Cow<'_, [u8]>,
+    }
+}
+
+impl Reply for OsStr {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        self.as_bytes().collect_bytes(collector)
+    }
+}
+
+impl Reply for OsString {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        (**self).collect_bytes(collector)
+    }
+}
+
+impl Reply for Path {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        self.as_os_str().collect_bytes(collector)
+    }
+}
+
+impl Reply for PathBuf {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        (**self).collect_bytes(collector)
+    }
+}
+
+/// Container for collecting the scattered bytes.
+pub trait Collector<'a> {
+    /// Append a chunk of bytes into itself.
+    fn append(&mut self, buf: &'a [u8]);
+}
+
+macro_rules! impl_reply {
+    ($t:ty) => {
+        impl Reply for $t {
+            #[inline]
+            fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
             where
                 T: Collector<'a>,
             {
                 collector.append(unsafe { crate::util::as_bytes(self) })
             }
         }
-    )*};
-}
-
-impl_scattered_buf! {
-    ReplyAttr,
-    ReplyEntry,
-    ReplyOpen,
-    ReplyWrite,
-    ReplyXattr,
-    ReplyStatfs,
-    ReplyBmap,
-    ReplyLk,
-    ReplyPoll,
+    };
 }
 
 /// Reply with the inode attributes.
 #[derive(Debug)]
 #[must_use]
 pub struct ReplyAttr(fuse_attr_out);
+
+impl_reply!(ReplyAttr);
 
 impl AsRef<Self> for ReplyAttr {
     #[inline]
@@ -84,6 +316,8 @@ impl ReplyAttr {
 #[derive(Debug)]
 #[must_use]
 pub struct ReplyEntry(fuse_entry_out);
+
+impl_reply!(ReplyEntry);
 
 impl AsRef<Self> for ReplyEntry {
     #[inline]
@@ -175,6 +409,8 @@ impl ReplyEntry {
 #[must_use]
 pub struct ReplyOpen(fuse_open_out);
 
+impl_reply!(ReplyOpen);
+
 impl AsRef<Self> for ReplyOpen {
     #[inline]
     fn as_ref(&self) -> &Self {
@@ -238,6 +474,8 @@ impl ReplyOpen {
 #[must_use]
 pub struct ReplyWrite(fuse_write_out);
 
+impl_reply!(ReplyWrite);
+
 impl AsRef<Self> for ReplyWrite {
     #[inline]
     fn as_ref(&self) -> &Self {
@@ -265,6 +503,8 @@ impl ReplyWrite {
 #[derive(Debug)]
 #[must_use]
 pub struct ReplyXattr(fuse_getxattr_out);
+
+impl_reply!(ReplyXattr);
 
 impl AsRef<Self> for ReplyXattr {
     #[inline]
@@ -294,6 +534,8 @@ impl ReplyXattr {
 #[must_use]
 pub struct ReplyStatfs(fuse_statfs_out);
 
+impl_reply!(ReplyStatfs);
+
 impl AsRef<Self> for ReplyStatfs {
     #[inline]
     fn as_ref(&self) -> &Self {
@@ -321,6 +563,8 @@ impl ReplyStatfs {
 #[derive(Debug)]
 #[must_use]
 pub struct ReplyLk(fuse_lk_out);
+
+impl_reply!(ReplyLk);
 
 impl AsRef<Self> for ReplyLk {
     #[inline]
@@ -350,6 +594,8 @@ impl ReplyLk {
 #[must_use]
 pub struct ReplyBmap(fuse_bmap_out);
 
+impl_reply!(ReplyBmap);
+
 impl AsRef<Self> for ReplyBmap {
     #[inline]
     fn as_ref(&self) -> &Self {
@@ -377,6 +623,8 @@ impl ReplyBmap {
 #[derive(Debug)]
 #[must_use]
 pub struct ReplyPoll(fuse_poll_out);
+
+impl_reply!(ReplyPoll);
 
 impl AsRef<Self> for ReplyPoll {
     #[inline]

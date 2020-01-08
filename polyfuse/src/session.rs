@@ -114,7 +114,7 @@ impl Session {
                         let mut st = StatFs::default();
                         st.set_namelen(255);
                         st.set_bsize(512);
-                        cx.reply_bytes(crate::reply::ReplyStatfs::new(st)).await?;
+                        cx.reply(crate::reply::ReplyStatfs::new(st)).await?;
                     }
                 }
                 op => {

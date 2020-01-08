@@ -13,15 +13,14 @@
 
 use pico_args::Arguments;
 use polyfuse::{
-    io::{Reader, ScatteredBytes, Writer},
+    io::{Reader, Writer},
     op,
-    reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite},
+    reply::{Reply, ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite},
     Context, DirEntry, FileAttr, Filesystem, Forget, Operation,
 };
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
-    ffi::OsString,
     io,
     os::unix::prelude::*,
     path::{Path, PathBuf},
@@ -301,16 +300,13 @@ impl PathThrough {
         Ok(ReplyAttr::new(attr))
     }
 
-    async fn do_readlink(&self, op: &op::Readlink<'_>) -> io::Result<OsString> {
+    async fn do_readlink(&self, op: &op::Readlink<'_>) -> io::Result<PathBuf> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        let link = tokio::fs::read_link(self.source.join(&inode.path)).await?;
-
-        // TODO: impl ScatteredBytes for PathBuf
-        Ok(link.into_os_string())
+        tokio::fs::read_link(self.source.join(&inode.path)).await
     }
 
     async fn do_opendir(&self, op: &op::Opendir<'_>) -> io::Result<ReplyOpen> {
@@ -331,7 +327,7 @@ impl PathThrough {
         Ok(ReplyOpen::new(key as u64))
     }
 
-    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<impl ScatteredBytes> {
+    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<impl Reply> {
         let dirs = self.dirs.lock().await;
 
         let dir = dirs
@@ -419,7 +415,7 @@ impl PathThrough {
         Ok(ReplyOpen::new(key as u64))
     }
 
-    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl ScatteredBytes> {
+    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl Reply> {
         let files = self.files.lock().await;
 
         let file = files
@@ -536,7 +532,7 @@ impl Filesystem for PathThrough {
         macro_rules! try_reply {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(reply) => cx.reply_bytes(reply).await,
+                    Ok(reply) => cx.reply(reply).await,
                     Err(err) => cx.reply_err(err.raw_os_error().unwrap_or(libc::EIO)).await,
                 }
             };

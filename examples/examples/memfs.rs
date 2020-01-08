@@ -2,9 +2,9 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
-    io::{Collector, Reader, ScatteredBytes, Writer},
+    io::{Reader, Writer},
     op,
-    reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr},
+    reply::{Collector, Reply, ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr},
     Context, DirEntry, FileAttr, Filesystem, Forget, Operation,
 };
 use slab::Slab;
@@ -434,7 +434,7 @@ impl MemFS {
         Ok(ReplyOpen::new(key as u64))
     }
 
-    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<impl ScatteredBytes> {
+    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<impl Reply> {
         let dirs = self.dir_handles.lock().await;
 
         let dir = dirs
@@ -556,7 +556,7 @@ impl MemFS {
         }
     }
 
-    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl ScatteredBytes> {
+    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl Reply> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -607,7 +607,7 @@ impl MemFS {
         }
     }
 
-    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl ScatteredBytes> {
+    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl Reply> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -649,7 +649,7 @@ impl MemFS {
         }
     }
 
-    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl ScatteredBytes> {
+    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl Reply> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
@@ -718,7 +718,7 @@ impl Filesystem for MemFS {
         macro_rules! try_reply {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(reply) => cx.reply_bytes(reply).await,
+                    Ok(reply) => cx.reply(reply).await,
                     Err(err) => cx.reply_err(err.raw_os_error().unwrap_or(libc::EIO)).await,
                 }
             };
@@ -776,19 +776,19 @@ enum Either<L, R> {
     Right(R),
 }
 
-impl<L, R> ScatteredBytes for Either<L, R>
+impl<L, R> Reply for Either<L, R>
 where
-    L: ScatteredBytes,
-    R: ScatteredBytes,
+    L: Reply,
+    R: Reply,
 {
     #[inline]
-    fn collect<'a, C: ?Sized>(&'a self, collector: &mut C)
+    fn collect_bytes<'a, C: ?Sized>(&'a self, collector: &mut C)
     where
         C: Collector<'a>,
     {
         match self {
-            Either::Left(l) => l.collect(collector),
-            Either::Right(r) => r.collect(collector),
+            Either::Left(l) => l.collect_bytes(collector),
+            Either::Right(r) => r.collect_bytes(collector),
         }
     }
 }

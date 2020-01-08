@@ -6,9 +6,18 @@ mod fs;
 use crate::fs::{FileDesc, ReadDir};
 use pico_args::Arguments;
 use polyfuse::{
-    io::{Collector, Reader, ScatteredBytes, Writer},
+    io::{Reader, Writer},
     op,
-    reply::{ReplyAttr, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr},
+    reply::{
+        Collector, //
+        Reply,
+        ReplyAttr,
+        ReplyEntry,
+        ReplyOpen,
+        ReplyStatfs,
+        ReplyWrite,
+        ReplyXattr,
+    },
     CapabilityFlags, Context, DirEntry, Filesystem, Operation,
 };
 use slab::Slab;
@@ -79,19 +88,19 @@ enum Either<L, R> {
     Right(R),
 }
 
-impl<L, R> ScatteredBytes for Either<L, R>
+impl<L, R> Reply for Either<L, R>
 where
-    L: ScatteredBytes,
-    R: ScatteredBytes,
+    L: Reply,
+    R: Reply,
 {
     #[inline]
-    fn collect<'a, C: ?Sized>(&'a self, collector: &mut C)
+    fn collect_bytes<'a, C: ?Sized>(&'a self, collector: &mut C)
     where
         C: Collector<'a>,
     {
         match self {
-            Either::Left(l) => l.collect(collector),
-            Either::Right(r) => r.collect(collector),
+            Either::Left(l) => l.collect_bytes(collector),
+            Either::Right(r) => r.collect_bytes(collector),
         }
     }
 }
@@ -615,7 +624,7 @@ impl Passthrough {
         Ok(())
     }
 
-    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl ScatteredBytes> {
+    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl Reply> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -639,7 +648,7 @@ impl Passthrough {
         }
     }
 
-    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl ScatteredBytes> {
+    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl Reply> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -723,7 +732,7 @@ impl Filesystem for Passthrough {
         macro_rules! try_reply {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(reply) => cx.reply_bytes(reply).await,
+                    Ok(reply) => cx.reply(reply).await,
                     Err(err) => cx.reply_err(io_to_errno(err)).await,
                 }
             };
@@ -779,7 +788,7 @@ impl Filesystem for Passthrough {
                 let res = self.do_write(&mut reader, &op).await;
                 drop(reader);
                 match res {
-                    Ok(reply) => cx.reply_bytes(reply).await,
+                    Ok(reply) => cx.reply(reply).await,
                     Err(err) => cx.reply_err(io_to_errno(err)).await,
                 }
             }
