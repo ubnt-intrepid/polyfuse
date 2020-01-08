@@ -109,7 +109,13 @@ pub enum Operation<'a> {
 // TODO: add operations:
 // Ioctl
 
-/// Look up a directory entry by name.
+/// Lookup a directory entry by name.
+///
+/// If a matching entry is found, the filesystem replies to the kernel
+/// with its attribute using `ReplyEntry`.  In addition, the lookup count
+/// of the corresponding inode is incremented on success.
+///
+/// See also the documentation of `ReplyEntry` for tuning the reply parameters.
 #[derive(Debug)]
 pub struct Lookup<'a> {
     header: &'a fuse_in_header,
@@ -129,8 +135,12 @@ impl<'a> Lookup<'a> {
         self.name
     }
 
-    /// Reply with the entry information.
     #[inline]
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -144,6 +154,11 @@ impl<'a> Lookup<'a> {
 }
 
 /// Get file attributes.
+///
+/// The obtained attribute values are replied using `ReplyAttr`.
+///
+/// If writeback caching is enabled, the kernel might ignore
+/// some of the attribute values, such as `st_size`.
 #[derive(Debug)]
 pub struct Getattr<'a> {
     header: &'a fuse_in_header,
@@ -165,10 +180,11 @@ impl<'a> Getattr<'a> {
         }
     }
 
-    /// Reply with the obtained attribute values.
-    ///
-    /// If writeback caching is enabled, the kernel might ignore
-    /// some of the attribute values specified here (like `st_size`).
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -182,6 +198,9 @@ impl<'a> Getattr<'a> {
 }
 
 /// Set file attributes.
+///
+/// When the setting of attribute values succeeds, the filesystem replies its value
+/// to the kernel using `ReplyAttr`.
 #[derive(Debug)]
 pub struct Setattr<'a> {
     header: &'a fuse_in_header,
@@ -300,8 +319,12 @@ impl<'a> Setattr<'a> {
         self.get(crate::kernel::FATTR_LOCKOWNER, |arg| arg.lock_owner)
     }
 
-    /// Reply with the modified attribute values.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -326,7 +349,11 @@ impl Readlink<'_> {
         self.header.nodeid
     }
 
-    /// Reply with the obtained link value.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -340,6 +367,9 @@ impl Readlink<'_> {
 }
 
 /// Create a symbolic link.
+///
+/// When the link is successfully created, the filesystem must send
+/// its attribute values using `ReplyEntry`.
 #[derive(Debug)]
 pub struct Symlink<'a> {
     header: &'a fuse_in_header,
@@ -366,8 +396,12 @@ impl<'a> Symlink<'a> {
         &*self.link
     }
 
-    /// Reply with the entry information.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -381,6 +415,9 @@ impl<'a> Symlink<'a> {
 }
 
 /// Create a file node.
+///
+/// When the file node is successfully created, the filesystem must send
+/// its attribute values using `ReplyEntry`.
 #[derive(Debug)]
 pub struct Mknod<'a> {
     header: &'a fuse_in_header,
@@ -422,7 +459,11 @@ impl<'a> Mknod<'a> {
         self.arg.umask
     }
 
-    /// Reply with the entry information about the created node.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -436,6 +477,9 @@ impl<'a> Mknod<'a> {
 }
 
 /// Create a directory node.
+///
+/// When the directory is successfully created, the filesystem must send
+/// its attribute values using `ReplyEntry`.
 #[derive(Debug)]
 pub struct Mkdir<'a> {
     header: &'a fuse_in_header,
@@ -468,8 +512,12 @@ impl<'a> Mkdir<'a> {
         self.arg.umask
     }
 
-    /// Reply with the entry information about the created directory.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -504,8 +552,12 @@ impl<'a> Unlink<'a> {
         &*self.name
     }
 
-    /// Reply that the file is successfully removed.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -536,8 +588,12 @@ impl<'a> Rmdir<'a> {
         &*self.name
     }
 
-    /// Reply that the directory is successfully removed.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -610,8 +666,12 @@ impl<'a> Rename<'a> {
         }
     }
 
-    /// Reply that the target node is successfully renamed.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -621,6 +681,9 @@ impl<'a> Rename<'a> {
 }
 
 /// Create a hard link.
+///
+/// When the link is successfully created, the filesystem must send
+/// its attribute values using `ReplyEntry`.
 #[derive(Debug)]
 pub struct Link<'a> {
     header: &'a fuse_in_header,
@@ -647,7 +710,11 @@ impl<'a> Link<'a> {
         &*self.newname
     }
 
-    /// Reply with the entry information about the created hard link.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -661,6 +728,14 @@ impl<'a> Link<'a> {
 }
 
 /// Open a file.
+///
+/// If the file is successfully opened, the filesystem must send the identifier
+/// of the opened file handle to the kernel using `ReplyOpen`. This parameter is
+/// set to a series of requests, such as `read` and `write`, until releasing
+/// the file, and is able to be utilized as a "pointer" to the state during
+/// handling the opened file.
+///
+/// See also the documentation of `ReplyOpen` for tuning the reply parameters.
 #[derive(Debug)]
 pub struct Open<'a> {
     header: &'a fuse_in_header,
@@ -689,13 +764,11 @@ impl<'a> Open<'a> {
         self.arg.flags
     }
 
-    /// Reply with the handle of opened file.
-    ///
-    /// The filesystem could have a state used in a series of operations (`read`, `write`,
-    /// etc), with the lifetime from this `open` to the corresponding `release`.
-    /// The `fh` parameter is used to identify the instance of its value in each request.
-    ///
-    /// See the documentation of `ReplyOpen` for details.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -708,7 +781,17 @@ impl<'a> Open<'a> {
     }
 }
 
-/// Read data from an opened file.
+/// Read data from a file.
+///
+/// The total amount of the replied data must be within `size`.
+///
+/// When the file is opened in `direct_io` mode, the result replied will be
+/// reflected in the caller's result of `read` syscall.
+///
+/// When the file is not opened in `direct_io` mode (i.e. the page caching is enabled),
+/// the filesystem should send *exactly* the specified range of file content to the
+/// kernel. If the length of the passed data is shorter than `size`, the rest of
+/// the data will be substituted with zeroes.
 #[derive(Debug)]
 pub struct Read<'a> {
     header: &'a fuse_in_header,
@@ -756,16 +839,12 @@ impl<'a> Read<'a> {
         }
     }
 
-    /// Reply with the content of the specified range of file.
-    ///
-    /// When the file is opened in `direct_io` mode, the result replied here will be
-    /// reflected in the caller's result of `read` syscall.
-    ///
-    /// When the file is not opened in `direct_io` mode (i.e., page caching is enabled),
-    /// the filesystem should send *exactly* the specified range of file content to the
-    /// kernel. If the length of the passed data is shorter than `op.size()`, the rest of
-    /// the data will be substituted with zeroes.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -783,8 +862,12 @@ impl<'a> Read<'a> {
         }
     }
 
-    /// Reply with the discontinuous content of the specified range of file.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply_vectored<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -802,7 +885,16 @@ impl<'a> Read<'a> {
     }
 }
 
-/// Write data to an opened file.
+/// Write data to a file.
+///
+/// If the data is successfully written, the filesystem must send the amount of the written
+/// data using `ReplyWrite`.
+///
+/// When the file is opened in `direct_io` mode, the result replied will be reflected
+/// in the caller's result of `write` syscall.
+///
+/// When the file is not opened in `direct_io` mode (i.e. the page caching is enabled),
+/// the filesystem should receive *exactly* the specified range of file content from the kernel.
 #[derive(Debug)]
 pub struct Write<'a> {
     header: &'a fuse_in_header,
@@ -850,14 +942,12 @@ impl<'a> Write<'a> {
         }
     }
 
-    /// Reply with the amount of the written data.
-    ///
-    /// When the file is opened in `direct_io` mode, the result replied here will be reflected
-    /// in the caller's result of `write` syscall.
-    ///
-    /// When the file is not opened in `direct_io` mode (i.e. the page caching is enabled),
-    /// the filesystem should receive *exactly* the specified range of file content from the kernel.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -915,8 +1005,12 @@ impl<'a> Release<'a> {
         self.arg.release_flags & crate::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
     }
 
-    /// Reply that the file is successfully released.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -926,6 +1020,8 @@ impl<'a> Release<'a> {
 }
 
 /// Get the filesystem statistics.
+///
+/// The obtained statistics must be sent to the kernel using `ReplyStatfs`.
 #[derive(Debug)]
 pub struct Statfs<'a> {
     header: &'a fuse_in_header,
@@ -938,8 +1034,12 @@ impl Statfs<'_> {
         self.header.nodeid
     }
 
-    /// Reply with the obtained filesystem statistics.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -978,7 +1078,11 @@ impl<'a> Fsync<'a> {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
-    /// Reply that the content of the file and/or the metadata are successfully synchronized.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1021,8 +1125,12 @@ impl<'a> Setxattr<'a> {
         self.arg.flags
     }
 
-    /// Reply that the specified extended attribute is succesfully set.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1032,6 +1140,16 @@ impl<'a> Setxattr<'a> {
 }
 
 /// Get an extended attribute.
+///
+/// This operation needs to switch the reply value according to the
+/// value of `size`:
+///
+/// * When `size` is zero, the filesystem must send the length of the
+///   attribute value for the specified name using `ReplyXattr`.
+///
+/// * Otherwise, returns the attribute value with the specified name.
+///   The filesystem should send an `ERANGE` error if the specified
+///   size is too small for the attribute value.
 #[derive(Debug)]
 pub struct Getxattr<'a> {
     header: &'a fuse_in_header,
@@ -1055,9 +1173,11 @@ impl<'a> Getxattr<'a> {
         self.arg.size
     }
 
-    /// Reply with the size information of the attribute value.
-    ///
-    /// The filesystem should use this method if `op.size()` returns zero.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply_size<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1069,7 +1189,11 @@ impl<'a> Getxattr<'a> {
         cx.reply(out.as_ref()).await
     }
 
-    /// Reply with the content of the attribute value.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1087,7 +1211,11 @@ impl<'a> Getxattr<'a> {
         }
     }
 
-    /// Reply with the discontinuous content of the attribute value.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply_vectored<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1106,6 +1234,10 @@ impl<'a> Getxattr<'a> {
 }
 
 /// List extended attribute names.
+///
+/// Each element of the attribute names list must be null-terminated.
+/// As with `Getxattr`, the filesystem must send the data length of the attribute
+/// names using `ReplyXattr` if `size` is zero.
 #[derive(Debug)]
 pub struct Listxattr<'a> {
     header: &'a fuse_in_header,
@@ -1123,9 +1255,11 @@ impl<'a> Listxattr<'a> {
         self.arg.size
     }
 
-    /// Reply with the size information about the attribute names.
-    ///
-    /// The filesystem should use this method if `op.size()` returns zero.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply_size<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1137,9 +1271,11 @@ impl<'a> Listxattr<'a> {
         cx.reply(out.as_ref()).await
     }
 
-    /// Reply with the content of the attribute names.
-    ///
-    /// The attribute names must be seperated by a null character (i.e. `b'\0'`).
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1157,7 +1293,11 @@ impl<'a> Listxattr<'a> {
         }
     }
 
-    /// Reply with the discontinuous content of the attribute names.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply_vectored<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1195,8 +1335,12 @@ impl<'a> Removexattr<'a> {
         &*self.name
     }
 
-    /// Reply that the specified extended attribute is successfully removed.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1237,7 +1381,11 @@ impl<'a> Flush<'a> {
         self.arg.lock_owner
     }
 
-    /// Reply that the file descriptor is successfully closed.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1247,6 +1395,9 @@ impl<'a> Flush<'a> {
 }
 
 /// Open a directory.
+///
+/// If the directory is successfully opened, the filesystem must send
+/// the identifier to the opened directory handle using `ReplyOpen`.
 #[derive(Debug)]
 pub struct Opendir<'a> {
     header: &'a fuse_in_header,
@@ -1266,8 +1417,12 @@ impl<'a> Opendir<'a> {
         self.arg.flags
     }
 
-    /// Reply with the handle of opened directory.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1321,8 +1476,12 @@ impl<'a> Readdir<'a> {
         self.is_plus
     }
 
-    /// Reply with the data of directory stream.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1342,6 +1501,10 @@ impl<'a> Readdir<'a> {
 
     /// Reply with the discontinus data of directory stream.
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply_vectored<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1385,8 +1548,12 @@ impl<'a> Releasedir<'a> {
         self.arg.flags
     }
 
-    /// Reply that the directory is successfully released.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1421,7 +1588,11 @@ impl<'a> Fsyncdir<'a> {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
-    /// Reply that the content of the directory and/or the metadata are successfully synchronized.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1431,6 +1602,8 @@ impl<'a> Fsyncdir<'a> {
 }
 
 /// Test for a POSIX file lock.
+///
+/// The lock result must be replied using `ReplyLk`.
 #[derive(Debug)]
 pub struct Getlk<'a> {
     header: &'a fuse_in_header,
@@ -1458,7 +1631,11 @@ impl<'a> Getlk<'a> {
         FileLock::new(&self.arg.lk)
     }
 
-    /// Reply with the provided lock result.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1510,8 +1687,12 @@ impl<'a> Setlk<'a> {
         self.sleep
     }
 
-    /// Reply that the specified file lock is successfully set.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1569,7 +1750,11 @@ impl<'a> Flock<'a> {
         Some(op)
     }
 
-    /// Reply that updating the lock is successful.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1596,7 +1781,11 @@ impl<'a> Access<'a> {
         self.arg.mask
     }
 
-    /// Reply that the provided access mode is valid for the inode.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1609,6 +1798,9 @@ impl<'a> Access<'a> {
 ///
 /// This operation is a combination of `Mknod` and `Open`. If an `ENOSYS` error is returned
 /// for this operation, those operations will be used instead.
+///
+/// If the file is successfully created and opened, a pair of `ReplyEntry` and `ReplyOpen`
+/// with the corresponding attribute values and the file handle must be sent to the kernel.
 #[derive(Debug)]
 pub struct Create<'a> {
     header: &'a fuse_in_header,
@@ -1654,7 +1846,11 @@ impl<'a> Create<'a> {
         self.arg.flags
     }
 
-    /// Reply with the entry information and a handle of opened file.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     #[inline]
     pub async fn reply<T: ?Sized>(
         self,
@@ -1670,6 +1866,8 @@ impl<'a> Create<'a> {
 }
 
 /// Map block index within a file to block index within device.
+///
+/// The mapping result must be replied using `ReplyBmap`.
 ///
 /// This operation makes sense only for filesystems that use
 /// block devices, and is called only when the mount options
@@ -1696,7 +1894,11 @@ impl<'a> Bmap<'a> {
         self.arg.blocksize
     }
 
-    /// Reply with the mapped block index.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1710,6 +1912,10 @@ impl<'a> Bmap<'a> {
 }
 
 /// Allocate requested space.
+///
+/// If this operation is successful, the filesystem shall not report
+/// the error caused by the lack of free spaces to subsequent write
+/// requests.
 #[derive(Debug)]
 pub struct Fallocate<'a> {
     header: &'a fuse_in_header,
@@ -1751,12 +1957,12 @@ impl<'a> Fallocate<'a> {
         self.arg.mode
     }
 
-    /// Reply that the requested region is successfully allocated.
-    ///
-    /// If this operation is successful, the filesystem shall not report
-    /// the error caused by the lack of free spaces to subsequent write
-    /// requests.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
     where
         T: Writer + Unpin,
@@ -1766,6 +1972,8 @@ impl<'a> Fallocate<'a> {
 }
 
 /// Copy a range of data from an opened file to another.
+///
+/// The length of copied data must be replied using `ReplyWrite`.
 #[derive(Debug)]
 pub struct CopyFileRange<'a> {
     header: &'a fuse_in_header,
@@ -1839,8 +2047,12 @@ impl<'a> CopyFileRange<'a> {
         self.arg.flags
     }
 
-    /// Reply with the copied data length.
+    #[doc(hidden)]
     #[inline]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,
@@ -1854,6 +2066,8 @@ impl<'a> CopyFileRange<'a> {
 }
 
 /// Poll for readiness.
+///
+/// The mask of ready poll events must be replied using `ReplyPoll`.
 #[derive(Debug)]
 pub struct Poll<'a> {
     header: &'a fuse_in_header,
@@ -1892,7 +2106,11 @@ impl<'a> Poll<'a> {
         }
     }
 
-    /// Reply with the mask of ready poll events.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.3.3",
+        note = "This method will be removed in the future version."
+    )]
     pub async fn reply<T: ?Sized>(
         self,
         cx: &mut Context<'_, T>,

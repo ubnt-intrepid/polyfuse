@@ -71,9 +71,6 @@ impl<'cx, T: ?Sized> Context<'cx, T> {
     }
 
     /// Reply to the kernel with an arbitrary bytes of data.
-    ///
-    /// This is the basic method for sending a reply to the kernel.
-    /// Typically, it is called via replying method associated with the operation.
     #[inline]
     pub async fn reply<R>(&mut self, reply: R) -> io::Result<()>
     where

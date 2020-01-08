@@ -167,17 +167,13 @@ impl Filesystem for Heartbeat {
             Operation::Getattr(op) => match op.ino() {
                 ROOT_INO => {
                     let inner = self.inner.lock().await;
-                    op.reply(cx, ReplyAttr::new(inner.attr)).await?;
+                    cx.reply(ReplyAttr::new(inner.attr)).await?;
                 }
                 _ => cx.reply_err(libc::ENOENT).await?,
             },
             Operation::Open(op) => match op.ino() {
                 ROOT_INO => {
-                    op.reply(cx, {
-                        ReplyOpen::new(0) //
-                            .keep_cache(true)
-                    })
-                    .await?;
+                    cx.reply(ReplyOpen::new(0).keep_cache(true)).await?;
                 }
                 _ => cx.reply_err(libc::ENOENT).await?,
             },
@@ -187,12 +183,12 @@ impl Filesystem for Heartbeat {
 
                     let offset = op.offset() as usize;
                     if offset >= inner.content.len() {
-                        op.reply(cx, &[]).await?;
+                        cx.reply(&[]).await?;
                     } else {
                         let size = op.size() as usize;
                         let data = &inner.content.as_bytes()[offset..];
                         let data = &data[..std::cmp::min(data.len(), size)];
-                        op.reply(cx, data).await?;
+                        cx.reply(data).await?;
                     }
                 }
                 _ => cx.reply_err(libc::ENOENT).await?,

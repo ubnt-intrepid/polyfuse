@@ -68,13 +68,13 @@ impl Hello {
     {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
-                op.reply(cx, {
+                cx.reply(
                     ReplyEntry::default()
                         .ino(HELLO_INO)
                         .attr(self.hello_attr) //
                         .ttl_attr(TTL)
-                        .ttl_entry(TTL)
-                })
+                        .ttl_entry(TTL),
+                )
                 .await?;
             }
             _ => cx.reply_err(libc::ENOENT).await?,
@@ -97,11 +97,7 @@ impl Hello {
             _ => return cx.reply_err(libc::ENOENT).await,
         };
 
-        op.reply(cx, {
-            ReplyAttr::new(attr) //
-                .ttl_attr(TTL)
-        })
-        .await?;
+        cx.reply(ReplyAttr::new(attr).ttl_attr(TTL)).await?;
 
         Ok(())
     }
@@ -118,13 +114,13 @@ impl Hello {
 
         let offset = op.offset() as usize;
         if offset >= HELLO_CONTENT.len() {
-            return op.reply(cx, &[]).await;
+            return cx.reply(&[]).await;
         }
 
         let size = op.size() as usize;
         let data = &HELLO_CONTENT[offset..];
         let data = &data[..std::cmp::min(data.len(), size)];
-        op.reply(cx, data).await?;
+        cx.reply(data).await?;
 
         Ok(())
     }
@@ -155,7 +151,7 @@ impl Hello {
             total_len += entry.len();
         }
 
-        op.reply_vectored(cx, &*entries).await?;
+        cx.reply(entries).await?;
 
         Ok(())
     }
