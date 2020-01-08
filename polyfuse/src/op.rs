@@ -1499,7 +1499,7 @@ impl<'a> Readdir<'a> {
         }
     }
 
-    /// Reply with the discontinus data of directory stream.
+    #[doc(hidden)]
     #[inline]
     #[deprecated(
         since = "0.3.3",
