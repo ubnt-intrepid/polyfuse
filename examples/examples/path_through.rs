@@ -21,6 +21,7 @@ use polyfuse::{
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
+    convert::TryInto,
     io,
     os::unix::prelude::*,
     path::{Path, PathBuf},
@@ -150,22 +151,9 @@ impl PathThrough {
 
     async fn get_attr(&self, path: impl AsRef<Path>) -> io::Result<FileAttr> {
         let metadata = tokio::fs::symlink_metadata(self.source.join(path)).await?;
-
-        let mut attr = FileAttr::default();
-        attr.set_ino(metadata.ino());
-        attr.set_size(metadata.size());
-        attr.set_mode(metadata.mode());
-        attr.set_nlink(metadata.nlink() as u32);
-        attr.set_uid(metadata.uid());
-        attr.set_gid(metadata.gid());
-        attr.set_rdev(metadata.rdev() as u32);
-        attr.set_blksize(metadata.blksize() as u32);
-        attr.set_blocks(metadata.blocks());
-        attr.set_atime_raw((metadata.atime() as u64, metadata.atime_nsec() as u32));
-        attr.set_mtime_raw((metadata.mtime() as u64, metadata.mtime_nsec() as u32));
-        attr.set_ctime_raw((metadata.ctime() as u64, metadata.ctime_nsec() as u32));
-
-        Ok(attr)
+        metadata
+            .try_into()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
     }
 
     async fn do_lookup(&self, op: &op::Lookup<'_>) -> io::Result<ReplyEntry> {
