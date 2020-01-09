@@ -151,7 +151,6 @@ where
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct Request {
     header: fuse_in_header,
     arg: Vec<u8>,
@@ -258,12 +257,6 @@ where
                 "written data is too short",
             )));
         }
-
-        tracing::debug!(
-            "Reply to kernel: unique={}: error={}",
-            me.header.unique,
-            me.header.error
-        );
 
         Poll::Ready(Ok(()))
     }

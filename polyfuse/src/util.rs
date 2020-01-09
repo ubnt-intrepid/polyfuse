@@ -25,3 +25,18 @@ pub(crate) fn make_raw_time(time: SystemTime) -> (u64, u32) {
         .expect("invalid time");
     (duration.as_secs(), duration.subsec_nanos())
 }
+
+pub(crate) trait BuilderExt {
+    fn if_some<T, F>(self, value: Option<T>, f: F) -> Self
+    where
+        Self: Sized,
+        F: FnOnce(Self, T) -> Self,
+    {
+        match value {
+            Some(value) => f(self, value),
+            None => self,
+        }
+    }
+}
+
+impl<T> BuilderExt for T {}
