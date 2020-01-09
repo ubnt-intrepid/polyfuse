@@ -2,7 +2,12 @@ use crate::{
     kernel::{fuse_attr, fuse_file_lock, fuse_forget_one, fuse_kstatfs},
     util::{make_raw_time, make_system_time},
 };
-use std::{convert::TryFrom, error, fmt, time::SystemTime};
+use std::{
+    convert::TryFrom, //
+    error,
+    fmt,
+    time::SystemTime,
+};
 
 /// Attributes about a file.
 ///
@@ -185,28 +190,77 @@ impl FileAttr {
     }
 }
 
-impl TryFrom<libc::stat> for FileAttr {
-    type Error = std::num::TryFromIntError;
+// #[cfg(target_os = "linux")]
+mod impl_try_from_for_file_attr {
+    use super::*;
+    use std::{
+        convert::{TryFrom, TryInto},
+        fs::Metadata,
+        mem,
+        os::linux::fs::MetadataExt,
+    };
 
-    fn try_from(attr: libc::stat) -> Result<Self, Self::Error> {
-        Ok(Self(fuse_attr {
-            ino: u64::try_from(attr.st_ino).map_err(Self::Error::from)?,
-            size: u64::try_from(attr.st_size).map_err(Self::Error::from)?,
-            blocks: u64::try_from(attr.st_blocks).map_err(Self::Error::from)?,
-            atime: u64::try_from(attr.st_atime).map_err(Self::Error::from)?,
-            mtime: u64::try_from(attr.st_mtime).map_err(Self::Error::from)?,
-            ctime: u64::try_from(attr.st_ctime).map_err(Self::Error::from)?,
-            atimensec: u32::try_from(attr.st_atime_nsec).map_err(Self::Error::from)?,
-            mtimensec: u32::try_from(attr.st_mtime_nsec).map_err(Self::Error::from)?,
-            ctimensec: u32::try_from(attr.st_ctime_nsec).map_err(Self::Error::from)?,
-            mode: u32::try_from(attr.st_mode).map_err(Self::Error::from)?,
-            nlink: u32::try_from(attr.st_nlink).map_err(Self::Error::from)?,
-            uid: u32::try_from(attr.st_uid).map_err(Self::Error::from)?,
-            gid: u32::try_from(attr.st_gid).map_err(Self::Error::from)?,
-            rdev: u32::try_from(attr.st_gid).map_err(Self::Error::from)?,
-            blksize: u32::try_from(attr.st_blksize).map_err(Self::Error::from)?,
-            padding: 0,
-        }))
+    impl TryFrom<libc::stat> for FileAttr {
+        // FIXME: switch to the custom error type.
+        type Error = std::num::TryFromIntError;
+
+        #[allow(clippy::cast_sign_loss)]
+        fn try_from(attr: libc::stat) -> Result<Self, Self::Error> {
+            let mut ret: fuse_attr = unsafe { mem::MaybeUninit::zeroed().assume_init() };
+
+            ret.ino = attr.st_ino;
+            ret.mode = attr.st_mode;
+            ret.nlink = attr.st_nlink.try_into()?; // FUSE does not support 64bit nlinks.
+            ret.uid = attr.st_uid;
+            ret.gid = attr.st_gid;
+            ret.rdev = attr.st_rdev.try_into()?; // FUSE does not support 64bit devide ID.
+
+            // In the FUSE kernel driver, the type of this field is treated as `loff_t`.
+            ret.size = attr.st_size as u64;
+
+            ret.atime = attr.st_atime as u64;
+            ret.atimensec = attr.st_atime_nsec.try_into()?;
+            ret.mtime = attr.st_mtime as u64;
+            ret.mtimensec = attr.st_mtime_nsec.try_into()?;
+            ret.ctime = attr.st_ctime as u64;
+            ret.ctimensec = attr.st_ctime_nsec.try_into()?;
+
+            ret.blksize = attr.st_blksize.try_into()?;
+            ret.blocks = attr.st_blocks as u64;
+
+            Ok(Self(ret))
+        }
+    }
+
+    impl TryFrom<Metadata> for FileAttr {
+        type Error = std::num::TryFromIntError;
+
+        #[allow(clippy::cast_sign_loss)]
+        fn try_from(attr: Metadata) -> Result<Self, Self::Error> {
+            let mut ret: fuse_attr = unsafe { mem::MaybeUninit::zeroed().assume_init() };
+
+            ret.ino = attr.st_ino();
+            ret.mode = attr.st_mode();
+            ret.nlink = attr.st_nlink().try_into()?; // FUSE does not support 64bit nlinks.
+            ret.uid = attr.st_uid();
+            ret.gid = attr.st_gid();
+            ret.rdev = attr.st_rdev().try_into()?; // FUSE does not support 64bit devide ID.
+
+            // In the FUSE kernel driver, the type of this field is treated as `loff_t`.
+            ret.size = attr.st_size() as u64;
+
+            ret.atime = attr.st_atime() as u64;
+            ret.atimensec = attr.st_atime_nsec().try_into()?;
+            ret.mtime = attr.st_mtime() as u64;
+            ret.mtimensec = attr.st_mtime_nsec().try_into()?;
+            ret.ctime = attr.st_ctime() as u64;
+            ret.ctimensec = attr.st_ctime_nsec().try_into()?;
+
+            ret.blksize = attr.st_blksize().try_into()?;
+            ret.blocks = attr.st_blocks() as u64;
+
+            Ok(Self(ret))
+        }
     }
 }
 
