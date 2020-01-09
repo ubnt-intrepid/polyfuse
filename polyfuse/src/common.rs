@@ -7,9 +7,28 @@ use std::{convert::TryFrom, error, fmt, time::SystemTime};
 /// Attributes about a file.
 ///
 /// This type is ABI-compatible with `fuse_attr`.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 #[repr(transparent)]
 pub struct FileAttr(fuse_attr);
+
+impl fmt::Debug for FileAttr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileAttr")
+            .field("ino", &self.ino())
+            .field("size", &self.size())
+            .field("mode", &self.mode())
+            .field("nlink", &self.nlink())
+            .field("uid", &self.uid())
+            .field("gid", &self.gid())
+            .field("rdev", &self.rdev())
+            .field("blksize", &self.blksize())
+            .field("blocks", &self.blocks())
+            .field("atime", &self.atime())
+            .field("mtime", &self.mtime())
+            .field("ctime", &self.ctime())
+            .finish()
+    }
+}
 
 impl FileAttr {
     /// Return the inode number.
@@ -200,9 +219,20 @@ impl FileAttr {
 /// File lock information.
 ///
 /// This type is ABI-compatible with `fuse_file_lock`.
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Copy, Clone, Default)]
 #[repr(transparent)]
 pub struct FileLock(fuse_file_lock);
+
+impl fmt::Debug for FileLock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileLock")
+            .field("typ", &self.typ())
+            .field("start", &self.start())
+            .field("end", &self.end())
+            .field("pid", &self.pid())
+            .finish()
+    }
+}
 
 impl FileLock {
     pub(crate) fn new(attr: &fuse_file_lock) -> &Self {
@@ -314,9 +344,24 @@ impl error::Error for InvalidFileLock {}
 /// Filesystem statistics.
 ///
 /// This type is ABI-compatible with `fuse_kstatfs`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 #[repr(transparent)]
 pub struct StatFs(fuse_kstatfs);
+
+impl fmt::Debug for StatFs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Statfs")
+            .field("bsize", &self.bsize())
+            .field("frsize", &self.frsize())
+            .field("blocks", &self.blocks())
+            .field("bfree", &self.bfree())
+            .field("bavail", &self.bavail())
+            .field("files", &self.files())
+            .field("ffree", &self.ffree())
+            .field("namelen", &self.namelen())
+            .finish()
+    }
+}
 
 impl StatFs {
     /// Return the block size.
@@ -426,9 +471,17 @@ impl TryFrom<libc::statvfs> for StatFs {
 /// A forget information.
 ///
 /// This type is ABI-compatible with `fuse_forget_one`.
-#[derive(Debug)]
 #[repr(transparent)]
 pub struct Forget(fuse_forget_one);
+
+impl fmt::Debug for Forget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Forget")
+            .field("ino", &self.ino())
+            .field("nlookup", &self.nlookup())
+            .finish()
+    }
+}
 
 impl Forget {
     pub(crate) const fn new(ino: u64, nlookup: u64) -> Self {

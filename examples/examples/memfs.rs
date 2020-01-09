@@ -11,12 +11,14 @@ use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::{OsStr, OsString},
+    fmt::Debug,
     io,
     path::PathBuf,
     sync::Arc,
     time::Duration,
 };
 use tokio::sync::Mutex;
+use tracing_futures::Instrument;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -434,7 +436,7 @@ impl MemFS {
         Ok(ReplyOpen::new(key as u64))
     }
 
-    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<impl Reply> {
+    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<impl Reply + Debug> {
         let dirs = self.dir_handles.lock().await;
 
         let dir = dirs
@@ -556,7 +558,7 @@ impl MemFS {
         }
     }
 
-    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl Reply> {
+    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl Reply + Debug> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -607,7 +609,7 @@ impl MemFS {
         }
     }
 
-    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl Reply> {
+    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl Reply + Debug> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -649,7 +651,7 @@ impl MemFS {
         }
     }
 
-    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl Reply> {
+    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl Reply + Debug> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
@@ -715,11 +717,21 @@ impl Filesystem for MemFS {
     where
         T: Reader + Writer + Send + Unpin,
     {
+        let span = tracing::debug_span!("MemFS::call", unique = cx.unique());
+        span.in_scope(|| tracing::debug!(?op));
+
         macro_rules! try_reply {
             ($e:expr) => {
-                match ($e).await {
-                    Ok(reply) => cx.reply(reply).await,
-                    Err(err) => cx.reply_err(err.raw_os_error().unwrap_or(libc::EIO)).await,
+                match ($e).instrument(span.clone()).await {
+                    Ok(reply) => {
+                        span.in_scope(|| tracing::debug!(reply=?reply));
+                        cx.reply(reply).await
+                    }
+                    Err(err) => {
+                        let errno = err.raw_os_error().unwrap_or(libc::EIO);
+                        span.in_scope(|| tracing::debug!(errno=errno));
+                        cx.reply_err(errno).await
+                    }
                 }
             };
         }
@@ -753,11 +765,17 @@ impl Filesystem for MemFS {
 
             Operation::Read(op) => try_reply!(self.do_read(&op)),
             Operation::Write(op) => {
-                let res = self.do_write(&op, &mut cx.reader()).await;
+                let res = self
+                    .do_write(&op, &mut cx.reader())
+                    .instrument(span.clone())
+                    .await;
                 try_reply!(async { res })
             }
 
-            _ => Ok(()),
+            _ => {
+                span.in_scope(|| tracing::debug!("NOSYS"));
+                Ok(())
+            }
         }
     }
 }
@@ -771,6 +789,7 @@ fn unknown_error() -> io::Error {
 }
 
 // FIXME: use either crate.
+#[derive(Debug)]
 enum Either<L, R> {
     Left(L),
     Right(R),

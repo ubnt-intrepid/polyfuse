@@ -18,11 +18,11 @@ use crate::{
     },
     op::OperationKind,
     session::Session,
-    util::as_bytes,
+    util::{as_bytes, BuilderExt},
 };
 use bitflags::bitflags;
 use lazy_static::lazy_static;
-use std::{cmp, io};
+use std::{cmp, fmt, io};
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -245,8 +245,25 @@ impl SessionInitializer {
 }
 
 /// Information about the connection associated with a session.
-#[derive(Debug)]
 pub struct ConnectionInfo(fuse_init_out);
+
+impl fmt::Debug for ConnectionInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectionInfo")
+            .field("proto_major", &self.proto_major())
+            .field("proto_minor", &self.proto_minor())
+            .field("flags", &self.flags())
+            .field("no_open_support", &self.no_open_support())
+            .field("no_opendir_support", &self.no_opendir_support())
+            .field("max_readahead", &self.max_readahead())
+            .field("max_write", &self.max_write())
+            .field("max_background", &self.max_background())
+            .field("congestion_threshold", &self.congestion_threshold())
+            .field("time_gran", &self.time_gran())
+            .if_some(self.max_pages(), |f, pages| f.field("max_pages", &pages))
+            .finish()
+    }
+}
 
 impl ConnectionInfo {
     /// Returns the major version of the protocol.

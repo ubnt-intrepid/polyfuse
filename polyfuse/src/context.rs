@@ -14,7 +14,13 @@ pub struct Context<'cx, T: ?Sized> {
 
 impl<T: ?Sized> fmt::Debug for Context<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Context").finish()
+        f.debug_struct("Context")
+            .field("unique", &self.unique())
+            .field("uid", &self.uid())
+            .field("gid", &self.gid())
+            .field("pid", &self.pid())
+            .field("replied", &self.replied())
+            .finish()
     }
 }
 

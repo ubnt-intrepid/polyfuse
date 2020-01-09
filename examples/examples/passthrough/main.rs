@@ -25,6 +25,7 @@ use std::{
     collections::hash_map::{Entry, HashMap},
     convert::TryInto,
     ffi::{OsStr, OsString},
+    fmt::Debug,
     io,
     os::unix::prelude::*,
     path::PathBuf,
@@ -35,6 +36,7 @@ use tokio::{
     fs::{File, OpenOptions},
     sync::Mutex,
 };
+use tracing_futures::Instrument;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -83,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 // FIXME: use either crate.
+#[derive(Debug)]
 enum Either<L, R> {
     Left(L),
     Right(R),
@@ -624,7 +627,7 @@ impl Passthrough {
         Ok(())
     }
 
-    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl Reply> {
+    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl Reply + Debug> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -648,7 +651,7 @@ impl Passthrough {
         }
     }
 
-    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl Reply> {
+    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl Reply + Debug> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -729,11 +732,21 @@ impl Filesystem for Passthrough {
     where
         T: Reader + Writer + Send + Unpin,
     {
+        let span = tracing::debug_span!("Passthrough::call", unique = cx.unique());
+        span.in_scope(|| tracing::debug!(?op));
+
         macro_rules! try_reply {
             ($e:expr) => {
-                match ($e).await {
-                    Ok(reply) => cx.reply(reply).await,
-                    Err(err) => cx.reply_err(io_to_errno(err)).await,
+                match ($e).instrument(span.clone()).await {
+                    Ok(reply) => {
+                        span.in_scope(|| tracing::debug!(reply = ?reply));
+                        cx.reply(reply).await
+                    },
+                    Err(err) => {
+                        let errno = io_to_errno(err);
+                        span.in_scope(|| tracing::debug!(errno = errno));
+                        cx.reply_err(errno).await
+                    },
                 }
             };
         }

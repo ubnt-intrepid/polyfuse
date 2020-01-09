@@ -3,16 +3,26 @@ use crate::{
     reply::{Collector, Reply},
 };
 use memoffset::offset_of;
-use std::{convert::TryFrom, ffi::OsStr, mem, os::unix::ffi::OsStrExt, ptr};
+use std::{convert::TryFrom, ffi::OsStr, fmt, mem, os::unix::ffi::OsStrExt, ptr};
 
 fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
 
 /// A directory entry replied to the kernel.
-#[derive(Debug)]
 pub struct DirEntry {
     dirent_buf: Vec<u8>,
+}
+
+impl fmt::Debug for DirEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DirEntry")
+            .field("nodeid", &self.nodeid())
+            .field("offset", &self.offset())
+            .field("typ", &self.typ())
+            .field("name", &self.name())
+            .finish()
+    }
 }
 
 impl DirEntry {

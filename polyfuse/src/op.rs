@@ -47,11 +47,12 @@ use crate::{
         ReplyWrite,
         ReplyXattr,
     },
-    util::make_system_time,
+    util::{make_system_time, BuilderExt},
 };
 use std::{
     convert::TryFrom, //
     ffi::OsStr,
+    fmt,
     io,
     mem,
     os::unix::ffi::OsStrExt,
@@ -59,7 +60,6 @@ use std::{
 };
 
 /// The kind of FUSE requests received from the kernel.
-#[derive(Debug)]
 #[allow(missing_docs)]
 #[non_exhaustive]
 pub enum Operation<'a> {
@@ -106,6 +106,59 @@ pub enum Operation<'a> {
     Unknown,
 }
 
+impl fmt::Debug for Operation<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        macro_rules! operation_debug_body {
+            ($($Op:ident),*$(,)?) => {
+                match self {
+                    $( Self::$Op(op) => fmt::Debug::fmt(op, f), )*
+                    Self::Unknown => f.debug_struct("Unknown").finish(),
+                }
+            };
+        }
+        operation_debug_body! {
+            Lookup,
+            Forget,
+            Getattr,
+            Setattr,
+            Readlink,
+            Symlink,
+            Link,
+            Mknod,
+            Mkdir,
+            Unlink,
+            Rmdir,
+            Rename,
+            Open,
+            Read,
+            Write,
+            Flush,
+            Fsync,
+            Release,
+            Opendir,
+            Readdir,
+            Fsyncdir,
+            Releasedir,
+            Setxattr,
+            Getxattr,
+            Listxattr,
+            Removexattr,
+            Statfs,
+            Getlk,
+            Setlk,
+            Flock,
+            Access,
+            Create,
+            CopyFileRange,
+            Fallocate,
+            Poll,
+            Bmap,
+            Interrupt,
+            NotifyReply,
+        }
+    }
+}
+
 // TODO: add operations:
 // Ioctl
 
@@ -116,10 +169,18 @@ pub enum Operation<'a> {
 /// of the corresponding inode is incremented on success.
 ///
 /// See also the documentation of `ReplyEntry` for tuning the reply parameters.
-#[derive(Debug)]
 pub struct Lookup<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
+}
+
+impl fmt::Debug for Lookup<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lookup")
+            .field("parent", &self.parent())
+            .field("name", &self.name())
+            .finish()
+    }
 }
 
 impl<'a> Lookup<'a> {
@@ -159,10 +220,18 @@ impl<'a> Lookup<'a> {
 ///
 /// If writeback caching is enabled, the kernel might ignore
 /// some of the attribute values, such as `st_size`.
-#[derive(Debug)]
 pub struct Getattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_getattr_in,
+}
+
+impl fmt::Debug for Getattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Getattr")
+            .field("ino", &self.ino())
+            .if_some(self.fh(), |f, fh| f.field("fh", &fh))
+            .finish()
+    }
 }
 
 impl<'a> Getattr<'a> {
@@ -201,10 +270,25 @@ impl<'a> Getattr<'a> {
 ///
 /// When the setting of attribute values succeeds, the filesystem replies its value
 /// to the kernel using `ReplyAttr`.
-#[derive(Debug)]
 pub struct Setattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_setattr_in,
+}
+
+impl fmt::Debug for Setattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Setattr")
+            .field("ino", &self.ino())
+            .if_some(self.fh(), |f, fh| f.field("fh", &fh))
+            .if_some(self.mode(), |f, mode| f.field("mode", &mode))
+            .if_some(self.uid(), |f, uid| f.field("uid", &uid))
+            .if_some(self.gid(), |f, gid| f.field("gid", &gid))
+            .if_some(self.size(), |f, size| f.field("size", &size))
+            .if_some(self.atime_raw(), |f, atime| f.field("atime_raw", &atime))
+            .if_some(self.mtime_raw(), |f, mtime| f.field("mtime_raw", &mtime))
+            .if_some(self.ctime_raw(), |f, ctime| f.field("ctime_raw", &ctime))
+            .finish()
+    }
 }
 
 impl<'a> Setattr<'a> {
@@ -338,9 +422,16 @@ impl<'a> Setattr<'a> {
 }
 
 /// Read a symbolic link.
-#[derive(Debug)]
 pub struct Readlink<'a> {
     header: &'a fuse_in_header,
+}
+
+impl fmt::Debug for Readlink<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Readlink")
+            .field("ino", &self.ino())
+            .finish()
+    }
 }
 
 impl Readlink<'_> {
@@ -370,11 +461,20 @@ impl Readlink<'_> {
 ///
 /// When the link is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
-#[derive(Debug)]
 pub struct Symlink<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
     link: &'a OsStr,
+}
+
+impl fmt::Debug for Symlink<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Symlink")
+            .field("parent", &self.parent())
+            .field("name", &self.name())
+            .field("link", &self.link())
+            .finish()
+    }
 }
 
 impl<'a> Symlink<'a> {
@@ -418,11 +518,22 @@ impl<'a> Symlink<'a> {
 ///
 /// When the file node is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
-#[derive(Debug)]
 pub struct Mknod<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_mknod_in,
     name: &'a OsStr,
+}
+
+impl fmt::Debug for Mknod<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Mknod")
+            .field("parent", &self.parent())
+            .field("name", &self.name())
+            .field("mode", &self.mode())
+            .field("rdev", &self.rdev())
+            .field("umask", &self.umask())
+            .finish()
+    }
 }
 
 impl<'a> Mknod<'a> {
@@ -480,11 +591,21 @@ impl<'a> Mknod<'a> {
 ///
 /// When the directory is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
-#[derive(Debug)]
 pub struct Mkdir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_mkdir_in,
     name: &'a OsStr,
+}
+
+impl fmt::Debug for Mkdir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Mkdir")
+            .field("parent", &self.parent())
+            .field("name", &self.name())
+            .field("mode", &self.mode())
+            .field("umask", &self.umask())
+            .finish()
+    }
 }
 
 impl<'a> Mkdir<'a> {
@@ -533,10 +654,18 @@ impl<'a> Mkdir<'a> {
 // TODO: description about lookup count.
 
 /// Remove a file.
-#[derive(Debug)]
 pub struct Unlink<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
+}
+
+impl fmt::Debug for Unlink<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Unlink")
+            .field("parent", &self.parent())
+            .field("name", &self.name())
+            .finish()
+    }
 }
 
 impl<'a> Unlink<'a> {
@@ -567,10 +696,18 @@ impl<'a> Unlink<'a> {
 }
 
 /// Remove a directory.
-#[derive(Debug)]
 pub struct Rmdir<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
+}
+
+impl fmt::Debug for Rmdir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Rmdir")
+            .field("parent", &self.parent())
+            .field("name", &self.name())
+            .finish()
+    }
 }
 
 // TODO: description about lookup count.
@@ -603,7 +740,6 @@ impl<'a> Rmdir<'a> {
 }
 
 /// Rename a file.
-#[derive(Debug)]
 pub struct Rename<'a> {
     header: &'a fuse_in_header,
     arg: RenameKind<'a>,
@@ -611,7 +747,7 @@ pub struct Rename<'a> {
     newname: &'a OsStr,
 }
 
-#[derive(Debug)]
+#[allow(missing_debug_implementations)]
 enum RenameKind<'a> {
     V1(&'a fuse_rename_in),
     V2(&'a fuse_rename2_in),
@@ -626,6 +762,18 @@ impl<'a> From<&'a fuse_rename_in> for RenameKind<'a> {
 impl<'a> From<&'a fuse_rename2_in> for RenameKind<'a> {
     fn from(arg: &'a fuse_rename2_in) -> Self {
         Self::V2(arg)
+    }
+}
+
+impl fmt::Debug for Rename<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Rename")
+            .field("parent", &self.parent())
+            .field("name", &self.name())
+            .field("newparent", &self.newparent())
+            .field("newname", &self.newname())
+            .field("flags", &self.flags())
+            .finish()
     }
 }
 
@@ -684,11 +832,20 @@ impl<'a> Rename<'a> {
 ///
 /// When the link is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
-#[derive(Debug)]
 pub struct Link<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_link_in,
     newname: &'a OsStr,
+}
+
+impl fmt::Debug for Link<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Link")
+            .field("ino", &self.ino())
+            .field("newparent", &self.newparent())
+            .field("newname", &self.newname())
+            .finish()
+    }
 }
 
 impl<'a> Link<'a> {
@@ -736,10 +893,18 @@ impl<'a> Link<'a> {
 /// handling the opened file.
 ///
 /// See also the documentation of `ReplyOpen` for tuning the reply parameters.
-#[derive(Debug)]
 pub struct Open<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_open_in,
+}
+
+impl fmt::Debug for Open<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Open")
+            .field("ino", &self.ino())
+            .field("flags", &self.flags())
+            .finish()
+    }
 }
 
 // TODO: Description of behavior when writeback caching is enabled.
@@ -792,10 +957,22 @@ impl<'a> Open<'a> {
 /// the filesystem should send *exactly* the specified range of file content to the
 /// kernel. If the length of the passed data is shorter than `size`, the rest of
 /// the data will be substituted with zeroes.
-#[derive(Debug)]
 pub struct Read<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_read_in,
+}
+
+impl fmt::Debug for Read<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Read")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("offset", &self.offset())
+            .field("size", &self.size())
+            .field("flags", &self.flags())
+            .if_some(self.lock_owner(), |f, owner| f.field("lock_owner", &owner))
+            .finish()
+    }
 }
 
 impl<'a> Read<'a> {
@@ -895,10 +1072,22 @@ impl<'a> Read<'a> {
 ///
 /// When the file is not opened in `direct_io` mode (i.e. the page caching is enabled),
 /// the filesystem should receive *exactly* the specified range of file content from the kernel.
-#[derive(Debug)]
 pub struct Write<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_write_in,
+}
+
+impl fmt::Debug for Write<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Write")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("offset", &self.offset())
+            .field("size", &self.size())
+            .field("flags", &self.flags())
+            .if_some(self.lock_owner(), |f, owner| f.field("owner", &owner))
+            .finish()
+    }
 }
 
 impl<'a> Write<'a> {
@@ -961,10 +1150,22 @@ impl<'a> Write<'a> {
 }
 
 /// Release an opened file.
-#[derive(Debug)]
 pub struct Release<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_release_in,
+}
+
+impl fmt::Debug for Release<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Release")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("flags", &self.flags())
+            .field("lock_owner", &self.lock_owner())
+            .field("flush", &self.flush())
+            .field("flock_release", &self.flock_release())
+            .finish()
+    }
 }
 
 impl<'a> Release<'a> {
@@ -1022,9 +1223,16 @@ impl<'a> Release<'a> {
 /// Get the filesystem statistics.
 ///
 /// The obtained statistics must be sent to the kernel using `ReplyStatfs`.
-#[derive(Debug)]
 pub struct Statfs<'a> {
     header: &'a fuse_in_header,
+}
+
+impl fmt::Debug for Statfs<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Statfs") //
+            .field("ino", &self.ino())
+            .finish()
+    }
 }
 
 impl Statfs<'_> {
@@ -1053,10 +1261,19 @@ impl Statfs<'_> {
 }
 
 /// Synchronize the file contents.
-#[derive(Debug)]
 pub struct Fsync<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fsync_in,
+}
+
+impl fmt::Debug for Fsync<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Fsync")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("datasync", &self.datasync())
+            .finish()
+    }
 }
 
 impl<'a> Fsync<'a> {
@@ -1092,12 +1309,22 @@ impl<'a> Fsync<'a> {
 }
 
 /// Set an extended attribute.
-#[derive(Debug)]
 pub struct Setxattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_setxattr_in,
     name: &'a OsStr,
     value: &'a [u8],
+}
+
+impl fmt::Debug for Setxattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Setxattr")
+            .field("ino", &self.ino())
+            .field("name", &self.name())
+            .field("value", &self.value())
+            .field("flags", &self.flags())
+            .finish()
+    }
 }
 
 impl<'a> Setxattr<'a> {
@@ -1150,11 +1377,20 @@ impl<'a> Setxattr<'a> {
 /// * Otherwise, returns the attribute value with the specified name.
 ///   The filesystem should send an `ERANGE` error if the specified
 ///   size is too small for the attribute value.
-#[derive(Debug)]
 pub struct Getxattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_getxattr_in,
     name: &'a OsStr,
+}
+
+impl fmt::Debug for Getxattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Getxattr")
+            .field("ino", &self.ino())
+            .field("name", &self.name())
+            .field("size", &self.size())
+            .finish()
+    }
 }
 
 impl<'a> Getxattr<'a> {
@@ -1238,10 +1474,18 @@ impl<'a> Getxattr<'a> {
 /// Each element of the attribute names list must be null-terminated.
 /// As with `Getxattr`, the filesystem must send the data length of the attribute
 /// names using `ReplyXattr` if `size` is zero.
-#[derive(Debug)]
 pub struct Listxattr<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_getxattr_in,
+}
+
+impl fmt::Debug for Listxattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Listxattr")
+            .field("ino", &self.ino())
+            .field("size", &self.size())
+            .finish()
+    }
 }
 
 impl<'a> Listxattr<'a> {
@@ -1316,10 +1560,18 @@ impl<'a> Listxattr<'a> {
 }
 
 /// Remove an extended attribute.
-#[derive(Debug)]
 pub struct Removexattr<'a> {
     header: &'a fuse_in_header,
     name: &'a OsStr,
+}
+
+impl fmt::Debug for Removexattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Removexattr")
+            .field("ino", &self.ino())
+            .field("name", &self.name())
+            .finish()
+    }
 }
 
 impl<'a> Removexattr<'a> {
@@ -1359,10 +1611,19 @@ impl<'a> Removexattr<'a> {
 /// flush operations might be issued for one `Open`.
 /// Also, it is not guaranteed that flush will always be issued
 /// after some writes.
-#[derive(Debug)]
 pub struct Flush<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_flush_in,
+}
+
+impl fmt::Debug for Flush<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Flush")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("lock_owner", &self.lock_owner())
+            .finish()
+    }
 }
 
 impl<'a> Flush<'a> {
@@ -1398,10 +1659,18 @@ impl<'a> Flush<'a> {
 ///
 /// If the directory is successfully opened, the filesystem must send
 /// the identifier to the opened directory handle using `ReplyOpen`.
-#[derive(Debug)]
 pub struct Opendir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_open_in,
+}
+
+impl fmt::Debug for Opendir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Opendir")
+            .field("ino", &self.ino())
+            .field("flags", &self.flags())
+            .finish()
+    }
 }
 
 impl<'a> Opendir<'a> {
@@ -1436,11 +1705,22 @@ impl<'a> Opendir<'a> {
 }
 
 /// Read contents from an opened directory.
-#[derive(Debug)]
 pub struct Readdir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_read_in,
     is_plus: bool,
+}
+
+impl fmt::Debug for Readdir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Readdir")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("offset", &self.offset())
+            .field("size", &self.size())
+            .field("is_plus", &self.is_plus())
+            .finish()
+    }
 }
 
 // TODO: description about `offset` and `is_plus`.
@@ -1523,10 +1803,19 @@ impl<'a> Readdir<'a> {
 }
 
 /// Release an opened directory.
-#[derive(Debug)]
 pub struct Releasedir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_release_in,
+}
+
+impl fmt::Debug for Releasedir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Releasedir")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("flags", &self.flags())
+            .finish()
+    }
 }
 
 impl<'a> Releasedir<'a> {
@@ -1563,10 +1852,19 @@ impl<'a> Releasedir<'a> {
 }
 
 /// Synchronize the directory contents.
-#[derive(Debug)]
 pub struct Fsyncdir<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fsync_in,
+}
+
+impl fmt::Debug for Fsyncdir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Fsyncdir")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("datasync", &self.datasync())
+            .finish()
+    }
 }
 
 impl<'a> Fsyncdir<'a> {
@@ -1604,10 +1902,20 @@ impl<'a> Fsyncdir<'a> {
 /// Test for a POSIX file lock.
 ///
 /// The lock result must be replied using `ReplyLk`.
-#[derive(Debug)]
 pub struct Getlk<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_lk_in,
+}
+
+impl fmt::Debug for Getlk<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Getlk")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("owner", &self.owner())
+            .field("lk", &self.lk())
+            .finish()
+    }
 }
 
 impl<'a> Getlk<'a> {
@@ -1649,11 +1957,22 @@ impl<'a> Getlk<'a> {
 }
 
 /// Acquire, modify or release a POSIX file lock.
-#[derive(Debug)]
 pub struct Setlk<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_lk_in,
     sleep: bool,
+}
+
+impl fmt::Debug for Setlk<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Setlk")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("owner", &self.owner())
+            .field("lk", &self.lk())
+            .field("sleep", &self.sleep())
+            .finish()
+    }
 }
 
 impl<'a> Setlk<'a> {
@@ -1702,11 +2021,21 @@ impl<'a> Setlk<'a> {
 }
 
 /// Acquire, modify or release a BSD file lock.
-#[derive(Debug)]
 pub struct Flock<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_lk_in,
     sleep: bool,
+}
+
+impl fmt::Debug for Flock<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Flock")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("owner", &self.owner())
+            .field("op", &self.op())
+            .finish()
+    }
 }
 
 impl<'a> Flock<'a> {
@@ -1764,10 +2093,18 @@ impl<'a> Flock<'a> {
 }
 
 /// Check file access permissions.
-#[derive(Debug)]
 pub struct Access<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_access_in,
+}
+
+impl fmt::Debug for Access<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Access")
+            .field("ino", &self.ino())
+            .field("mask", &self.mask())
+            .finish()
+    }
 }
 
 impl<'a> Access<'a> {
@@ -1801,11 +2138,22 @@ impl<'a> Access<'a> {
 ///
 /// If the file is successfully created and opened, a pair of `ReplyEntry` and `ReplyOpen`
 /// with the corresponding attribute values and the file handle must be sent to the kernel.
-#[derive(Debug)]
 pub struct Create<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_create_in,
     name: &'a OsStr,
+}
+
+impl fmt::Debug for Create<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Create")
+            .field("parent", &self.parent())
+            .field("name", &self.name())
+            .field("mode", &self.mode())
+            .field("umask", &self.umask())
+            .field("open_flags", &self.open_flags())
+            .finish()
+    }
 }
 
 impl<'a> Create<'a> {
@@ -1872,10 +2220,19 @@ impl<'a> Create<'a> {
 /// This operation makes sense only for filesystems that use
 /// block devices, and is called only when the mount options
 /// contains `blkdev`.
-#[derive(Debug)]
 pub struct Bmap<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_bmap_in,
+}
+
+impl fmt::Debug for Bmap<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Bmap")
+            .field("ino", &self.ino())
+            .field("block", &self.block())
+            .field("blocksize", &self.blocksize())
+            .finish()
+    }
 }
 
 impl<'a> Bmap<'a> {
@@ -1916,10 +2273,21 @@ impl<'a> Bmap<'a> {
 /// If this operation is successful, the filesystem shall not report
 /// the error caused by the lack of free spaces to subsequent write
 /// requests.
-#[derive(Debug)]
 pub struct Fallocate<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_fallocate_in,
+}
+
+impl fmt::Debug for Fallocate<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Fallocate")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("offset", &self.offset())
+            .field("length", &self.length())
+            .field("mode", &self.mode())
+            .finish()
+    }
 }
 
 impl<'a> Fallocate<'a> {
@@ -1974,10 +2342,24 @@ impl<'a> Fallocate<'a> {
 /// Copy a range of data from an opened file to another.
 ///
 /// The length of copied data must be replied using `ReplyWrite`.
-#[derive(Debug)]
 pub struct CopyFileRange<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_copy_file_range_in,
+}
+
+impl fmt::Debug for CopyFileRange<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CopyFileRange")
+            .field("ino_in", &self.ino_in())
+            .field("fh_in", &self.fh_in())
+            .field("offset_in", &self.offset_in())
+            .field("ino_out", &self.ino_out())
+            .field("fh_out", &self.fh_out())
+            .field("offset_out", &self.offset_out())
+            .field("length", &self.length())
+            .field("flags", &self.flags())
+            .finish()
+    }
 }
 
 impl<'a> CopyFileRange<'a> {
@@ -2068,10 +2450,19 @@ impl<'a> CopyFileRange<'a> {
 /// Poll for readiness.
 ///
 /// The mask of ready poll events must be replied using `ReplyPoll`.
-#[derive(Debug)]
 pub struct Poll<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_poll_in,
+}
+
+impl fmt::Debug for Poll<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Poll")
+            .field("ino", &self.ino())
+            .field("events", &self.events())
+            .if_some(self.kh(), |f, kh| f.field("kh", &kh))
+            .finish()
+    }
 }
 
 impl<'a> Poll<'a> {
@@ -2124,7 +2515,6 @@ impl<'a> Poll<'a> {
 }
 
 /// A set of `Forget`s removed from the kernel's internal caches.
-#[derive(Debug)]
 pub enum Forgets<'a> {
     #[allow(missing_docs)]
     Single(Forget),
@@ -2141,11 +2531,29 @@ impl AsRef<[Forget]> for Forgets<'_> {
     }
 }
 
+impl fmt::Debug for Forgets<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list() //
+            .entries(self.as_ref())
+            .finish()
+    }
+}
+
 /// A reply to a `NOTIFY_RETRIEVE` notification.
-#[derive(Debug)]
 pub struct NotifyReply<'a> {
     header: &'a fuse_in_header,
     arg: &'a fuse_notify_retrieve_in,
+}
+
+impl fmt::Debug for NotifyReply<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NotifyReply")
+            .field("unique", &self.unique())
+            .field("ino", &self.ino())
+            .field("offset", &self.offset())
+            .field("size", &self.size())
+            .finish()
+    }
 }
 
 impl<'a> NotifyReply<'a> {
@@ -2175,10 +2583,18 @@ impl<'a> NotifyReply<'a> {
 }
 
 /// Interrupt a previous FUSE request.
-#[derive(Debug)]
 pub struct Interrupt<'a> {
+    #[allow(dead_code)]
     header: &'a fuse_in_header,
     arg: &'a fuse_interrupt_in,
+}
+
+impl fmt::Debug for Interrupt<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Interrupt")
+            .field("unique", &self.unique())
+            .finish()
+    }
 }
 
 impl Interrupt<'_> {
@@ -2191,7 +2607,6 @@ impl Interrupt<'_> {
 
 // ==== parse ====
 
-#[derive(Debug)]
 pub(crate) enum OperationKind<'a> {
     Operation(Operation<'a>),
     Init { arg: &'a fuse_init_in },
@@ -2204,7 +2619,6 @@ impl<'a> OperationKind<'a> {
     }
 }
 
-#[derive(Debug)]
 struct Parser<'a> {
     header: &'a fuse_in_header,
     bytes: &'a [u8],

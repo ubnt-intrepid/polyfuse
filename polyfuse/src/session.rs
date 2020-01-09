@@ -16,7 +16,6 @@ use crate::{
         fuse_notify_poll_wakeup_out,
         fuse_notify_retrieve_out,
         fuse_notify_store_out,
-        fuse_opcode,
     },
     op::{Operation, OperationKind},
     util::as_bytes,
@@ -82,12 +81,6 @@ impl Session {
         let request = io.read_request().await?;
         let header = request.header();
         let arg = request.arg()?;
-
-        tracing::debug!(
-            "Handle a request: unique={}, opcode={:?}",
-            header.unique,
-            fuse_opcode::try_from(header.opcode).ok(),
-        );
 
         let mut cx = Context::new(header, &mut *io);
 
