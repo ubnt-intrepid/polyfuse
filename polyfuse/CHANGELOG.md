@@ -5,6 +5,21 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+### Added
+
+* `Reply` trait (introduced in [#70](https://github.com/ubnt-intrepid/polyfuse/pull/70) as `ScatteredBytes`, and renamed in [6682a82](https://github.com/ubnt-intrepid/polyfuse/commit/6682a828934ffc257d9bc7b690215e02014df08a)))
+* `TryFrom<Metadata>` for `FileAttr` ([deb093c](https://github.com/ubnt-intrepid/polyfuse/commit/deb093ce195fcbd4bb675c12155c8a05d58211c6))
+* `LockOwner` for protection the raw owner identifier ([#73](https://github.com/ubnt-intrepid/polyfuse/pull/73))
+
+### Fixed
+
+* improve the `fmt::Debug` implementation in public types ([ca4546c](https://github.com/ubnt-intrepid/polyfuse/commit/ca4546c3c0cf1ddd5e66c81771857a559959e9d3))
+
+### Deprecated
+
+* `Context::reply_raw` (#70)
+* Replying methods such as `Lookup::reply` and so on ([#71](https://github.com/ubnt-intrepid/polyfuse/pull/71))
+
 ## [0.3.2] (2020-01-03)
 
 ### Fixed
