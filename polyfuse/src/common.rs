@@ -555,3 +555,20 @@ impl Forget {
         self.0.nlookup
     }
 }
+
+/// The identifier for locking operations.
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct LockOwner(u64);
+
+impl fmt::Debug for LockOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LockOwner {{ .. }}")
+    }
+}
+
+impl LockOwner {
+    pub(crate) const fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+}

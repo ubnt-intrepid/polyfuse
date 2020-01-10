@@ -1,7 +1,7 @@
 //! Filesystem operations.
 
 use crate::{
-    common::{FileLock, Forget},
+    common::{FileLock, Forget, LockOwner},
     context::Context,
     io::Writer,
     kernel::{
@@ -397,10 +397,19 @@ impl<'a> Setattr<'a> {
         self.get(crate::kernel::FATTR_CTIME, |arg| (arg.ctime, arg.ctimensec))
     }
 
-    #[doc(hidden)] // TODO: dox
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
     #[inline]
     pub fn lock_owner(&self) -> Option<u64> {
         self.get(crate::kernel::FATTR_LOCKOWNER, |arg| arg.lock_owner)
+    }
+
+    /// Return the identifier of lock owner.
+    #[inline]
+    pub fn lock_owner_id(&self) -> Option<LockOwner> {
+        self.get(crate::kernel::FATTR_LOCKOWNER, |arg| {
+            LockOwner::from_raw(arg.lock_owner)
+        })
     }
 
     #[doc(hidden)]
@@ -970,7 +979,9 @@ impl fmt::Debug for Read<'_> {
             .field("offset", &self.offset())
             .field("size", &self.size())
             .field("flags", &self.flags())
-            .if_some(self.lock_owner(), |f, owner| f.field("lock_owner", &owner))
+            .if_some(self.lock_owner_id(), |f, owner| {
+                f.field("lock_owner", &owner)
+            })
             .finish()
     }
 }
@@ -1006,11 +1017,22 @@ impl<'a> Read<'a> {
         self.arg.flags
     }
 
-    /// Return the identifier of lock owner, if specified.
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
     #[inline]
     pub fn lock_owner(&self) -> Option<u64> {
         if self.arg.read_flags & crate::kernel::FUSE_READ_LOCKOWNER != 0 {
             Some(self.arg.lock_owner)
+        } else {
+            None
+        }
+    }
+
+    /// Return the identifier of lock owner.
+    #[inline]
+    pub fn lock_owner_id(&self) -> Option<LockOwner> {
+        if self.arg.read_flags & crate::kernel::FUSE_READ_LOCKOWNER != 0 {
+            Some(LockOwner::from_raw(self.arg.lock_owner))
         } else {
             None
         }
@@ -1085,7 +1107,7 @@ impl fmt::Debug for Write<'_> {
             .field("offset", &self.offset())
             .field("size", &self.size())
             .field("flags", &self.flags())
-            .if_some(self.lock_owner(), |f, owner| f.field("owner", &owner))
+            .if_some(self.lock_owner_id(), |f, owner| f.field("owner", &owner))
             .finish()
     }
 }
@@ -1121,11 +1143,22 @@ impl<'a> Write<'a> {
         self.arg.flags
     }
 
-    /// Return the identifier of lock owner.
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
     #[inline]
     pub fn lock_owner(&self) -> Option<u64> {
         if self.arg.write_flags & crate::kernel::FUSE_WRITE_LOCKOWNER != 0 {
             Some(self.arg.lock_owner)
+        } else {
+            None
+        }
+    }
+
+    /// Return the identifier of lock owner.
+    #[inline]
+    pub fn lock_owner_id(&self) -> Option<LockOwner> {
+        if self.arg.write_flags & crate::kernel::FUSE_WRITE_LOCKOWNER != 0 {
+            Some(LockOwner::from_raw(self.arg.lock_owner))
         } else {
             None
         }
@@ -1161,7 +1194,7 @@ impl fmt::Debug for Release<'_> {
             .field("ino", &self.ino())
             .field("fh", &self.fh())
             .field("flags", &self.flags())
-            .field("lock_owner", &self.lock_owner())
+            .field("lock_owner", &self.lock_owner_id())
             .field("flush", &self.flush())
             .field("flock_release", &self.flock_release())
             .finish()
@@ -1187,11 +1220,19 @@ impl<'a> Release<'a> {
         self.arg.flags
     }
 
-    /// Return the identifier of lock owner.
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
     #[inline]
     pub fn lock_owner(&self) -> u64 {
         // NOTE: fuse_release_in.lock_owner is available since ABI 7.8.
         self.arg.lock_owner
+    }
+
+    /// Return the identifier of lock owner.
+    #[inline]
+    pub fn lock_owner_id(&self) -> LockOwner {
+        // NOTE: fuse_release_in.lock_owner is available since ABI 7.8.
+        LockOwner::from_raw(self.arg.lock_owner)
     }
 
     /// Return whether the operation indicates a flush.
@@ -1621,7 +1662,7 @@ impl fmt::Debug for Flush<'_> {
         f.debug_struct("Flush")
             .field("ino", &self.ino())
             .field("fh", &self.fh())
-            .field("lock_owner", &self.lock_owner())
+            .field("lock_owner", &self.lock_owner_id())
             .finish()
     }
 }
@@ -1637,9 +1678,16 @@ impl<'a> Flush<'a> {
         self.arg.fh
     }
 
-    /// Return the identifier of lock owner.
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
     pub fn lock_owner(&self) -> u64 {
         self.arg.lock_owner
+    }
+
+    /// Return the identifier of lock owner.
+    #[inline]
+    pub fn lock_owner_id(&self) -> LockOwner {
+        LockOwner::from_raw(self.arg.lock_owner)
     }
 
     #[doc(hidden)]
@@ -1912,7 +1960,7 @@ impl fmt::Debug for Getlk<'_> {
         f.debug_struct("Getlk")
             .field("ino", &self.ino())
             .field("fh", &self.fh())
-            .field("owner", &self.owner())
+            .field("owner", &self.owner_id())
             .field("lk", &self.lk())
             .finish()
     }
@@ -1929,9 +1977,16 @@ impl<'a> Getlk<'a> {
         self.arg.fh
     }
 
-    /// Return the identifier of lock owner.
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.3", note = "use `owner_id` instead.")]
     pub fn owner(&self) -> u64 {
         self.arg.owner
+    }
+
+    /// Return the identifier of lock owner.
+    #[inline]
+    pub fn owner_id(&self) -> LockOwner {
+        LockOwner::from_raw(self.arg.owner)
     }
 
     /// Return the lock information for testing.
@@ -1968,7 +2023,7 @@ impl fmt::Debug for Setlk<'_> {
         f.debug_struct("Setlk")
             .field("ino", &self.ino())
             .field("fh", &self.fh())
-            .field("owner", &self.owner())
+            .field("owner", &self.owner_id())
             .field("lk", &self.lk())
             .field("sleep", &self.sleep())
             .finish()
@@ -1988,10 +2043,17 @@ impl<'a> Setlk<'a> {
         self.arg.fh
     }
 
-    /// Return the identifier of lock owner.
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.3", note = "use `owner_id` instead.")]
     #[inline]
     pub fn owner(&self) -> u64 {
         self.arg.owner
+    }
+
+    /// Return the identifier of lock owner.
+    #[inline]
+    pub fn owner_id(&self) -> LockOwner {
+        LockOwner::from_raw(self.arg.owner)
     }
 
     /// Return the lock information to be obtained.
@@ -2032,7 +2094,7 @@ impl fmt::Debug for Flock<'_> {
         f.debug_struct("Flock")
             .field("ino", &self.ino())
             .field("fh", &self.fh())
-            .field("owner", &self.owner())
+            .field("owner", &self.owner_id())
             .field("op", &self.op())
             .finish()
     }
@@ -2049,9 +2111,16 @@ impl<'a> Flock<'a> {
         self.arg.fh
     }
 
-    /// Return the identifier of lock owner.
+    #[doc(hidden)]
+    #[deprecated(since = "0.3.3", note = "use `owner_id` instead.")]
     pub fn owner(&self) -> u64 {
         self.arg.owner
+    }
+
+    /// Return the identifier of lock owner.
+    #[inline]
+    pub fn owner_id(&self) -> LockOwner {
+        LockOwner::from_raw(self.arg.owner)
     }
 
     /// Return the locking operation.
