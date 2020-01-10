@@ -30,7 +30,7 @@ mod util;
 
 #[doc(inline)]
 pub use crate::{
-    common::{FileAttr, FileLock, Forget, StatFs},
+    common::{FileAttr, FileLock, Forget, LockOwner, StatFs},
     context::Context,
     dirent::DirEntry,
     fs::Filesystem,
