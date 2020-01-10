@@ -1,8 +1,7 @@
-#![doc(html_root_url = "https://docs.rs/polyfuse/0.3.2")]
+#![doc(html_root_url = "https://docs.rs/polyfuse/0.3.3")]
 
 //! A FUSE (Filesystem in userspace) library for Rust.
 
-#![warn(clippy::checked_conversions)]
 #![deny(
     missing_docs,
     missing_debug_implementations,
@@ -11,9 +10,11 @@
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
+    clippy::checked_conversions,
     clippy::invalid_upcast_comparisons
 )]
-#![forbid(clippy::unimplemented)]
+#![forbid(clippy::unimplemented, clippy::todo)]
+#![cfg_attr(test, deny(warnings))]
 
 pub mod io;
 pub mod op;

@@ -5,6 +5,8 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.3.3] (2020-01-10)
+
 ### Added
 
 * `Reply` trait (introduced in [#70](https://github.com/ubnt-intrepid/polyfuse/pull/70) as `ScatteredBytes`, and renamed in [6682a82](https://github.com/ubnt-intrepid/polyfuse/commit/6682a828934ffc257d9bc7b690215e02014df08a)))
@@ -98,7 +100,8 @@ See the commit log for a detailed change history.
 
 <!-- links -->
 
-[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.2.1...v0.3.0
