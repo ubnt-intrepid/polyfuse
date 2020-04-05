@@ -1,4 +1,4 @@
-name: Doc
+name: CI
 
 on:
   push:
@@ -7,10 +7,13 @@ on:
   pull_request:
 
 env:
+  CARGO_HUSKY_DONT_INSTALL_HOOKS: true
   CARGO_TERM_VERBOSE: true
+  CARGO_INCREMENTAL: '0'
+  CARGO_NET_OFFLINE: true
 
 jobs:
-  DeployMasterDoc:
+  Doc:
     runs-on: ubuntu-18.04
     container:
       image: rustops/crates-build-env:latest
@@ -27,16 +30,27 @@ jobs:
         toolchain: nightly
         override: true
 
+    - name: Generate Cargo.lock
+      run: cargo generate-lockfile
+      env:
+        CARGO_NET_OFFLINE: false
+
     - name: Cache cargo registry
       uses: actions/cache@v1
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
     - name: Cache cargo index
       uses: actions/cache@v1
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Fetch cargo dependencies
+      run: cargo fetch
+      env:
+        CARGO_NET_OFFLINE: false
 
     # TODO:
     # * restrict network access during building docs.
@@ -55,8 +69,9 @@ jobs:
 
     - name: Deply to GitHub Pages
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-      uses: peaceiris/actions-gh-pages@v2.3.1
-      env:
-        ACTIONS_DEPLOY_KEY: ${{ secrets.ACTIONS_DEPLOY_KEY }}
-        PUBLISH_BRANCH: gh-pages
-        PUBLISH_DIR: ./target/doc
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_branch: gh-pages
+        publish_dir: ./target/doc
+        force_orphan: true

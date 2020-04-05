@@ -1,4 +1,4 @@
-name: Test
+name: CI
 
 on:
   push:
@@ -7,7 +7,10 @@ on:
   pull_request:
 
 env:
+  CARGO_HUSKY_DONT_INSTALL_HOOKS: true
   CARGO_TERM_VERBOSE: true
+  CARGO_INCREMENTAL: '0'
+  CARGO_NET_OFFLINE: true
 
 jobs:
   Test:
@@ -37,21 +40,27 @@ jobs:
         components: ${{ matrix.conf.components }}
         override: true
 
+    - name: Generate Cargo.lock
+      run: cargo generate-lockfile
+      env:
+        CARGO_NET_OFFLINE: false
+
     - name: Cache cargo registry
       uses: actions/cache@v1
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
     - name: Cache cargo index
       uses: actions/cache@v1
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-    # - name: Cache cargo build
-    #   uses: actions/cache@v1
-    #   with:
-    #     path: target
-    #     key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Fetch cargo dependencies
+      run: cargo fetch
+      env:
+        CARGO_NET_OFFLINE: false
 
     - name: Run tests
       uses: actions-rs/cargo@v1
