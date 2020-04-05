@@ -1,0 +1,6 @@
+delete_merged_branches = true
+
+status = [
+    "Test",
+    "Doc",
+]

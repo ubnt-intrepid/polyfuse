@@ -4,7 +4,8 @@ on:
   push:
     branches:
       - master
-  pull_request:
+      - staging
+      - trying
 
 env:
   CARGO_HUSKY_DONT_INSTALL_HOOKS: true

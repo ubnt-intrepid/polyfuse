@@ -4,7 +4,8 @@ on:
   push:
     branches:
       - master
-  pull_request:
+      - staging
+      - trying
 
 env:
   CARGO_HUSKY_DONT_INSTALL_HOOKS: true
@@ -14,16 +15,9 @@ env:
 
 jobs:
   Test:
-    strategy:
-      matrix:
-        conf:
-          - { toolchain: stable  , os: ubuntu-18.04   , components: "rustfmt, clippy" , coverage: true }
-          - { toolchain: beta    , os: ubuntu-18.04   }
-          - { toolchain: nightly , os: ubuntu-18.04   }
-
-    runs-on: ${{ matrix.conf.os }}
+    runs-on: ubuntu-18.04
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v1 # FIXME: upgrade to v2
       with:
         submodules: true
 
@@ -32,13 +26,11 @@ jobs:
         sudo apt-get update -yqq
         sudo apt-get install -yqq --no-install-recommends fuse
 
-    - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: ${{ matrix.conf.toolchain }}
-        components: ${{ matrix.conf.components }}
-        override: true
+    - name: Install Rust toolchains
+      run: |
+        rustup set profile minimal
+        rustup install stable beta nightly 1.39.0
+        rustup component add rustfmt clippy --toolchain stable
 
     - name: Generate Cargo.lock
       run: cargo generate-lockfile
@@ -62,45 +54,44 @@ jobs:
       env:
         CARGO_NET_OFFLINE: false
 
-    - name: Run tests
-      uses: actions-rs/cargo@v1
-      with:
-        command: test
-        args: --workspace
-
-    - name: Run format check
-      uses: actions-rs/cargo@v1
-      with:
-        command: fmt
-        args: --all -- --check
-      if: contains(matrix.conf.components, 'rustfmt')
-
-    - name: Run clippy
-      uses: actions-rs/cargo@v1
+    - name: Run tests (stable)
+      run: |
+        cargo +stable fmt --all -- --check
+        cargo +stable clippy --workspace --all-targets
+        cargo +stable test --workspace
       env:
         RUSTFLAGS: "-D warnings"
-      with:
-        command: clippy
-        args: --workspace --all-targets
-      if: contains(matrix.conf.components, 'clippy')
 
-    - name: Install cargo-tarpaulin
-      run: |
-        curl -L https://github.com/xd009642/tarpaulin/releases/download/0.10.0/cargo-tarpaulin-0.10.0-travis.tar.gz | tar zxf -
-        mkdir -pv $HOME/.cargo/bin
-        mv -v ./cargo-tarpaulin $HOME/.cargo/bin
-        echo ::add-path::$HOME/.cargo/bin
-      if: matrix.conf.coverage == true
+    - name: Run tests (beta)
+      run: cargo +beta test --workspace
+      env:
+        RUSTFLAGS: "-D warnings"
 
-    - name: Run tarpaulin
-      uses: actions-rs/cargo@v1
-      with:
-        command: tarpaulin
-        args: --verbose --workspace --out Xml
-      if: matrix.conf.coverage == true
+    - name: Run tests (nightly)
+      run: cargo +nightly test --workspace
 
-    - name: Send report to Codecov
-      uses: codecov/codecov-action@v1.0.3
-      if: success() && matrix.conf.coverage == true
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
+    - name: Run tests (minimal supported toolchain)
+      run: cargo +1.39.0 test --workspace
+      env:
+        RUSTFLAGS: "-D warnings"
+
+    # - name: Install cargo-tarpaulin
+    #   run: |
+    #     curl -L https://github.com/xd009642/tarpaulin/releases/download/0.10.0/cargo-tarpaulin-0.10.0-travis.tar.gz | tar zxf -
+    #     mkdir -pv $HOME/.cargo/bin
+    #     mv -v ./cargo-tarpaulin $HOME/.cargo/bin
+    #     echo ::add-path::$HOME/.cargo/bin
+    #   if: matrix.conf.coverage == true
+
+    # - name: Run tarpaulin
+    #   uses: actions-rs/cargo@v1
+    #   with:
+    #     command: tarpaulin
+    #     args: --verbose --workspace --out Xml
+    #   if: matrix.conf.coverage == true
+
+    # - name: Send report to Codecov
+    #   uses: codecov/codecov-action@v1.0.3
+    #   if: success() && matrix.conf.coverage == true
+    #   with:
+    #     token: ${{ secrets.CODECOV_TOKEN }}
