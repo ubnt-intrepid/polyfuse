@@ -14,7 +14,6 @@
     clippy::invalid_upcast_comparisons
 )]
 #![forbid(clippy::unimplemented, clippy::todo)]
-#![cfg_attr(test, deny(warnings))]
 
 pub mod io;
 pub mod op;
