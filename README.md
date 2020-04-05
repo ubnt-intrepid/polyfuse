@@ -15,8 +15,8 @@
          alt="crates.io"
     />
   </a>
-  <a href="https://blog.rust-lang.org/2019/11/07/Rust-1.39.0.html">
-    <img src="https://img.shields.io/badge/rust%20toolchain-1.39.0%2B-gray.svg?style=flat-square"
+  <a href="https://blog.rust-lang.org/2019/12/19/Rust-1.40.0.html">
+    <img src="https://img.shields.io/badge/rust--toolchain-1.40.0-gray?style=flat-square"
          alt="rust toolchain"
     />
   </a>

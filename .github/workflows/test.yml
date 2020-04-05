@@ -29,7 +29,7 @@ jobs:
     - name: Install Rust toolchains
       run: |
         rustup set profile minimal
-        rustup install stable beta nightly 1.39.0
+        rustup install stable beta nightly 1.40.0
         rustup component add rustfmt clippy --toolchain stable
 
     - name: Generate Cargo.lock
@@ -71,9 +71,7 @@ jobs:
       run: cargo +nightly test --workspace
 
     - name: Run tests (minimal supported toolchain)
-      run: cargo +1.39.0 test --workspace
-      env:
-        RUSTFLAGS: "-D warnings"
+      run: cargo +1.40.0 test --workspace
 
     # - name: Install cargo-tarpaulin
     #   run: |
