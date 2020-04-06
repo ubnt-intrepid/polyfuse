@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-
-set -eux
-
-DIR="$(cd $(dirname $BASH_SOURCE)/..; pwd)"
-cd $DIR
-
-rm -rfv target/cov/*
-cargo tarpaulin -v --workspace --out Html --output-dir target/cov

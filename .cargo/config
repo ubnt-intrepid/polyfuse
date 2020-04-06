@@ -1,3 +1,2 @@
 [alias]
 xtask = "run --quiet --package polyfuse-xtask --"
-xscript = "xtask script"
