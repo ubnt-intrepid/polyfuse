@@ -1,9 +1,0 @@
-#!/bin/bash
-
-set -e
-
-(set -x; cargo build --workspace --all-targets)
-
-if cargo clippy --version >/dev/null; then
-   (set -x; cargo clippy --workspace --all-targets)
-fi
