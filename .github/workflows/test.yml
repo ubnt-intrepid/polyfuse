@@ -48,21 +48,27 @@ jobs:
     - name: Fetch cargo dependencies
       run: cargo fetch
 
+    - name: Run lints
+      run: cargo +stable xtask lint
+      env:
+        RUSTFLAGS: "-D warnings"
+
     - name: Run tests (stable)
-      run: cargo +stable xtask test
+      run: cargo +stable test
       env:
         RUSTFLAGS: "-D warnings"
 
     - name: Run tests (beta)
-      run: cargo +beta xtask test
+      run: cargo +beta test
       env:
         RUSTFLAGS: "-D warnings"
 
-    - name: Run tests (nightly)
-      run: cargo +nightly xtask test
-
     - name: Run tests (minimal supported toolchain)
-      run: cargo +1.40.0 xtask test
+      run: cargo +1.40.0 test
+
+    - name: Run tests (nightly)
+      run: cargo +nightly test
+      continue-on-error: true
 
     - name: Install cargo-tarpaulin
       run: |
@@ -75,6 +81,7 @@ jobs:
     - name: Run coverage test
       run: cargo +stable xtask coverage
       if: matrix.conf.coverage == true
+      continue-on-error: true
 
     - name: Send report to Codecov
       uses: codecov/codecov-action@v1.0.3

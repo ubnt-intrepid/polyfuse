@@ -1,3 +1,5 @@
+mod hook;
+
 use anyhow::Context as _;
 use pico_args::Arguments;
 use std::{
@@ -19,7 +21,11 @@ Usage:
     cargo xtask <SUBCOMMAND>
 
 Subcommands:
-    script  Run external script
+    lint            Run lints
+    doc             Build API docs
+    coverage        Run coverage test
+    install-hooks   Install Git hooks
+    pre-commit      Run pre-commit hook
 
 Flags:
     -h, --help  Show this message
@@ -34,109 +40,60 @@ Flags:
         return Ok(());
     }
 
-    let subcommand = args.subcommand()?.unwrap_or_default();
-    match &*subcommand {
-        "test" => {
-            let show_help = || {
-                eprintln!(
-                    "\
-cargo-xtask test
-Run test suites
-
-Usage:
-    cargo xtask test
-
-Flags:
-    -h, --help  Show this message
-"
-                );
-            };
-            if args.contains(["-h", "--help"]) {
-                show_help();
-                return Ok(());
-            }
-            args.finish().map_err(|err| {
-                show_help();
-                err
-            })?;
-            do_test()
+    let subcommand = args.subcommand()?;
+    match subcommand.as_deref() {
+        Some("lint") => {
+            args.finish()?;
+            do_lint()
         }
-        "docs" => {
-            let show_help = || {
-                eprintln!(
-                    "\
-cargo-xtask docs
-Build API docs
-
-Usage:
-    cargo xtask docs
-
-Flags:
-    -h, --help  Show this message
-"
-                );
-            };
-            if args.contains(["-h", "--help"]) {
-                show_help();
-                return Ok(());
-            }
-            args.finish().map_err(|err| {
-                show_help();
-                err
-            })?;
-            do_docs()
+        Some("doc") => {
+            args.finish()?;
+            do_doc()
         }
-        "coverage" => {
-            let show_help = || {
-                eprintln!(
-                    "\
-cargo-xtask coverage
-Run coverage test
-
-Usage:
-    cargo xtask coverage
-
-Flags:
-    -h, --help  Show this message
-"
-                );
-            };
-            if args.contains(["-h", "--help"]) {
-                show_help();
-                return Ok(());
-            }
-            args.finish().map_err(|err| {
-                show_help();
-                err
-            })?;
+        Some("coverage") => {
+            args.finish()?;
             do_coverage()
         }
-        _ => {
+        Some("install-hooks") => {
+            let force = args.contains(["-f", "--force"]);
+            args.finish()?;
+            hook::install(force)
+        }
+        Some("pre-commit") => {
+            args.finish()?;
+            hook::pre_commit()
+        }
+        Some(subcommand) => {
             show_help();
-            anyhow::bail!("invalid CLI arguments");
+            anyhow::bail!("unknown subcommand: {}", subcommand);
+        }
+        None => {
+            show_help();
+            anyhow::bail!("missing subcommand");
         }
     }
 }
 
-fn do_test() -> anyhow::Result<()> {
-    if cargo().arg("fmt").arg("--version").run_silent().is_ok() {
-        cargo().arg("fmt").arg("--").arg("--check").run()?;
+fn do_lint() -> anyhow::Result<()> {
+    let has_rustfmt = cargo().args(&["fmt", "--version"]).run_silent().is_ok();
+    let has_clippy = cargo().args(&["clippy", "--version"]).run_silent().is_ok();
+
+    if has_rustfmt {
+        cargo().args(&["fmt", "--", "--check"]).run()?;
     }
 
-    if cargo().args(&["clippy", "--version"]).run_silent().is_ok() {
-        cargo()
-            .arg("clippy")
-            .arg("--workspace")
-            .arg("--all-targets")
-            .run()?;
+    if has_clippy {
+        cargo().args(&["clippy", "--all-targets"]).run()?;
     }
-
-    cargo().arg("test").arg("--workspace").run()?;
 
     Ok(())
 }
 
-fn do_docs() -> anyhow::Result<()> {
+fn do_doc() -> anyhow::Result<()> {
+    // TODOs:
+    // * restrict network access during building docs.
+    // * restrict all write access expect target/
+
     // ref: https://blog.rust-lang.org/2019/09/18/upcoming-docsrs-changes.html#what-will-change
     const CARGO_DOC_TIMEOUT: Duration = Duration::from_secs(60 * 15);
 

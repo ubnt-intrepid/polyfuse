@@ -47,14 +47,8 @@ jobs:
     - name: Fetch cargo dependencies
       run: cargo fetch
 
-    # TODO:
-    # * restrict network access during building docs.
-    # * restrict all write access expect target/
     - name: Build API docs
-      uses: actions-rs/cargo@v1
-      with:
-        command: xtask
-        args: docs
+      run: cargo xtask doc
 
     - name: Upload artifact
       uses: actions/upload-artifact@v1
