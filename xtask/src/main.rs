@@ -1,94 +1,280 @@
+use anyhow::Context as _;
+use pico_args::Arguments;
 use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
+    env, fs, io,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Duration,
 };
-use structopt::StructOpt;
-
-#[derive(Debug, StructOpt)]
-enum Arg {
-    /// Install Git hooks
-    InstallHooks,
-
-    /// Run a script.
-    Script {
-        /// The script name
-        #[structopt(name = "command", parse(from_os_str))]
-        command: OsString,
-
-        /// The arguments passed to script
-        #[structopt(name = "args", parse(from_os_str))]
-        args: Vec<OsString>,
-    },
-}
+use wait_timeout::ChildExt as _;
 
 fn main() -> anyhow::Result<()> {
-    match Arg::from_args() {
-        Arg::InstallHooks => do_install_hooks(),
-        Arg::Script { command, args } => do_run(command, args),
+    let show_help = || {
+        eprintln!(
+            "\
+cargo-xtask
+Free-form automation tool
+
+Usage:
+    cargo xtask <SUBCOMMAND>
+
+Subcommands:
+    script  Run external script
+
+Flags:
+    -h, --help  Show this message
+"
+        );
+    };
+
+    let mut args = Arguments::from_env();
+
+    if args.contains(["-h", "--help"]) {
+        show_help();
+        return Ok(());
+    }
+
+    let subcommand = args.subcommand()?.unwrap_or_default();
+    match &*subcommand {
+        "test" => {
+            let show_help = || {
+                eprintln!(
+                    "\
+cargo-xtask test
+Run test suites
+
+Usage:
+    cargo xtask test
+
+Flags:
+    -h, --help  Show this message
+"
+                );
+            };
+            if args.contains(["-h", "--help"]) {
+                show_help();
+                return Ok(());
+            }
+            args.finish().map_err(|err| {
+                show_help();
+                err
+            })?;
+            do_test()
+        }
+        "docs" => {
+            let show_help = || {
+                eprintln!(
+                    "\
+cargo-xtask docs
+Build API docs
+
+Usage:
+    cargo xtask docs
+
+Flags:
+    -h, --help  Show this message
+"
+                );
+            };
+            if args.contains(["-h", "--help"]) {
+                show_help();
+                return Ok(());
+            }
+            args.finish().map_err(|err| {
+                show_help();
+                err
+            })?;
+            do_docs()
+        }
+        "coverage" => {
+            let show_help = || {
+                eprintln!(
+                    "\
+cargo-xtask coverage
+Run coverage test
+
+Usage:
+    cargo xtask coverage
+
+Flags:
+    -h, --help  Show this message
+"
+                );
+            };
+            if args.contains(["-h", "--help"]) {
+                show_help();
+                return Ok(());
+            }
+            args.finish().map_err(|err| {
+                show_help();
+                err
+            })?;
+            do_coverage()
+        }
+        _ => {
+            show_help();
+            anyhow::bail!("invalid CLI arguments");
+        }
     }
 }
 
-fn do_install_hooks() -> anyhow::Result<()> {
-    let src_dir = project_root()?.join(".cargo/hooks").canonicalize()?;
-    anyhow::ensure!(src_dir.is_dir(), "Cargo hooks directory");
+fn do_test() -> anyhow::Result<()> {
+    if cargo().arg("fmt").arg("--version").run_silent().is_ok() {
+        cargo().arg("fmt").arg("--").arg("--check").run()?;
+    }
 
-    let dst_dir = project_root()?.join(".git/hooks").canonicalize()?;
-    anyhow::ensure!(dst_dir.is_dir(), "Git hooks directory");
+    if cargo().args(&["clippy", "--version"]).run_silent().is_ok() {
+        cargo()
+            .arg("clippy")
+            .arg("--workspace")
+            .arg("--all-targets")
+            .run()?;
+    }
 
-    install_hook(src_dir.join("pre-commit"), dst_dir.join("pre-commit"))?;
-    install_hook(src_dir.join("pre-push"), dst_dir.join("pre-push"))?;
+    cargo().arg("test").arg("--workspace").run()?;
 
     Ok(())
 }
 
-fn install_hook(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> anyhow::Result<()> {
-    let src = src.as_ref();
-    let dst = dst.as_ref();
+fn do_docs() -> anyhow::Result<()> {
+    // ref: https://blog.rust-lang.org/2019/09/18/upcoming-docsrs-changes.html#what-will-change
+    const CARGO_DOC_TIMEOUT: Duration = Duration::from_secs(60 * 15);
 
-    if src.is_file() {
-        println!("install {:?} to {:?}", src, dst);
-
-        std::fs::create_dir_all(
-            dst.parent()
-                .ok_or_else(|| anyhow::anyhow!("missing dst parent"))?,
-        )?;
-        std::fs::remove_file(dst)?;
-        std::os::unix::fs::symlink(src, dst)?;
+    let doc_dir = target_dir().join("doc");
+    if doc_dir.exists() {
+        fs::remove_dir_all(&doc_dir)?;
     }
+
+    cargo()
+        .arg("doc")
+        .arg("--no-deps")
+        .arg("--package=polyfuse")
+        .run_timeout(CARGO_DOC_TIMEOUT)?;
+
+    cargo()
+        .arg("doc")
+        .arg("--no-deps")
+        .arg("--package=polyfuse-tokio")
+        .run_timeout(CARGO_DOC_TIMEOUT)?;
+
+    let lockfile = doc_dir.join(".lock");
+    if lockfile.exists() {
+        fs::remove_file(lockfile)?;
+    }
+
+    let indexfile = doc_dir.join("index.html");
+    fs::write(
+        indexfile,
+        "<meta http-equiv=\"refresh\" content=\"0;url=polyfuse\">\n",
+    )?;
 
     Ok(())
 }
 
-fn do_run(command: OsString, args: Vec<OsString>) -> anyhow::Result<()> {
-    let bin_dir = project_root()?.join("bin").canonicalize()?;
-    anyhow::ensure!(bin_dir.is_dir(), "bin/ is not a directory");
-
-    use std::process::{Command, Stdio};
-
-    let mut script = Command::new(command);
-    script.args(args);
-    script.stdin(Stdio::null());
-    script.stdout(Stdio::inherit());
-    script.stderr(Stdio::inherit());
-    if let Some(orig_path) = std::env::var_os("PATH") {
-        let paths: Vec<_> = Some(bin_dir)
-            .into_iter()
-            .chain(std::env::split_paths(&orig_path))
-            .collect();
-        let new_path = std::env::join_paths(paths)?;
-        script.env("PATH", new_path);
+fn do_coverage() -> anyhow::Result<()> {
+    if cargo()
+        .args(&["tarpaulin", "--version"])
+        .run_silent()
+        .is_err()
+    {
+        eprintln!("[cargo-xtask] cargo-tarpaulin is not installed");
+        return Ok(());
     }
 
-    let status = script.status()?;
-    anyhow::ensure!(status.success(), format!("Script failed: {}", status));
+    let cov_dir = target_dir().join("cov");
+    if cov_dir.exists() {
+        fs::remove_dir_all(&cov_dir)?;
+    }
+    fs::create_dir_all(&cov_dir)?;
+
+    cargo()
+        .arg("tarpaulin")
+        .arg("-v")
+        .arg("--workspace")
+        .arg("--out")
+        .arg("Xml")
+        .arg("--output-dir")
+        .arg(&cov_dir)
+        .arg("--target-dir")
+        .arg(&cov_dir)
+        .run()?;
 
     Ok(())
 }
 
-fn project_root() -> anyhow::Result<PathBuf> {
-    Ok(std::path::Path::new(&env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("missing ancestor"))?
-        .to_owned())
+fn cargo() -> Command {
+    let cargo = env::var_os("CARGO")
+        .or_else(|| option_env!("CARGO").map(Into::into))
+        .unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command.current_dir(project_root());
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::inherit());
+    command.stderr(Stdio::inherit());
+    command.env("CARGO_INCREMENTAL", "0");
+    command.env("CARGO_NET_OFFLINE", "true");
+    command.env("RUST_BACKTRACE", "full");
+    command
+}
+
+trait CommandExt {
+    fn run(&mut self) -> anyhow::Result<()>;
+    fn run_timeout(&mut self, timeout: Duration) -> anyhow::Result<()>;
+    fn run_silent(&mut self) -> anyhow::Result<()>;
+}
+
+impl CommandExt for Command {
+    fn run(&mut self) -> anyhow::Result<()> {
+        run_impl(self, None)
+    }
+
+    fn run_timeout(&mut self, timeout: Duration) -> anyhow::Result<()> {
+        run_impl(self, Some(timeout))
+    }
+
+    fn run_silent(&mut self) -> anyhow::Result<()> {
+        self.stdout(Stdio::null());
+        self.stderr(Stdio::null());
+        self.run()
+    }
+}
+
+fn run_impl(cmd: &mut Command, timeout: Option<Duration>) -> anyhow::Result<()> {
+    eprintln!("[cargo-xtask] run {:?}", cmd);
+
+    let mut child = cmd.spawn().context("failed to spawn the subprocess")?;
+
+    let st = match timeout {
+        Some(timeout) => match child.wait_timeout(timeout)? {
+            Some(st) => st,
+            None => {
+                if let Err(err) = child.kill() {
+                    match err.kind() {
+                        io::ErrorKind::InvalidInput => (),
+                        _ => anyhow::bail!(err),
+                    }
+                }
+                child.wait()?
+            }
+        },
+        None => child.wait()?,
+    };
+
+    anyhow::ensure!(st.success(), "Subprocess failed: {}", st);
+
+    Ok(())
+}
+
+fn project_root() -> PathBuf {
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .or_else(|| option_env!("CARGO_MANIFEST_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("./xtask"));
+    manifest_dir.parent().unwrap().to_owned()
+}
+
+fn target_dir() -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_root().join("target"))
 }

@@ -2,10 +2,14 @@
 name = "polyfuse-xtask"
 version = "0.0.0" # never publish
 publish = false
-authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-anyhow = "*"
-structopt = "*"
-thiserror = "*"
+anyhow = "1"
+pico-args = "0.3"
+wait-timeout = "0.2"
+
+[dependencies.cargo-husky]
+version = "1.5"
+default-features = false
+features = [ "user-hooks" ]
