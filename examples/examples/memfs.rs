@@ -693,7 +693,7 @@ impl MemFS {
         let offset = op.offset() as usize;
         let size = op.size() as usize;
 
-        content.resize(offset + size, 0);
+        content.resize(std::cmp::max(content.len(), offset + size), 0);
 
         use futures::io::AsyncReadExt;
         reader
