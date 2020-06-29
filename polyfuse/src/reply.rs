@@ -50,7 +50,7 @@ macro_rules! impl_reply_body_for_pointers {
         {
             (**self).collect_bytes(collector)
         }
-    }
+    };
 }
 
 impl<R: ?Sized> Reply for &R

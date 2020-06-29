@@ -50,8 +50,6 @@ jobs:
 
     - name: Run lints
       run: cargo +stable xtask lint
-      env:
-        RUSTFLAGS: "-D warnings"
 
     - name: Run tests (stable)
       run: cargo +stable test
