@@ -36,7 +36,7 @@ const MAX_MAX_PAGES: usize = 256;
 const BUFFER_HEADER_SIZE: usize = 0x1000;
 
 lazy_static! {
-    static ref PAGE_SIZE: usize = { unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize } };
+    static ref PAGE_SIZE: usize = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
 }
 
 /// Session initializer.
