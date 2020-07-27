@@ -23,7 +23,6 @@ mod common;
 mod context;
 mod dirent;
 mod fs;
-mod init;
 mod kernel;
 mod session;
 mod util;
@@ -34,9 +33,8 @@ pub use crate::{
     context::Context,
     dirent::DirEntry,
     fs::Filesystem,
-    init::{CapabilityFlags, ConnectionInfo, SessionInitializer},
     op::Operation,
-    session::Session,
+    session::{CapabilityFlags, ConnectionInfo, Session, SessionInitializer},
 };
 
 /// A re-export of [`async_trait`] for implementing `Filesystem`.
