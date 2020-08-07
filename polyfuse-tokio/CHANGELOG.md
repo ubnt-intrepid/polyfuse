@@ -5,6 +5,12 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.2.1] (2020-08-07)
+
+### Fixed
+
+* Check the exit status of `fusermount` after spawning ([#85](https://github.com/ubnt-intrepid/polyfuse/pull/85))
+
 ## [0.2.0] (2019-12-28)
 
 ### Added
@@ -30,7 +36,8 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 <!-- links -->
 
-[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/polyfuse-tokio-v0.2.0...HEAD
+[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/polyfuse-tokio-v0.2.1...HEAD
+[0.2.1]: https://github.com/ubnt-intrepid/polyfuse/compare/polyfuse-tokio-v0.2.0...polyfuse-tokio-v0.2.1
 [0.2.0]: https://github.com/ubnt-intrepid/polyfuse/compare/polyfuse-tokio-v0.1.0...polyfuse-tokio-v0.2.0
 [0.1.0]: https://github.com/ubnt-intrepid/polyfuse/tree/polyfuse-tokio-v0.1.0
 
