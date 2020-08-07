@@ -25,11 +25,11 @@ use std::{
     os::unix::{
         io::{AsRawFd, IntoRawFd, RawFd},
         net::UnixDatagram,
-        process::CommandExt,
+        process::{CommandExt, ExitStatusExt},
     },
     path::{Path, PathBuf},
     pin::Pin,
-    process::Command,
+    process::{Command, ExitStatus},
     ptr,
 };
 use tokio::io::PollEvented;
@@ -195,7 +195,18 @@ pub struct Channel(PollEvented<Connection>);
 impl Channel {
     /// Establish a connection with the FUSE kernel driver.
     pub fn open(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<Self> {
-        let (_pid, mut reader) = exec_fusermount(mountpoint, mountopts)?;
+        let (pid, mut reader) = exec_fusermount(mountpoint, mountopts)?;
+
+        // Check if the `fusermount` command is started successfully.
+        let mut status = 0;
+        syscall! { waitpid(pid, &mut status, 0) };
+        let status = ExitStatus::from_raw(status);
+        if !status.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("fusermount failed with: {}", status),
+            ));
+        }
 
         let fd = receive_fd(&mut reader)?;
         set_nonblocking(fd)?;
