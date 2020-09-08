@@ -74,7 +74,7 @@ $ sudo pacman -S fuse2
 
 ## Resources
 
-* [Examples](./examples)
+* [Examples](https://github.com/ubnt-intrepid/polyfuse/tree/master/examples)
 * [API documentation (docs.rs)](https://docs.rs/polyfuse)
 * [API documentation (master)](https://ubnt-intrepid.github.io/polyfuse/)
 
