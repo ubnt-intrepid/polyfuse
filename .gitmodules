@@ -1,4 +1,4 @@
 [submodule "libfuse"]
-path = polyfuse/systest/libfuse
+path = polyfuse-kernel/systest/libfuse
 url = https://github.com/libfuse/libfuse.git
 ignore = dirty

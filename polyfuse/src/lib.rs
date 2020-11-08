@@ -23,9 +23,10 @@ mod context;
 mod dirent;
 mod fs;
 mod io;
-mod kernel;
 mod session;
 mod util;
+
+use polyfuse_kernel as kernel;
 
 #[doc(inline)]
 pub use crate::{
