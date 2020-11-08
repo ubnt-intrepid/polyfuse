@@ -4,6 +4,6 @@ members = [
   "polyfuse/systest",
   "polyfuse-tokio",
 
-  "examples",
+  #"examples",
   "xtask",
 ]
