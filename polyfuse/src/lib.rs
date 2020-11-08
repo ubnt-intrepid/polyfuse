@@ -15,7 +15,6 @@
 )]
 #![forbid(clippy::unimplemented, clippy::todo)]
 
-pub mod io;
 pub mod op;
 pub mod reply;
 
@@ -23,6 +22,7 @@ mod common;
 mod context;
 mod dirent;
 mod fs;
+mod io;
 mod kernel;
 mod session;
 mod util;

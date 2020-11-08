@@ -3,9 +3,9 @@
 use crate::{
     async_trait, //
     context::Context,
-    io::{Reader, Writer},
     op::Operation,
 };
+use futures::io::{AsyncRead, AsyncWrite};
 use std::{future::Future, io, pin::Pin};
 
 /// A set of callbacks for FUSE filesystem implementation.
@@ -22,7 +22,7 @@ pub trait Filesystem: Sync {
         op: Operation<'cx>,
     ) -> io::Result<()>
     where
-        T: Reader + Writer + Send + Unpin,
+        T: AsyncRead + AsyncWrite + Send + Unpin,
     {
         Ok(())
     }
@@ -39,7 +39,7 @@ macro_rules! impl_filesystem_body {
         where
             'a: 'async_trait,
             'cx: 'async_trait,
-            T: Reader + Writer + Send + Unpin + 'async_trait,
+            T: AsyncRead + AsyncWrite + Send + Unpin + 'async_trait,
         {
             (**self).call(cx, op)
         }

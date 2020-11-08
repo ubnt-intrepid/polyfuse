@@ -16,33 +16,15 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
     task::{self, Poll},
 };
-use pin_project_lite::pin_project;
 use smallvec::SmallVec;
 use std::{
     convert::TryFrom,
-    io::{self, IoSlice, IoSliceMut},
+    io::{self, IoSlice},
     mem,
-    ops::DerefMut,
     pin::Pin,
 };
 
-/// A reader for an FUSE request message.
-pub trait Reader: AsyncRead {}
-
-impl<R: ?Sized> Reader for &mut R where R: Reader + Unpin {}
-
-impl<R: ?Sized> Reader for Box<R> where R: Reader + Unpin {}
-
-impl<P, R: ?Sized> Reader for Pin<P>
-where
-    P: DerefMut<Target = R> + Unpin,
-    R: Reader,
-{
-}
-
-impl Reader for &[u8] {}
-
-pub(crate) trait ReaderExt: Reader {
+pub(crate) trait ReaderExt: AsyncRead {
     fn read_request(&mut self) -> ReadRequest<'_, Self>
     where
         Self: Unpin,
@@ -56,7 +38,7 @@ pub(crate) trait ReaderExt: Reader {
     }
 }
 
-impl<R: Reader + ?Sized> ReaderExt for R {}
+impl<R: AsyncRead + ?Sized> ReaderExt for R {}
 
 #[allow(missing_debug_implementations)]
 pub(crate) struct ReadRequest<'r, R: ?Sized> {
@@ -76,7 +58,7 @@ enum ReadRequestState {
 
 impl<R: ?Sized> Future for ReadRequest<'_, R>
 where
-    R: Reader + Unpin,
+    R: AsyncRead + Unpin,
 {
     type Output = io::Result<Request>;
 
@@ -166,23 +148,7 @@ impl Request {
     }
 }
 
-/// The writer of FUSE responses and notifications.
-pub trait Writer: AsyncWrite {}
-
-impl<W: ?Sized> Writer for &mut W where W: Writer + Unpin {}
-
-impl<W: ?Sized> Writer for Box<W> where W: Writer + Unpin {}
-
-impl<P, W: ?Sized> Writer for Pin<P>
-where
-    P: DerefMut<Target = W> + Unpin,
-    W: Writer,
-{
-}
-
-impl Writer for Vec<u8> {}
-
-pub(crate) trait WriterExt: Writer {
+pub(crate) trait WriterExt: AsyncWrite {
     fn send_msg<'w, T: ?Sized>(
         &'w mut self,
         unique: u64,
@@ -225,7 +191,7 @@ pub(crate) trait WriterExt: Writer {
     }
 }
 
-impl<W: Writer + ?Sized> WriterExt for W {}
+impl<W: AsyncWrite + ?Sized> WriterExt for W {}
 
 pub(crate) struct SendMsg<'w, W: ?Sized> {
     writer: &'w mut W,
@@ -235,7 +201,7 @@ pub(crate) struct SendMsg<'w, W: ?Sized> {
 
 impl<W: ?Sized> Future for SendMsg<'_, W>
 where
-    W: Writer + Unpin,
+    W: AsyncWrite + Unpin,
 {
     type Output = io::Result<()>;
 
@@ -262,80 +228,6 @@ where
     }
 }
 
-/// Unite a pair of `Reader` and `Writer` as an I/O.
-pub fn unite<R, W>(reader: R, writer: W) -> Unite<R, W>
-where
-    R: Reader,
-    W: Writer,
-{
-    Unite { reader, writer }
-}
-
-pin_project! {
-    /// The united I/O of a pair of `Reader` and `Writer`.
-    #[derive(Debug)]
-    pub struct Unite<R, W> {
-        #[pin]
-        reader: R,
-        #[pin]
-        writer: W,
-    }
-}
-
-impl<R, W> AsyncRead for Unite<R, W>
-where
-    R: AsyncRead,
-{
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        dst: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        self.project().reader.poll_read(cx, dst)
-    }
-
-    fn poll_read_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        dst: &mut [IoSliceMut<'_>],
-    ) -> Poll<io::Result<usize>> {
-        self.project().reader.poll_read_vectored(cx, dst)
-    }
-}
-
-impl<R, W> AsyncWrite for Unite<R, W>
-where
-    W: AsyncWrite,
-{
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        src: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        self.project().writer.poll_write(cx, src)
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        src: &[IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        self.project().writer.poll_write_vectored(cx, src)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-        self.project().writer.poll_flush(cx)
-    }
-
-    fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-        self.project().writer.poll_close(cx)
-    }
-}
-
-impl<R, W> Reader for Unite<R, W> where R: Reader {}
-
-impl<R, W> Writer for Unite<R, W> where W: Writer {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +236,7 @@ mod tests {
         executor::block_on,
         task::{self, Poll},
     };
+    use pin_project_lite::pin_project;
     use std::{
         io::{self, IoSlice},
         ops::Index,
@@ -474,8 +367,6 @@ mod tests {
             self.project().vec.poll_close(cx)
         }
     }
-
-    impl Writer for DummyWriter {}
 
     #[test]
     fn send_msg_empty() {
