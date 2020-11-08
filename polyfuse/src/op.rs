@@ -2,8 +2,6 @@
 
 use crate::{
     common::{FileLock, Forget, LockOwner},
-    context::Context,
-    io::Writer,
     kernel::{
         fuse_access_in, //
         fuse_batch_forget_in,
@@ -35,17 +33,6 @@ use crate::{
         fuse_setxattr_in,
         fuse_write_in,
         FUSE_LK_FLOCK,
-    },
-    reply::{
-        ReplyAttr, //
-        ReplyBmap,
-        ReplyEntry,
-        ReplyLk,
-        ReplyOpen,
-        ReplyPoll,
-        ReplyStatfs,
-        ReplyWrite,
-        ReplyXattr,
     },
     util::{make_system_time, BuilderExt},
 };
@@ -195,23 +182,6 @@ impl<'a> Lookup<'a> {
     pub fn name(&self) -> &OsStr {
         self.name
     }
-
-    #[inline]
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        entry: impl AsRef<ReplyEntry>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(entry.as_ref()).await
-    }
 }
 
 /// Get file attributes.
@@ -247,22 +217,6 @@ impl<'a> Getattr<'a> {
         } else {
             None
         }
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        attr: impl AsRef<ReplyAttr>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(attr.as_ref()).await
     }
 }
 
@@ -397,36 +351,12 @@ impl<'a> Setattr<'a> {
         self.get(crate::kernel::FATTR_CTIME, |arg| (arg.ctime, arg.ctimensec))
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
-    #[inline]
-    pub fn lock_owner(&self) -> Option<u64> {
-        self.get(crate::kernel::FATTR_LOCKOWNER, |arg| arg.lock_owner)
-    }
-
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner_id(&self) -> Option<LockOwner> {
+    pub fn lock_owner(&self) -> Option<LockOwner> {
         self.get(crate::kernel::FATTR_LOCKOWNER, |arg| {
             LockOwner::from_raw(arg.lock_owner)
         })
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        attr: impl AsRef<ReplyAttr>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(attr.as_ref()).await
     }
 }
 
@@ -447,22 +377,6 @@ impl Readlink<'_> {
     /// Return the inode number to be read the link value.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        value: impl AsRef<OsStr>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(value.as_ref()).await
     }
 }
 
@@ -503,23 +417,6 @@ impl<'a> Symlink<'a> {
     #[inline]
     pub fn link(&self) -> &OsStr {
         &*self.link
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        entry: impl AsRef<ReplyEntry>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(entry.as_ref()).await
     }
 }
 
@@ -578,22 +475,6 @@ impl<'a> Mknod<'a> {
     pub fn umask(&self) -> u32 {
         self.arg.umask
     }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        entry: impl AsRef<ReplyEntry>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(entry.as_ref()).await
-    }
 }
 
 /// Create a directory node.
@@ -641,23 +522,6 @@ impl<'a> Mkdir<'a> {
     pub fn umask(&self) -> u32 {
         self.arg.umask
     }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        entry: impl AsRef<ReplyEntry>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(entry.as_ref()).await
-    }
 }
 
 // TODO: description about lookup count.
@@ -689,19 +553,6 @@ impl<'a> Unlink<'a> {
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
-    }
 }
 
 /// Remove a directory.
@@ -732,19 +583,6 @@ impl<'a> Rmdir<'a> {
     #[inline]
     pub fn name(&self) -> &OsStr {
         &*self.name
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
     }
 }
 
@@ -822,19 +660,6 @@ impl<'a> Rename<'a> {
             RenameKind::V2(arg) => arg.flags,
         }
     }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
-    }
 }
 
 /// Create a hard link.
@@ -874,22 +699,6 @@ impl<'a> Link<'a> {
     #[inline]
     pub fn newname(&self) -> &OsStr {
         &*self.newname
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        entry: impl AsRef<ReplyEntry>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(entry.as_ref()).await
     }
 }
 
@@ -937,22 +746,6 @@ impl<'a> Open<'a> {
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyOpen>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
-    }
 }
 
 /// Read data from a file.
@@ -979,9 +772,7 @@ impl fmt::Debug for Read<'_> {
             .field("offset", &self.offset())
             .field("size", &self.size())
             .field("flags", &self.flags())
-            .if_some(self.lock_owner_id(), |f, owner| {
-                f.field("lock_owner", &owner)
-            })
+            .if_some(self.lock_owner(), |f, owner| f.field("lock_owner", &owner))
             .finish()
     }
 }
@@ -1017,69 +808,13 @@ impl<'a> Read<'a> {
         self.arg.flags
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
-    #[inline]
-    pub fn lock_owner(&self) -> Option<u64> {
-        if self.arg.read_flags & crate::kernel::FUSE_READ_LOCKOWNER != 0 {
-            Some(self.arg.lock_owner)
-        } else {
-            None
-        }
-    }
-
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner_id(&self) -> Option<LockOwner> {
+    pub fn lock_owner(&self) -> Option<LockOwner> {
         if self.arg.read_flags & crate::kernel::FUSE_READ_LOCKOWNER != 0 {
             Some(LockOwner::from_raw(self.arg.lock_owner))
         } else {
             None
-        }
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        data: impl AsRef<[u8]>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        let data = data.as_ref();
-
-        if data.len() <= self.size() as usize {
-            cx.reply(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
-        }
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply_vectored<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        data: &[&[u8]],
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        let data_len: usize = data.iter().map(|t| t.len()).sum();
-        if data_len <= self.size() as usize {
-            cx.reply(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
         }
     }
 }
@@ -1107,7 +842,7 @@ impl fmt::Debug for Write<'_> {
             .field("offset", &self.offset())
             .field("size", &self.size())
             .field("flags", &self.flags())
-            .if_some(self.lock_owner_id(), |f, owner| f.field("owner", &owner))
+            .if_some(self.lock_owner(), |f, owner| f.field("owner", &owner))
             .finish()
     }
 }
@@ -1143,42 +878,14 @@ impl<'a> Write<'a> {
         self.arg.flags
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
-    #[inline]
-    pub fn lock_owner(&self) -> Option<u64> {
-        if self.arg.write_flags & crate::kernel::FUSE_WRITE_LOCKOWNER != 0 {
-            Some(self.arg.lock_owner)
-        } else {
-            None
-        }
-    }
-
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner_id(&self) -> Option<LockOwner> {
+    pub fn lock_owner(&self) -> Option<LockOwner> {
         if self.arg.write_flags & crate::kernel::FUSE_WRITE_LOCKOWNER != 0 {
             Some(LockOwner::from_raw(self.arg.lock_owner))
         } else {
             None
         }
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyWrite>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
     }
 }
 
@@ -1194,7 +901,7 @@ impl fmt::Debug for Release<'_> {
             .field("ino", &self.ino())
             .field("fh", &self.fh())
             .field("flags", &self.flags())
-            .field("lock_owner", &self.lock_owner_id())
+            .field("lock_owner", &self.lock_owner())
             .field("flush", &self.flush())
             .field("flock_release", &self.flock_release())
             .finish()
@@ -1220,17 +927,9 @@ impl<'a> Release<'a> {
         self.arg.flags
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
-    #[inline]
-    pub fn lock_owner(&self) -> u64 {
-        // NOTE: fuse_release_in.lock_owner is available since ABI 7.8.
-        self.arg.lock_owner
-    }
-
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner_id(&self) -> LockOwner {
+    pub fn lock_owner(&self) -> LockOwner {
         // NOTE: fuse_release_in.lock_owner is available since ABI 7.8.
         LockOwner::from_raw(self.arg.lock_owner)
     }
@@ -1245,19 +944,6 @@ impl<'a> Release<'a> {
     #[inline]
     pub fn flock_release(&self) -> bool {
         self.arg.release_flags & crate::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
     }
 }
 
@@ -1281,23 +967,6 @@ impl Statfs<'_> {
     #[inline]
     pub fn ino(&self) -> u64 {
         self.header.nodeid
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyStatfs>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
     }
 }
 
@@ -1334,18 +1003,6 @@ impl<'a> Fsync<'a> {
     #[inline]
     pub fn datasync(&self) -> bool {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
     }
 }
 
@@ -1392,19 +1049,6 @@ impl<'a> Setxattr<'a> {
     pub fn flags(&self) -> u32 {
         self.arg.flags
     }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
-    }
 }
 
 /// Get an extended attribute.
@@ -1449,65 +1093,6 @@ impl<'a> Getxattr<'a> {
     pub fn size(&self) -> u32 {
         self.arg.size
     }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply_size<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyXattr>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        data: impl AsRef<[u8]>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        let data = data.as_ref();
-
-        if data.len() <= self.size() as usize {
-            cx.reply(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
-        }
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply_vectored<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        data: &[&[u8]],
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        let data_len: usize = data.iter().map(|t| t.len()).sum();
-        if data_len <= self.size() as usize {
-            cx.reply(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
-        }
-    }
 }
 
 /// List extended attribute names.
@@ -1539,65 +1124,6 @@ impl<'a> Listxattr<'a> {
     pub fn size(&self) -> u32 {
         self.arg.size
     }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply_size<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyXattr>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        data: impl AsRef<[u8]>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        let data = data.as_ref();
-
-        if data.len() <= self.size() as usize {
-            cx.reply(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
-        }
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply_vectored<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        data: &[&[u8]],
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        let data_len: usize = data.iter().map(|t| t.len()).sum();
-        if data_len <= self.size() as usize {
-            cx.reply(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
-        }
-    }
 }
 
 /// Remove an extended attribute.
@@ -1627,19 +1153,6 @@ impl<'a> Removexattr<'a> {
     pub fn name(&self) -> &OsStr {
         &*self.name
     }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
-    }
 }
 
 /// Close a file descriptor.
@@ -1662,7 +1175,7 @@ impl fmt::Debug for Flush<'_> {
         f.debug_struct("Flush")
             .field("ino", &self.ino())
             .field("fh", &self.fh())
-            .field("lock_owner", &self.lock_owner_id())
+            .field("lock_owner", &self.lock_owner())
             .finish()
     }
 }
@@ -1678,28 +1191,10 @@ impl<'a> Flush<'a> {
         self.arg.fh
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `lock_owner_id` instead.")]
-    pub fn lock_owner(&self) -> u64 {
-        self.arg.lock_owner
-    }
-
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner_id(&self) -> LockOwner {
+    pub fn lock_owner(&self) -> LockOwner {
         LockOwner::from_raw(self.arg.lock_owner)
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
     }
 }
 
@@ -1732,23 +1227,6 @@ impl<'a> Opendir<'a> {
     #[inline]
     pub fn flags(&self) -> u32 {
         self.arg.flags
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyOpen>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
     }
 }
 
@@ -1803,51 +1281,6 @@ impl<'a> Readdir<'a> {
     pub fn is_plus(&self) -> bool {
         self.is_plus
     }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        data: impl AsRef<[u8]>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        let data = data.as_ref();
-
-        if data.len() <= self.size() as usize {
-            cx.reply(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
-        }
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply_vectored<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        data: &[&[u8]],
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        let data_len: usize = data.iter().map(|t| t.len()).sum();
-        if data_len <= self.size() as usize {
-            cx.reply(data).await
-        } else {
-            cx.reply_err(libc::ERANGE).await
-        }
-    }
 }
 
 /// Release an opened directory.
@@ -1883,19 +1316,6 @@ impl<'a> Releasedir<'a> {
     #[inline]
     pub fn flags(&self) -> u32 {
         self.arg.flags
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
     }
 }
 
@@ -1933,18 +1353,6 @@ impl<'a> Fsyncdir<'a> {
     pub fn datasync(&self) -> bool {
         self.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
     }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
-    }
 }
 
 /// Test for a POSIX file lock.
@@ -1960,7 +1368,7 @@ impl fmt::Debug for Getlk<'_> {
         f.debug_struct("Getlk")
             .field("ino", &self.ino())
             .field("fh", &self.fh())
-            .field("owner", &self.owner_id())
+            .field("owner", &self.owner())
             .field("lk", &self.lk())
             .finish()
     }
@@ -1977,37 +1385,15 @@ impl<'a> Getlk<'a> {
         self.arg.fh
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `owner_id` instead.")]
-    pub fn owner(&self) -> u64 {
-        self.arg.owner
-    }
-
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn owner_id(&self) -> LockOwner {
+    pub fn owner(&self) -> LockOwner {
         LockOwner::from_raw(self.arg.owner)
     }
 
     /// Return the lock information for testing.
     pub fn lk(&self) -> &FileLock {
         FileLock::new(&self.arg.lk)
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyLk>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
     }
 }
 
@@ -2023,7 +1409,7 @@ impl fmt::Debug for Setlk<'_> {
         f.debug_struct("Setlk")
             .field("ino", &self.ino())
             .field("fh", &self.fh())
-            .field("owner", &self.owner_id())
+            .field("owner", &self.owner())
             .field("lk", &self.lk())
             .field("sleep", &self.sleep())
             .finish()
@@ -2043,16 +1429,9 @@ impl<'a> Setlk<'a> {
         self.arg.fh
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `owner_id` instead.")]
-    #[inline]
-    pub fn owner(&self) -> u64 {
-        self.arg.owner
-    }
-
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn owner_id(&self) -> LockOwner {
+    pub fn owner(&self) -> LockOwner {
         LockOwner::from_raw(self.arg.owner)
     }
 
@@ -2066,19 +1445,6 @@ impl<'a> Setlk<'a> {
     #[inline]
     pub fn sleep(&self) -> bool {
         self.sleep
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
     }
 }
 
@@ -2111,12 +1477,6 @@ impl<'a> Flock<'a> {
         self.arg.fh
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `owner_id` instead.")]
-    pub fn owner(&self) -> u64 {
-        self.arg.owner
-    }
-
     /// Return the identifier of lock owner.
     #[inline]
     pub fn owner_id(&self) -> LockOwner {
@@ -2147,18 +1507,6 @@ impl<'a> Flock<'a> {
 
         Some(op)
     }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
-    }
 }
 
 /// Check file access permissions.
@@ -2185,18 +1533,6 @@ impl<'a> Access<'a> {
     /// Return the requested access mode.
     pub fn mask(&self) -> u32 {
         self.arg.mask
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
     }
 }
 
@@ -2262,24 +1598,6 @@ impl<'a> Create<'a> {
     pub fn open_flags(&self) -> u32 {
         self.arg.flags
     }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    #[inline]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        entry: impl AsRef<ReplyEntry>,
-        open: impl AsRef<ReplyOpen>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply((entry.as_ref(), open.as_ref())).await
-    }
 }
 
 /// Map block index within a file to block index within device.
@@ -2318,22 +1636,6 @@ impl<'a> Bmap<'a> {
     /// Returns the unit of block index.
     pub fn blocksize(&self) -> u32 {
         self.arg.blocksize
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyBmap>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
     }
 }
 
@@ -2393,19 +1695,6 @@ impl<'a> Fallocate<'a> {
     pub fn mode(&self) -> u32 {
         self.arg.mode
     }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(self, cx: &mut Context<'_, T>) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(()).await
-    }
 }
 
 /// Copy a range of data from an opened file to another.
@@ -2432,15 +1721,6 @@ impl fmt::Debug for CopyFileRange<'_> {
 }
 
 impl<'a> CopyFileRange<'a> {
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.1",
-        note = "use `ino_in`, `fh_in` or `offset_in` instead."
-    )]
-    pub fn input(&self) -> (u64, u64, u64) {
-        (self.ino_in(), self.fh_in(), self.offset_in())
-    }
-
     /// Return the inode number of source file.
     #[inline]
     pub fn ino_in(&self) -> u64 {
@@ -2457,15 +1737,6 @@ impl<'a> CopyFileRange<'a> {
     #[inline]
     pub fn offset_in(&self) -> u64 {
         self.arg.fh_in
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.1",
-        note = "use `ino_out`, `fh_out` or `offset_out` instead."
-    )]
-    pub fn output(&self) -> (u64, u64, u64) {
-        (self.arg.nodeid_out, self.arg.fh_out, self.arg.off_out)
     }
 
     /// Return the inode number of target file.
@@ -2496,23 +1767,6 @@ impl<'a> CopyFileRange<'a> {
     #[inline]
     pub fn flags(&self) -> u64 {
         self.arg.flags
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyWrite>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
     }
 }
 
@@ -2564,22 +1818,6 @@ impl<'a> Poll<'a> {
         } else {
             None
         }
-    }
-
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.3.3",
-        note = "This method will be removed in the future version."
-    )]
-    pub async fn reply<T: ?Sized>(
-        self,
-        cx: &mut Context<'_, T>,
-        out: impl AsRef<ReplyPoll>,
-    ) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        cx.reply(out.as_ref()).await
     }
 }
 

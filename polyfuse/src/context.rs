@@ -66,16 +66,6 @@ impl<'cx, T: ?Sized> Context<'cx, T> {
         &mut *self.io
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.3.3", note = "use `reply` instead.")]
-    #[inline]
-    pub async fn reply_raw<'a>(&'a mut self, data: &'a [&'a [u8]]) -> io::Result<()>
-    where
-        T: Writer + Unpin,
-    {
-        self.send_reply(0, data).await
-    }
-
     /// Reply to the kernel with an arbitrary bytes of data.
     #[inline]
     pub async fn reply<R>(&mut self, reply: R) -> io::Result<()>
