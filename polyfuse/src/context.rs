@@ -1,8 +1,5 @@
-use crate::{
-    io::{Reader, Writer, WriterExt},
-    kernel::fuse_in_header,
-    reply::Reply,
-};
+use crate::{io::WriterExt, kernel::fuse_in_header, reply::Reply};
+use futures::io::{AsyncRead, AsyncWrite};
 use std::{fmt, io};
 
 /// The context of FUSE callbacks.
@@ -59,9 +56,9 @@ impl<'cx, T: ?Sized> Context<'cx, T> {
 
     /// Return the instance of `Reader` for reading the rest of the request message.
     #[inline]
-    pub fn reader(&mut self) -> impl Reader + '_
+    pub fn reader(&mut self) -> impl AsyncRead + '_
     where
-        T: Reader + Unpin,
+        T: AsyncRead + Unpin,
     {
         &mut *self.io
     }
@@ -70,7 +67,7 @@ impl<'cx, T: ?Sized> Context<'cx, T> {
     #[inline]
     pub async fn reply<R>(&mut self, reply: R) -> io::Result<()>
     where
-        T: Writer + Unpin,
+        T: AsyncWrite + Unpin,
         R: Reply,
     {
         self.send_reply(0, &reply).await
@@ -80,7 +77,7 @@ impl<'cx, T: ?Sized> Context<'cx, T> {
     #[inline]
     pub async fn reply_err(&mut self, error: i32) -> io::Result<()>
     where
-        T: Writer + Unpin,
+        T: AsyncWrite + Unpin,
     {
         self.send_reply(error, &[]).await
     }
@@ -93,7 +90,7 @@ impl<'cx, T: ?Sized> Context<'cx, T> {
 
     async fn send_reply<R: ?Sized>(&mut self, error: i32, data: &R) -> io::Result<()>
     where
-        T: Writer + Unpin,
+        T: AsyncWrite + Unpin,
         R: Reply,
     {
         if !self.written {

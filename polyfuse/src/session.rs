@@ -12,7 +12,7 @@ use crate::{
     common::StatFs,
     context::Context,
     fs::Filesystem,
-    io::{Reader, ReaderExt, Writer, WriterExt},
+    io::{ReaderExt, WriterExt},
     kernel::{
         fuse_init_out, //
         FUSE_KERNEL_MINOR_VERSION,
@@ -35,6 +35,7 @@ use crate::{
     util::{as_bytes, BuilderExt},
 };
 use bitflags::bitflags;
+use futures::io::{AsyncRead, AsyncWrite};
 use lazy_static::lazy_static;
 use smallvec::SmallVec;
 use std::{
@@ -160,7 +161,7 @@ impl SessionInitializer {
     #[allow(clippy::cognitive_complexity)]
     pub async fn try_init<I: ?Sized>(&self, io: &mut I) -> io::Result<Option<Session>>
     where
-        I: Reader + Writer + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
     {
         let request = io.read_request().await?;
 
@@ -475,7 +476,7 @@ impl Session {
     pub async fn process<F: ?Sized, T: ?Sized>(&self, fs: &F, io: &mut T) -> io::Result<()>
     where
         F: Filesystem,
-        T: Reader + Writer + Send + Unpin,
+        T: AsyncRead + AsyncWrite + Send + Unpin,
     {
         if self.exited() {
             tracing::warn!("The sesson has already been exited");
@@ -540,7 +541,7 @@ impl Session {
         len: i64,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if self.exited() {
             return Err(io::Error::new(
@@ -571,7 +572,7 @@ impl Session {
         name: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if self.exited() {
             return Err(io::Error::new(
@@ -609,7 +610,7 @@ impl Session {
         name: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if self.exited() {
             return Err(io::Error::new(
@@ -643,7 +644,7 @@ impl Session {
         data: &[&[u8]],
     ) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if self.exited() {
             return Err(io::Error::new(
@@ -675,7 +676,7 @@ impl Session {
         size: u32,
     ) -> io::Result<u64>
     where
-        W: Writer + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if self.exited() {
             return Err(io::Error::new(
@@ -705,7 +706,7 @@ impl Session {
     /// Send I/O readiness to the kernel.
     pub async fn notify_poll_wakeup<W: ?Sized>(&self, writer: &mut W, kh: u64) -> io::Result<()>
     where
-        W: Writer + Unpin,
+        W: AsyncWrite + Unpin,
     {
         if self.exited() {
             return Err(io::Error::new(
@@ -734,7 +735,7 @@ async fn send_notify<W: ?Sized>(
     data: &[&[u8]],
 ) -> io::Result<()>
 where
-    W: Writer + Unpin,
+    W: AsyncWrite + Unpin,
 {
     let code = unsafe { mem::transmute::<_, i32>(code) };
     writer.send_msg(0, code, data).await
@@ -744,8 +745,76 @@ where
 mod tests {
     use super::*;
     use crate::kernel::{fuse_in_header, fuse_init_in};
-    use futures::executor::block_on;
-    use std::mem;
+    use futures::{
+        executor::block_on,
+        io::{AsyncRead, AsyncWrite},
+        task::{self, Poll},
+    };
+    use pin_project_lite::pin_project;
+    use std::{
+        io::{IoSlice, IoSliceMut},
+        mem,
+        pin::Pin,
+    };
+
+    pin_project! {
+        struct Unite<R, W> {
+            #[pin]
+            reader: R,
+            #[pin]
+            writer: W,
+        }
+    }
+
+    impl<R, W> AsyncRead for Unite<R, W>
+    where
+        R: AsyncRead,
+    {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            dst: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            self.project().reader.poll_read(cx, dst)
+        }
+
+        fn poll_read_vectored(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            dst: &mut [IoSliceMut<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.project().reader.poll_read_vectored(cx, dst)
+        }
+    }
+
+    impl<R, W> AsyncWrite for Unite<R, W>
+    where
+        W: AsyncWrite,
+    {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            src: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.project().writer.poll_write(cx, src)
+        }
+
+        fn poll_write_vectored(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            src: &[IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.project().writer.poll_write_vectored(cx, src)
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+            self.project().writer.poll_flush(cx)
+        }
+
+        fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+            self.project().writer.poll_close(cx)
+        }
+    }
 
     #[test]
     fn init_default() {
@@ -776,7 +845,10 @@ mod tests {
 
         let mut reader = &input[..];
         let mut writer = Vec::<u8>::new();
-        let mut io = crate::io::unite(&mut reader, &mut writer);
+        let mut io = Unite {
+            reader: &mut reader,
+            writer: &mut writer,
+        };
 
         let init_session = SessionInitializer::default();
         let session = block_on(init_session.try_init(&mut io))
