@@ -53,13 +53,9 @@ jobs:
 
     - name: Run tests (stable)
       run: cargo +stable test
-      env:
-        RUSTFLAGS: "-D warnings"
 
     - name: Run tests (beta)
       run: cargo +beta test
-      env:
-        RUSTFLAGS: "-D warnings"
 
     - name: Run tests (minimal supported toolchain)
       run: cargo +1.40.0 test
