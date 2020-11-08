@@ -25,6 +25,9 @@
 
 `polyfuse-tokio` provides an implementation of the filesystem daemon for running FUSE (Filesystem in Userspace) filesystems on the [`tokio`](https://crates.io/crates/tokio) runtime.
 
+> NOTE: This crate is currently in maintenance mode and will be deprecated after
+> the runtime support for `tokio-0.3`/`mio-0.7` is released.
+
 ## Resources
 
 * [API documentation (docs.rs)](https://docs.rs/polyfuse-tokio/)
