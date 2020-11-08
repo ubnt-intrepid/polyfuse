@@ -1,5 +1,5 @@
 [package]
-name = "polyfuse-systest"
+name = "polyfuse-kernel-systest"
 version = "0.0.0" # never publish
 publish = false
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
@@ -8,12 +8,10 @@ build = "build.rs"
 
 [dependencies]
 libc = "0.2"
+polyfuse-kernel = { path = ".." }
 
 [build-dependencies]
 ctest = "0.2"
-
-[lib]
-name = "systest"
 
 [[test]]
 name = "test_kernel"

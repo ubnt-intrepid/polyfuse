@@ -1,4 +1,4 @@
-//! FUSE application binary interface.
+//! FUSE application binary interface for `polyfuse`.
 //!
 //! The bindings is compatible with ABI 7.29 (in libfuse 3.6.2).
 
@@ -18,7 +18,7 @@ pub const FUSE_KERNEL_MINOR_VERSION: u32 = 29;
 pub const FUSE_MIN_READ_BUFFER: u32 = 8192;
 
 /// Maximum of in_iovecs + out_iovecs
-//pub const FUSE_IOCTL_MAX_IOV: u32 = 256;
+pub const FUSE_IOCTL_MAX_IOV: u32 = 256;
 
 // Bitmasks for fuse_setattr_in.valid
 pub const FATTR_MODE: u32 = 1 << 0;
@@ -42,16 +42,16 @@ pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
 // INIT request/reply flags.
 pub const FUSE_ASYNC_READ: u32 = 1;
 pub const FUSE_POSIX_LOCKS: u32 = 1 << 1;
-//pub const FUSE_FILE_OPS: u32 = 1 << 2;
+pub const FUSE_FILE_OPS: u32 = 1 << 2;
 pub const FUSE_ATOMIC_O_TRUNC: u32 = 1 << 3;
 pub const FUSE_EXPORT_SUPPORT: u32 = 1 << 4;
 pub const FUSE_BIG_WRITES: u32 = 1 << 5;
 pub const FUSE_DONT_MASK: u32 = 1 << 6;
-//pub const FUSE_SPLICE_WRITE: u32 = 1 << 7;
-//pub const FUSE_SPLICE_MOVE: u32 = 1 << 8;
-//pub const FUSE_SPLICE_READ: u32 = 1 << 9;
+pub const FUSE_SPLICE_WRITE: u32 = 1 << 7;
+pub const FUSE_SPLICE_MOVE: u32 = 1 << 8;
+pub const FUSE_SPLICE_READ: u32 = 1 << 9;
 pub const FUSE_FLOCK_LOCKS: u32 = 1 << 10;
-//pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11;
+pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11;
 pub const FUSE_AUTO_INVAL_DATA: u32 = 1 << 12;
 pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
 pub const FUSE_READDIRPLUS_AUTO: u32 = 1 << 14;
@@ -61,13 +61,13 @@ pub const FUSE_NO_OPEN_SUPPORT: u32 = 1 << 17;
 pub const FUSE_PARALLEL_DIROPS: u32 = 1 << 18;
 pub const FUSE_HANDLE_KILLPRIV: u32 = 1 << 19;
 pub const FUSE_POSIX_ACL: u32 = 1 << 20;
-//pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
+pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
 pub const FUSE_MAX_PAGES: u32 = 1 << 22;
-//pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
+pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
 pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
 
 // CUSE INIT request/reply flags.
-//pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;
+pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;
 
 // Release flags.
 pub const FUSE_RELEASE_FLUSH: u32 = 1 << 0;
@@ -87,11 +87,11 @@ pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
 pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
 
 // Ioctl flags.
-// pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
-// pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
-// pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
-// pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
-// pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
+pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
+pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
+pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
+pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
+pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
 
 // Poll flags.
 pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
@@ -100,14 +100,14 @@ pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
 // misc
-// pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
-// pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
-// pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
-// pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
-// pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
-// pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
-// pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
-// pub const CUSE_INIT_INFO_MAX: u32 = 4096;
+pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
+pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
+pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
+pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
+pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
+pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
+pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
+pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 
 #[derive(Default, Copy, Clone)]
 #[repr(C)]
@@ -541,15 +541,15 @@ pub struct fuse_bmap_out {
     pub block: u64,
 }
 
-// #[repr(C)]
-// pub struct fuse_ioctl_in {
-//     pub fh: u64,
-//     pub flags: u32,
-//     pub cmd: u32,
-//     pub arg: u64,
-//     pub in_size: u32,
-//     pub out_size: u32,
-// }
+#[repr(C)]
+pub struct fuse_ioctl_in {
+    pub fh: u64,
+    pub flags: u32,
+    pub cmd: u32,
+    pub arg: u64,
+    pub in_size: u32,
+    pub out_size: u32,
+}
 
 #[derive(Default)]
 #[repr(C)]
@@ -616,13 +616,13 @@ pub struct fuse_rename2_in {
     pub padding: u32,
 }
 
-// #[repr(C)]
-// pub struct fuse_lseek_in {
-//     pub fh: u64,
-//     pub offset: u64,
-//     pub whence: u32,
-//     pub padding: u32,
-// }
+#[repr(C)]
+pub struct fuse_lseek_in {
+    pub fh: u64,
+    pub offset: u64,
+    pub whence: u32,
+    pub padding: u32,
+}
 
 #[derive(Default)]
 #[repr(C)]
@@ -731,23 +731,23 @@ pub struct fuse_notify_retrieve_in {
     pub dummy4: u64,
 }
 
-// #[repr(C)]
-// pub struct cuse_init_in {
-//     pub major: u32,
-//     pub minor: u32,
-//     pub unused: u32,
-//     pub flags: u32,
-// }
+#[repr(C)]
+pub struct cuse_init_in {
+    pub major: u32,
+    pub minor: u32,
+    pub unused: u32,
+    pub flags: u32,
+}
 
-// #[repr(C)]
-// pub struct cuse_init_out {
-//     pub major: u32,
-//     pub minor: u32,
-//     pub unused: u32,
-//     pub flags: u32,
-//     pub max_read: u32,
-//     pub max_write: u32,
-//     pub dev_major: u32,
-//     pub dev_minor: u32,
-//     pub spare: [u32; 10],
-// }
+#[repr(C)]
+pub struct cuse_init_out {
+    pub major: u32,
+    pub minor: u32,
+    pub unused: u32,
+    pub flags: u32,
+    pub max_read: u32,
+    pub max_write: u32,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+    pub spare: [u32; 10],
+}

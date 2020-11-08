@@ -1,5 +1,5 @@
 #![allow(bad_style, clippy::all)]
 
-use systest::kernel::*;
+use polyfuse_kernel::*;
 
 include!(concat!(env!("OUT_DIR"), "/kernel.rs"));
