@@ -556,6 +556,12 @@ impl Forget {
     }
 }
 
+impl AsRef<Self> for Forget {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 /// The identifier for locking operations.
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]

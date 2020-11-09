@@ -19,10 +19,8 @@ pub mod op;
 pub mod reply;
 
 mod common;
-mod context;
 mod dirent;
 mod fs;
-mod io;
 mod session;
 mod util;
 
@@ -31,10 +29,8 @@ use polyfuse_kernel as kernel;
 #[doc(inline)]
 pub use crate::{
     common::{FileAttr, FileLock, Forget, LockOwner, StatFs},
-    context::Context,
     dirent::DirEntry,
     fs::Filesystem,
-    op::Operation,
     session::{CapabilityFlags, ConnectionInfo, Session, SessionInitializer},
 };
 
