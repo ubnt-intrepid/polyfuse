@@ -1,7 +1,5 @@
 //! Lowlevel interface to handle FUSE requests.
 
-mod util;
-
 use crate::util::{as_bytes, BuilderExt};
 use bitflags::bitflags;
 use futures::{
@@ -1887,77 +1885,10 @@ where
 #[cfg(test)]
 mod tests_session {
     use super::*;
-    use futures::{
-        executor::block_on,
-        io::{AsyncRead, AsyncWrite},
-        task::{self, Poll},
-    };
+    use crate::util::Unite;
+    use futures::executor::block_on;
     use kernel::{fuse_in_header, fuse_init_in};
-    use pin_project_lite::pin_project;
-    use std::{
-        io::{IoSlice, IoSliceMut},
-        mem,
-        pin::Pin,
-    };
-
-    pin_project! {
-        struct Unite<R, W> {
-            #[pin]
-            reader: R,
-            #[pin]
-            writer: W,
-        }
-    }
-
-    impl<R, W> AsyncRead for Unite<R, W>
-    where
-        R: AsyncRead,
-    {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            dst: &mut [u8],
-        ) -> Poll<io::Result<usize>> {
-            self.project().reader.poll_read(cx, dst)
-        }
-
-        fn poll_read_vectored(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            dst: &mut [IoSliceMut<'_>],
-        ) -> Poll<io::Result<usize>> {
-            self.project().reader.poll_read_vectored(cx, dst)
-        }
-    }
-
-    impl<R, W> AsyncWrite for Unite<R, W>
-    where
-        W: AsyncWrite,
-    {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            src: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            self.project().writer.poll_write(cx, src)
-        }
-
-        fn poll_write_vectored(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            src: &[IoSlice<'_>],
-        ) -> Poll<io::Result<usize>> {
-            self.project().writer.poll_write_vectored(cx, src)
-        }
-
-        fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-            self.project().writer.poll_flush(cx)
-        }
-
-        fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
-            self.project().writer.poll_close(cx)
-        }
-    }
+    use std::mem;
 
     #[test]
     fn init_default() {
