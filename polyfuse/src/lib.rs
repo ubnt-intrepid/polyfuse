@@ -16,23 +16,13 @@
 #![forbid(clippy::unimplemented, clippy::todo)]
 
 pub mod op;
-pub mod reply;
+pub mod types;
 
-mod common;
-mod dirent;
 mod fs;
-mod session;
 mod util;
 
-use polyfuse_kernel as kernel;
-
 #[doc(inline)]
-pub use crate::{
-    common::{FileAttr, FileLock, Forget, LockOwner, StatFs},
-    dirent::DirEntry,
-    fs::Filesystem,
-    session::{CapabilityFlags, ConnectionInfo, Session, SessionInitializer},
-};
+pub use crate::fs::Filesystem;
 
 /// A re-export of [`async_trait`] for implementing `Filesystem`.
 ///

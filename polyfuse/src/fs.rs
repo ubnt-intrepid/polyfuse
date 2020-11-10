@@ -1,6 +1,6 @@
 //! Filesystem abstraction.
 
-use crate::{common::Forget, op};
+use crate::op;
 use futures::future::Future;
 use std::pin::Pin;
 
@@ -42,8 +42,6 @@ macro_rules! dispatch_ops {
             fallocate => Fallocate,
             copy_file_range => CopyFileRange,
             poll => Poll,
-            interrupt => Interrupt,
-            notify_reply => NotifyReply,
         }
     };
 }
@@ -73,7 +71,7 @@ pub trait Filesystem: Sync {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'async_trait>>
     where
         I: IntoIterator + Send + 'async_trait,
-        I::Item: AsRef<Forget> + Send + 'async_trait,
+        I::Item: op::Forget + Send + 'async_trait,
         I::IntoIter: Send + 'async_trait;
 }
 
@@ -104,13 +102,11 @@ macro_rules! impl_filesystem_body {
         ) -> Pin<Box<dyn Future<Output = ()> + Send + 'async_trait>>
         where
             I: IntoIterator + Send + 'async_trait,
-            I::Item: AsRef<Forget> + Send + 'async_trait,
+            I::Item: op::Forget + Send + 'async_trait,
             I::IntoIter: Send + 'async_trait,
         {
             (**self).forget(forgets)
         }
-
-        // TODO: interrupt, notify_reply
     };
 }
 
