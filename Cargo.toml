@@ -3,6 +3,7 @@ members = [
   "polyfuse",
   "polyfuse-kernel",
   "polyfuse-kernel/systest",
+  "polyfuse-session",
   "polyfuse-tokio",
 
   #"examples",

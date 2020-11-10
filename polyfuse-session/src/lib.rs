@@ -1,43 +1,8 @@
 //! Lowlevel interface to handle FUSE requests.
 
-#![allow(clippy::needless_update)]
-// FIXME: re-enable lints.
-#![allow(
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
+mod util;
 
-use crate::{
-    async_trait,
-    common::{FileLock, Forget, LockOwner},
-    fs::Filesystem,
-    kernel::{
-        self, //
-        fuse_in_header,
-        fuse_init_out,
-        fuse_notify_code,
-        fuse_notify_delete_out,
-        fuse_notify_inval_entry_out,
-        fuse_notify_inval_inode_out,
-        fuse_notify_poll_wakeup_out,
-        fuse_notify_retrieve_in,
-        fuse_notify_retrieve_out,
-        fuse_notify_store_out,
-        fuse_opcode,
-        fuse_out_header,
-        fuse_write_in,
-        FUSE_KERNEL_MINOR_VERSION,
-        FUSE_KERNEL_VERSION,
-        FUSE_MAX_PAGES,
-        FUSE_MIN_READ_BUFFER,
-        FUSE_NO_OPENDIR_SUPPORT,
-        FUSE_NO_OPEN_SUPPORT,
-    },
-    op::{self, Operation},
-    reply::{Collector, Reply},
-    util::{as_bytes, BuilderExt},
-};
+use crate::util::{as_bytes, BuilderExt};
 use bitflags::bitflags;
 use futures::{
     future::Future,
@@ -45,17 +10,44 @@ use futures::{
     task::{self, Poll},
 };
 use lazy_static::lazy_static;
+use polyfuse::{
+    async_trait,
+    op::{self, Operation},
+    types::{FileLock, LockOwner},
+    Filesystem,
+};
+use polyfuse_kernel::{
+    self as kernel, //
+    fuse_in_header,
+    fuse_init_out,
+    fuse_notify_code,
+    fuse_notify_delete_out,
+    fuse_notify_inval_entry_out,
+    fuse_notify_inval_inode_out,
+    fuse_notify_poll_wakeup_out,
+    fuse_notify_retrieve_in,
+    fuse_notify_retrieve_out,
+    fuse_notify_store_out,
+    fuse_opcode,
+    fuse_out_header,
+    fuse_write_in,
+    FUSE_KERNEL_MINOR_VERSION,
+    FUSE_KERNEL_VERSION,
+    FUSE_MAX_PAGES,
+    FUSE_MIN_READ_BUFFER,
+    FUSE_NO_OPENDIR_SUPPORT,
+    FUSE_NO_OPEN_SUPPORT,
+};
 use smallvec::SmallVec;
 use std::{
     cmp,
     convert::TryFrom,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fmt,
     io::{self, IoSlice},
     mem,
     os::unix::ffi::OsStrExt,
     pin::Pin,
-    slice,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
@@ -222,7 +214,7 @@ impl SessionInitializer {
                 init_out.minor = cmp::min(init_out.minor, init_in.minor);
 
                 init_out.flags = (self.flags & capable).bits();
-                init_out.flags |= crate::kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
+                init_out.flags |= kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
 
                 init_out.max_readahead = cmp::min(self.max_readahead, init_in.max_readahead);
                 init_out.max_write = self.max_write;
@@ -379,66 +371,66 @@ bitflags! {
         /// The filesystem supports asynchronous read requests.
         ///
         /// Enabled by default.
-        const ASYNC_READ = crate::kernel::FUSE_ASYNC_READ;
+        const ASYNC_READ = kernel::FUSE_ASYNC_READ;
 
         /// The filesystem supports the `O_TRUNC` open flag.
         ///
         /// Enabled by default.
-        const ATOMIC_O_TRUNC = crate::kernel::FUSE_ATOMIC_O_TRUNC;
+        const ATOMIC_O_TRUNC = kernel::FUSE_ATOMIC_O_TRUNC;
 
         /// The kernel check the validity of attributes on every read.
         ///
         /// Enabled by default.
-        const AUTO_INVAL_DATA = crate::kernel::FUSE_AUTO_INVAL_DATA;
+        const AUTO_INVAL_DATA = kernel::FUSE_AUTO_INVAL_DATA;
 
         /// The filesystem supports asynchronous direct I/O submission.
         ///
         /// Enabled by default.
-        const ASYNC_DIO = crate::kernel::FUSE_ASYNC_DIO;
+        const ASYNC_DIO = kernel::FUSE_ASYNC_DIO;
 
         /// The kernel supports parallel directory operations.
         ///
         /// Enabled by default.
-        const PARALLEL_DIROPS = crate::kernel::FUSE_PARALLEL_DIROPS;
+        const PARALLEL_DIROPS = kernel::FUSE_PARALLEL_DIROPS;
 
         /// The filesystem is responsible for unsetting setuid and setgid bits
         /// when a file is written, truncated, or its owner is changed.
         ///
         /// Enabled by default.
-        const HANDLE_KILLPRIV = crate::kernel::FUSE_HANDLE_KILLPRIV;
+        const HANDLE_KILLPRIV = kernel::FUSE_HANDLE_KILLPRIV;
 
         /// The filesystem supports the POSIX-style file lock.
-        const POSIX_LOCKS = crate::kernel::FUSE_POSIX_LOCKS;
+        const POSIX_LOCKS = kernel::FUSE_POSIX_LOCKS;
 
         /// The filesystem supports the `flock` handling.
-        const FLOCK_LOCKS = crate::kernel::FUSE_FLOCK_LOCKS;
+        const FLOCK_LOCKS = kernel::FUSE_FLOCK_LOCKS;
 
         /// The filesystem supports lookups of `"."` and `".."`.
-        const EXPORT_SUPPORT = crate::kernel::FUSE_EXPORT_SUPPORT;
+        const EXPORT_SUPPORT = kernel::FUSE_EXPORT_SUPPORT;
 
         /// The kernel should not apply the umask to the file mode on create
         /// operations.
-        const DONT_MASK = crate::kernel::FUSE_DONT_MASK;
+        const DONT_MASK = kernel::FUSE_DONT_MASK;
 
         /// The writeback caching should be enabled.
-        const WRITEBACK_CACHE = crate::kernel::FUSE_WRITEBACK_CACHE;
+        const WRITEBACK_CACHE = kernel::FUSE_WRITEBACK_CACHE;
 
         /// The filesystem supports POSIX access control lists.
-        const POSIX_ACL = crate::kernel::FUSE_POSIX_ACL;
+        const POSIX_ACL = kernel::FUSE_POSIX_ACL;
 
         /// The filesystem supports `readdirplus` operations.
-        const READDIRPLUS = crate::kernel::FUSE_DO_READDIRPLUS;
+        const READDIRPLUS = kernel::FUSE_DO_READDIRPLUS;
 
         /// Indicates that the kernel uses the adaptive readdirplus.
-        const READDIRPLUS_AUTO = crate::kernel::FUSE_READDIRPLUS_AUTO;
+        const READDIRPLUS_AUTO = kernel::FUSE_READDIRPLUS_AUTO;
 
         // TODO: splice read/write
-        // const SPLICE_WRITE = crate::kernel::FUSE_SPLICE_WRITE;
-        // const SPLICE_MOVE = crate::kernel::FUSE_SPLICE_MOVE;
-        // const SPLICE_READ = crate::kernel::FUSE_SPLICE_READ;
+        // const SPLICE_WRITE = kernel::FUSE_SPLICE_WRITE;
+        // const SPLICE_MOVE = kernel::FUSE_SPLICE_MOVE;
+        // const SPLICE_READ = kernel::FUSE_SPLICE_READ;
 
         // TODO: ioctl
-        // const IOCTL_DIR = crate::kernel::FUSE_IOCTL_DIR;
+        // const IOCTL_DIR = kernel::FUSE_IOCTL_DIR;
     }
 }
 
@@ -506,16 +498,13 @@ impl Session {
                         return Ok(());
                     }
                     OperationKind::Forget { arg } => {
-                        fs.forget(Some(Forget::new(header.nodeid, arg.nlookup))).await;
+                        fs.forget(Some(ForgetOne(&kernel::fuse_forget_one {
+                            nodeid: header.nodeid,
+                            nlookup: arg.nlookup,
+                        }))).await;
                     },
                     OperationKind::BatchForget { forgets, .. } => {
-                        fs.forget(unsafe {
-                            slice::from_raw_parts(
-                                forgets.as_ptr() as *const Forget,
-                                forgets.len(),
-                            )
-                        })
-                        .await;
+                        fs.forget(forgets.iter().map(|forget| ForgetOne(forget))).await;
                     },
 
                     $(
@@ -529,11 +518,14 @@ impl Session {
                         }
                     )*
 
+                    // TODO: interrupt, notify_reply
+
                     OperationKind::Init { .. } => {
                         tracing::warn!("ignore an INIT request after initializing the session");
                         io.send_msg(header.unique, -libc::EIO, &[]).await?;
                     }
-                    OperationKind::Unknown => {
+
+                    _ => {
                         tracing::warn!("unknown opcode: {}", header.opcode);
                         io.send_msg(header.unique, -libc::EIO, &[]).await?;
                     },
@@ -542,8 +534,6 @@ impl Session {
         }
 
         dispatch_op! {
-            Interrupt => interrupt,
-            NotifyReply => notify_reply,
             Lookup => lookup,
             Getattr => getattr,
             Setattr => setattr,
@@ -826,11 +816,25 @@ where
     writer.send_msg(0, code, data).await
 }
 
+struct ForgetOne<'a>(&'a kernel::fuse_forget_one);
+
+impl op::Forget for ForgetOne<'_> {
+    fn ino(&self) -> u64 {
+        self.0.nodeid
+    }
+
+    fn nlookup(&self) -> u64 {
+        self.0.nlookup
+    }
+}
+
 struct SessionOperation<'ctx, I, Op> {
     io: I,
     header: &'ctx fuse_in_header,
     op: Op,
 }
+
+type OpResult<T> = std::result::Result<<T as Operation>::Ok, <T as Operation>::Error>;
 
 #[async_trait]
 impl<'ctx, I, Op> Operation for SessionOperation<'ctx, I, Op>
@@ -857,18 +861,12 @@ where
         self.header.pid
     }
 
-    async fn reply<R>(&mut self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: Reply + Send + Sync,
-    {
-        self.io.send_msg(self.header.unique, 0, &reply).await
-    }
-
-    async fn reply_err(&mut self, error: i32) -> Result<Self::Ok, Self::Error> {
+    async fn reply_err(mut self, error: i32) -> OpResult<Self> {
         self.io.send_msg(self.header.unique, -error, &[]).await
     }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Lookup for SessionOperation<'ctx, I, Lookup<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -880,8 +878,17 @@ where
     fn name(&self) -> &OsStr {
         &*self.op.name
     }
+
+    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyEntry + Send + Sync,
+    {
+        let reply = ReplyEntry::new(&reply);
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Getattr for SessionOperation<'ctx, I, Getattr<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -897,6 +904,14 @@ where
             None
         }
     }
+
+    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyAttr + Send + Sync,
+    {
+        let reply = ReplyAttr::new(&reply);
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
 impl<'ctx, I> SessionOperation<'ctx, I, Setattr<'ctx>> {
@@ -910,6 +925,7 @@ impl<'ctx, I> SessionOperation<'ctx, I, Setattr<'ctx>> {
     }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Setattr for SessionOperation<'ctx, I, Setattr<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -919,56 +935,65 @@ where
     }
 
     fn fh(&self) -> Option<u64> {
-        self.get(crate::kernel::FATTR_FH, |arg| arg.fh)
+        self.get(kernel::FATTR_FH, |arg| arg.fh)
     }
 
     fn mode(&self) -> Option<u32> {
-        self.get(crate::kernel::FATTR_MODE, |arg| arg.mode)
+        self.get(kernel::FATTR_MODE, |arg| arg.mode)
     }
 
     fn uid(&self) -> Option<u32> {
-        self.get(crate::kernel::FATTR_UID, |arg| arg.uid)
+        self.get(kernel::FATTR_UID, |arg| arg.uid)
     }
 
     fn gid(&self) -> Option<u32> {
-        self.get(crate::kernel::FATTR_GID, |arg| arg.gid)
+        self.get(kernel::FATTR_GID, |arg| arg.gid)
     }
 
     fn size(&self) -> Option<u64> {
-        self.get(crate::kernel::FATTR_SIZE, |arg| arg.size)
+        self.get(kernel::FATTR_SIZE, |arg| arg.size)
     }
 
     fn atime_raw(&self) -> Option<(u64, u32, bool)> {
-        self.get(crate::kernel::FATTR_ATIME, |arg| {
+        self.get(kernel::FATTR_ATIME, |arg| {
             (
                 arg.atime,
                 arg.atimensec,
-                arg.valid & crate::kernel::FATTR_ATIME_NOW != 0,
+                arg.valid & kernel::FATTR_ATIME_NOW != 0,
             )
         })
     }
 
     fn mtime_raw(&self) -> Option<(u64, u32, bool)> {
-        self.get(crate::kernel::FATTR_MTIME, |arg| {
+        self.get(kernel::FATTR_MTIME, |arg| {
             (
                 arg.mtime,
                 arg.mtimensec,
-                arg.valid & crate::kernel::FATTR_MTIME_NOW != 0,
+                arg.valid & kernel::FATTR_MTIME_NOW != 0,
             )
         })
     }
 
     fn ctime_raw(&self) -> Option<(u64, u32)> {
-        self.get(crate::kernel::FATTR_CTIME, |arg| (arg.ctime, arg.ctimensec))
+        self.get(kernel::FATTR_CTIME, |arg| (arg.ctime, arg.ctimensec))
     }
 
     fn lock_owner(&self) -> Option<LockOwner> {
-        self.get(crate::kernel::FATTR_LOCKOWNER, |arg| {
+        self.get(kernel::FATTR_LOCKOWNER, |arg| {
             LockOwner::from_raw(arg.lock_owner)
         })
     }
+
+    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyAttr + Send + Sync,
+    {
+        let reply = ReplyAttr::new(&reply);
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Readlink for SessionOperation<'ctx, I, Readlink>
 where
     I: AsyncWrite + Unpin + Send,
@@ -976,8 +1001,13 @@ where
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
+
+    async fn reply(mut self, reply: &OsStr) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Symlink for SessionOperation<'ctx, I, Symlink<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -993,8 +1023,17 @@ where
     fn link(&self) -> &OsStr {
         &*self.op.link
     }
+
+    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyEntry + Send + Sync,
+    {
+        let reply = ReplyEntry::new(&reply);
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Mknod for SessionOperation<'ctx, I, Mknod<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1018,8 +1057,17 @@ where
     fn umask(&self) -> u32 {
         self.op.arg.umask
     }
+
+    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyEntry + Send + Sync,
+    {
+        let reply = ReplyEntry::new(&reply);
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Mkdir for SessionOperation<'ctx, I, Mkdir<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1039,8 +1087,17 @@ where
     fn umask(&self) -> u32 {
         self.op.arg.umask
     }
+
+    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyEntry + Send + Sync,
+    {
+        let reply = ReplyEntry::new(&reply);
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Unlink for SessionOperation<'ctx, I, Unlink<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1052,8 +1109,13 @@ where
     fn name(&self) -> &OsStr {
         &*self.op.name
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Rmdir for SessionOperation<'ctx, I, Rmdir<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1065,8 +1127,13 @@ where
     fn name(&self) -> &OsStr {
         &*self.op.name
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Rename for SessionOperation<'ctx, I, Rename<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1090,8 +1157,13 @@ where
     fn flags(&self) -> u32 {
         0
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Rename for SessionOperation<'ctx, I, Rename2<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1115,8 +1187,13 @@ where
     fn flags(&self) -> u32 {
         self.op.arg.flags
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Link for SessionOperation<'ctx, I, Link<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1132,8 +1209,17 @@ where
     fn newname(&self) -> &OsStr {
         &*self.op.newname
     }
+
+    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyEntry + Send + Sync,
+    {
+        let reply = ReplyEntry::new(&reply);
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Open for SessionOperation<'ctx, I, Open<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1145,8 +1231,17 @@ where
     fn flags(&self) -> u32 {
         self.op.arg.flags
     }
+
+    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyOpen + Send + Sync,
+    {
+        let reply = ReplyOpen::new(&reply);
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Read for SessionOperation<'ctx, I, Read<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1172,14 +1267,19 @@ where
     }
 
     fn lock_owner(&self) -> Option<LockOwner> {
-        if self.op.arg.read_flags & crate::kernel::FUSE_READ_LOCKOWNER != 0 {
+        if self.op.arg.read_flags & kernel::FUSE_READ_LOCKOWNER != 0 {
             Some(LockOwner::from_raw(self.op.arg.lock_owner))
         } else {
             None
         }
     }
+
+    async fn reply<R>(mut self, data: &[u8]) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, data).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Write for SessionOperation<'ctx, I, Write<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1205,14 +1305,23 @@ where
     }
 
     fn lock_owner(&self) -> Option<LockOwner> {
-        if self.op.arg.write_flags & crate::kernel::FUSE_WRITE_LOCKOWNER != 0 {
+        if self.op.arg.write_flags & kernel::FUSE_WRITE_LOCKOWNER != 0 {
             Some(LockOwner::from_raw(self.op.arg.lock_owner))
         } else {
             None
         }
     }
+
+    async fn reply(mut self, size: u32) -> OpResult<Self> {
+        let reply = ReplyWrite(kernel::fuse_write_out {
+            size,
+            ..Default::default()
+        });
+        self.io.send_msg(self.header.unique, 0, &reply).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Release for SessionOperation<'ctx, I, Release<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1235,14 +1344,19 @@ where
     }
 
     fn flush(&self) -> bool {
-        self.op.arg.release_flags & crate::kernel::FUSE_RELEASE_FLUSH != 0
+        self.op.arg.release_flags & kernel::FUSE_RELEASE_FLUSH != 0
     }
 
     fn flock_release(&self) -> bool {
-        self.op.arg.release_flags & crate::kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
+        self.op.arg.release_flags & kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
+    }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
     }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Statfs for SessionOperation<'ctx, I, Statfs>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1250,8 +1364,16 @@ where
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
+
+    async fn reply<S>(self, stat: S) -> OpResult<Self>
+    where
+        S: polyfuse::types::FsStatistics + Send + Sync,
+    {
+        todo!()
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Fsync for SessionOperation<'ctx, I, Fsync<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1265,10 +1387,15 @@ where
     }
 
     fn datasync(&self) -> bool {
-        self.op.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
+        self.op.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
+    }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
     }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Setxattr for SessionOperation<'ctx, I, Setxattr<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1288,8 +1415,13 @@ where
     fn flags(&self) -> u32 {
         self.op.arg.flags
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Getxattr for SessionOperation<'ctx, I, Getxattr<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1305,8 +1437,17 @@ where
     fn size(&self) -> u32 {
         self.op.arg.size
     }
+
+    async fn reply_size(self, size: u32) -> OpResult<Self> {
+        todo!()
+    }
+
+    async fn reply(self, value: &[u8]) -> OpResult<Self> {
+        todo!()
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Listxattr for SessionOperation<'ctx, I, Listxattr<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1318,8 +1459,17 @@ where
     fn size(&self) -> u32 {
         self.op.arg.size
     }
+
+    async fn reply_size(self, size: u32) -> OpResult<Self> {
+        todo!()
+    }
+
+    async fn reply(self, value: &[u8]) -> OpResult<Self> {
+        todo!()
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Removexattr for SessionOperation<'ctx, I, Removexattr<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1331,8 +1481,13 @@ where
     fn name(&self) -> &OsStr {
         &*self.op.name
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Flush for SessionOperation<'ctx, I, Flush<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1348,8 +1503,13 @@ where
     fn lock_owner(&self) -> LockOwner {
         LockOwner::from_raw(self.op.arg.lock_owner)
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Opendir for SessionOperation<'ctx, I, Opendir<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1361,8 +1521,16 @@ where
     fn flags(&self) -> u32 {
         self.op.arg.flags
     }
+
+    async fn reply<R>(self, reply: R) -> OpResult<Self>
+    where
+        R: op::ReplyOpen + Send + Sync,
+    {
+        todo!()
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Readdir for SessionOperation<'ctx, I, Readdir<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1386,8 +1554,18 @@ where
     fn is_plus(&self) -> bool {
         self.op.is_plus
     }
+
+    async fn reply<D>(self, dirs: D) -> OpResult<Self>
+    where
+        D: IntoIterator + Send,
+        D::IntoIter: Send,
+        D::Item: polyfuse::types::DirEntry + Send + Sync,
+    {
+        todo!()
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Releasedir for SessionOperation<'ctx, I, Releasedir<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1403,8 +1581,13 @@ where
     fn flags(&self) -> u32 {
         self.op.arg.flags
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Fsyncdir for SessionOperation<'ctx, I, Fsyncdir<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1418,10 +1601,15 @@ where
     }
 
     fn datasync(&self) -> bool {
-        self.op.arg.fsync_flags & crate::kernel::FUSE_FSYNC_FDATASYNC != 0
+        self.op.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
+    }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
     }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Getlk for SessionOperation<'ctx, I, Getlk<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1438,11 +1626,19 @@ where
         LockOwner::from_raw(self.op.arg.owner)
     }
 
-    fn lk(&self) -> &FileLock {
-        FileLock::new(&self.op.arg.lk)
+    fn lk(&self) -> &(dyn FileLock + Send + Sync) {
+        todo!()
+    }
+
+    async fn reply<L>(self, lk: L) -> OpResult<Self>
+    where
+        L: polyfuse::types::FileLock + Send + Sync,
+    {
+        todo!()
     }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Setlk for SessionOperation<'ctx, I, Setlk<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1459,15 +1655,20 @@ where
         LockOwner::from_raw(self.op.arg.owner)
     }
 
-    fn lk(&self) -> &FileLock {
-        FileLock::new(&self.op.arg.lk)
+    fn lk(&self) -> &(dyn FileLock + Send + Sync) {
+        todo!()
     }
 
     fn sleep(&self) -> bool {
         self.op.sleep
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Flock for SessionOperation<'ctx, I, Flock<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1501,8 +1702,13 @@ where
 
         Some(op)
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Access for SessionOperation<'ctx, I, Access<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1514,8 +1720,13 @@ where
     fn mask(&self) -> u32 {
         self.op.arg.mask
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Create for SessionOperation<'ctx, I, Create<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1539,8 +1750,17 @@ where
     fn open_flags(&self) -> u32 {
         self.op.arg.flags
     }
+
+    async fn reply<E, O>(self, entry: E, open: O) -> OpResult<Self>
+    where
+        E: op::ReplyEntry + Send + Sync,
+        O: op::ReplyOpen + Send + Sync,
+    {
+        todo!()
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Bmap for SessionOperation<'ctx, I, Bmap<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1556,8 +1776,13 @@ where
     fn blocksize(&self) -> u32 {
         self.op.arg.blocksize
     }
+
+    async fn reply(self, block: u64) -> OpResult<Self> {
+        todo!()
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Fallocate for SessionOperation<'ctx, I, Fallocate<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1581,8 +1806,13 @@ where
     fn mode(&self) -> u32 {
         self.op.arg.mode
     }
+
+    async fn reply(mut self) -> OpResult<Self> {
+        self.io.send_msg(self.header.unique, 0, &[]).await
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::CopyFileRange for SessionOperation<'ctx, I, CopyFileRange<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1618,8 +1848,13 @@ where
     fn flags(&self) -> u64 {
         self.op.arg.flags
     }
+
+    async fn reply(self, size: u32) -> OpResult<Self> {
+        todo!()
+    }
 }
 
+#[async_trait]
 impl<'ctx, I> op::Poll for SessionOperation<'ctx, I, PollOp<'ctx>>
 where
     I: AsyncWrite + Unpin + Send,
@@ -1637,53 +1872,27 @@ where
     }
 
     fn kh(&self) -> Option<u64> {
-        if self.op.arg.flags & crate::kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
+        if self.op.arg.flags & kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
             Some(self.op.arg.kh)
         } else {
             None
         }
     }
-}
 
-impl<'ctx, I> op::Interrupt for SessionOperation<'ctx, I, Interrupt<'ctx>>
-where
-    I: AsyncWrite + Unpin + Send,
-{
-    fn unique(&self) -> u64 {
-        self.op.arg.unique
-    }
-}
-
-impl<'ctx, I> op::NotifyReply for SessionOperation<'ctx, I, NotifyReply<'ctx>>
-where
-    I: AsyncWrite + Unpin + Send,
-{
-    fn unique(&self) -> u64 {
-        self.header.unique
-    }
-
-    fn ino(&self) -> u64 {
-        self.header.nodeid
-    }
-
-    fn offset(&self) -> u64 {
-        self.op.arg.offset
-    }
-
-    fn size(&self) -> u32 {
-        self.op.arg.size
+    async fn reply(self, revents: u32) -> OpResult<Self> {
+        todo!()
     }
 }
 
 #[cfg(test)]
 mod tests_session {
     use super::*;
-    use crate::kernel::{fuse_in_header, fuse_init_in};
     use futures::{
         executor::block_on,
         io::{AsyncRead, AsyncWrite},
         task::{self, Poll},
     };
+    use kernel::{fuse_in_header, fuse_init_in};
     use pin_project_lite::pin_project;
     use std::{
         io::{IoSlice, IoSliceMut},
@@ -1755,7 +1964,7 @@ mod tests_session {
         #[allow(clippy::cast_possible_truncation)]
         let in_header = fuse_in_header {
             len: (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>()) as u32,
-            opcode: crate::kernel::FUSE_INIT,
+            opcode: kernel::FUSE_INIT,
             unique: 2,
             nodeid: 0,
             uid: 100,
@@ -2281,7 +2490,7 @@ mod tests_parse {
 
         let header = fuse_in_header {
             len: (mem::size_of::<fuse_in_header>() + name.as_bytes_with_nul().len()) as u32,
-            opcode: crate::kernel::FUSE_LOOKUP,
+            opcode: kernel::FUSE_LOOKUP,
             unique: 2,
             nodeid: parent,
             uid: 1,
@@ -2312,7 +2521,7 @@ mod tests_parse {
             len: (mem::size_of::<fuse_in_header>()
                 + name.as_bytes_with_nul().len()
                 + link.as_bytes_with_nul().len()) as u32,
-            opcode: crate::kernel::FUSE_SYMLINK,
+            opcode: kernel::FUSE_SYMLINK,
             unique: 2,
             nodeid: parent,
             uid: 1,
@@ -2535,11 +2744,11 @@ where
 #[cfg(test)]
 mod tests_io {
     use super::*;
-    use crate::kernel::fuse_init_in;
     use futures::{
         executor::block_on,
         task::{self, Poll},
     };
+    use kernel::fuse_init_in;
     use pin_project_lite::pin_project;
     use std::{
         io::{self, IoSlice},
@@ -2560,7 +2769,7 @@ mod tests_io {
         #[allow(clippy::cast_possible_truncation)]
         let in_header = fuse_in_header {
             len: (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>()) as u32,
-            opcode: crate::kernel::FUSE_INIT,
+            opcode: kernel::FUSE_INIT,
             unique: 2,
             nodeid: 0,
             uid: 100,
@@ -2572,7 +2781,7 @@ mod tests_io {
             major: 7,
             minor: 23,
             max_readahead: 40,
-            flags: crate::kernel::FUSE_AUTO_INVAL_DATA | crate::kernel::FUSE_DO_READDIRPLUS,
+            flags: kernel::FUSE_AUTO_INVAL_DATA | kernel::FUSE_DO_READDIRPLUS,
         };
 
         let mut input = vec![];
@@ -2609,7 +2818,7 @@ mod tests_io {
         #[allow(clippy::cast_possible_truncation)]
         let in_header = fuse_in_header {
             len: (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>()) as u32,
-            opcode: crate::kernel::FUSE_INIT,
+            opcode: kernel::FUSE_INIT,
             unique: 2,
             nodeid: 0,
             uid: 100,
@@ -2721,3 +2930,329 @@ mod tests_io {
         assert_eq!(writer[16..], *b"hello, this is a message.", "payload");
     }
 }
+
+// ==== reply ====
+
+/// A trait that represents the data structure contained in the reply sent to the kernel.
+///
+/// The trait is roughly a generalization of `AsRef<[u8]>`, representing *scattered* bytes
+/// that are not necessarily in contiguous memory space.
+pub trait Reply {
+    /// Collect the *scattered* bytes in the `collector`.
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>;
+}
+
+// ==== pointer types ====
+
+macro_rules! impl_reply_body_for_pointers {
+    () => {
+        #[inline]
+        fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+        where
+            T: Collector<'a>,
+        {
+            (**self).collect_bytes(collector)
+        }
+    };
+}
+
+impl<R: ?Sized> Reply for &R
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+impl<R: ?Sized> Reply for &mut R
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+impl<R: ?Sized> Reply for Box<R>
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+impl<R: ?Sized> Reply for std::rc::Rc<R>
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+impl<R: ?Sized> Reply for std::sync::Arc<R>
+where
+    R: Reply,
+{
+    impl_reply_body_for_pointers!();
+}
+
+// ==== empty bytes ====
+
+impl Reply for () {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, _: &mut T)
+    where
+        T: Collector<'a>,
+    {
+    }
+}
+
+impl Reply for [u8; 0] {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, _: &mut T)
+    where
+        T: Collector<'a>,
+    {
+    }
+}
+
+// ==== compound types ====
+
+macro_rules! impl_reply_for_tuple {
+    ($($T:ident),+ $(,)?) => {
+        impl<$($T),+> Reply for ($($T,)+)
+        where
+            $( $T: Reply, )+
+        {
+            #[allow(nonstandard_style)]
+            #[inline]
+            fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+            where
+                T: Collector<'a>,
+            {
+                let ($($T,)+) = self;
+                $(
+                    $T.collect_bytes(collector);
+                )+
+            }
+        }
+    }
+}
+
+impl_reply_for_tuple!(T1);
+impl_reply_for_tuple!(T1, T2);
+impl_reply_for_tuple!(T1, T2, T3);
+impl_reply_for_tuple!(T1, T2, T3, T4);
+impl_reply_for_tuple!(T1, T2, T3, T4, T5);
+
+impl<R> Reply for [R]
+where
+    R: Reply,
+{
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        for t in self {
+            t.collect_bytes(collector);
+        }
+    }
+}
+
+impl<R> Reply for Vec<R>
+where
+    R: Reply,
+{
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        for t in self {
+            t.collect_bytes(collector);
+        }
+    }
+}
+
+// ==== Option<T> ====
+
+impl<T> Reply for Option<T>
+where
+    T: Reply,
+{
+    #[inline]
+    fn collect_bytes<'a, C: ?Sized>(&'a self, collector: &mut C)
+    where
+        C: Collector<'a>,
+    {
+        if let Some(ref reply) = self {
+            reply.collect_bytes(collector);
+        }
+    }
+}
+
+// ==== continuous bytes ====
+
+mod impl_scattered_bytes_for_cont {
+    use super::*;
+
+    #[inline(always)]
+    fn as_bytes(t: &(impl AsRef<[u8]> + ?Sized)) -> &[u8] {
+        t.as_ref()
+    }
+
+    macro_rules! impl_reply {
+        ($($t:ty),*$(,)?) => {$(
+            impl Reply for $t {
+                #[inline]
+                fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+                where
+                    T: Collector<'a>,
+                {
+                    let this = as_bytes(self);
+                    if !this.is_empty() {
+                        collector.append(this);
+                    }
+                }
+            }
+        )*};
+    }
+
+    impl_reply! {
+        [u8],
+        str,
+        String,
+        Vec<u8>,
+        std::borrow::Cow<'_, [u8]>,
+    }
+}
+
+impl Reply for OsStr {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        self.as_bytes().collect_bytes(collector)
+    }
+}
+
+impl Reply for OsString {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        (**self).collect_bytes(collector)
+    }
+}
+
+impl Reply for std::path::Path {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        self.as_os_str().collect_bytes(collector)
+    }
+}
+
+impl Reply for std::path::PathBuf {
+    #[inline]
+    fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        (**self).collect_bytes(collector)
+    }
+}
+
+/// Container for collecting the scattered bytes.
+pub trait Collector<'a> {
+    /// Append a chunk of bytes into itself.
+    fn append(&mut self, buf: &'a [u8]);
+}
+
+macro_rules! impl_reply {
+    ($t:ty) => {
+        impl Reply for $t {
+            #[inline]
+            fn collect_bytes<'a, T: ?Sized>(&'a self, collector: &mut T)
+            where
+                T: Collector<'a>,
+            {
+                collector.append(unsafe { crate::util::as_bytes(self) })
+            }
+        }
+    };
+}
+
+/// Reply with the inode attributes.
+#[must_use]
+pub struct ReplyAttr(kernel::fuse_attr_out);
+
+impl_reply!(ReplyAttr);
+
+impl ReplyAttr {
+    fn new(attr: &dyn op::ReplyAttr) -> Self {
+        todo!()
+    }
+}
+
+/// Reply with entry params.
+#[must_use]
+pub struct ReplyEntry(kernel::fuse_entry_out);
+
+impl_reply!(ReplyEntry);
+
+impl ReplyEntry {
+    fn new(entry: &dyn op::ReplyEntry) -> Self {
+        todo!()
+    }
+}
+
+/// Reply with an opened file.
+#[must_use]
+pub struct ReplyOpen(kernel::fuse_open_out);
+
+impl_reply!(ReplyOpen);
+
+impl ReplyOpen {
+    fn new(open: &dyn op::ReplyOpen) -> Self {
+        todo!()
+    }
+}
+
+/// Reply with the information about written data.
+#[must_use]
+pub struct ReplyWrite(kernel::fuse_write_out);
+
+impl_reply!(ReplyWrite);
+
+/// Reply to a request about extended attributes.
+#[must_use]
+pub struct ReplyXattr(kernel::fuse_getxattr_out);
+
+impl_reply!(ReplyXattr);
+
+/// Reply with the filesystem staticstics.
+#[must_use]
+pub struct ReplyStatfs(kernel::fuse_statfs_out);
+
+impl_reply!(ReplyStatfs);
+
+/// Reply with a file lock.
+#[must_use]
+pub struct ReplyLk(kernel::fuse_lk_out);
+
+impl_reply!(ReplyLk);
+
+/// Reply with the mapped block index.
+#[must_use]
+pub struct ReplyBmap(kernel::fuse_bmap_out);
+
+impl_reply!(ReplyBmap);
+
+/// Reply with the poll result.
+#[must_use]
+pub struct ReplyPoll(kernel::fuse_poll_out);
+
+impl_reply!(ReplyPoll);
