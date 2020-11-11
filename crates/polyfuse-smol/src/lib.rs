@@ -8,10 +8,9 @@ mod buf;
 mod channel;
 mod pool;
 mod server;
-mod session;
 mod util;
 
-pub use crate::server::{Builder, Server};
+pub use crate::server::{Builder, CapabilityFlags, ConnectionInfo, Server};
 
 use polyfuse::Filesystem;
 use std::{ffi::OsStr, io, path::Path};
