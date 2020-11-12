@@ -16,8 +16,8 @@ use futures::{
 use lazy_static::lazy_static;
 use polyfuse::{
     async_trait,
-    op::{self, Operation},
-    types::{FileLock, LockOwner},
+    op::{self, EntryOptions, OpenOptions, Operation},
+    types::{DirEntry, FileAttr, FileLock, FsStatistics, LockOwner},
     Filesystem,
 };
 use polyfuse_kernel::{
@@ -55,6 +55,7 @@ use std::{
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     sync::Arc,
+    time::Duration,
 };
 
 // The minimum supported ABI minor version by polyfuse.
@@ -1076,12 +1077,8 @@ impl<'ctx> op::Lookup for SessionOperation<'ctx, Lookup<'ctx>> {
         &*self.op.name
     }
 
-    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyEntry + Send + Sync,
-    {
-        let reply = ReplyEntry::new(&reply);
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+        todo!()
     }
 }
 
@@ -1099,12 +1096,8 @@ impl<'ctx> op::Getattr for SessionOperation<'ctx, Getattr<'ctx>> {
         }
     }
 
-    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyAttr + Send + Sync,
-    {
-        let reply = ReplyAttr::new(&reply);
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    async fn reply(mut self, attr: &FileAttr, ttl: Option<Duration>) -> OpResult<Self> {
+        todo!()
     }
 }
 
@@ -1175,12 +1168,8 @@ impl<'ctx> op::Setattr for SessionOperation<'ctx, Setattr<'ctx>> {
         })
     }
 
-    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyAttr + Send + Sync,
-    {
-        let reply = ReplyAttr::new(&reply);
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    async fn reply(mut self, attr: &FileAttr, ttl: Option<Duration>) -> OpResult<Self> {
+        todo!()
     }
 }
 
@@ -1209,12 +1198,8 @@ impl<'ctx> op::Symlink for SessionOperation<'ctx, Symlink<'ctx>> {
         &*self.op.link
     }
 
-    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyEntry + Send + Sync,
-    {
-        let reply = ReplyEntry::new(&reply);
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+        todo!()
     }
 }
 
@@ -1240,12 +1225,8 @@ impl<'ctx> op::Mknod for SessionOperation<'ctx, Mknod<'ctx>> {
         self.op.arg.umask
     }
 
-    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyEntry + Send + Sync,
-    {
-        let reply = ReplyEntry::new(&reply);
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+        todo!()
     }
 }
 
@@ -1267,12 +1248,8 @@ impl<'ctx> op::Mkdir for SessionOperation<'ctx, Mkdir<'ctx>> {
         self.op.arg.umask
     }
 
-    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyEntry + Send + Sync,
-    {
-        let reply = ReplyEntry::new(&reply);
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+        todo!()
     }
 }
 
@@ -1374,12 +1351,8 @@ impl<'ctx> op::Link for SessionOperation<'ctx, Link<'ctx>> {
         &*self.op.newname
     }
 
-    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyEntry + Send + Sync,
-    {
-        let reply = ReplyEntry::new(&reply);
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+        todo!()
     }
 }
 
@@ -1393,12 +1366,8 @@ impl<'ctx> op::Open for SessionOperation<'ctx, Open<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply<R>(mut self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyOpen + Send + Sync,
-    {
-        let reply = ReplyOpen::new(&reply);
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    async fn reply(mut self, fh: u64, opts: &OpenOptions) -> OpResult<Self> {
+        todo!()
     }
 }
 
@@ -1514,10 +1483,7 @@ impl<'ctx> op::Statfs for SessionOperation<'ctx, Statfs> {
         self.header.nodeid
     }
 
-    async fn reply<S>(self, stat: S) -> OpResult<Self>
-    where
-        S: polyfuse::types::FsStatistics + Send + Sync,
-    {
+    async fn reply(self, stat: &FsStatistics) -> OpResult<Self> {
         todo!()
     }
 }
@@ -1650,10 +1616,7 @@ impl<'ctx> op::Opendir for SessionOperation<'ctx, Opendir<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply<R>(self, reply: R) -> OpResult<Self>
-    where
-        R: op::ReplyOpen + Send + Sync,
-    {
+    async fn reply(self, fh: u64, opts: &OpenOptions) -> OpResult<Self> {
         todo!()
     }
 }
@@ -1684,7 +1647,7 @@ impl<'ctx> op::Readdir for SessionOperation<'ctx, Readdir<'ctx>> {
     where
         D: IntoIterator + Send,
         D::IntoIter: Send,
-        D::Item: polyfuse::types::DirEntry + Send + Sync,
+        D::Item: AsRef<DirEntry> + Send + Sync,
     {
         todo!()
     }
@@ -1742,14 +1705,11 @@ impl<'ctx> op::Getlk for SessionOperation<'ctx, Getlk<'ctx>> {
         LockOwner::from_raw(self.op.arg.owner)
     }
 
-    fn lk(&self) -> &(dyn FileLock + Send + Sync) {
+    fn lk(&self) -> &FileLock {
         todo!()
     }
 
-    async fn reply<L>(self, lk: L) -> OpResult<Self>
-    where
-        L: polyfuse::types::FileLock + Send + Sync,
-    {
+    async fn reply(self, lk: &FileLock) -> OpResult<Self> {
         todo!()
     }
 }
@@ -1768,7 +1728,7 @@ impl<'ctx> op::Setlk for SessionOperation<'ctx, Setlk<'ctx>> {
         LockOwner::from_raw(self.op.arg.owner)
     }
 
-    fn lk(&self) -> &(dyn FileLock + Send + Sync) {
+    fn lk(&self) -> &FileLock {
         todo!()
     }
 
@@ -1855,11 +1815,13 @@ impl<'ctx> op::Create for SessionOperation<'ctx, Create<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply<E, O>(self, entry: E, open: O) -> OpResult<Self>
-    where
-        E: op::ReplyEntry + Send + Sync,
-        O: op::ReplyOpen + Send + Sync,
-    {
+    async fn reply(
+        self,
+        attr: &FileAttr,
+        fh: u64,
+        entry_opts: &EntryOptions,
+        open_opts: &OpenOptions,
+    ) -> OpResult<Self> {
         todo!()
     }
 }
@@ -3230,35 +3192,17 @@ pub struct ReplyAttr(kernel::fuse_attr_out);
 
 impl_reply!(ReplyAttr);
 
-impl ReplyAttr {
-    fn new(attr: &dyn op::ReplyAttr) -> Self {
-        todo!()
-    }
-}
-
 /// Reply with entry params.
 #[must_use]
 pub struct ReplyEntry(kernel::fuse_entry_out);
 
 impl_reply!(ReplyEntry);
 
-impl ReplyEntry {
-    fn new(entry: &dyn op::ReplyEntry) -> Self {
-        todo!()
-    }
-}
-
 /// Reply with an opened file.
 #[must_use]
 pub struct ReplyOpen(kernel::fuse_open_out);
 
 impl_reply!(ReplyOpen);
-
-impl ReplyOpen {
-    fn new(open: &dyn op::ReplyOpen) -> Self {
-        todo!()
-    }
-}
 
 /// Reply with the information about written data.
 #[must_use]

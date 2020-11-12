@@ -4,7 +4,7 @@
 
 use crate::{
     async_trait,
-    types::{DirEntry, FileAttr, FileLock, FsStatistics, LockOwner},
+    types::{DirEntry, FileAttr, FileLock, FsStatistics, LockOwner, NonExhaustive},
     util::make_system_time,
 };
 use std::{
@@ -59,9 +59,7 @@ pub trait Lookup: Operation {
     /// Return the name of the entry to be looked up.
     fn name(&self) -> &OsStr;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
+    async fn reply(self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Get file attributes.
@@ -78,9 +76,7 @@ pub trait Getattr: Operation {
     /// Return the handle of opened file, if specified.
     fn fh(&self) -> Option<u64>;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyAttr + Send + Sync;
+    async fn reply(self, attr: &FileAttr, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Set file attributes.
@@ -149,9 +145,7 @@ pub trait Setattr: Operation {
     /// Return the identifier of lock owner.
     fn lock_owner(&self) -> Option<LockOwner>;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyAttr + Send + Sync;
+    async fn reply(self, attr: &FileAttr, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Read a symbolic link.
@@ -178,9 +172,7 @@ pub trait Symlink: Operation {
     /// Return the contents of the symbolic link.
     fn link(&self) -> &OsStr;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
+    async fn reply(self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Create a file node.
@@ -207,9 +199,7 @@ pub trait Mknod: Operation {
     #[doc(hidden)] // TODO: dox
     fn umask(&self) -> u32;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
+    async fn reply(self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Create a directory node.
@@ -230,9 +220,7 @@ pub trait Mkdir: Operation {
     #[doc(hidden)] // TODO: dox
     fn umask(&self) -> u32;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
+    async fn reply(self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>;
 }
 
 // TODO: description about lookup count.
@@ -299,9 +287,7 @@ pub trait Link: Operation {
     /// Return the name of the hard link to be created.
     fn newname(&self) -> &OsStr;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
+    async fn reply(self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Open a file.
@@ -332,9 +318,7 @@ pub trait Open: Operation {
     /// invalid.
     fn flags(&self) -> u32;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyOpen + Send + Sync;
+    async fn reply(self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Read data from a file.
@@ -436,9 +420,7 @@ pub trait Statfs: Operation {
     /// Return the inode number or `0` which means "undefined".
     fn ino(&self) -> u64;
 
-    async fn reply<S>(self, stat: S) -> Result<Self::Ok, Self::Error>
-    where
-        S: FsStatistics + Send + Sync;
+    async fn reply(self, stat: &FsStatistics) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Synchronize the file contents.
@@ -569,9 +551,7 @@ pub trait Opendir: Operation {
     /// Return the open flags.
     fn flags(&self) -> u32;
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyOpen + Send + Sync;
+    async fn reply(self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Read contents from an opened directory.
@@ -598,7 +578,7 @@ pub trait Readdir: Operation {
     where
         I: IntoIterator + Send,
         I::IntoIter: Send,
-        I::Item: DirEntry + Send + Sync;
+        I::Item: AsRef<DirEntry> + Send + Sync;
 }
 
 /// Release an opened directory.
@@ -648,11 +628,9 @@ pub trait Getlk: Operation {
     fn owner(&self) -> LockOwner;
 
     /// Return the lock information for testing.
-    fn lk(&self) -> &(dyn FileLock + Send + Sync);
+    fn lk(&self) -> &FileLock;
 
-    async fn reply<L>(self, lk: L) -> Result<Self::Ok, Self::Error>
-    where
-        L: FileLock + Send + Sync;
+    async fn reply(self, lk: &FileLock) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Acquire, modify or release a POSIX file lock.
@@ -668,7 +646,7 @@ pub trait Setlk: Operation {
     fn owner(&self) -> LockOwner;
 
     /// Return the lock information to be obtained.
-    fn lk(&self) -> &(dyn FileLock + Send + Sync);
+    fn lk(&self) -> &FileLock;
 
     /// Return whether the locking operation might sleep until a lock is obtained.
     fn sleep(&self) -> bool;
@@ -742,10 +720,13 @@ pub trait Create: Operation {
     /// This is the same as `Open::flags`.
     fn open_flags(&self) -> u32;
 
-    async fn reply<E, O>(self, entry: E, open: O) -> Result<Self::Ok, Self::Error>
-    where
-        E: ReplyEntry + Send + Sync,
-        O: ReplyOpen + Send + Sync;
+    async fn reply(
+        self,
+        attr: &FileAttr,
+        fh: u64,
+        entry_opts: &EntryOptions,
+        open_opts: &OpenOptions,
+    ) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Map block index within a file to block index within device.
@@ -853,21 +834,11 @@ pub trait Poll: Operation {
     async fn reply(self, revents: u32) -> Result<Self::Ok, Self::Error>;
 }
 
-// ==== reply ====
-
-/// Reply with the inode attributes.
-pub trait ReplyAttr {
-    /// Return the attribute.
-    fn attr(&self) -> &(dyn FileAttr + Send + Sync);
-
-    /// Return the validity timeout for attributes.
-    fn ttl(&self) -> Option<Duration> {
-        None
-    }
-}
+// ==== reply options ====
 
 /// Reply with entry params.
-pub trait ReplyEntry {
+#[derive(Copy, Clone, Debug)]
+pub struct EntryOptions {
     /// Return the inode number of this entry.
     ///
     /// If this value is zero, it means that the entry is *negative*.
@@ -876,28 +847,21 @@ pub trait ReplyEntry {
     /// of the entry cache by using the `ttl_entry` parameter.
     ///
     /// The default value is `0`.
-    fn ino(&self) -> u64;
-
-    /// Return the attribute value of this entry.
-    fn attr(&self) -> &(dyn FileAttr + Send + Sync);
+    pub ino: u64,
 
     /// Return the validity timeout for inode attributes.
     ///
     /// The operations should set this value to very large
     /// when the changes of inode attributes are caused
     /// only by FUSE requests.
-    fn ttl_attr(&self) -> Option<Duration> {
-        None
-    }
+    pub ttl_attr: Option<Duration>,
 
     /// Return the validity timeout for the name.
     ///
     /// The operations should set this value to very large
     /// when the changes/deletions of directory entries are
     /// caused only by FUSE requests.
-    fn ttl_entry(&self) -> Option<Duration> {
-        None
-    }
+    pub ttl_entry: Option<Duration>,
 
     /// Return the generation of this entry.
     ///
@@ -905,36 +869,56 @@ pub trait ReplyEntry {
     /// when the filesystem reuse inode numbers.  That is, the operations
     /// must ensure that the pair of entry's inode number and generation
     /// are unique for the lifetime of the filesystem.
-    fn generation(&self) -> u64 {
-        0
+    pub generation: u64,
+
+    #[doc(hidden)] // non_exhaustive
+    pub __non_exhaustive: NonExhaustive,
+}
+
+impl Default for EntryOptions {
+    fn default() -> Self {
+        Self {
+            ino: 0,
+            ttl_attr: None,
+            ttl_entry: None,
+            generation: 0,
+
+            __non_exhaustive: NonExhaustive::INIT,
+        }
     }
 }
 
 /// Reply with an opened file.
-pub trait ReplyOpen {
-    /// Return the file handle.
-    fn fh(&self) -> u64;
-
+#[derive(Copy, Clone, Debug)]
+pub struct OpenOptions {
     /// Indicates that the direct I/O is used on this file.
-    fn direct_io(&self) -> bool {
-        false
-    }
+    pub direct_io: bool,
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
-    fn keep_cache(&self) -> bool {
-        false
-    }
+    pub keep_cache: bool,
 
     /// Indicates that the opened file is not seekable.
-    fn nonseekable(&self) -> bool {
-        false
-    }
+    pub nonseekable: bool,
 
     /// Enable caching of entries returned by `readdir`.
     ///
     /// This flag is meaningful only for `opendir` operations.
-    fn cache_dir(&self) -> bool {
-        false
+    pub cache_dir: bool,
+
+    #[doc(hidden)] // non_exhaustive
+    pub __non_exhaustive: NonExhaustive,
+}
+
+impl Default for OpenOptions {
+    fn default() -> Self {
+        Self {
+            direct_io: false,
+            keep_cache: false,
+            nonseekable: false,
+            cache_dir: false,
+
+            __non_exhaustive: NonExhaustive::INIT,
+        }
     }
 }
