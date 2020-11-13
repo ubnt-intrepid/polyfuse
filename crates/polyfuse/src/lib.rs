@@ -18,16 +18,11 @@
 pub mod op;
 pub mod types;
 
-mod fs;
+mod filesystem;
 mod util;
 
 #[doc(inline)]
-pub use crate::fs::Filesystem;
-
-/// A re-export of [`async_trait`] for implementing `Filesystem`.
-///
-/// [`async_trait`]: https://docs.rs/async-trait
-pub use async_trait::async_trait;
+pub use crate::filesystem::Filesystem;
 
 #[test]
 fn test_html_root_url() {

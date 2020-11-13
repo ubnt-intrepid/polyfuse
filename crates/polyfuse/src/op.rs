@@ -10,6 +10,7 @@ use std::{
     ffi::OsStr,
     time::{Duration, SystemTime},
 };
+
 pub trait Operation {
     type Ok;
     type Error;

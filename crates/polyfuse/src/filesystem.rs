@@ -1,8 +1,7 @@
 //! Filesystem abstraction.
 
 use crate::op;
-use futures::future::Future;
-use std::pin::Pin;
+use futures::future::BoxFuture;
 
 macro_rules! dispatch_ops {
     ($mac:ident) => {
@@ -48,43 +47,39 @@ macro_rules! dispatch_ops {
 
 macro_rules! define_filesystem_op {
     ($( $name:ident => $Op:ident, )*) => {$(
-        #[must_use]
-        fn $name<'a, 'async_trait, Op>(
-            &'a self,
-            op: Op,
-        ) -> Pin<Box<dyn Future<Output = Result<Op::Ok, Op::Error>> + Send + 'async_trait>>
-        where
-            'a: 'async_trait,
-            Op: op::$Op + Send + 'async_trait;
+        paste::paste! {
+            #[doc = "See [the documentation of `" $Op "`](op::" $Op ") for details."]
+            #[must_use]
+            fn $name<'op, Op>(
+                &'op self,
+                op: Op,
+            ) -> BoxFuture<'op, Result<Op::Ok, Op::Error>>
+            where
+                Op: op::$Op + Send + 'op;
+        }
     )*};
 }
 
-/// A set of callbacks for FUSE filesystem implementation.
-#[allow(missing_docs)]
+/// The FUSE filesystem.
 pub trait Filesystem: Sync {
     dispatch_ops!(define_filesystem_op);
 
+    /// Forget about inodes removed from the kenrel's internal caches.
+    #[allow(unused_variables)]
     #[must_use]
-    fn forget<'a, 'async_trait, I>(
-        &'a self,
-        forgets: I,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'async_trait>>
+    fn forget<'op, I>(&'op self, forgets: I) -> BoxFuture<'op, ()>
     where
-        I: IntoIterator + Send + 'async_trait,
-        I::Item: op::Forget + Send + 'async_trait,
-        I::IntoIter: Send + 'async_trait;
+        I: IntoIterator + Send + 'op,
+        I::IntoIter: Send + 'op,
+        I::Item: op::Forget + Send + 'op;
 }
 
 macro_rules! impl_filesystem_op {
     ($( $name:ident => $Op:ident, )*) => {$(
         #[inline]
-        fn $name<'a, 'async_trait, Op>(
-            &'a self,
-            op: Op,
-        ) -> Pin<Box<dyn Future<Output = Result<Op::Ok, Op::Error>> + Send + 'async_trait>>
+        fn $name<'op, Op>(&'op self, op: Op) -> BoxFuture<'op, Result<Op::Ok, Op::Error>>
         where
-            'a: 'async_trait,
-            Op: op::$Op + Send + 'async_trait,
+            Op: op::$Op + Send + 'op,
         {
             (**self).$name(op)
         }
@@ -96,14 +91,11 @@ macro_rules! impl_filesystem_body {
         dispatch_ops!(impl_filesystem_op);
 
         #[inline]
-        fn forget<'a, 'async_trait, I>(
-            &'a self,
-            forgets: I,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'async_trait>>
+        fn forget<'op, I>(&'op self, forgets: I) -> BoxFuture<'op, ()>
         where
-            I: IntoIterator + Send + 'async_trait,
-            I::Item: op::Forget + Send + 'async_trait,
-            I::IntoIter: Send + 'async_trait,
+            I: IntoIterator + Send + 'op,
+            I::IntoIter: Send + 'op,
+            I::Item: op::Forget + Send + 'op,
         {
             (**self).forget(forgets)
         }
