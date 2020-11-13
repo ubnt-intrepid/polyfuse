@@ -15,7 +15,6 @@ use futures::{
 };
 use lazy_static::lazy_static;
 use polyfuse::{
-    async_trait,
     op::{self, EntryOptions, OpenOptions, Operation},
     types::{DirEntry, FileAttr, FileLock, FsStatistics, LockOwner},
     Filesystem,
@@ -1038,7 +1037,6 @@ struct SessionOperation<'ctx, Op> {
 
 type OpResult<T> = std::result::Result<<T as Operation>::Ok, <T as Operation>::Error>;
 
-#[async_trait]
 impl<'ctx, Op> Operation for SessionOperation<'ctx, Op>
 where
     Op: Send,
@@ -1062,12 +1060,11 @@ where
         self.header.pid
     }
 
-    async fn reply_err(mut self, error: i32) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, -error, &[]).await
+    fn reply_err(mut self, error: i32) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Lookup for SessionOperation<'ctx, Lookup<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1077,12 +1074,11 @@ impl<'ctx> op::Lookup for SessionOperation<'ctx, Lookup<'ctx>> {
         &*self.op.name
     }
 
-    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+    fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Getattr for SessionOperation<'ctx, Getattr<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1096,7 +1092,7 @@ impl<'ctx> op::Getattr for SessionOperation<'ctx, Getattr<'ctx>> {
         }
     }
 
-    async fn reply(mut self, attr: &FileAttr, ttl: Option<Duration>) -> OpResult<Self> {
+    fn reply(mut self, attr: &FileAttr, ttl: Option<Duration>) -> OpResult<Self> {
         todo!()
     }
 }
@@ -1112,7 +1108,6 @@ impl<'ctx> SessionOperation<'ctx, Setattr<'ctx>> {
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Setattr for SessionOperation<'ctx, Setattr<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1168,23 +1163,21 @@ impl<'ctx> op::Setattr for SessionOperation<'ctx, Setattr<'ctx>> {
         })
     }
 
-    async fn reply(mut self, attr: &FileAttr, ttl: Option<Duration>) -> OpResult<Self> {
+    fn reply(mut self, attr: &FileAttr, ttl: Option<Duration>) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Readlink for SessionOperation<'ctx, Readlink> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
-    async fn reply(mut self, reply: &OsStr) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, reply).await
+    fn reply(self, reply: &OsStr) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Symlink for SessionOperation<'ctx, Symlink<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1198,12 +1191,11 @@ impl<'ctx> op::Symlink for SessionOperation<'ctx, Symlink<'ctx>> {
         &*self.op.link
     }
 
-    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+    fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Mknod for SessionOperation<'ctx, Mknod<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1225,12 +1217,11 @@ impl<'ctx> op::Mknod for SessionOperation<'ctx, Mknod<'ctx>> {
         self.op.arg.umask
     }
 
-    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+    fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Mkdir for SessionOperation<'ctx, Mkdir<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1248,12 +1239,11 @@ impl<'ctx> op::Mkdir for SessionOperation<'ctx, Mkdir<'ctx>> {
         self.op.arg.umask
     }
 
-    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+    fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Unlink for SessionOperation<'ctx, Unlink<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1263,12 +1253,11 @@ impl<'ctx> op::Unlink for SessionOperation<'ctx, Unlink<'ctx>> {
         &*self.op.name
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Rmdir for SessionOperation<'ctx, Rmdir<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1278,12 +1267,11 @@ impl<'ctx> op::Rmdir for SessionOperation<'ctx, Rmdir<'ctx>> {
         &*self.op.name
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Rename for SessionOperation<'ctx, Rename<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1305,12 +1293,11 @@ impl<'ctx> op::Rename for SessionOperation<'ctx, Rename<'ctx>> {
         0
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Rename for SessionOperation<'ctx, Rename2<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1332,12 +1319,11 @@ impl<'ctx> op::Rename for SessionOperation<'ctx, Rename2<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Link for SessionOperation<'ctx, Link<'ctx>> {
     fn ino(&self) -> u64 {
         self.op.arg.oldnodeid
@@ -1351,12 +1337,11 @@ impl<'ctx> op::Link for SessionOperation<'ctx, Link<'ctx>> {
         &*self.op.newname
     }
 
-    async fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
+    fn reply(mut self, attr: &FileAttr, opts: &EntryOptions) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Open for SessionOperation<'ctx, Open<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1366,12 +1351,11 @@ impl<'ctx> op::Open for SessionOperation<'ctx, Open<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply(mut self, fh: u64, opts: &OpenOptions) -> OpResult<Self> {
+    fn reply(mut self, fh: u64, opts: &OpenOptions) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Read for SessionOperation<'ctx, Read<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1401,12 +1385,11 @@ impl<'ctx> op::Read for SessionOperation<'ctx, Read<'ctx>> {
         }
     }
 
-    async fn reply<R>(mut self, data: &[u8]) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, data).await
+    fn reply<R>(mut self, data: &[u8]) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Write for SessionOperation<'ctx, Write<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1436,16 +1419,11 @@ impl<'ctx> op::Write for SessionOperation<'ctx, Write<'ctx>> {
         }
     }
 
-    async fn reply(mut self, size: u32) -> OpResult<Self> {
-        let reply = ReplyWrite(kernel::fuse_write_out {
-            size,
-            ..Default::default()
-        });
-        self.channel.send_msg(self.header.unique, 0, &reply).await
+    fn reply(mut self, size: u32) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Release for SessionOperation<'ctx, Release<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1472,23 +1450,21 @@ impl<'ctx> op::Release for SessionOperation<'ctx, Release<'ctx>> {
         self.op.arg.release_flags & kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Statfs for SessionOperation<'ctx, Statfs> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
-    async fn reply(self, stat: &FsStatistics) -> OpResult<Self> {
+    fn reply(self, stat: &FsStatistics) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Fsync for SessionOperation<'ctx, Fsync<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1502,12 +1478,11 @@ impl<'ctx> op::Fsync for SessionOperation<'ctx, Fsync<'ctx>> {
         self.op.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Setxattr for SessionOperation<'ctx, Setxattr<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1525,12 +1500,11 @@ impl<'ctx> op::Setxattr for SessionOperation<'ctx, Setxattr<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Getxattr for SessionOperation<'ctx, Getxattr<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1544,16 +1518,15 @@ impl<'ctx> op::Getxattr for SessionOperation<'ctx, Getxattr<'ctx>> {
         self.op.arg.size
     }
 
-    async fn reply_size(self, size: u32) -> OpResult<Self> {
+    fn reply_size(self, size: u32) -> OpResult<Self> {
         todo!()
     }
 
-    async fn reply(self, value: &[u8]) -> OpResult<Self> {
+    fn reply(self, value: &[u8]) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Listxattr for SessionOperation<'ctx, Listxattr<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1563,16 +1536,15 @@ impl<'ctx> op::Listxattr for SessionOperation<'ctx, Listxattr<'ctx>> {
         self.op.arg.size
     }
 
-    async fn reply_size(self, size: u32) -> OpResult<Self> {
+    fn reply_size(self, size: u32) -> OpResult<Self> {
         todo!()
     }
 
-    async fn reply(self, value: &[u8]) -> OpResult<Self> {
+    fn reply(self, value: &[u8]) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Removexattr for SessionOperation<'ctx, Removexattr<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1582,12 +1554,11 @@ impl<'ctx> op::Removexattr for SessionOperation<'ctx, Removexattr<'ctx>> {
         &*self.op.name
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Flush for SessionOperation<'ctx, Flush<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1601,12 +1572,11 @@ impl<'ctx> op::Flush for SessionOperation<'ctx, Flush<'ctx>> {
         LockOwner::from_raw(self.op.arg.lock_owner)
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(mut self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Opendir for SessionOperation<'ctx, Opendir<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1616,12 +1586,11 @@ impl<'ctx> op::Opendir for SessionOperation<'ctx, Opendir<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply(self, fh: u64, opts: &OpenOptions) -> OpResult<Self> {
+    fn reply(self, fh: u64, opts: &OpenOptions) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Readdir for SessionOperation<'ctx, Readdir<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1643,17 +1612,15 @@ impl<'ctx> op::Readdir for SessionOperation<'ctx, Readdir<'ctx>> {
         self.op.is_plus
     }
 
-    async fn reply<D>(self, dirs: D) -> OpResult<Self>
+    fn reply<D>(self, dirs: D) -> OpResult<Self>
     where
-        D: IntoIterator + Send,
-        D::IntoIter: Send,
-        D::Item: AsRef<DirEntry> + Send + Sync,
+        D: IntoIterator,
+        D::Item: AsRef<DirEntry>,
     {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Releasedir for SessionOperation<'ctx, Releasedir<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1667,12 +1634,11 @@ impl<'ctx> op::Releasedir for SessionOperation<'ctx, Releasedir<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Fsyncdir for SessionOperation<'ctx, Fsyncdir<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1686,12 +1652,11 @@ impl<'ctx> op::Fsyncdir for SessionOperation<'ctx, Fsyncdir<'ctx>> {
         self.op.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Getlk for SessionOperation<'ctx, Getlk<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1709,12 +1674,11 @@ impl<'ctx> op::Getlk for SessionOperation<'ctx, Getlk<'ctx>> {
         todo!()
     }
 
-    async fn reply(self, lk: &FileLock) -> OpResult<Self> {
+    fn reply(self, lk: &FileLock) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Setlk for SessionOperation<'ctx, Setlk<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1736,12 +1700,11 @@ impl<'ctx> op::Setlk for SessionOperation<'ctx, Setlk<'ctx>> {
         self.op.sleep
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Flock for SessionOperation<'ctx, Flock<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1773,12 +1736,11 @@ impl<'ctx> op::Flock for SessionOperation<'ctx, Flock<'ctx>> {
         Some(op)
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Access for SessionOperation<'ctx, Access<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1788,12 +1750,11 @@ impl<'ctx> op::Access for SessionOperation<'ctx, Access<'ctx>> {
         self.op.arg.mask
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Create for SessionOperation<'ctx, Create<'ctx>> {
     fn parent(&self) -> u64 {
         self.header.nodeid
@@ -1815,7 +1776,7 @@ impl<'ctx> op::Create for SessionOperation<'ctx, Create<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply(
+    fn reply(
         self,
         attr: &FileAttr,
         fh: u64,
@@ -1826,7 +1787,6 @@ impl<'ctx> op::Create for SessionOperation<'ctx, Create<'ctx>> {
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Bmap for SessionOperation<'ctx, Bmap<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1840,12 +1800,11 @@ impl<'ctx> op::Bmap for SessionOperation<'ctx, Bmap<'ctx>> {
         self.op.arg.blocksize
     }
 
-    async fn reply(self, block: u64) -> OpResult<Self> {
+    fn reply(self, block: u64) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Fallocate for SessionOperation<'ctx, Fallocate<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1867,12 +1826,11 @@ impl<'ctx> op::Fallocate for SessionOperation<'ctx, Fallocate<'ctx>> {
         self.op.arg.mode
     }
 
-    async fn reply(mut self) -> OpResult<Self> {
-        self.channel.send_msg(self.header.unique, 0, &[]).await
+    fn reply(self) -> OpResult<Self> {
+        todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::CopyFileRange for SessionOperation<'ctx, CopyFileRange<'ctx>> {
     fn ino_in(&self) -> u64 {
         self.header.nodeid
@@ -1906,12 +1864,11 @@ impl<'ctx> op::CopyFileRange for SessionOperation<'ctx, CopyFileRange<'ctx>> {
         self.op.arg.flags
     }
 
-    async fn reply(self, size: u32) -> OpResult<Self> {
+    fn reply(self, size: u32) -> OpResult<Self> {
         todo!()
     }
 }
 
-#[async_trait]
 impl<'ctx> op::Poll for SessionOperation<'ctx, PollOp<'ctx>> {
     fn ino(&self) -> u64 {
         self.header.nodeid
@@ -1933,7 +1890,7 @@ impl<'ctx> op::Poll for SessionOperation<'ctx, PollOp<'ctx>> {
         }
     }
 
-    async fn reply(self, revents: u32) -> OpResult<Self> {
+    fn reply(self, revents: u32) -> OpResult<Self> {
         todo!()
     }
 }
