@@ -16,18 +16,13 @@
 #![forbid(clippy::unimplemented, clippy::todo)]
 
 pub mod op;
+pub mod reply;
 pub mod types;
 
-mod fs;
-mod util;
+mod filesystem;
 
 #[doc(inline)]
-pub use crate::fs::Filesystem;
-
-/// A re-export of [`async_trait`] for implementing `Filesystem`.
-///
-/// [`async_trait`]: https://docs.rs/async-trait
-pub use async_trait::async_trait;
+pub use crate::filesystem::{Filesystem, LocalFilesystem, Request};
 
 #[test]
 fn test_html_root_url() {

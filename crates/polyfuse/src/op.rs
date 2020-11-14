@@ -1,36 +1,7 @@
 //! Filesystem operations.
 
-#![allow(missing_docs)]
-
-use crate::{
-    async_trait,
-    types::{DirEntry, FileAttr, FileLock, FsStatistics, LockOwner},
-    util::make_system_time,
-};
-use std::{
-    ffi::OsStr,
-    time::{Duration, SystemTime},
-};
-#[async_trait]
-pub trait Operation {
-    type Ok;
-    type Error;
-
-    /// Return the unique ID of the request.
-    fn unique(&self) -> u64;
-
-    /// Return the user ID of the calling process.
-    fn uid(&self) -> u32;
-
-    /// Return the group ID of the calling process.
-    fn gid(&self) -> u32;
-
-    /// Return the process ID of the calling process.
-    fn pid(&self) -> u32;
-
-    /// Reply to the kernel with an error code.
-    async fn reply_err(self, error: i32) -> Result<Self::Ok, Self::Error>;
-}
+use crate::types::{FileLock, LockOwner, Timespec};
+use std::{ffi::OsStr, time::SystemTime};
 
 // TODO: add operations:
 // Ioctl
@@ -51,17 +22,12 @@ pub trait Forget {
 /// of the corresponding inode is incremented on success.
 ///
 /// See also the documentation of `ReplyEntry` for tuning the reply parameters.
-#[async_trait]
-pub trait Lookup: Operation {
+pub trait Lookup {
     /// Return the inode number of the parent directory.
     fn parent(&self) -> u64;
 
     /// Return the name of the entry to be looked up.
     fn name(&self) -> &OsStr;
-
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
 }
 
 /// Get file attributes.
@@ -70,25 +36,19 @@ pub trait Lookup: Operation {
 ///
 /// If writeback caching is enabled, the kernel might ignore
 /// some of the attribute values, such as `st_size`.
-#[async_trait]
-pub trait Getattr: Operation {
+pub trait Getattr {
     /// Return the inode number for obtaining the attribute value.
     fn ino(&self) -> u64;
 
     /// Return the handle of opened file, if specified.
     fn fh(&self) -> Option<u64>;
-
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyAttr + Send + Sync;
 }
 
 /// Set file attributes.
 ///
 /// When the setting of attribute values succeeds, the filesystem replies its value
 /// to the kernel using `ReplyAttr`.
-#[async_trait]
-pub trait Setattr: Operation {
+pub trait Setattr {
     /// Return the inode number to be set the attribute values.
     fn ino(&self) -> u64;
 
@@ -108,67 +68,51 @@ pub trait Setattr: Operation {
     fn size(&self) -> Option<u64>;
 
     /// Return the last accessed time to be set.
-    #[inline]
-    fn atime(&self) -> Option<SystemTime> {
-        self.atime_raw().map(|(sec, nsec, now)| {
-            if now {
-                SystemTime::now()
-            } else {
-                make_system_time((sec, nsec))
-            }
-        })
-    }
-
-    /// Return the last accessed time to be set, in raw form.
-    fn atime_raw(&self) -> Option<(u64, u32, bool)>;
+    fn atime(&self) -> Option<SetAttrTime>;
 
     /// Return the last modified time to be set.
-    #[inline]
-    fn mtime(&self) -> Option<SystemTime> {
-        self.mtime_raw().map(|(sec, nsec, now)| {
-            if now {
-                SystemTime::now()
-            } else {
-                make_system_time((sec, nsec))
-            }
-        })
-    }
-
-    /// Return the last modified time to be set, in raw form.
-    fn mtime_raw(&self) -> Option<(u64, u32, bool)>;
+    fn mtime(&self) -> Option<SetAttrTime>;
 
     /// Return the last creation time to be set.
-    #[inline]
-    fn ctime(&self) -> Option<SystemTime> {
-        self.ctime_raw().map(make_system_time)
-    }
-
-    /// Return the last creation time to be set, in raw form.
-    fn ctime_raw(&self) -> Option<(u64, u32)>;
+    fn ctime(&self) -> Option<Timespec>;
 
     /// Return the identifier of lock owner.
     fn lock_owner(&self) -> Option<LockOwner>;
+}
 
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyAttr + Send + Sync;
+/// The time value requested to be set.
+#[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
+pub enum SetAttrTime {
+    /// Set the specified time value.
+    Timespec(Timespec),
+
+    /// Set the current time.
+    Now,
+}
+
+impl SetAttrTime {
+    /// Convert itself into a `SystemTime`.
+    #[inline]
+    pub fn as_system_time(self) -> SystemTime {
+        match self {
+            SetAttrTime::Timespec(ts) => ts.as_system_time(),
+            SetAttrTime::Now => SystemTime::now(),
+        }
+    }
 }
 
 /// Read a symbolic link.
-#[async_trait]
-pub trait Readlink: Operation {
+pub trait Readlink {
     /// Return the inode number to be read the link value.
     fn ino(&self) -> u64;
-
-    async fn reply(self, reply: &OsStr) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Create a symbolic link.
 ///
 /// When the link is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
-#[async_trait]
-pub trait Symlink: Operation {
+pub trait Symlink {
     /// Return the inode number of the parent directory.
     fn parent(&self) -> u64;
 
@@ -177,18 +121,13 @@ pub trait Symlink: Operation {
 
     /// Return the contents of the symbolic link.
     fn link(&self) -> &OsStr;
-
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
 }
 
 /// Create a file node.
 ///
 /// When the file node is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
-#[async_trait]
-pub trait Mknod: Operation {
+pub trait Mknod {
     /// Return the inode number of the parent directory.
     fn parent(&self) -> u64;
 
@@ -200,24 +139,19 @@ pub trait Mknod: Operation {
 
     /// Return the device number for special file.
     ///
-    /// This value is only meaningful only if the created node is a device file
+    /// This value is meaningful only if the created node is a device file
     /// (i.e. the file type is specified either `S_IFCHR` or `S_IFBLK`).
     fn rdev(&self) -> u32;
 
     #[doc(hidden)] // TODO: dox
     fn umask(&self) -> u32;
-
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
 }
 
 /// Create a directory node.
 ///
 /// When the directory is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
-#[async_trait]
-pub trait Mkdir: Operation {
+pub trait Mkdir {
     /// Return the inode number of the parent directory where the directory is created.
     fn parent(&self) -> u64;
 
@@ -229,29 +163,21 @@ pub trait Mkdir: Operation {
 
     #[doc(hidden)] // TODO: dox
     fn umask(&self) -> u32;
-
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
 }
 
 // TODO: description about lookup count.
 
 /// Remove a file.
-#[async_trait]
-pub trait Unlink: Operation {
+pub trait Unlink {
     /// Return the inode number of the parent directory.
     fn parent(&self) -> u64;
 
     /// Return the file name to be removed.
     fn name(&self) -> &OsStr;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Remove a directory.
-#[async_trait]
-pub trait Rmdir: Operation {
+pub trait Rmdir {
     // TODO: description about lookup count.
 
     /// Return the inode number of the parent directory.
@@ -259,13 +185,10 @@ pub trait Rmdir: Operation {
 
     /// Return the directory name to be removed.
     fn name(&self) -> &OsStr;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Rename a file.
-#[async_trait]
-pub trait Rename: Operation {
+pub trait Rename {
     /// Return the inode number of the old parent directory.
     fn parent(&self) -> u64;
 
@@ -280,16 +203,13 @@ pub trait Rename: Operation {
 
     /// Return the rename flags.
     fn flags(&self) -> u32;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Create a hard link.
 ///
 /// When the link is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
-#[async_trait]
-pub trait Link: Operation {
+pub trait Link {
     /// Return the *original* inode number which links to the created hard link.
     fn ino(&self) -> u64;
 
@@ -298,10 +218,6 @@ pub trait Link: Operation {
 
     /// Return the name of the hard link to be created.
     fn newname(&self) -> &OsStr;
-
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyEntry + Send + Sync;
 }
 
 /// Open a file.
@@ -313,8 +229,7 @@ pub trait Link: Operation {
 /// handling the opened file.
 ///
 /// See also the documentation of `ReplyOpen` for tuning the reply parameters.
-#[async_trait]
-pub trait Open: Operation {
+pub trait Open {
     // TODO: Description of behavior when writeback caching is enabled.
 
     /// Return the inode number to be opened.
@@ -331,10 +246,6 @@ pub trait Open: Operation {
     /// handle these flags and return an `EACCES` error when provided access mode is
     /// invalid.
     fn flags(&self) -> u32;
-
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyOpen + Send + Sync;
 }
 
 /// Read data from a file.
@@ -348,8 +259,7 @@ pub trait Open: Operation {
 /// the filesystem should send *exactly* the specified range of file content to the
 /// kernel. If the length of the passed data is shorter than `size`, the rest of
 /// the data will be substituted with zeroes.
-#[async_trait]
-pub trait Read: Operation {
+pub trait Read {
     /// Return the inode number to be read.
     fn ino(&self) -> u64;
 
@@ -367,8 +277,6 @@ pub trait Read: Operation {
 
     /// Return the identifier of lock owner.
     fn lock_owner(&self) -> Option<LockOwner>;
-
-    async fn reply<R>(self, data: &[u8]) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Write data to a file.
@@ -381,8 +289,7 @@ pub trait Read: Operation {
 ///
 /// When the file is not opened in `direct_io` mode (i.e. the page caching is enabled),
 /// the filesystem should receive *exactly* the specified range of file content from the kernel.
-#[async_trait]
-pub trait Write: Operation {
+pub trait Write {
     /// Return the inode number to be written.
     fn ino(&self) -> u64;
 
@@ -400,13 +307,10 @@ pub trait Write: Operation {
 
     /// Return the identifier of lock owner.
     fn lock_owner(&self) -> Option<LockOwner>;
-
-    async fn reply(self, size: u32) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Release an opened file.
-#[async_trait]
-pub trait Release: Operation {
+pub trait Release {
     /// Return the inode number of opened file.
     fn ino(&self) -> u64;
 
@@ -424,26 +328,18 @@ pub trait Release: Operation {
 
     /// Return whether the `flock` locks for this file should be released.
     fn flock_release(&self) -> bool;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Get the filesystem statistics.
 ///
 /// The obtained statistics must be sent to the kernel using `ReplyStatfs`.
-#[async_trait]
-pub trait Statfs: Operation {
+pub trait Statfs {
     /// Return the inode number or `0` which means "undefined".
     fn ino(&self) -> u64;
-
-    async fn reply<S>(self, stat: S) -> Result<Self::Ok, Self::Error>
-    where
-        S: FsStatistics + Send + Sync;
 }
 
 /// Synchronize the file contents.
-#[async_trait]
-pub trait Fsync: Operation {
+pub trait Fsync {
     /// Return the inode number to be synchronized.
     fn ino(&self) -> u64;
 
@@ -454,13 +350,10 @@ pub trait Fsync: Operation {
     ///
     /// When this method returns `true`, the metadata does not have to be flushed.
     fn datasync(&self) -> bool;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Set an extended attribute.
-#[async_trait]
-pub trait Setxattr: Operation {
+pub trait Setxattr {
     /// Return the inode number to set the value of extended attribute.
     fn ino(&self) -> u64;
 
@@ -472,8 +365,6 @@ pub trait Setxattr: Operation {
 
     /// Return the flags that specifies the meanings of this operation.
     fn flags(&self) -> u32;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Get an extended attribute.
@@ -487,8 +378,7 @@ pub trait Setxattr: Operation {
 /// * Otherwise, returns the attribute value with the specified name.
 ///   The filesystem should send an `ERANGE` error if the specified
 ///   size is too small for the attribute value.
-#[async_trait]
-pub trait Getxattr: Operation {
+pub trait Getxattr {
     /// Return the inode number to be get the extended attribute.
     fn ino(&self) -> u64;
 
@@ -497,10 +387,6 @@ pub trait Getxattr: Operation {
 
     /// Return the maximum length of the attribute value to be replied.
     fn size(&self) -> u32;
-
-    async fn reply_size(self, size: u32) -> Result<Self::Ok, Self::Error>;
-
-    async fn reply(self, value: &[u8]) -> Result<Self::Ok, Self::Error>;
 }
 
 /// List extended attribute names.
@@ -508,29 +394,21 @@ pub trait Getxattr: Operation {
 /// Each element of the attribute names list must be null-terminated.
 /// As with `Getxattr`, the filesystem must send the data length of the attribute
 /// names using `ReplyXattr` if `size` is zero.
-#[async_trait]
-pub trait Listxattr: Operation {
+pub trait Listxattr {
     /// Return the inode number to be obtained the attribute names.
     fn ino(&self) -> u64;
 
     /// Return the maximum length of the attribute names to be replied.
     fn size(&self) -> u32;
-
-    async fn reply_size(self, size: u32) -> Result<Self::Ok, Self::Error>;
-
-    async fn reply(self, value: &[u8]) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Remove an extended attribute.
-#[async_trait]
-pub trait Removexattr: Operation {
+pub trait Removexattr {
     /// Return the inode number to remove the extended attribute.
     fn ino(&self) -> u64;
 
     /// Return the name of extended attribute to be removed.
     fn name(&self) -> &OsStr;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Close a file descriptor.
@@ -543,8 +421,7 @@ pub trait Removexattr: Operation {
 /// flush operations might be issued for one `Open`.
 /// Also, it is not guaranteed that flush will always be issued
 /// after some writes.
-#[async_trait]
-pub trait Flush: Operation {
+pub trait Flush {
     /// Return the inode number of target file.
     fn ino(&self) -> u64;
 
@@ -553,30 +430,22 @@ pub trait Flush: Operation {
 
     /// Return the identifier of lock owner.
     fn lock_owner(&self) -> LockOwner;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Open a directory.
 ///
 /// If the directory is successfully opened, the filesystem must send
 /// the identifier to the opened directory handle using `ReplyOpen`.
-#[async_trait]
-pub trait Opendir: Operation {
+pub trait Opendir {
     /// Return the inode number to be opened.
     fn ino(&self) -> u64;
 
     /// Return the open flags.
     fn flags(&self) -> u32;
-
-    async fn reply<R>(self, reply: R) -> Result<Self::Ok, Self::Error>
-    where
-        R: ReplyOpen + Send + Sync;
 }
 
 /// Read contents from an opened directory.
-#[async_trait]
-pub trait Readdir: Operation {
+pub trait Readdir {
     // TODO: description about `offset` and `is_plus`.
 
     /// Return the inode number to be read.
@@ -593,17 +462,10 @@ pub trait Readdir: Operation {
 
     /// Return whether the operation is "plus" mode or not.
     fn is_plus(&self) -> bool;
-
-    async fn reply<I>(self, dirs: I) -> Result<Self::Ok, Self::Error>
-    where
-        I: IntoIterator + Send,
-        I::IntoIter: Send,
-        I::Item: DirEntry + Send + Sync;
 }
 
 /// Release an opened directory.
-#[async_trait]
-pub trait Releasedir: Operation {
+pub trait Releasedir {
     /// Return the inode number of opened directory.
     fn ino(&self) -> u64;
 
@@ -612,13 +474,10 @@ pub trait Releasedir: Operation {
 
     /// Return the flags specified at opening the directory.
     fn flags(&self) -> u32;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Synchronize the directory contents.
-#[async_trait]
-pub trait Fsyncdir: Operation {
+pub trait Fsyncdir {
     /// Return the inode number to be synchronized.
     fn ino(&self) -> u64;
 
@@ -629,15 +488,12 @@ pub trait Fsyncdir: Operation {
     ///
     /// When this method returns `true`, the metadata does not have to be flushed.
     fn datasync(&self) -> bool;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Test for a POSIX file lock.
 ///
 /// The lock result must be replied using `ReplyLk`.
-#[async_trait]
-pub trait Getlk: Operation {
+pub trait Getlk {
     /// Return the inode number to be tested the lock.
     fn ino(&self) -> u64;
 
@@ -648,16 +504,11 @@ pub trait Getlk: Operation {
     fn owner(&self) -> LockOwner;
 
     /// Return the lock information for testing.
-    fn lk(&self) -> &(dyn FileLock + Send + Sync);
-
-    async fn reply<L>(self, lk: L) -> Result<Self::Ok, Self::Error>
-    where
-        L: FileLock + Send + Sync;
+    fn lk(&self) -> &FileLock;
 }
 
 /// Acquire, modify or release a POSIX file lock.
-#[async_trait]
-pub trait Setlk: Operation {
+pub trait Setlk {
     /// Return the inode number to be obtained the lock.
     fn ino(&self) -> u64;
 
@@ -668,17 +519,14 @@ pub trait Setlk: Operation {
     fn owner(&self) -> LockOwner;
 
     /// Return the lock information to be obtained.
-    fn lk(&self) -> &(dyn FileLock + Send + Sync);
+    fn lk(&self) -> &FileLock;
 
     /// Return whether the locking operation might sleep until a lock is obtained.
     fn sleep(&self) -> bool;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Acquire, modify or release a BSD file lock.
-#[async_trait]
-pub trait Flock: Operation {
+pub trait Flock {
     /// Return the target inode number.
     fn ino(&self) -> u64;
 
@@ -694,20 +542,15 @@ pub trait Flock: Operation {
     ///
     /// [flock]: http://man7.org/linux/man-pages/man2/flock.2.html
     fn op(&self) -> Option<u32>;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Check file access permissions.
-#[async_trait]
-pub trait Access: Operation {
+pub trait Access {
     /// Return the inode number subject to the access permission check.
     fn ino(&self) -> u64;
 
     /// Return the requested access mode.
     fn mask(&self) -> u32;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Create and open a file.
@@ -717,8 +560,7 @@ pub trait Access: Operation {
 ///
 /// If the file is successfully created and opened, a pair of `ReplyEntry` and `ReplyOpen`
 /// with the corresponding attribute values and the file handle must be sent to the kernel.
-#[async_trait]
-pub trait Create: Operation {
+pub trait Create {
     /// Return the inode number of the parent directory.
     ///
     /// This is the same as `Mknod::parent`.
@@ -741,11 +583,6 @@ pub trait Create: Operation {
     ///
     /// This is the same as `Open::flags`.
     fn open_flags(&self) -> u32;
-
-    async fn reply<E, O>(self, entry: E, open: O) -> Result<Self::Ok, Self::Error>
-    where
-        E: ReplyEntry + Send + Sync,
-        O: ReplyOpen + Send + Sync;
 }
 
 /// Map block index within a file to block index within device.
@@ -755,8 +592,7 @@ pub trait Create: Operation {
 /// This operation makes sense only for filesystems that use
 /// block devices, and is called only when the mount options
 /// contains `blkdev`.
-#[async_trait]
-pub trait Bmap: Operation {
+pub trait Bmap {
     /// Return the inode number of the file node to be mapped.
     fn ino(&self) -> u64;
 
@@ -765,8 +601,6 @@ pub trait Bmap: Operation {
 
     /// Returns the unit of block index.
     fn blocksize(&self) -> u32;
-
-    async fn reply(self, block: u64) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Allocate requested space.
@@ -774,8 +608,7 @@ pub trait Bmap: Operation {
 /// If this operation is successful, the filesystem shall not report
 /// the error caused by the lack of free spaces to subsequent write
 /// requests.
-#[async_trait]
-pub trait Fallocate: Operation {
+pub trait Fallocate {
     /// Return the number of target inode to be allocated the space.
     fn ino(&self) -> u64;
 
@@ -794,15 +627,12 @@ pub trait Fallocate: Operation {
     ///
     /// [fallocate]: http://man7.org/linux/man-pages/man2/fallocate.2.html
     fn mode(&self) -> u32;
-
-    async fn reply(self) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Copy a range of data from an opened file to another.
 ///
 /// The length of copied data must be replied using `ReplyWrite`.
-#[async_trait]
-pub trait CopyFileRange: Operation {
+pub trait CopyFileRange {
     /// Return the inode number of source file.
     fn ino_in(&self) -> u64;
 
@@ -826,15 +656,12 @@ pub trait CopyFileRange: Operation {
 
     /// Return the flag value for `copy_file_range` syscall.
     fn flags(&self) -> u64;
-
-    async fn reply(self, size: u32) -> Result<Self::Ok, Self::Error>;
 }
 
 /// Poll for readiness.
 ///
 /// The mask of ready poll events must be replied using `ReplyPoll`.
-#[async_trait]
-pub trait Poll: Operation {
+pub trait Poll {
     /// Return the inode number to check the I/O readiness.
     fn ino(&self) -> u64;
 
@@ -849,92 +676,4 @@ pub trait Poll: Operation {
     /// If the returned value is not `None`, the filesystem should send the notification
     /// when the corresponding I/O will be ready.
     fn kh(&self) -> Option<u64>;
-
-    async fn reply(self, revents: u32) -> Result<Self::Ok, Self::Error>;
-}
-
-// ==== reply ====
-
-/// Reply with the inode attributes.
-pub trait ReplyAttr {
-    /// Return the attribute.
-    fn attr(&self) -> &(dyn FileAttr + Send + Sync);
-
-    /// Return the validity timeout for attributes.
-    fn ttl(&self) -> Option<Duration> {
-        None
-    }
-}
-
-/// Reply with entry params.
-pub trait ReplyEntry {
-    /// Return the inode number of this entry.
-    ///
-    /// If this value is zero, it means that the entry is *negative*.
-    /// Returning a negative entry is also possible with the `ENOENT` error,
-    /// but the *zeroed* entries also have the ability to specify the lifetime
-    /// of the entry cache by using the `ttl_entry` parameter.
-    ///
-    /// The default value is `0`.
-    fn ino(&self) -> u64;
-
-    /// Return the attribute value of this entry.
-    fn attr(&self) -> &(dyn FileAttr + Send + Sync);
-
-    /// Return the validity timeout for inode attributes.
-    ///
-    /// The operations should set this value to very large
-    /// when the changes of inode attributes are caused
-    /// only by FUSE requests.
-    fn ttl_attr(&self) -> Option<Duration> {
-        None
-    }
-
-    /// Return the validity timeout for the name.
-    ///
-    /// The operations should set this value to very large
-    /// when the changes/deletions of directory entries are
-    /// caused only by FUSE requests.
-    fn ttl_entry(&self) -> Option<Duration> {
-        None
-    }
-
-    /// Return the generation of this entry.
-    ///
-    /// This parameter is used to distinguish the inode from the past one
-    /// when the filesystem reuse inode numbers.  That is, the operations
-    /// must ensure that the pair of entry's inode number and generation
-    /// are unique for the lifetime of the filesystem.
-    fn generation(&self) -> u64 {
-        0
-    }
-}
-
-/// Reply with an opened file.
-pub trait ReplyOpen {
-    /// Return the file handle.
-    fn fh(&self) -> u64;
-
-    /// Indicates that the direct I/O is used on this file.
-    fn direct_io(&self) -> bool {
-        false
-    }
-
-    /// Indicates that the currently cached file data in the kernel
-    /// need not be invalidated.
-    fn keep_cache(&self) -> bool {
-        false
-    }
-
-    /// Indicates that the opened file is not seekable.
-    fn nonseekable(&self) -> bool {
-        false
-    }
-
-    /// Enable caching of entries returned by `readdir`.
-    ///
-    /// This flag is meaningful only for `opendir` operations.
-    fn cache_dir(&self) -> bool {
-        false
-    }
 }
