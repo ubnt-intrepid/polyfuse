@@ -16,13 +16,14 @@
 #![forbid(clippy::unimplemented, clippy::todo)]
 
 pub mod op;
+pub mod reply;
 pub mod types;
 
 mod filesystem;
 mod util;
 
 #[doc(inline)]
-pub use crate::filesystem::Filesystem;
+pub use crate::filesystem::{Filesystem, Request};
 
 #[test]
 fn test_html_root_url() {
