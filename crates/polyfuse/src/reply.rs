@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+//! Replies to the kernel.
 
 use crate::types::{FileAttr, FileLock, FsStatistics, NonExhaustive};
 use std::{io, time::Duration};
@@ -37,13 +37,23 @@ pub trait ReplyOk: Reply {
     fn ok(self) -> Result<Self::Ok, Self::Error>;
 }
 
+/// A `Reply` for arbitrary bytes.
+pub trait ReplyBytes: Reply {
+    /// Reply with a bytes of data.
+    fn data<T>(self, bytes: T) -> Result<Self::Ok, Self::Error>
+    where
+        T: AsRef<[u8]>;
+
+    // FIXME: add support for vectored data
+}
+
 /// A `Reply` for entry params.
 pub trait ReplyEntry: Reply {
     /// Reply with the entry params.
     fn entry(self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>;
 }
 
-/// Reply with entry params.
+/// The option values for `ReplyEntry`.
 #[derive(Copy, Clone, Debug)]
 pub struct EntryOptions {
     /// Return the inode number of this entry.
@@ -95,15 +105,19 @@ impl Default for EntryOptions {
     }
 }
 
+/// A `Reply` for inode attributes.
 pub trait ReplyAttr: Reply {
+    /// Reply with the inode attributes.
     fn attr(self, attr: &FileAttr, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error>;
 }
 
+/// A `Reply` for opened files or directories.
 pub trait ReplyOpen: Reply {
+    /// Reply with an opened file handle.
     fn open(self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error>;
 }
 
-/// Reply with an opened file.
+/// The option values for `ReplyOpen`.
 #[derive(Copy, Clone, Debug)]
 pub struct OpenOptions {
     /// Indicates that the direct I/O is used on this file.
@@ -138,37 +152,44 @@ impl Default for OpenOptions {
     }
 }
 
-pub trait ReplyBytes: Reply {
-    fn data<T>(self, bytes: T) -> Result<Self::Ok, Self::Error>
-    where
-        T: AsRef<[u8]>;
-}
-
+/// A `Reply` for write operations.
 pub trait ReplyWrite: Reply {
+    /// Reply with the size of written bytes.
     fn size(self, size: u32) -> Result<Self::Ok, Self::Error>;
 }
 
+/// A `Reply` for extended attribute operations.
 pub trait ReplyXattr: Reply {
+    /// Reply with the size of attribute value.
     fn size(self, size: u32) -> Result<Self::Ok, Self::Error>;
 
+    /// Reply with the value of attribute value.
     fn data<T>(self, bytes: T) -> Result<Self::Ok, Self::Error>
     where
         T: AsRef<[u8]>;
 }
 
+/// A `Reply` for the filesystem statistics.
 pub trait ReplyStatfs: Reply {
+    /// Reply with the filesystem statistics.
     fn stat(self, stat: &FsStatistics) -> Result<Self::Ok, Self::Error>;
 }
 
+/// A `Reply` for lock operations.
 pub trait ReplyLk: Reply {
+    /// Reply with the lock information.
     fn lk(self, lk: &FileLock) -> Result<Self::Ok, Self::Error>;
 }
 
+/// A `Reply` for block mapping operations.
 pub trait ReplyBmap: Reply {
+    /// Reply with the number of mapped blocks.
     fn block(self, block: u64) -> Result<Self::Ok, Self::Error>;
 }
 
+/// A `Reply` for create operation.
 pub trait ReplyCreate: Reply {
+    /// Reply with the information about created and opened file.
     fn create(
         self,
         fh: u64,
@@ -178,6 +199,8 @@ pub trait ReplyCreate: Reply {
     ) -> Result<Self::Ok, Self::Error>;
 }
 
+/// A `Reply` for the polling operations.
 pub trait ReplyPoll: Reply {
+    /// Reply with returned events mask.
     fn revents(self, revents: u32) -> Result<Self::Ok, Self::Error>;
 }

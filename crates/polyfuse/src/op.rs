@@ -1,11 +1,6 @@
 //! Filesystem operations.
 
-#![allow(missing_docs)]
-
-use crate::{
-    types::{FileLock, LockOwner},
-    util::make_system_time,
-};
+use crate::types::{FileLock, LockOwner, Timespec};
 use std::{ffi::OsStr, time::SystemTime};
 
 // TODO: add operations:
@@ -27,7 +22,7 @@ pub trait Forget {
 /// of the corresponding inode is incremented on success.
 ///
 /// See also the documentation of `ReplyEntry` for tuning the reply parameters.
-pub trait Lookup: Send + Sync {
+pub trait Lookup {
     /// Return the inode number of the parent directory.
     fn parent(&self) -> u64;
 
@@ -73,46 +68,38 @@ pub trait Setattr {
     fn size(&self) -> Option<u64>;
 
     /// Return the last accessed time to be set.
-    #[inline]
-    fn atime(&self) -> Option<SystemTime> {
-        self.atime_raw().map(|(sec, nsec, now)| {
-            if now {
-                SystemTime::now()
-            } else {
-                make_system_time((sec, nsec))
-            }
-        })
-    }
-
-    /// Return the last accessed time to be set, in raw form.
-    fn atime_raw(&self) -> Option<(u64, u32, bool)>;
+    fn atime(&self) -> Option<SetAttrTime>;
 
     /// Return the last modified time to be set.
-    #[inline]
-    fn mtime(&self) -> Option<SystemTime> {
-        self.mtime_raw().map(|(sec, nsec, now)| {
-            if now {
-                SystemTime::now()
-            } else {
-                make_system_time((sec, nsec))
-            }
-        })
-    }
-
-    /// Return the last modified time to be set, in raw form.
-    fn mtime_raw(&self) -> Option<(u64, u32, bool)>;
+    fn mtime(&self) -> Option<SetAttrTime>;
 
     /// Return the last creation time to be set.
-    #[inline]
-    fn ctime(&self) -> Option<SystemTime> {
-        self.ctime_raw().map(make_system_time)
-    }
-
-    /// Return the last creation time to be set, in raw form.
-    fn ctime_raw(&self) -> Option<(u64, u32)>;
+    fn ctime(&self) -> Option<Timespec>;
 
     /// Return the identifier of lock owner.
     fn lock_owner(&self) -> Option<LockOwner>;
+}
+
+/// The time value requested to be set.
+#[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
+pub enum SetAttrTime {
+    /// Set the specified time value.
+    Timespec(Timespec),
+
+    /// Set the current time.
+    Now,
+}
+
+impl SetAttrTime {
+    /// Convert itself into a `SystemTime`.
+    #[inline]
+    pub fn as_system_time(self) -> SystemTime {
+        match self {
+            SetAttrTime::Timespec(ts) => ts.as_system_time(),
+            SetAttrTime::Now => SystemTime::now(),
+        }
+    }
 }
 
 /// Read a symbolic link.
@@ -152,7 +139,7 @@ pub trait Mknod {
 
     /// Return the device number for special file.
     ///
-    /// This value is only meaningful only if the created node is a device file
+    /// This value is meaningful only if the created node is a device file
     /// (i.e. the file type is specified either `S_IFCHR` or `S_IFBLK`).
     fn rdev(&self) -> u32;
 

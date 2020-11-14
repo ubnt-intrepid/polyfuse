@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+//! Common types used in the filesystem representation.
 
 pub(crate) use non_exhaustive::NonExhaustive;
 mod non_exhaustive {
@@ -10,11 +10,20 @@ mod non_exhaustive {
     }
 }
 
-use std::{borrow::Cow, ffi::OsStr, fmt};
+use std::{
+    borrow::Cow,
+    ffi::OsStr,
+    fmt,
+    time::{Duration, SystemTime},
+};
 
+/// The time value hliding seconds and nanoseconds.
 #[derive(Copy, Clone, Debug)]
 pub struct Timespec {
+    #[allow(missing_docs)]
     pub secs: u64,
+
+    #[allow(missing_docs)]
     pub nsecs: u32,
 
     #[doc(hidden)] // non_exhaustive
@@ -30,6 +39,17 @@ impl Default for Timespec {
 
             __non_exhaustive: NonExhaustive::INIT,
         }
+    }
+}
+
+impl Timespec {
+    /// Get the time value converted to [`SystemTime`](std::time::SystemTime).
+    ///
+    /// The conversion is performed by treating itself as increment
+    /// from `SystemTime::UNIX_EPOCH`.
+    #[inline]
+    pub fn as_system_time(self) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::new(self.secs, self.nsecs)
     }
 }
 
