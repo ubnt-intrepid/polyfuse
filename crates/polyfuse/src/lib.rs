@@ -15,14 +15,10 @@
 )]
 #![forbid(clippy::unimplemented, clippy::todo)]
 
+pub mod error;
 pub mod op;
 pub mod reply;
 pub mod types;
-
-mod filesystem;
-
-#[doc(inline)]
-pub use crate::filesystem::{Filesystem, LocalFilesystem, Request};
 
 #[test]
 fn test_html_root_url() {
