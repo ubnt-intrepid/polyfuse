@@ -1,0 +1,12 @@
+[package]
+name = "polyfuse-daemon"
+version = "0.1.0-dev"
+publish = false
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+polyfuse = { version = "0.4.0-dev", path = "../polyfuse" }
+
+anyhow = "1"
+futures = "0.3"

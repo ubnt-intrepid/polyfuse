@@ -2,6 +2,7 @@
 members = [
   "crates/*",
   #"examples",
+  "examples/sketch",
   "xtask",
 ]
 exclude = [

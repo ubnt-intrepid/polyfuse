@@ -1,0 +1,12 @@
+[package]
+name = "example-sketch"
+version = "0.0.0"
+publish = false
+edition = "2018"
+
+[dependencies]
+polyfuse = { path = "../../crates/polyfuse" }
+polyfuse-daemon = { path = "../../crates/polyfuse-daemon" }
+
+anyhow = "1"
+async-std = ">=1.7.0"
