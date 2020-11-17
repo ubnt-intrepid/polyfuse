@@ -1,13 +1,18 @@
-pub mod daemon;
+#![warn(clippy::todo, clippy::unimplemented)]
+
+mod conn;
+mod daemon;
+mod parse;
+mod request;
+mod session;
+mod util;
+mod write;
+
 pub mod op;
 
-pub use crate::daemon::Daemon;
-pub use crate::op::Operation;
-
-use std::{ffi::OsStr, path::Path};
-
-/// Start a FUSE daemon mount on the specified path.
-#[inline]
-pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> anyhow::Result<Daemon> {
-    Daemon::mount(mountpoint, mountopts).await
-}
+pub use crate::{
+    daemon::{Builder, Daemon},
+    op::Operation,
+    request::Request,
+    session::{CapabilityFlags, ConnectionInfo},
+};

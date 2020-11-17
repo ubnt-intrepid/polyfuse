@@ -1,11 +1,13 @@
 use polyfuse::{op, reply::ReplyAttr as _, types::FileAttr};
-use polyfuse_daemon::Operation;
+use polyfuse_daemon::{Daemon, Operation};
 
 use anyhow::Context as _;
 use async_std::task;
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
     let mut args = pico_args::Arguments::from_env();
 
     let mountpoint: PathBuf = args
@@ -15,17 +17,14 @@ fn main() -> anyhow::Result<()> {
 
     task::block_on(async {
         // Start the FUSE daemon mounted on the specified path.
-        let mut daemon = polyfuse_daemon::mount(mountpoint, &[]).await?;
+        let mut daemon = Daemon::mount(mountpoint, &[]).await?;
 
-        loop {
-            // Receive an incoming FUSE request from the kernel.
-            let mut req = match daemon.next_request().await {
-                Some(req) => req,
-                None => break,
-            };
-
+        // Receive an incoming FUSE request from the kernel.
+        while let Some(req) = daemon.next_request().await? {
             // Process the request.
             req.process(|op| async {
+                tracing::trace!("in process()");
+
                 match op {
                     // Dispatch your callbacks to the supported operations...
                     Operation::Getattr(op) => getattr(op).await,
@@ -58,6 +57,6 @@ where
             gid: unsafe { libc::getgid() },
             ..Default::default()
         },
-        None,
+        Some(std::time::Duration::from_secs(1)),
     )
 }
