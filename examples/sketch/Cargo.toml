@@ -10,3 +10,5 @@ polyfuse-daemon = { path = "../../crates/polyfuse-daemon" }
 
 anyhow = "1"
 async-std = ">=1.7.0"
+libc = "0.2"
+pico-args = "0.3"
