@@ -69,7 +69,7 @@ jobs:
         curl -L https://github.com/xd009642/tarpaulin/releases/download/0.10.0/cargo-tarpaulin-0.10.0-travis.tar.gz | tar zxf -
         mkdir -pv $HOME/.cargo/bin
         mv -v ./cargo-tarpaulin $HOME/.cargo/bin
-        echo ::add-path::$HOME/.cargo/bin
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
     - name: Run coverage test
       run: cargo +stable xtask coverage
