@@ -23,10 +23,10 @@ fn main() -> anyhow::Result<()> {
 struct Filesystem {}
 
 impl Filesystem {
-    async fn process(&self, op: Operation<'_>) -> Result<(), polyfuse_daemon::Error> {
+    async fn process(&self, op: Operation<'_>) -> polyfuse_daemon::op::Result {
         match op {
             Operation::Getattr(op) => self.getattr(op).await,
-            op => op.default().await,
+            op => op.unimplemented().await,
         }
     }
 
