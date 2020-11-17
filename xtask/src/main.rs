@@ -102,23 +102,13 @@ fn do_doc() -> anyhow::Result<()> {
         fs::remove_dir_all(&doc_dir)?;
     }
 
-    cargo()
-        .arg("doc")
-        .arg("--no-deps")
-        .arg("--package=polyfuse")
-        .run_timeout(CARGO_DOC_TIMEOUT)?;
-
-    cargo()
-        .arg("doc")
-        .arg("--no-deps")
-        .arg("--package=polyfuse-kernel")
-        .run_timeout(CARGO_DOC_TIMEOUT)?;
-
-    cargo()
-        .arg("doc")
-        .arg("--no-deps")
-        .arg("--package=polyfuse-smol")
-        .run_timeout(CARGO_DOC_TIMEOUT)?;
+    for package in &["polyfuse", "polyfuse-kernel"] {
+        cargo()
+            .arg("doc")
+            .arg("--no-deps")
+            .arg(format!("--package={}", package))
+            .run_timeout(CARGO_DOC_TIMEOUT)?;
+    }
 
     let lockfile = doc_dir.join(".lock");
     if lockfile.exists() {
