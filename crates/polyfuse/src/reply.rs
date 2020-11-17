@@ -1,7 +1,10 @@
 //! Replies to the kernel.
 
-use crate::types::{FileAttr, FileLock, FsStatistics, NonExhaustive};
-use std::{io, time::Duration};
+use crate::{
+    error::Error,
+    types::{FileAttr, FileLock, FsStatistics, NonExhaustive},
+};
+use std::time::Duration;
 
 /// The object for replying to the FUSE kernel driver.
 pub trait Reply: Send {
@@ -10,25 +13,6 @@ pub trait Reply: Send {
 
     /// The error type produced by the filesystem.
     type Error: Error;
-
-    /// Annotate to the backend that the filesystem does not support
-    /// this operation.
-    fn unimplemented(self) -> Result<Self::Ok, Self::Error>;
-}
-
-/// The error type returned from the filesystem.
-pub trait Error {
-    /// Construct the error value from an I/O error.
-    fn from_io_error(io_error: io::Error) -> Self;
-
-    /// Construct the error value from an error number.
-    #[inline]
-    fn from_raw_os_error(code: i32) -> Self
-    where
-        Self: Sized,
-    {
-        Self::from_io_error(io::Error::from_raw_os_error(code))
-    }
 }
 
 /// A `Reply` for empty data.
