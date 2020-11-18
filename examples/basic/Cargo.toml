@@ -1,5 +1,5 @@
 [package]
-name = "example-sketch"
+name = "polyfuse-example-basic"
 version = "0.0.0"
 publish = false
 edition = "2018"
