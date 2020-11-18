@@ -1,0 +1,19 @@
+[package]
+name = "polyfuse-daemon"
+version = "0.1.0-dev"
+publish = false
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+polyfuse = { version = "0.4.0-dev", path = "../polyfuse" }
+polyfuse-kernel = { version = "0.1.0-dev", path = "../polyfuse-kernel" }
+
+anyhow = "1"
+async-io = "1.2"
+bitflags = "1.2"
+either = "1"
+futures = "0.3"
+libc = "0.2"
+smallvec = "1.4"
+tracing = "0.1"

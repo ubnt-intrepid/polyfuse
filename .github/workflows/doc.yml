@@ -23,13 +23,11 @@ jobs:
         submodules: true
 
     - name: Install Rust toolchain
-      uses: actions-rs/toolchain@dependabot/npm_and_yarn/actions/core-1.2.6
+      uses: actions-rs/toolchain@v1
       with:
         profile: minimal
         toolchain: nightly
         override: true
-      env:
-        ACTIONS_ALLOW_UNSECURE_COMMANDS: true
 
     - name: Generate Cargo.lock
       run: cargo generate-lockfile

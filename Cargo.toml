@@ -1,9 +1,6 @@
 [workspace]
 members = [
   "crates/*",
-  #"examples",
+  "examples/*",
   "xtask",
-]
-exclude = [
-  "crates/polyfuse-smol",
 ]
