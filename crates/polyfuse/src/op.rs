@@ -676,7 +676,7 @@ pub trait Flock: Operation {
     fn fh(&self) -> u64;
 
     /// Return the identifier of lock owner.
-    fn owner_id(&self) -> LockOwner;
+    fn owner(&self) -> LockOwner;
 
     /// Return the locking operation.
     ///
@@ -685,7 +685,7 @@ pub trait Flock: Operation {
     /// [flock]: http://man7.org/linux/man-pages/man2/flock.2.html
     fn op(&self) -> Option<u32>;
 
-    fn reply(self) -> Result<Self::Ok, Self::Error>;
+    fn reply(self) -> Self::Reply;
 }
 
 /// Check file access permissions.
@@ -755,6 +755,8 @@ pub trait Bmap: Operation {
 
     /// Returns the unit of block index.
     fn blocksize(&self) -> u32;
+
+    fn reply(self) -> Self::Reply;
 }
 
 /// Allocate requested space.

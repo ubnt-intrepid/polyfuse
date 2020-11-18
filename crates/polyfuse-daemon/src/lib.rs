@@ -9,6 +9,7 @@ mod util;
 mod write;
 
 pub mod op;
+pub mod reply;
 
 pub use crate::{
     daemon::{Builder, Daemon},

@@ -1,11 +1,6 @@
+use polyfuse::types::FileLock;
 use polyfuse_kernel::{self as kernel, fuse_opcode};
-use std::convert::TryFrom;
-use std::ffi::OsStr;
-use std::fmt;
-use std::io;
-use std::marker::PhantomData;
-use std::mem;
-use std::os::unix::prelude::*;
+use std::{convert::TryFrom, ffi::OsStr, fmt, io, marker::PhantomData, mem, os::unix::prelude::*};
 
 pub struct Request<'a> {
     pub header: &'a kernel::fuse_in_header,
@@ -70,7 +65,7 @@ pub enum Arg<'a> {
     Fsyncdir(Fsyncdir<'a>),
     Getlk(Getlk<'a>),
     Setlk(Setlk<'a>),
-    Setlkw(Setlkw<'a>),
+    Flock(Flock<'a>),
     Access(Access<'a>),
     Create(Create<'a>),
     Bmap(Bmap<'a>),
@@ -220,14 +215,18 @@ pub struct Fsyncdir<'a> {
 
 pub struct Getlk<'a> {
     pub arg: &'a kernel::fuse_lk_in,
+    pub lk: FileLock,
 }
 
 pub struct Setlk<'a> {
     pub arg: &'a kernel::fuse_lk_in,
+    pub lk: FileLock,
+    pub sleep: bool,
 }
 
-pub struct Setlkw<'a> {
+pub struct Flock<'a> {
     pub arg: &'a kernel::fuse_lk_in,
+    pub op: u32,
 }
 
 pub struct Access<'a> {
@@ -442,15 +441,18 @@ impl<'a> Parser<'a> {
             }
             Some(fuse_opcode::FUSE_GETLK) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Getlk(Getlk { arg }))
+                let lk = fill_lock(&arg);
+                Ok(Arg::Getlk(Getlk { arg, lk }))
             }
             Some(fuse_opcode::FUSE_SETLK) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Setlk(Setlk { arg }))
+                let lk = fill_lock(&arg);
+                parse_lock_arg(arg, lk, false)
             }
             Some(fuse_opcode::FUSE_SETLKW) => {
                 let arg = self.fetch()?;
-                Ok(Arg::Setlkw(Setlkw { arg }))
+                let lk = fill_lock(&arg);
+                parse_lock_arg(arg, lk, true)
             }
             Some(fuse_opcode::FUSE_ACCESS) => {
                 let arg = self.fetch()?;
@@ -490,6 +492,45 @@ impl<'a> Parser<'a> {
             _ => Ok(Arg::Unknown),
         }
     }
+}
+
+fn fill_lock(arg: &kernel::fuse_lk_in) -> FileLock {
+    FileLock {
+        typ: arg.lk.typ,
+        start: arg.lk.start,
+        end: arg.lk.end,
+        pid: arg.lk.pid,
+        ..Default::default()
+    }
+}
+
+fn parse_lock_arg(arg: &kernel::fuse_lk_in, lk: FileLock, sleep: bool) -> io::Result<Arg<'_>> {
+    if arg.lk_flags & kernel::FUSE_LK_FLOCK == 0 {
+        // POSIX file lock.
+        return Ok(Arg::Setlk(Setlk { arg, lk, sleep }));
+    }
+
+    const F_RDLCK: u32 = libc::F_RDLCK as u32;
+    const F_WRLCK: u32 = libc::F_WRLCK as u32;
+    const F_UNLCK: u32 = libc::F_UNLCK as u32;
+
+    let mut op = match arg.lk.typ {
+        F_RDLCK => libc::LOCK_SH as u32,
+        F_WRLCK => libc::LOCK_EX as u32,
+        F_UNLCK => libc::LOCK_UN as u32,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "unknown lock operation is specified",
+            ))
+        }
+    };
+
+    if !sleep {
+        op |= libc::LOCK_NB as u32;
+    }
+
+    Ok(Arg::Flock(Flock { arg, op }))
 }
 
 #[cfg(test)]

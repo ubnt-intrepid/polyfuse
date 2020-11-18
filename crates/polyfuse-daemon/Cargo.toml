@@ -12,6 +12,7 @@ polyfuse-kernel = { version = "0.1.0-dev", path = "../polyfuse-kernel" }
 anyhow = "1"
 async-io = "1.2"
 bitflags = "1.2"
+either = "1"
 futures = "0.3"
 libc = "0.2"
 smallvec = "1.4"
