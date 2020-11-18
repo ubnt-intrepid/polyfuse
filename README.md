@@ -15,14 +15,19 @@
          alt="crates.io"
     />
   </a>
-  <a href="https://blog.rust-lang.org/2019/12/19/Rust-1.40.0.html">
+  <!--<a href="https://blog.rust-lang.org/2019/12/19/Rust-1.40.0.html">
     <img src="https://img.shields.io/badge/rust--toolchain-1.40.0-gray?style=flat-square"
          alt="rust toolchain"
     />
-  </a>
+  </a>-->
   <a href="https://docs.rs/polyfuse">
     <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
          alt="docs.rs" />
+  </a>
+  <a href="https://discord.gg/qHHdweYFVp">
+    <img src="https://img.shields.io/discord/778686351352135701.svg?style=flat-square&label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2"
+         alt="Discord channel"
+    />
   </a>
 </div>
 
@@ -31,6 +36,8 @@
 `polyfuse` is a library for implementing filesystems based on [Filesystem in Userspace (FUSE)](https://en.wikipedia.org/wiki/Filesystem_in_Userspace) in Rust.
 
 The goal of this project is to provide a Rust FUSE library that has a high affinity with the `async`/`.await` syntax stabilized in Rust 1.39.
+
+> Note: The main branch is currently working on upcoming 0.4.0.
 
 ## Installation
 
