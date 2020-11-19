@@ -1,10 +1,53 @@
-use crate::{conn::Writer, op, util::as_bytes, write};
+use crate::{conn::Writer, util::as_bytes, write};
 use polyfuse::{
     reply::{self, EntryOptions, OpenOptions},
     types::{FileAttr, FileLock, FsStatistics},
 };
 use polyfuse_kernel as kernel;
-use std::time::Duration;
+use std::{fmt, io, time::Duration};
+
+pub type Ok = ();
+
+#[derive(Debug)]
+pub struct Error(ErrorKind);
+
+#[derive(Debug)]
+enum ErrorKind {
+    Code(i32),
+    Fatal(io::Error),
+}
+
+impl Error {
+    pub(crate) fn code(&self) -> Option<i32> {
+        match self.0 {
+            ErrorKind::Code(code) => Some(code),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpError").finish()
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl polyfuse::error::Error for Error {
+    fn from_io_error(io_error: io::Error) -> Self {
+        Self(ErrorKind::Fatal(io_error))
+    }
+
+    fn from_code(code: i32) -> Self
+    where
+        Self: Sized,
+    {
+        Self(ErrorKind::Code(code))
+    }
+}
+
+pub type Result<T = Ok, E = Error> = std::result::Result<T, E>;
 
 pub struct ReplyEntry<'req> {
     pub(crate) writer: &'req Writer,
@@ -13,12 +56,12 @@ pub struct ReplyEntry<'req> {
 }
 
 impl reply::Reply for ReplyEntry<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyEntry for ReplyEntry<'_> {
-    fn entry(mut self, attr: &FileAttr, opts: &EntryOptions) -> op::Result {
+    fn entry(mut self, attr: &FileAttr, opts: &EntryOptions) -> Result {
         fill_attr(attr, &mut self.arg.attr);
         self.arg.nodeid = opts.ino;
         self.arg.generation = opts.generation;
@@ -55,12 +98,12 @@ pub struct ReplyAttr<'req> {
 }
 
 impl reply::Reply for ReplyAttr<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyAttr for ReplyAttr<'_> {
-    fn attr(mut self, attr: &FileAttr, ttl: Option<Duration>) -> op::Result {
+    fn attr(mut self, attr: &FileAttr, ttl: Option<Duration>) -> Result {
         fill_attr(attr, &mut self.arg.attr);
 
         if let Some(ttl) = ttl {
@@ -86,8 +129,8 @@ pub struct ReplyOk<'req> {
 }
 
 impl reply::Reply for ReplyOk<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyOk for ReplyOk<'_> {
@@ -103,12 +146,12 @@ pub struct ReplyData<'req> {
 }
 
 impl reply::Reply for ReplyData<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyBytes for ReplyData<'_> {
-    fn data<T>(self, data: T) -> op::Result
+    fn data<T>(self, data: T) -> Result
     where
         T: AsRef<[u8]>,
     {
@@ -126,8 +169,8 @@ pub struct ReplyOpen<'req> {
 }
 
 impl reply::Reply for ReplyOpen<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyOpen for ReplyOpen<'_> {
@@ -166,8 +209,8 @@ pub struct ReplyWrite<'req> {
 }
 
 impl reply::Reply for ReplyWrite<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyWrite for ReplyWrite<'_> {
@@ -190,8 +233,8 @@ pub struct ReplyStatfs<'req> {
 }
 
 impl reply::Reply for ReplyStatfs<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyStatfs for ReplyStatfs<'_> {
@@ -214,8 +257,8 @@ pub struct ReplyXattr<'req> {
 }
 
 impl reply::Reply for ReplyXattr<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyXattr for ReplyXattr<'_> {
@@ -248,8 +291,8 @@ pub struct ReplyLk<'req> {
 }
 
 impl reply::Reply for ReplyLk<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyLk for ReplyLk<'_> {
@@ -279,8 +322,8 @@ pub(crate) struct CreateArg {
 }
 
 impl reply::Reply for ReplyCreate<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyCreate for ReplyCreate<'_> {
@@ -345,8 +388,8 @@ pub struct ReplyBmap<'req> {
 }
 
 impl reply::Reply for ReplyBmap<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyBmap for ReplyBmap<'_> {
@@ -369,8 +412,8 @@ pub struct ReplyPoll<'req> {
 }
 
 impl reply::Reply for ReplyPoll<'_> {
-    type Ok = op::Ok;
-    type Error = op::Error;
+    type Ok = Ok;
+    type Error = Error;
 }
 
 impl reply::ReplyPoll for ReplyPoll<'_> {

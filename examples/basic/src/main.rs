@@ -1,4 +1,4 @@
-use polyfuse::{op, reply::ReplyAttr as _, types::FileAttr};
+use polyfuse::{op, reply, types::FileAttr};
 use polyfuse_daemon::{Daemon, Operation};
 
 use anyhow::Context as _;
@@ -22,14 +22,12 @@ async fn main() -> anyhow::Result<()> {
     while let Some(req) = daemon.next_request().await? {
         // Process the request.
         req.process(|op| async {
-            tracing::trace!("in process()");
-
             match op {
                 // Dispatch your callbacks to the supported operations...
-                Operation::Getattr(op) => getattr(op).await,
+                Operation::Getattr { op, reply, .. } => getattr(op, reply).await,
 
                 // Or annotate that the operation is not supported.
-                op => op.unimplemented().await,
+                _ => Err(polyfuse::error::code(libc::ENOSYS)),
             }
         })
         .await?;
@@ -38,15 +36,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn getattr<Op>(op: Op) -> Result<Op::Ok, Op::Error>
+async fn getattr<Op, R>(op: Op, reply: R) -> Result<R::Ok, R::Error>
 where
     Op: op::Getattr,
+    R: reply::ReplyAttr,
 {
     if op.ino() != 1 {
         return Err(polyfuse::error::code(libc::ENOENT));
     }
 
-    op.reply().attr(
+    reply.attr(
         &FileAttr {
             ino: 1,
             mode: libc::S_IFREG as u32 | 0o444,
