@@ -1,9 +1,11 @@
-use crate::{conn::Writer, util::as_bytes, write};
-use polyfuse_kernel as kernel;
-use polyfuse_types::{
-    reply::{self, EntryOptions, OpenOptions},
+use self::non_exhaustive::NonExhaustive;
+use crate::{
+    conn::Writer,
     types::{FileAttr, FileLock, FsStatistics},
+    util::as_bytes,
+    write,
 };
+use polyfuse_kernel as kernel;
 use std::{fmt, io, time::Duration};
 
 pub type Ok = ();
@@ -34,7 +36,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl polyfuse_types::error::Error for Error {
+impl crate::error::Error for Error {
     fn from_io_error(io_error: io::Error) -> Self {
         Self(ErrorKind::Fatal(io_error))
     }
@@ -55,13 +57,8 @@ pub struct ReplyEntry<'req> {
     pub(crate) arg: kernel::fuse_entry_out,
 }
 
-impl reply::Reply for ReplyEntry<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyEntry for ReplyEntry<'_> {
-    fn entry(mut self, attr: &FileAttr, opts: &EntryOptions) -> Result {
+impl ReplyEntry<'_> {
+    pub fn entry(mut self, attr: &FileAttr, opts: &EntryOptions) -> Result {
         fill_attr(attr, &mut self.arg.attr);
         self.arg.nodeid = opts.ino;
         self.arg.generation = opts.generation;
@@ -85,9 +82,61 @@ impl reply::ReplyEntry for ReplyEntry<'_> {
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
+    }
+}
+
+/// The option values for `ReplyEntry`.
+#[derive(Copy, Clone, Debug)]
+pub struct EntryOptions {
+    /// Return the inode number of this entry.
+    ///
+    /// If this value is zero, it means that the entry is *negative*.
+    /// Returning a negative entry is also possible with the `ENOENT` error,
+    /// but the *zeroed* entries also have the ability to specify the lifetime
+    /// of the entry cache by using the `ttl_entry` parameter.
+    ///
+    /// The default value is `0`.
+    pub ino: u64,
+
+    /// Return the validity timeout for inode attributes.
+    ///
+    /// The operations should set this value to very large
+    /// when the changes of inode attributes are caused
+    /// only by FUSE requests.
+    pub ttl_attr: Option<Duration>,
+
+    /// Return the validity timeout for the name.
+    ///
+    /// The operations should set this value to very large
+    /// when the changes/deletions of directory entries are
+    /// caused only by FUSE requests.
+    pub ttl_entry: Option<Duration>,
+
+    /// Return the generation of this entry.
+    ///
+    /// This parameter is used to distinguish the inode from the past one
+    /// when the filesystem reuse inode numbers.  That is, the operations
+    /// must ensure that the pair of entry's inode number and generation
+    /// are unique for the lifetime of the filesystem.
+    pub generation: u64,
+
+    #[doc(hidden)] // non_exhaustive
+    pub __non_exhaustive: NonExhaustive,
+}
+
+impl Default for EntryOptions {
+    fn default() -> Self {
+        Self {
+            ino: 0,
+            ttl_attr: None,
+            ttl_entry: None,
+            generation: 0,
+
+            __non_exhaustive: NonExhaustive::INIT,
+        }
     }
 }
 
@@ -97,13 +146,8 @@ pub struct ReplyAttr<'req> {
     pub(crate) arg: kernel::fuse_attr_out,
 }
 
-impl reply::Reply for ReplyAttr<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyAttr for ReplyAttr<'_> {
-    fn attr(mut self, attr: &FileAttr, ttl: Option<Duration>) -> Result {
+impl ReplyAttr<'_> {
+    pub fn attr(mut self, attr: &FileAttr, ttl: Option<Duration>) -> Result {
         fill_attr(attr, &mut self.arg.attr);
 
         if let Some(ttl) = ttl {
@@ -117,7 +161,7 @@ impl reply::ReplyAttr for ReplyAttr<'_> {
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -128,15 +172,9 @@ pub struct ReplyOk<'req> {
     pub(crate) header: &'req kernel::fuse_in_header,
 }
 
-impl reply::Reply for ReplyOk<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyOk for ReplyOk<'_> {
-    fn ok(self) -> Result<Self::Ok, Self::Error> {
-        write::send_reply(self.writer, self.header.unique, &[])
-            .map_err(polyfuse_types::error::io)?;
+impl ReplyOk<'_> {
+    pub fn ok(self) -> Result {
+        write::send_reply(self.writer, self.header.unique, &[]).map_err(crate::error::io)?;
         Ok(())
     }
 }
@@ -146,18 +184,13 @@ pub struct ReplyData<'req> {
     pub(crate) header: &'req kernel::fuse_in_header,
 }
 
-impl reply::Reply for ReplyData<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyBytes for ReplyData<'_> {
-    fn data<T>(self, data: T) -> Result
+impl ReplyData<'_> {
+    pub fn data<T>(self, data: T) -> Result
     where
         T: AsRef<[u8]>,
     {
         write::send_reply(self.writer, self.header.unique, data.as_ref())
-            .map_err(polyfuse_types::error::io)?;
+            .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -169,13 +202,8 @@ pub struct ReplyOpen<'req> {
     pub(crate) arg: kernel::fuse_open_out,
 }
 
-impl reply::Reply for ReplyOpen<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyOpen for ReplyOpen<'_> {
-    fn open(mut self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error> {
+impl ReplyOpen<'_> {
+    pub fn open(mut self, fh: u64, opts: &OpenOptions) -> Result {
         self.arg.fh = fh;
 
         if opts.direct_io {
@@ -197,9 +225,44 @@ impl reply::ReplyOpen for ReplyOpen<'_> {
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
+    }
+}
+
+/// The option values for `ReplyOpen`.
+#[derive(Copy, Clone, Debug)]
+pub struct OpenOptions {
+    /// Indicates that the direct I/O is used on this file.
+    pub direct_io: bool,
+
+    /// Indicates that the currently cached file data in the kernel
+    /// need not be invalidated.
+    pub keep_cache: bool,
+
+    /// Indicates that the opened file is not seekable.
+    pub nonseekable: bool,
+
+    /// Enable caching of entries returned by `readdir`.
+    ///
+    /// This flag is meaningful only for `opendir` operations.
+    pub cache_dir: bool,
+
+    #[doc(hidden)] // non_exhaustive
+    pub __non_exhaustive: NonExhaustive,
+}
+
+impl Default for OpenOptions {
+    fn default() -> Self {
+        Self {
+            direct_io: false,
+            keep_cache: false,
+            nonseekable: false,
+            cache_dir: false,
+
+            __non_exhaustive: NonExhaustive::INIT,
+        }
     }
 }
 
@@ -209,19 +272,14 @@ pub struct ReplyWrite<'req> {
     pub(crate) arg: kernel::fuse_write_out,
 }
 
-impl reply::Reply for ReplyWrite<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyWrite for ReplyWrite<'_> {
-    fn size(mut self, size: u32) -> Result<Self::Ok, Self::Error> {
+impl ReplyWrite<'_> {
+    pub fn size(mut self, size: u32) -> Result {
         self.arg.size = size;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -233,19 +291,14 @@ pub struct ReplyStatfs<'req> {
     pub(crate) arg: kernel::fuse_statfs_out,
 }
 
-impl reply::Reply for ReplyStatfs<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyStatfs for ReplyStatfs<'_> {
-    fn stat(mut self, stat: &FsStatistics) -> Result<Self::Ok, Self::Error> {
+impl ReplyStatfs<'_> {
+    pub fn stat(mut self, stat: &FsStatistics) -> Result {
         fill_statfs(stat, &mut self.arg.st);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -257,29 +310,24 @@ pub struct ReplyXattr<'req> {
     pub(crate) arg: kernel::fuse_getxattr_out,
 }
 
-impl reply::Reply for ReplyXattr<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyXattr for ReplyXattr<'_> {
-    fn size(mut self, size: u32) -> Result<Self::Ok, Self::Error> {
+impl ReplyXattr<'_> {
+    pub fn size(mut self, size: u32) -> Result {
         self.arg.size = size;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
     }
 
-    fn data<T>(self, data: T) -> Result<Self::Ok, Self::Error>
+    pub fn data<T>(self, data: T) -> Result
     where
         T: AsRef<[u8]>,
     {
         write::send_reply(self.writer, self.header.unique, data.as_ref())
-            .map_err(polyfuse_types::error::io)?;
+            .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -291,19 +339,14 @@ pub struct ReplyLk<'req> {
     pub(crate) arg: kernel::fuse_lk_out,
 }
 
-impl reply::Reply for ReplyLk<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyLk for ReplyLk<'_> {
-    fn lk(mut self, lk: &FileLock) -> Result<Self::Ok, Self::Error> {
+impl ReplyLk<'_> {
+    pub fn lk(mut self, lk: &FileLock) -> Result {
         fill_lk(lk, &mut self.arg.lk);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -322,19 +365,14 @@ pub(crate) struct CreateArg {
     open_out: kernel::fuse_open_out,
 }
 
-impl reply::Reply for ReplyCreate<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyCreate for ReplyCreate<'_> {
-    fn create(
+impl ReplyCreate<'_> {
+    pub fn create(
         mut self,
         fh: u64,
         attr: &FileAttr,
         entry_opts: &EntryOptions,
         open_opts: &OpenOptions,
-    ) -> Result<Self::Ok, Self::Error> {
+    ) -> Result {
         fill_attr(attr, &mut self.arg.entry_out.attr);
         self.arg.entry_out.nodeid = entry_opts.ino;
         self.arg.entry_out.generation = entry_opts.generation;
@@ -376,7 +414,7 @@ impl reply::ReplyCreate for ReplyCreate<'_> {
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -388,19 +426,14 @@ pub struct ReplyBmap<'req> {
     pub(crate) arg: kernel::fuse_bmap_out,
 }
 
-impl reply::Reply for ReplyBmap<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyBmap for ReplyBmap<'_> {
-    fn block(mut self, block: u64) -> Result<Self::Ok, Self::Error> {
+impl ReplyBmap<'_> {
+    pub fn block(mut self, block: u64) -> Result {
         self.arg.block = block;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -412,19 +445,14 @@ pub struct ReplyPoll<'req> {
     pub(crate) arg: kernel::fuse_poll_out,
 }
 
-impl reply::Reply for ReplyPoll<'_> {
-    type Ok = Ok;
-    type Error = Error;
-}
-
-impl reply::ReplyPoll for ReplyPoll<'_> {
-    fn revents(mut self, revents: u32) -> Result<Self::Ok, Self::Error> {
+impl ReplyPoll<'_> {
+    pub fn revents(mut self, revents: u32) -> Result {
         self.arg.revents = revents;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(polyfuse_types::error::io)?;
+        .map_err(crate::error::io)?;
 
         Ok(())
     }
@@ -464,4 +492,13 @@ fn fill_lk(src: &FileLock, dst: &mut kernel::fuse_file_lock) {
     dst.start = src.start;
     dst.end = src.end;
     dst.pid = src.pid;
+}
+
+mod non_exhaustive {
+    #[derive(Copy, Clone, Debug)]
+    pub struct NonExhaustive(());
+
+    impl NonExhaustive {
+        pub(crate) const INIT: Self = Self(());
+    }
 }
