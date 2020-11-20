@@ -9,11 +9,16 @@ edition = "2018"
 readme = "README.md"
 categories = [ "filesystem" ]
 keywords = [ "fuse", "filesystem", "async", "futures" ]
-exclude = [ "systest/**/*" ]
 
 [dependencies]
-futures = "0.3"
-paste = "1"
+polyfuse-kernel = { version = "0.1.0-dev", path = "../polyfuse-kernel" }
+polyfuse-types = { version = "0.1.0-dev", path = "../polyfuse-types" }
 
-[dev-dependencies]
-version-sync = "0.8"
+anyhow = "1"
+async-io = "1.2"
+bitflags = "1.2"
+either = "1"
+futures = "0.3"
+libc = "0.2"
+smallvec = "1.4"
+tracing = "0.1"

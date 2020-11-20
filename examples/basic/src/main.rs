@@ -1,5 +1,5 @@
-use polyfuse::{op, reply, types::FileAttr};
-use polyfuse_daemon::{Daemon, Operation};
+use polyfuse::{Daemon, Operation};
+use polyfuse_types::{op, reply, types::FileAttr};
 
 use anyhow::Context as _;
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
                 Operation::Getattr { op, reply, .. } => getattr(op, reply).await,
 
                 // Or annotate that the operation is not supported.
-                _ => Err(polyfuse::error::code(libc::ENOSYS)),
+                _ => Err(polyfuse_types::error::code(libc::ENOSYS)),
             }
         })
         .await?;
@@ -42,7 +42,7 @@ where
     R: reply::ReplyAttr,
 {
     if op.ino() != 1 {
-        return Err(polyfuse::error::code(libc::ENOENT));
+        return Err(polyfuse_types::error::code(libc::ENOENT));
     }
 
     reply.attr(
