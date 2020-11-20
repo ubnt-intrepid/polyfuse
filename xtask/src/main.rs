@@ -102,7 +102,7 @@ fn do_doc() -> anyhow::Result<()> {
         fs::remove_dir_all(&doc_dir)?;
     }
 
-    for package in &["polyfuse", "polyfuse-kernel", "polyfuse-daemon"] {
+    for package in &["polyfuse", "polyfuse-kernel"] {
         cargo()
             .arg("doc")
             .arg("--no-deps")

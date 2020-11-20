@@ -1,15 +1,6 @@
 //! Common types used in the filesystem representation.
 
-pub(crate) use non_exhaustive::NonExhaustive;
-mod non_exhaustive {
-    #[derive(Copy, Clone, Debug)]
-    pub struct NonExhaustive(());
-
-    impl NonExhaustive {
-        pub(crate) const INIT: Self = Self(());
-    }
-}
-
+use self::non_exhaustive::NonExhaustive;
 use std::{
     borrow::Cow,
     ffi::OsStr,
@@ -255,5 +246,14 @@ impl Default for DirEntry {
 
             __non_exhaustive: NonExhaustive::INIT,
         }
+    }
+}
+
+mod non_exhaustive {
+    #[derive(Copy, Clone, Debug)]
+    pub struct NonExhaustive(());
+
+    impl NonExhaustive {
+        pub(crate) const INIT: Self = Self(());
     }
 }

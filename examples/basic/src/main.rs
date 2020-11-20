@@ -1,5 +1,4 @@
-use polyfuse::{op, reply, types::FileAttr};
-use polyfuse_daemon::{Daemon, Operation};
+use polyfuse::{op, reply, types::FileAttr, Daemon, Operation};
 
 use anyhow::Context as _;
 use std::path::PathBuf;
@@ -36,11 +35,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn getattr<Op, R>(op: Op, reply: R) -> Result<R::Ok, R::Error>
-where
-    Op: op::Getattr,
-    R: reply::ReplyAttr,
-{
+async fn getattr(op: op::Getattr<'_>, reply: reply::ReplyAttr<'_>) -> reply::Result {
+    use polyfuse::op::traits::Getattr as _;
+
     if op.ino() != 1 {
         return Err(polyfuse::error::code(libc::ENOENT));
     }

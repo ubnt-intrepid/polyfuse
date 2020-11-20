@@ -1,4 +1,4 @@
-use polyfuse::types::FileLock;
+use crate::types::FileLock;
 use polyfuse_kernel::{self as kernel, fuse_opcode};
 use std::{convert::TryFrom, ffi::OsStr, fmt, io, marker::PhantomData, mem, os::unix::prelude::*};
 
