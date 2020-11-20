@@ -1,5 +1,4 @@
 use crate::{
-    conn::Writer,
     parse,
     reply::{
         ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyEntry, ReplyLk, ReplyOk, ReplyOpen,
@@ -12,135 +11,165 @@ use polyfuse::{
     types::{FileLock, LockOwner, Timespec},
 };
 use polyfuse_kernel as kernel;
-use std::{ffi::OsStr, fmt, io, u32, u64};
-
-pub type Ok = ();
-
-#[derive(Debug)]
-pub struct Error(ErrorKind);
-
-#[derive(Debug)]
-enum ErrorKind {
-    Code(i32),
-    Fatal(io::Error),
-}
-
-impl Error {
-    pub(crate) fn code(&self) -> Option<i32> {
-        match self.0 {
-            ErrorKind::Code(code) => Some(code),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OpError").finish()
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl polyfuse::error::Error for Error {
-    fn from_io_error(io_error: io::Error) -> Self {
-        Self(ErrorKind::Fatal(io_error))
-    }
-
-    fn from_code(code: i32) -> Self
-    where
-        Self: Sized,
-    {
-        Self(ErrorKind::Code(code))
-    }
-}
-
-pub type Result = std::result::Result<Ok, Error>;
+use std::{ffi::OsStr, u32, u64};
 
 /// The kind of filesystem operation requested by the kernel.
 #[non_exhaustive]
 pub enum Operation<'req> {
-    Lookup(Lookup<'req>),
-    Getattr(Getattr<'req>),
-    Setattr(Setattr<'req>),
-    Readlink(Readlink<'req>),
-    Symlink(Symlink<'req>),
-    Mknod(Mknod<'req>),
-    Mkdir(Mkdir<'req>),
-    Unlink(Unlink<'req>),
-    Rmdir(Rmdir<'req>),
-    Rename(Rename<'req>),
-    Link(Link<'req>),
-    Open(Open<'req>),
-    Read(Read<'req>),
-    Write(Write<'req>),
-    Release(Release<'req>),
-    Statfs(Statfs<'req>),
-    Fsync(Fsync<'req>),
-    Setxattr(Setxattr<'req>),
-    Getxattr(Getxattr<'req>),
-    Listxattr(Listxattr<'req>),
-    Removexattr(Removexattr<'req>),
-    Flush(Flush<'req>),
-    Opendir(Opendir<'req>),
-    Readdir(Readdir<'req>),
-    Readdirplus(Readdirplus<'req>),
-    Releasedir(Releasedir<'req>),
-    Fsyncdir(Fsyncdir<'req>),
-    Getlk(Getlk<'req>),
-    Setlk(Setlk<'req>),
-    Flock(Flock<'req>),
-    Access(Access<'req>),
-    Create(Create<'req>),
-    Bmap(Bmap<'req>),
-    Fallocate(Fallocate<'req>),
-    CopyFileRange(CopyFileRange<'req>),
-    Poll(Poll<'req>),
-}
-
-impl<'req> Operation<'req> {
-    /// Annotate that the operation is not supported by the filesystem.
-    pub async fn unimplemented(self) -> Result {
-        Err(polyfuse::error::code(libc::ENOSYS))
-    }
+    Lookup {
+        op: Lookup<'req>,
+        reply: ReplyEntry<'req>,
+    },
+    Getattr {
+        op: Getattr<'req>,
+        reply: ReplyAttr<'req>,
+    },
+    Setattr {
+        op: Setattr<'req>,
+        reply: ReplyAttr<'req>,
+    },
+    Readlink {
+        op: Readlink<'req>,
+        reply: ReplyData<'req>,
+    },
+    Symlink {
+        op: Symlink<'req>,
+        reply: ReplyEntry<'req>,
+    },
+    Mknod {
+        op: Mknod<'req>,
+        reply: ReplyEntry<'req>,
+    },
+    Mkdir {
+        op: Mkdir<'req>,
+        reply: ReplyEntry<'req>,
+    },
+    Unlink {
+        op: Unlink<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Rmdir {
+        op: Rmdir<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Rename {
+        op: Rename<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Link {
+        op: Link<'req>,
+        reply: ReplyEntry<'req>,
+    },
+    Open {
+        op: Open<'req>,
+        reply: ReplyOpen<'req>,
+    },
+    Read {
+        op: Read<'req>,
+        reply: ReplyData<'req>,
+    },
+    Write {
+        op: Write<'req>,
+        reply: ReplyWrite<'req>,
+    },
+    Release {
+        op: Release<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Statfs {
+        op: Statfs<'req>,
+        reply: ReplyStatfs<'req>,
+    },
+    Fsync {
+        op: Fsync<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Setxattr {
+        op: Setxattr<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Getxattr {
+        op: Getxattr<'req>,
+        reply: ReplyXattr<'req>,
+    },
+    Listxattr {
+        op: Listxattr<'req>,
+        reply: ReplyXattr<'req>,
+    },
+    Removexattr {
+        op: Removexattr<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Flush {
+        op: Flush<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Opendir {
+        op: Opendir<'req>,
+        reply: ReplyOpen<'req>,
+    },
+    Readdir {
+        op: Readdir<'req>,
+        reply: ReplyData<'req>,
+    },
+    Readdirplus {
+        op: Readdirplus<'req>,
+        reply: ReplyData<'req>,
+    },
+    Releasedir {
+        op: Releasedir<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Fsyncdir {
+        op: Fsyncdir<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Getlk {
+        op: Getlk<'req>,
+        reply: ReplyLk<'req>,
+    },
+    Setlk {
+        op: Setlk<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Flock {
+        op: Flock<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Access {
+        op: Access<'req>,
+        reply: ReplyOk<'req>,
+    },
+    Create {
+        op: Create<'req>,
+        reply: ReplyCreate<'req>,
+    },
+    Bmap {
+        op: Bmap<'req>,
+        reply: ReplyBmap<'req>,
+    },
+    Fallocate {
+        op: Fallocate<'req>,
+        reply: ReplyOk<'req>,
+    },
+    CopyFileRange {
+        op: CopyFileRange<'req>,
+        reply: ReplyWrite<'req>,
+    },
+    Poll {
+        op: Poll<'req>,
+        reply: ReplyPoll<'req>,
+    },
 }
 
 pub struct Op<'req, Arg> {
     pub(crate) header: &'req kernel::fuse_in_header,
     pub(crate) arg: Arg,
-    pub(crate) writer: &'req Writer,
-}
-
-impl<Arg> op::Operation for Op<'_, Arg> {
-    type Ok = Ok;
-    type Error = Error;
-
-    fn unique(&self) -> u64 {
-        self.header.unique
-    }
-
-    fn uid(&self) -> u32 {
-        self.header.uid
-    }
-
-    fn gid(&self) -> u32 {
-        self.header.gid
-    }
-
-    fn pid(&self) -> u32 {
-        self.header.pid
-    }
-
-    fn unimplemented(self) -> Result {
-        Err(polyfuse::error::code(libc::ENOSYS))
-    }
 }
 
 pub type Lookup<'req> = Op<'req, parse::Lookup<'req>>;
 
 impl<'req> op::Lookup for Lookup<'req> {
-    type Reply = ReplyEntry<'req>;
-
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
@@ -148,21 +177,11 @@ impl<'req> op::Lookup for Lookup<'req> {
     fn name(&self) -> &OsStr {
         self.arg.name
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyEntry {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_entry_out::default(),
-        }
-    }
 }
 
 pub type Getattr<'req> = Op<'req, parse::Getattr<'req>>;
 
 impl<'req> op::Getattr for Getattr<'req> {
-    type Reply = ReplyAttr<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -172,14 +191,6 @@ impl<'req> op::Getattr for Getattr<'req> {
             Some(self.arg.arg.fh)
         } else {
             None
-        }
-    }
-
-    fn reply(self) -> Self::Reply {
-        ReplyAttr {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_attr_out::default(),
         }
     }
 }
@@ -198,8 +209,6 @@ impl<'req> Setattr<'req> {
 }
 
 impl<'req> op::Setattr for Setattr<'req> {
-    type Reply = ReplyAttr<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -274,38 +283,19 @@ impl<'req> op::Setattr for Setattr<'req> {
             LockOwner::from_raw(arg.lock_owner)
         })
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyAttr {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_attr_out::default(),
-        }
-    }
 }
 
 pub type Readlink<'req> = Op<'req, parse::Readlink<'req>>;
 
 impl<'req> op::Readlink for Readlink<'req> {
-    type Reply = ReplyData<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
-    }
-
-    fn reply(self) -> Self::Reply {
-        ReplyData {
-            writer: self.writer,
-            header: self.header,
-        }
     }
 }
 
 pub type Symlink<'req> = Op<'req, parse::Symlink<'req>>;
 
 impl<'req> op::Symlink for Symlink<'req> {
-    type Reply = ReplyEntry<'req>;
-
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
@@ -317,21 +307,11 @@ impl<'req> op::Symlink for Symlink<'req> {
     fn link(&self) -> &OsStr {
         self.arg.link
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyEntry {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_entry_out::default(),
-        }
-    }
 }
 
 pub type Mknod<'req> = Op<'req, parse::Mknod<'req>>;
 
 impl<'req> op::Mknod for Mknod<'req> {
-    type Reply = ReplyEntry<'req>;
-
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
@@ -351,21 +331,11 @@ impl<'req> op::Mknod for Mknod<'req> {
     fn umask(&self) -> u32 {
         self.arg.arg.umask
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyEntry {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_entry_out::default(),
-        }
-    }
 }
 
 pub type Mkdir<'req> = Op<'req, parse::Mkdir<'req>>;
 
 impl<'req> op::Mkdir for Mkdir<'req> {
-    type Reply = ReplyEntry<'req>;
-
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
@@ -381,42 +351,23 @@ impl<'req> op::Mkdir for Mkdir<'req> {
     fn umask(&self) -> u32 {
         self.arg.arg.umask
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyEntry {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_entry_out::default(),
-        }
-    }
 }
 
 pub type Unlink<'req> = Op<'req, parse::Unlink<'req>>;
 
 impl<'req> op::Unlink for Unlink<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
         self.arg.name
-    }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
     }
 }
 
 pub type Rmdir<'req> = Op<'req, parse::Rmdir<'req>>;
 
 impl<'req> op::Rmdir for Rmdir<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
@@ -424,20 +375,11 @@ impl<'req> op::Rmdir for Rmdir<'req> {
     fn name(&self) -> &OsStr {
         self.arg.name
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Rename<'req> = Op<'req, Either<parse::Rename<'req>, parse::Rename2<'req>>>;
 
 impl<'req> op::Rename for Rename<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
@@ -469,20 +411,11 @@ impl<'req> op::Rename for Rename<'req> {
             Either::Right(parse::Rename2 { arg, .. }) => arg.flags,
         }
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Link<'req> = Op<'req, parse::Link<'req>>;
 
 impl<'req> op::Link for Link<'req> {
-    type Reply = ReplyEntry<'req>;
-
     fn ino(&self) -> u64 {
         self.arg.arg.oldnodeid
     }
@@ -494,21 +427,11 @@ impl<'req> op::Link for Link<'req> {
     fn newname(&self) -> &OsStr {
         self.arg.newname
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyEntry {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_entry_out::default(),
-        }
-    }
 }
 
 pub type Open<'req> = Op<'req, parse::Open<'req>>;
 
 impl<'req> op::Open for Open<'req> {
-    type Reply = ReplyOpen<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -516,21 +439,11 @@ impl<'req> op::Open for Open<'req> {
     fn flags(&self) -> u32 {
         self.arg.arg.flags
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOpen {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_open_out::default(),
-        }
-    }
 }
 
 pub type Read<'req> = Op<'req, parse::Read<'req>>;
 
 impl<'req> op::Read for Read<'req> {
-    type Reply = ReplyData<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -558,20 +471,11 @@ impl<'req> op::Read for Read<'req> {
             None
         }
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyData {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Write<'req> = Op<'req, parse::Write<'req>>;
 
 impl<'req> op::Write for Write<'req> {
-    type Reply = ReplyWrite<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -599,21 +503,11 @@ impl<'req> op::Write for Write<'req> {
             None
         }
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyWrite {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_write_out::default(),
-        }
-    }
 }
 
 pub type Release<'req> = Op<'req, parse::Release<'req>>;
 
 impl<'req> op::Release for Release<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -637,38 +531,19 @@ impl<'req> op::Release for Release<'req> {
     fn flock_release(&self) -> bool {
         self.arg.arg.release_flags & kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Statfs<'req> = Op<'req, parse::Statfs<'req>>;
 
 impl<'req> op::Statfs for Statfs<'req> {
-    type Reply = ReplyStatfs<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
-    }
-
-    fn reply(self) -> Self::Reply {
-        ReplyStatfs {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_statfs_out::default(),
-        }
     }
 }
 
 pub type Fsync<'req> = Op<'req, parse::Fsync<'req>>;
 
 impl<'req> op::Fsync for Fsync<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -680,20 +555,11 @@ impl<'req> op::Fsync for Fsync<'req> {
     fn datasync(&self) -> bool {
         self.arg.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Setxattr<'req> = Op<'req, parse::Setxattr<'req>>;
 
 impl<'req> op::Setxattr for Setxattr<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -709,20 +575,11 @@ impl<'req> op::Setxattr for Setxattr<'req> {
     fn flags(&self) -> u32 {
         self.arg.arg.flags
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Getxattr<'req> = Op<'req, parse::Getxattr<'req>>;
 
 impl<'req> op::Getxattr for Getxattr<'req> {
-    type Reply = ReplyXattr<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -733,22 +590,12 @@ impl<'req> op::Getxattr for Getxattr<'req> {
 
     fn size(&self) -> u32 {
         self.arg.arg.size
-    }
-
-    fn reply(self) -> Self::Reply {
-        ReplyXattr {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_getxattr_out::default(),
-        }
     }
 }
 
 pub type Listxattr<'req> = Op<'req, parse::Listxattr<'req>>;
 
 impl<'req> op::Listxattr for Listxattr<'req> {
-    type Reply = ReplyXattr<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -756,21 +603,11 @@ impl<'req> op::Listxattr for Listxattr<'req> {
     fn size(&self) -> u32 {
         self.arg.arg.size
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyXattr {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_getxattr_out::default(),
-        }
-    }
 }
 
 pub type Removexattr<'req> = Op<'req, parse::Removexattr<'req>>;
 
 impl<'req> op::Removexattr for Removexattr<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -778,20 +615,11 @@ impl<'req> op::Removexattr for Removexattr<'req> {
     fn name(&self) -> &OsStr {
         self.arg.name
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Flush<'req> = Op<'req, parse::Flush<'req>>;
 
 impl<'req> op::Flush for Flush<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -803,20 +631,11 @@ impl<'req> op::Flush for Flush<'req> {
     fn lock_owner(&self) -> LockOwner {
         LockOwner::from_raw(self.arg.arg.lock_owner)
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Opendir<'req> = Op<'req, parse::Opendir<'req>>;
 
 impl<'req> op::Opendir for Opendir<'req> {
-    type Reply = ReplyOpen<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -824,21 +643,11 @@ impl<'req> op::Opendir for Opendir<'req> {
     fn flags(&self) -> u32 {
         self.arg.arg.flags
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOpen {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_open_out::default(),
-        }
-    }
 }
 
 pub type Readdir<'req> = Op<'req, parse::Readdir<'req>>;
 
 impl<'req> op::Readdir for Readdir<'req> {
-    type Reply = ReplyData<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -858,20 +667,11 @@ impl<'req> op::Readdir for Readdir<'req> {
     fn is_plus(&self) -> bool {
         false
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyData {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Readdirplus<'req> = Op<'req, parse::Readdirplus<'req>>;
 
 impl<'req> op::Readdir for Readdirplus<'req> {
-    type Reply = ReplyData<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -891,20 +691,11 @@ impl<'req> op::Readdir for Readdirplus<'req> {
     fn is_plus(&self) -> bool {
         true
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyData {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Releasedir<'req> = Op<'req, parse::Releasedir<'req>>;
 
 impl<'req> op::Releasedir for Releasedir<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -916,20 +707,11 @@ impl<'req> op::Releasedir for Releasedir<'req> {
     fn flags(&self) -> u32 {
         self.arg.arg.flags
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Fsyncdir<'req> = Op<'req, parse::Fsyncdir<'req>>;
 
 impl<'req> op::Fsyncdir for Fsyncdir<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -941,20 +723,11 @@ impl<'req> op::Fsyncdir for Fsyncdir<'req> {
     fn datasync(&self) -> bool {
         self.arg.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Getlk<'req> = Op<'req, parse::Getlk<'req>>;
 
 impl<'req> op::Getlk for Getlk<'req> {
-    type Reply = ReplyLk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -970,21 +743,11 @@ impl<'req> op::Getlk for Getlk<'req> {
     fn lk(&self) -> &FileLock {
         &self.arg.lk
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyLk {
-            writer: self.writer,
-            header: self.header,
-            arg: kernel::fuse_lk_out::default(),
-        }
-    }
 }
 
 pub type Setlk<'req> = Op<'req, parse::Setlk<'req>>;
 
 impl<'req> op::Setlk for Setlk<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -1004,20 +767,11 @@ impl<'req> op::Setlk for Setlk<'req> {
     fn sleep(&self) -> bool {
         self.arg.sleep
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Flock<'req> = Op<'req, parse::Flock<'req>>;
 
 impl<'req> op::Flock for Flock<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -1033,20 +787,11 @@ impl<'req> op::Flock for Flock<'req> {
     fn op(&self) -> Option<u32> {
         Some(self.arg.op)
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Access<'req> = Op<'req, parse::Access<'req>>;
 
 impl<'req> op::Access for Access<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -1054,20 +799,11 @@ impl<'req> op::Access for Access<'req> {
     fn mask(&self) -> u32 {
         self.arg.arg.mask
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type Create<'req> = Op<'req, parse::Create<'req>>;
 
 impl<'req> op::Create for Create<'req> {
-    type Reply = ReplyCreate<'req>;
-
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
@@ -1087,21 +823,11 @@ impl<'req> op::Create for Create<'req> {
     fn umask(&self) -> u32 {
         self.arg.arg.umask
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyCreate {
-            writer: self.writer,
-            header: self.header,
-            arg: Default::default(),
-        }
-    }
 }
 
 pub type Bmap<'req> = Op<'req, parse::Bmap<'req>>;
 
 impl<'req> op::Bmap for Bmap<'req> {
-    type Reply = ReplyBmap<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -1113,21 +839,11 @@ impl<'req> op::Bmap for Bmap<'req> {
     fn blocksize(&self) -> u32 {
         self.arg.arg.blocksize
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyBmap {
-            writer: self.writer,
-            header: self.header,
-            arg: Default::default(),
-        }
-    }
 }
 
 pub type Fallocate<'req> = Op<'req, parse::Fallocate<'req>>;
 
 impl<'req> op::Fallocate for Fallocate<'req> {
-    type Reply = ReplyOk<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -1147,20 +863,11 @@ impl<'req> op::Fallocate for Fallocate<'req> {
     fn mode(&self) -> u32 {
         self.arg.arg.mode
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyOk {
-            writer: self.writer,
-            header: self.header,
-        }
-    }
 }
 
 pub type CopyFileRange<'req> = Op<'req, parse::CopyFileRange<'req>>;
 
 impl<'req> op::CopyFileRange for CopyFileRange<'req> {
-    type Reply = ReplyWrite<'req>;
-
     fn ino_in(&self) -> u64 {
         self.header.nodeid
     }
@@ -1192,21 +899,11 @@ impl<'req> op::CopyFileRange for CopyFileRange<'req> {
     fn flags(&self) -> u64 {
         self.arg.arg.flags
     }
-
-    fn reply(self) -> Self::Reply {
-        ReplyWrite {
-            writer: self.writer,
-            header: self.header,
-            arg: Default::default(),
-        }
-    }
 }
 
 pub type Poll<'req> = Op<'req, parse::Poll<'req>>;
 
 impl<'req> op::Poll for Poll<'req> {
-    type Reply = ReplyPoll<'req>;
-
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -1224,14 +921,6 @@ impl<'req> op::Poll for Poll<'req> {
             Some(self.arg.arg.kh)
         } else {
             None
-        }
-    }
-
-    fn reply(self) -> Self::Reply {
-        ReplyPoll {
-            writer: self.writer,
-            header: self.header,
-            arg: Default::default(),
         }
     }
 }
