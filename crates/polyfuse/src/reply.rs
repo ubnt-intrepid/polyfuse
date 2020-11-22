@@ -1,5 +1,5 @@
 use self::non_exhaustive::NonExhaustive;
-use crate::types::{FileAttr, FileLock, FsStatistics};
+use crate::types::{FileAttr, FsStatistics};
 use std::{io, time::Duration};
 
 /// The error values caused by the filesystem.
@@ -30,7 +30,9 @@ pub trait ReplyEntry {
     type Ok;
     type Error: Error;
 
-    fn entry(self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>;
+    fn entry<T>(self, attr: T, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>
+    where
+        T: FileAttr;
 }
 
 /// The option values for `ReplyEntry`.
@@ -89,7 +91,9 @@ pub trait ReplyAttr {
     type Ok;
     type Error: Error;
 
-    fn attr(self, attr: &FileAttr, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error>;
+    fn attr<T>(self, attr: T, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error>
+    where
+        T: FileAttr;
 }
 
 pub trait ReplyOk {
@@ -161,7 +165,9 @@ pub trait ReplyStatfs {
     type Ok;
     type Error: Error;
 
-    fn stat(self, stat: &FsStatistics) -> Result<Self::Ok, Self::Error>;
+    fn stat<S>(self, stat: S) -> Result<Self::Ok, Self::Error>
+    where
+        S: FsStatistics;
 }
 
 pub trait ReplyXattr {
@@ -179,20 +185,22 @@ pub trait ReplyLk {
     type Ok;
     type Error: Error;
 
-    fn lk(self, lk: &FileLock) -> Result<Self::Ok, Self::Error>;
+    fn lk(self, typ: u32, start: u64, end: u64, pid: u32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyCreate {
     type Ok;
     type Error: Error;
 
-    fn create(
+    fn create<T>(
         self,
         fh: u64,
-        attr: &FileAttr,
+        attr: T,
         entry_opts: &EntryOptions,
         open_opts: &OpenOptions,
-    ) -> Result<Self::Ok, Self::Error>;
+    ) -> Result<Self::Ok, Self::Error>
+    where
+        T: FileAttr;
 }
 
 pub trait ReplyBmap {

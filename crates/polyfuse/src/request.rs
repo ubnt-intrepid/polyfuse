@@ -6,7 +6,7 @@ use crate::{
     parse::{self, Arg},
     reply::{self, EntryOptions, OpenOptions},
     session::Session,
-    types::{FileAttr, FileLock, FsStatistics, LockOwner, Timespec},
+    types::{FileAttr, FsStatistics, LockOwner},
     util::as_bytes,
     write,
 };
@@ -454,11 +454,7 @@ impl<'req> op::Setattr for Setattr<'req> {
             if arg.valid & kernel::FATTR_ATIME_NOW != 0 {
                 SetAttrTime::Now
             } else {
-                SetAttrTime::Timespec(Timespec {
-                    secs: arg.atime,
-                    nsecs: arg.atimensec,
-                    ..Default::default()
-                })
+                SetAttrTime::Timespec(Duration::new(arg.atime, arg.atimensec))
             }
         })
     }
@@ -469,21 +465,15 @@ impl<'req> op::Setattr for Setattr<'req> {
             if arg.valid & kernel::FATTR_MTIME_NOW != 0 {
                 SetAttrTime::Now
             } else {
-                SetAttrTime::Timespec(Timespec {
-                    secs: arg.mtime,
-                    nsecs: arg.mtimensec,
-                    ..Default::default()
-                })
+                SetAttrTime::Timespec(Duration::new(arg.mtime, arg.mtimensec))
             }
         })
     }
 
     #[inline]
-    fn ctime(&self) -> Option<Timespec> {
-        self.get(kernel::FATTR_CTIME, |arg| Timespec {
-            secs: arg.ctime,
-            nsecs: arg.ctimensec,
-            ..Default::default()
+    fn ctime(&self) -> Option<Duration> {
+        self.get(kernel::FATTR_CTIME, |arg| {
+            Duration::new(arg.ctime, arg.ctimensec)
         })
     }
 
@@ -950,8 +940,20 @@ impl<'req> op::Getlk for Getlk<'req> {
         LockOwner::from_raw(self.arg.arg.owner)
     }
 
-    fn lk(&self) -> &FileLock {
-        &self.arg.lk
+    fn typ(&self) -> u32 {
+        self.arg.arg.lk.typ
+    }
+
+    fn start(&self) -> u64 {
+        self.arg.arg.lk.start
+    }
+
+    fn end(&self) -> u64 {
+        self.arg.arg.lk.end
+    }
+
+    fn pid(&self) -> u32 {
+        self.arg.arg.lk.pid
     }
 }
 
@@ -970,8 +972,20 @@ impl<'req> op::Setlk for Setlk<'req> {
         LockOwner::from_raw(self.arg.arg.owner)
     }
 
-    fn lk(&self) -> &FileLock {
-        &self.arg.lk
+    fn typ(&self) -> u32 {
+        self.arg.arg.lk.typ
+    }
+
+    fn start(&self) -> u64 {
+        self.arg.arg.lk.start
+    }
+
+    fn end(&self) -> u64 {
+        self.arg.arg.lk.end
+    }
+
+    fn pid(&self) -> u32 {
+        self.arg.arg.lk.pid
     }
 
     fn sleep(&self) -> bool {
@@ -1151,7 +1165,10 @@ impl reply::ReplyAttr for ReplyAttr<'_> {
     type Ok = Replied;
     type Error = Error;
 
-    fn attr(mut self, attr: &FileAttr, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error> {
+    fn attr<T>(mut self, attr: T, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error>
+    where
+        T: FileAttr,
+    {
         fill_attr(attr, &mut self.arg.attr);
 
         if let Some(ttl) = ttl {
@@ -1181,7 +1198,10 @@ impl reply::ReplyEntry for ReplyEntry<'_> {
     type Ok = Replied;
     type Error = Error;
 
-    fn entry(mut self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error> {
+    fn entry<T>(mut self, attr: T, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>
+    where
+        T: FileAttr,
+    {
         fill_attr(attr, &mut self.arg.attr);
         self.arg.nodeid = opts.ino;
         self.arg.generation = opts.generation;
@@ -1315,7 +1335,10 @@ impl reply::ReplyStatfs for ReplyStatfs<'_> {
     type Ok = Replied;
     type Error = Error;
 
-    fn stat(mut self, stat: &FsStatistics) -> Result<Self::Ok, Self::Error> {
+    fn stat<S>(mut self, stat: S) -> Result<Self::Ok, Self::Error>
+    where
+        S: FsStatistics,
+    {
         fill_statfs(stat, &mut self.arg.st);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
@@ -1368,8 +1391,11 @@ impl reply::ReplyLk for ReplyLk<'_> {
     type Ok = Replied;
     type Error = Error;
 
-    fn lk(mut self, lk: &FileLock) -> Result<Self::Ok, Self::Error> {
-        fill_lk(lk, &mut self.arg.lk);
+    fn lk(mut self, typ: u32, start: u64, end: u64, pid: u32) -> Result<Self::Ok, Self::Error> {
+        self.arg.lk.typ = typ;
+        self.arg.lk.start = start;
+        self.arg.lk.end = end;
+        self.arg.lk.pid = pid;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1397,13 +1423,16 @@ impl reply::ReplyCreate for ReplyCreate<'_> {
     type Ok = Replied;
     type Error = Error;
 
-    fn create(
+    fn create<T>(
         mut self,
         fh: u64,
-        attr: &FileAttr,
+        attr: T,
         entry_opts: &EntryOptions,
         open_opts: &OpenOptions,
-    ) -> Result<Self::Ok, Self::Error> {
+    ) -> Result<Self::Ok, Self::Error>
+    where
+        T: FileAttr,
+    {
         fill_attr(attr, &mut self.arg.entry_out.attr);
         self.arg.entry_out.nodeid = entry_opts.ino;
         self.arg.entry_out.generation = entry_opts.generation;
@@ -1495,38 +1524,31 @@ impl reply::ReplyPoll for ReplyPoll<'_> {
     }
 }
 
-fn fill_attr(src: &FileAttr, dst: &mut kernel::fuse_attr) {
-    dst.ino = src.ino;
-    dst.size = src.size;
-    dst.mode = src.mode;
-    dst.nlink = src.nlink;
-    dst.uid = src.uid;
-    dst.gid = src.gid;
-    dst.rdev = src.rdev;
-    dst.blksize = src.blksize;
-    dst.blocks = src.blocks;
-    dst.atime = src.atime.secs;
-    dst.atimensec = src.atime.nsecs;
-    dst.mtime = src.mtime.secs;
-    dst.mtimensec = src.mtime.nsecs;
-    dst.ctime = src.ctime.secs;
-    dst.ctimensec = src.ctime.nsecs;
+fn fill_attr(src: impl FileAttr, dst: &mut kernel::fuse_attr) {
+    dst.ino = src.ino();
+    dst.size = src.size();
+    dst.mode = src.mode();
+    dst.nlink = src.nlink();
+    dst.uid = src.uid();
+    dst.gid = src.gid();
+    dst.rdev = src.rdev();
+    dst.blksize = src.blksize();
+    dst.blocks = src.blocks();
+    dst.atime = src.atime();
+    dst.atimensec = src.atime_nsec();
+    dst.mtime = src.mtime();
+    dst.mtimensec = src.mtime_nsec();
+    dst.ctime = src.ctime();
+    dst.ctimensec = src.ctime_nsec();
 }
 
-fn fill_statfs(src: &FsStatistics, dst: &mut kernel::fuse_kstatfs) {
-    dst.bsize = src.bsize;
-    dst.frsize = src.frsize;
-    dst.blocks = src.blocks;
-    dst.bfree = src.bfree;
-    dst.bavail = src.bavail;
-    dst.files = src.files;
-    dst.ffree = src.ffree;
-    dst.namelen = src.namelen;
-}
-
-fn fill_lk(src: &FileLock, dst: &mut kernel::fuse_file_lock) {
-    dst.typ = src.typ;
-    dst.start = src.start;
-    dst.end = src.end;
-    dst.pid = src.pid;
+fn fill_statfs(src: impl FsStatistics, dst: &mut kernel::fuse_kstatfs) {
+    dst.bsize = src.bsize();
+    dst.frsize = src.frsize();
+    dst.blocks = src.blocks();
+    dst.bfree = src.bfree();
+    dst.bavail = src.bavail();
+    dst.files = src.files();
+    dst.ffree = src.ffree();
+    dst.namelen = src.namelen();
 }
