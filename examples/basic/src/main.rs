@@ -35,9 +35,10 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn getattr(op: op::Getattr<'_>, reply: reply::ReplyAttr<'_>) -> reply::Result {
-    use polyfuse::op::traits::Getattr as _;
-
+async fn getattr<Op>(op: Op, reply: reply::ReplyAttr<'_>) -> reply::Result
+where
+    Op: op::Getattr,
+{
     if op.ino() != 1 {
         return Err(polyfuse::error::code(libc::ENOENT));
     }

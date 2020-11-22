@@ -3,7 +3,6 @@
 mod conn;
 mod daemon;
 mod parse;
-mod request;
 mod session;
 mod util;
 mod write;
@@ -11,11 +10,11 @@ mod write;
 pub mod error;
 pub mod op;
 pub mod reply;
+pub mod request;
 pub mod types;
 
 pub use crate::{
     daemon::{Builder, Daemon},
-    op::Operation,
-    request::Request,
+    request::{Operation, Request},
     session::{CapabilityFlags, ConnectionInfo},
 };
