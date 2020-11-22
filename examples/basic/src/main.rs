@@ -1,4 +1,4 @@
-use polyfuse::{op, reply, types::FileAttr, Daemon, Operation};
+use polyfuse::{op, reply, Daemon, Operation};
 
 use anyhow::Context as _;
 use std::{path::PathBuf, time::Duration};
@@ -44,15 +44,12 @@ where
         return Err(polyfuse::reply::error_code(libc::ENOENT));
     }
 
-    reply.attr(
-        &FileAttr {
-            ino: 1,
-            mode: libc::S_IFREG as u32 | 0o444,
-            nlink: 1,
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
-            ..Default::default()
-        },
-        Some(Duration::from_secs(1)),
-    )
+    let mut attr = unsafe { std::mem::zeroed::<libc::stat>() };
+    attr.st_ino = 1;
+    attr.st_mode = libc::S_IFREG as u32 | 0o444;
+    attr.st_nlink = 1;
+    attr.st_uid = unsafe { libc::getuid() };
+    attr.st_gid = unsafe { libc::getgid() };
+
+    reply.attr(attr, Some(Duration::from_secs(1)))
 }

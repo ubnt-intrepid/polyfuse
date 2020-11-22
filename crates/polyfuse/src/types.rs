@@ -1,192 +1,273 @@
 //! Common types used in the filesystem representation.
 
 use self::non_exhaustive::NonExhaustive;
-use std::{
-    borrow::Cow,
-    ffi::OsStr,
-    fmt,
-    time::{Duration, SystemTime},
-};
-
-/// The time value hliding seconds and nanoseconds.
-#[derive(Copy, Clone, Debug)]
-pub struct Timespec {
-    #[allow(missing_docs)]
-    pub secs: u64,
-
-    #[allow(missing_docs)]
-    pub nsecs: u32,
-
-    #[doc(hidden)] // non_exhaustive
-    pub __non_exhaustive: NonExhaustive,
-}
-
-impl Default for Timespec {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            secs: 0,
-            nsecs: 0,
-
-            __non_exhaustive: NonExhaustive::INIT,
-        }
-    }
-}
-
-impl Timespec {
-    /// Get the time value converted to [`SystemTime`](std::time::SystemTime).
-    ///
-    /// The conversion is performed by treating itself as increment
-    /// from `SystemTime::UNIX_EPOCH`.
-    #[inline]
-    pub fn as_system_time(self) -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::new(self.secs, self.nsecs)
-    }
-}
+use std::{borrow::Cow, ffi::OsStr, fmt};
 
 /// Attributes about a file.
-#[derive(Copy, Clone, Debug)]
-pub struct FileAttr {
+pub trait FileAttr {
     /// Return the inode number.
-    pub ino: u64,
+    fn ino(&self) -> u64;
 
     /// Return the size of content.
-    pub size: u64,
+    fn size(&self) -> u64;
 
     /// Return the permission of the inode.
-    pub mode: u32,
+    fn mode(&self) -> u32;
 
     /// Return the number of hard links.
-    pub nlink: u32,
+    fn nlink(&self) -> u32;
 
     /// Return the user ID.
-    pub uid: u32,
+    fn uid(&self) -> u32;
 
     /// Return the group ID.
-    pub gid: u32,
+    fn gid(&self) -> u32;
 
     /// Return the device ID.
-    pub rdev: u32,
+    fn rdev(&self) -> u32;
 
     /// Return the block size.
-    pub blksize: u32,
+    fn blksize(&self) -> u32;
 
     /// Return the number of allocated blocks.
-    pub blocks: u64,
+    fn blocks(&self) -> u64;
 
-    /// Return the last accessed time in raw form.
-    pub atime: Timespec,
+    /// Return the last accessed time.
+    fn atime(&self) -> u64;
 
-    /// Return the last modification time in raw form.
-    pub mtime: Timespec,
+    /// Return the last accessed time in nanoseconds since `atime`.
+    fn atime_nsec(&self) -> u32;
 
-    /// Return the last created time in raw form.
-    pub ctime: Timespec,
+    /// Return the last modification time.
+    fn mtime(&self) -> u64;
 
-    #[doc(hidden)] // non_exhaustive
-    pub __non_exhaustive: NonExhaustive,
+    /// Return the last modification time in nanoseconds since `mtime`.
+    fn mtime_nsec(&self) -> u32;
+
+    /// Return the last created time.
+    fn ctime(&self) -> u64;
+
+    /// Return the last created time in nanoseconds since `ctime`.    
+    fn ctime_nsec(&self) -> u32;
 }
 
-impl Default for FileAttr {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            ino: 0,
-            size: 0,
-            mode: 0,
-            nlink: 0,
-            uid: 0,
-            gid: 0,
-            rdev: 0,
-            blksize: 0,
-            blocks: 0,
-            atime: Timespec::default(),
-            mtime: Timespec::default(),
-            ctime: Timespec::default(),
+mod impl_file_attr {
+    use super::FileAttr;
+    use std::{convert::TryInto as _, fs::Metadata, os::unix::fs::MetadataExt};
 
-            __non_exhaustive: NonExhaustive::INIT,
-        }
+    macro_rules! passthrough {
+        ($m:ident) => {
+            $m! {
+                ino: u64,
+                size: u64,
+                mode: u32,
+                nlink: u32,
+                uid: u32,
+                gid: u32,
+                rdev: u32,
+                blksize: u32,
+                blocks: u64,
+                atime: u64,
+                atime_nsec: u32,
+                mtime: u64,
+                mtime_nsec: u32,
+                ctime: u64,
+                ctime_nsec: u32,
+            }
+        };
     }
-}
 
-/// File lock information.
-#[derive(Copy, Clone, Debug)]
-pub struct FileLock {
-    /// Return the type of lock.
-    pub typ: u32,
+    macro_rules! refs {
+        ($( $name:ident : $ret:ty, )*) => {$(
+            #[inline]
+            fn $name(&self) -> $ret {
+                (**self).$name()
+            }
+        )*};
+    }
 
-    /// Return the starting offset for lock.
-    pub start: u64,
+    impl<T: ?Sized> FileAttr for &T
+    where
+        T: FileAttr,
+    {
+        passthrough!(refs);
+    }
 
-    /// Return the ending offset for lock.
-    pub end: u64,
+    impl<T: ?Sized> FileAttr for Box<T>
+    where
+        T: FileAttr,
+    {
+        passthrough!(refs);
+    }
 
-    /// Return the process ID blocking the lock.
-    pub pid: u32,
+    impl<T: ?Sized> FileAttr for std::rc::Rc<T>
+    where
+        T: FileAttr,
+    {
+        passthrough!(refs);
+    }
 
-    #[doc(hidden)] // non_exhaustive
-    pub __non_exhaustive: NonExhaustive,
-}
+    impl<T: ?Sized> FileAttr for std::sync::Arc<T>
+    where
+        T: FileAttr,
+    {
+        passthrough!(refs);
+    }
 
-impl Default for FileLock {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            typ: 0,
-            start: 0,
-            end: 0,
-            pid: 0,
+    macro_rules! stat {
+        ($( $name:ident : $ret:ty, )*) => {
+            paste::paste!{$(
+                #[inline]
+                fn $name(&self) -> $ret {
+                    self. [< st_ $name >]
+                        .try_into()
+                        .expect(concat!("st_", stringify!($name)))
+                }
+            )*}
+        };
+    }
 
-            __non_exhaustive: NonExhaustive::INIT,
-        }
+    impl FileAttr for libc::stat {
+        passthrough!(stat);
+    }
+
+    macro_rules! metadata_ext {
+        ($( $name:ident : $ret:ty, )*) => {$(
+            #[inline]
+            fn $name(&self) -> $ret {
+                MetadataExt::$name(self)
+                    .try_into()
+                    .expect(concat!("MetadataExt::", stringify!($name)))
+            }
+        )*};
+    }
+
+    impl FileAttr for Metadata {
+        passthrough!(metadata_ext);
     }
 }
 
 /// Filesystem statistics.
-#[derive(Copy, Clone, Debug)]
-pub struct FsStatistics {
+pub trait FsStatistics {
     /// Return the block size.
-    pub bsize: u32,
+    fn bsize(&self) -> u32;
 
     /// Return the fragment size.
-    pub frsize: u32,
+    fn frsize(&self) -> u32;
 
     /// Return the number of blocks in the filesystem.
-    pub blocks: u64,
+    fn blocks(&self) -> u64;
 
     /// Return the number of free blocks.
-    pub bfree: u64,
+    fn bfree(&self) -> u64;
 
     /// Return the number of free blocks for non-priviledge users.
-    pub bavail: u64,
+    fn bavail(&self) -> u64;
 
     /// Return the number of inodes.
-    pub files: u64,
+    fn files(&self) -> u64;
 
     /// Return the number of free inodes.
-    pub ffree: u64,
+    fn ffree(&self) -> u64;
 
     /// Return the maximum length of file names.
-    pub namelen: u32,
-
-    #[doc(hidden)] // non_exhaustive
-    pub __non_exhaustive: NonExhaustive,
+    fn namelen(&self) -> u32;
 }
 
-impl Default for FsStatistics {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            bsize: 0,
-            frsize: 0,
-            blocks: 0,
-            bfree: 0,
-            bavail: 0,
-            files: 0,
-            ffree: 0,
-            namelen: 0,
+mod impl_fs_stat {
+    use super::FsStatistics;
 
-            __non_exhaustive: NonExhaustive::INIT,
+    macro_rules! passthrough {
+        ($m:ident) => {
+            $m! {
+                bsize: u32,
+                frsize: u32,
+                blocks: u64,
+                bfree: u64,
+                bavail: u64,
+                files: u64,
+                ffree: u64,
+                namelen: u32,
+            }
+        };
+    }
+
+    macro_rules! refs {
+        ($( $name:ident : $ret:ty, )*) => {$(
+            #[inline]
+            fn $name(&self) -> $ret {
+                (**self).$name()
+            }
+        )*};
+    }
+
+    impl<T: ?Sized> FsStatistics for &T
+    where
+        T: FsStatistics,
+    {
+        passthrough!(refs);
+    }
+
+    impl<T: ?Sized> FsStatistics for Box<T>
+    where
+        T: FsStatistics,
+    {
+        passthrough!(refs);
+    }
+
+    impl<T: ?Sized> FsStatistics for std::rc::Rc<T>
+    where
+        T: FsStatistics,
+    {
+        passthrough!(refs);
+    }
+
+    impl<T: ?Sized> FsStatistics for std::sync::Arc<T>
+    where
+        T: FsStatistics,
+    {
+        passthrough!(refs);
+    }
+
+    impl FsStatistics for libc::statvfs {
+        #[inline]
+        fn bsize(&self) -> u32 {
+            self.f_bsize as u32
+        }
+
+        #[inline]
+        fn frsize(&self) -> u32 {
+            self.f_frsize as u32
+        }
+
+        #[inline]
+        fn blocks(&self) -> u64 {
+            self.f_blocks
+        }
+
+        #[inline]
+        fn bfree(&self) -> u64 {
+            self.f_bfree
+        }
+
+        #[inline]
+        fn bavail(&self) -> u64 {
+            self.f_bavail
+        }
+
+        #[inline]
+        fn files(&self) -> u64 {
+            self.f_files
+        }
+
+        #[inline]
+        fn ffree(&self) -> u64 {
+            self.f_ffree
+        }
+
+        #[inline]
+        fn namelen(&self) -> u32 {
+            self.f_namemax as u32
         }
     }
 }

@@ -1,5 +1,5 @@
-use crate::types::{FileLock, LockOwner, Timespec};
-use std::{ffi::OsStr, time::SystemTime, u32, u64};
+use crate::types::LockOwner;
+use std::{ffi::OsStr, time::Duration, u32, u64};
 
 /// A forget information.
 pub trait Forget {
@@ -69,7 +69,7 @@ pub trait Setattr {
     fn mtime(&self) -> Option<SetAttrTime>;
 
     /// Return the last creation time to be set.
-    fn ctime(&self) -> Option<Timespec>;
+    fn ctime(&self) -> Option<Duration>;
 
     /// Return the identifier of lock owner.
     fn lock_owner(&self) -> Option<LockOwner>;
@@ -80,21 +80,10 @@ pub trait Setattr {
 #[non_exhaustive]
 pub enum SetAttrTime {
     /// Set the specified time value.
-    Timespec(Timespec),
+    Timespec(Duration),
 
     /// Set the current time.
     Now,
-}
-
-impl SetAttrTime {
-    /// Convert itself into a `SystemTime`.
-    #[inline]
-    pub fn as_system_time(self) -> SystemTime {
-        match self {
-            SetAttrTime::Timespec(ts) => ts.as_system_time(),
-            SetAttrTime::Now => SystemTime::now(),
-        }
-    }
 }
 
 /// Read a symbolic link.
@@ -498,8 +487,10 @@ pub trait Getlk {
     /// Return the identifier of lock owner.
     fn owner(&self) -> LockOwner;
 
-    /// Return the lock information for testing.
-    fn lk(&self) -> &FileLock;
+    fn typ(&self) -> u32;
+    fn start(&self) -> u64;
+    fn end(&self) -> u64;
+    fn pid(&self) -> u32;
 }
 
 /// Acquire, modify or release a POSIX file lock.
@@ -513,8 +504,10 @@ pub trait Setlk {
     /// Return the identifier of lock owner.
     fn owner(&self) -> LockOwner;
 
-    /// Return the lock information to be obtained.
-    fn lk(&self) -> &FileLock;
+    fn typ(&self) -> u32;
+    fn start(&self) -> u64;
+    fn end(&self) -> u64;
+    fn pid(&self) -> u32;
 
     /// Return whether the locking operation might sleep until a lock is obtained.
     fn sleep(&self) -> bool;
