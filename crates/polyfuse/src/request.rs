@@ -2,18 +2,16 @@ use crate::{
     conn::Writer,
     op::{self, SetAttrTime},
     parse::{self, Arg},
-    reply::{
-        self, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyEntry, ReplyLk, ReplyOk,
-        ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
-    },
+    reply::{self, EntryOptions, OpenOptions},
     session::Session,
-    types::{FileLock, LockOwner, Timespec},
+    types::{FileAttr, FileLock, FsStatistics, LockOwner, Timespec},
+    util::as_bytes,
     write,
 };
 use either::Either;
 use futures::future::Future;
 use polyfuse_kernel as kernel;
-use std::{ffi::OsStr, sync::Arc};
+use std::{ffi::OsStr, fmt, io, sync::Arc, time::Duration};
 
 /// Context about an incoming FUSE request.
 pub struct Request {
@@ -29,7 +27,7 @@ impl Request {
     pub async fn process<'req, F, Fut>(&'req self, f: F) -> anyhow::Result<()>
     where
         F: FnOnce(Operation<'req>) -> Fut,
-        Fut: Future<Output = reply::Result>,
+        Fut: Future<Output = ReplyResult>,
     {
         if self.session.exited() {
             return Ok(());
@@ -323,6 +321,8 @@ pub enum Operation<'req> {
         reply: ReplyPoll<'req>,
     },
 }
+
+// ==== operations ====
 
 #[doc(hidden)]
 pub struct Op<'req, Arg> {
@@ -1086,4 +1086,443 @@ impl<'req> op::Poll for Poll<'req> {
             None
         }
     }
+}
+
+// === replies ====
+
+pub type ReplyResult = std::result::Result<(), ReplyError>;
+
+#[derive(Debug)]
+pub struct ReplyError(ReplyErrorKind);
+
+#[derive(Debug)]
+enum ReplyErrorKind {
+    Code(i32),
+    Fatal(io::Error),
+}
+
+impl ReplyError {
+    fn fatal(err: io::Error) -> Self {
+        Self(ReplyErrorKind::Fatal(err))
+    }
+
+    fn code(&self) -> Option<i32> {
+        match self.0 {
+            ReplyErrorKind::Code(code) => Some(code),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ReplyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpError").finish()
+    }
+}
+
+impl std::error::Error for ReplyError {}
+
+impl crate::reply::Error for ReplyError {
+    fn from_io_error(io_error: io::Error) -> Self {
+        Self(ReplyErrorKind::Fatal(io_error))
+    }
+
+    fn from_code(code: i32) -> Self
+    where
+        Self: Sized,
+    {
+        Self(ReplyErrorKind::Code(code))
+    }
+}
+
+pub struct ReplyAttr<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_attr_out,
+}
+
+impl reply::ReplyAttr for ReplyAttr<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn attr(mut self, attr: &FileAttr, ttl: Option<Duration>) -> ReplyResult {
+        fill_attr(attr, &mut self.arg.attr);
+
+        if let Some(ttl) = ttl {
+            self.arg.attr_valid = ttl.as_secs();
+            self.arg.attr_valid_nsec = ttl.subsec_nanos();
+        } else {
+            self.arg.attr_valid = u64::MAX;
+            self.arg.attr_valid_nsec = u32::MAX;
+        }
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyEntry<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_entry_out,
+}
+
+impl reply::ReplyEntry for ReplyEntry<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn entry(mut self, attr: &FileAttr, opts: &EntryOptions) -> ReplyResult {
+        fill_attr(attr, &mut self.arg.attr);
+        self.arg.nodeid = opts.ino;
+        self.arg.generation = opts.generation;
+
+        if let Some(ttl) = opts.ttl_attr {
+            self.arg.attr_valid = ttl.as_secs();
+            self.arg.attr_valid_nsec = ttl.subsec_nanos();
+        } else {
+            self.arg.attr_valid = u64::MAX;
+            self.arg.attr_valid_nsec = u32::MAX;
+        }
+
+        if let Some(ttl) = opts.ttl_entry {
+            self.arg.entry_valid = ttl.as_secs();
+            self.arg.entry_valid_nsec = ttl.subsec_nanos();
+        } else {
+            self.arg.entry_valid = u64::MAX;
+            self.arg.entry_valid_nsec = u32::MAX;
+        }
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyOk<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+}
+
+impl reply::ReplyOk for ReplyOk<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn ok(self) -> ReplyResult {
+        write::send_reply(self.writer, self.header.unique, &[]).map_err(ReplyError::fatal)?;
+        Ok(())
+    }
+}
+
+pub struct ReplyData<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+}
+
+impl reply::ReplyData for ReplyData<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn data<T>(self, data: T) -> ReplyResult
+    where
+        T: AsRef<[u8]>,
+    {
+        write::send_reply(self.writer, self.header.unique, data.as_ref())
+            .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyOpen<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_open_out,
+}
+
+impl reply::ReplyOpen for ReplyOpen<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn open(mut self, fh: u64, opts: &OpenOptions) -> ReplyResult {
+        self.arg.fh = fh;
+
+        if opts.direct_io {
+            self.arg.open_flags |= kernel::FOPEN_DIRECT_IO;
+        }
+
+        if opts.keep_cache {
+            self.arg.open_flags |= kernel::FOPEN_KEEP_CACHE;
+        }
+
+        if opts.nonseekable {
+            self.arg.open_flags |= kernel::FOPEN_NONSEEKABLE;
+        }
+
+        if opts.cache_dir {
+            self.arg.open_flags |= kernel::FOPEN_CACHE_DIR;
+        }
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyWrite<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_write_out,
+}
+
+impl reply::ReplyWrite for ReplyWrite<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn size(mut self, size: u32) -> ReplyResult {
+        self.arg.size = size;
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyStatfs<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_statfs_out,
+}
+
+impl reply::ReplyStatfs for ReplyStatfs<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn stat(mut self, stat: &FsStatistics) -> ReplyResult {
+        fill_statfs(stat, &mut self.arg.st);
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyXattr<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_getxattr_out,
+}
+
+impl reply::ReplyXattr for ReplyXattr<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn size(mut self, size: u32) -> ReplyResult {
+        self.arg.size = size;
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+
+    fn data<T>(self, data: T) -> ReplyResult
+    where
+        T: AsRef<[u8]>,
+    {
+        write::send_reply(self.writer, self.header.unique, data.as_ref())
+            .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyLk<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_lk_out,
+}
+
+impl reply::ReplyLk for ReplyLk<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn lk(mut self, lk: &FileLock) -> ReplyResult {
+        fill_lk(lk, &mut self.arg.lk);
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyCreate<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: CreateArg,
+}
+
+#[derive(Default)]
+#[repr(C)]
+struct CreateArg {
+    entry_out: kernel::fuse_entry_out,
+    open_out: kernel::fuse_open_out,
+}
+
+impl reply::ReplyCreate for ReplyCreate<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn create(
+        mut self,
+        fh: u64,
+        attr: &FileAttr,
+        entry_opts: &EntryOptions,
+        open_opts: &OpenOptions,
+    ) -> ReplyResult {
+        fill_attr(attr, &mut self.arg.entry_out.attr);
+        self.arg.entry_out.nodeid = entry_opts.ino;
+        self.arg.entry_out.generation = entry_opts.generation;
+
+        if let Some(ttl) = entry_opts.ttl_attr {
+            self.arg.entry_out.attr_valid = ttl.as_secs();
+            self.arg.entry_out.attr_valid_nsec = ttl.subsec_nanos();
+        } else {
+            self.arg.entry_out.attr_valid = u64::MAX;
+            self.arg.entry_out.attr_valid_nsec = u32::MAX;
+        }
+
+        if let Some(ttl) = entry_opts.ttl_entry {
+            self.arg.entry_out.entry_valid = ttl.as_secs();
+            self.arg.entry_out.entry_valid_nsec = ttl.subsec_nanos();
+        } else {
+            self.arg.entry_out.entry_valid = u64::MAX;
+            self.arg.entry_out.entry_valid_nsec = u32::MAX;
+        }
+
+        self.arg.open_out.fh = fh;
+
+        if open_opts.direct_io {
+            self.arg.open_out.open_flags |= kernel::FOPEN_DIRECT_IO;
+        }
+
+        if open_opts.keep_cache {
+            self.arg.open_out.open_flags |= kernel::FOPEN_KEEP_CACHE;
+        }
+
+        if open_opts.nonseekable {
+            self.arg.open_out.open_flags |= kernel::FOPEN_NONSEEKABLE;
+        }
+
+        if open_opts.cache_dir {
+            self.arg.open_out.open_flags |= kernel::FOPEN_CACHE_DIR;
+        }
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyBmap<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_bmap_out,
+}
+
+impl reply::ReplyBmap for ReplyBmap<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn block(mut self, block: u64) -> ReplyResult {
+        self.arg.block = block;
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+pub struct ReplyPoll<'req> {
+    writer: &'req Writer,
+    header: &'req kernel::fuse_in_header,
+    arg: kernel::fuse_poll_out,
+}
+
+impl reply::ReplyPoll for ReplyPoll<'_> {
+    type Ok = ();
+    type Error = ReplyError;
+
+    fn revents(mut self, revents: u32) -> ReplyResult {
+        self.arg.revents = revents;
+
+        write::send_reply(self.writer, self.header.unique, unsafe {
+            as_bytes(&self.arg)
+        })
+        .map_err(ReplyError::fatal)?;
+
+        Ok(())
+    }
+}
+
+fn fill_attr(src: &FileAttr, dst: &mut kernel::fuse_attr) {
+    dst.ino = src.ino;
+    dst.size = src.size;
+    dst.mode = src.mode;
+    dst.nlink = src.nlink;
+    dst.uid = src.uid;
+    dst.gid = src.gid;
+    dst.rdev = src.rdev;
+    dst.blksize = src.blksize;
+    dst.blocks = src.blocks;
+    dst.atime = src.atime.secs;
+    dst.atimensec = src.atime.nsecs;
+    dst.mtime = src.mtime.secs;
+    dst.mtimensec = src.mtime.nsecs;
+    dst.ctime = src.ctime.secs;
+    dst.ctimensec = src.ctime.nsecs;
+}
+
+fn fill_statfs(src: &FsStatistics, dst: &mut kernel::fuse_kstatfs) {
+    dst.bsize = src.bsize;
+    dst.frsize = src.frsize;
+    dst.blocks = src.blocks;
+    dst.bfree = src.bfree;
+    dst.bavail = src.bavail;
+    dst.files = src.files;
+    dst.ffree = src.ffree;
+    dst.namelen = src.namelen;
+}
+
+fn fill_lk(src: &FileLock, dst: &mut kernel::fuse_file_lock) {
+    dst.typ = src.typ;
+    dst.start = src.start;
+    dst.end = src.end;
+    dst.pid = src.pid;
 }

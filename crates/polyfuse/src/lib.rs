@@ -7,7 +7,6 @@ mod session;
 mod util;
 mod write;
 
-pub mod error;
 pub mod op;
 pub mod reply;
 pub mod request;

@@ -1,7 +1,7 @@
 use polyfuse::{op, reply, types::FileAttr, Daemon, Operation};
 
 use anyhow::Context as _;
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
                 Operation::Getattr { op, reply, .. } => getattr(op, reply).await,
 
                 // Or annotate that the operation is not supported.
-                _ => Err(polyfuse::error::code(libc::ENOSYS)),
+                _ => Err(polyfuse::reply::error_code(libc::ENOSYS)),
             }
         })
         .await?;
@@ -35,12 +35,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn getattr<Op>(op: Op, reply: reply::ReplyAttr<'_>) -> reply::Result
+async fn getattr<Op, R>(op: Op, reply: R) -> Result<R::Ok, R::Error>
 where
     Op: op::Getattr,
+    R: reply::ReplyAttr,
 {
     if op.ino() != 1 {
-        return Err(polyfuse::error::code(libc::ENOENT));
+        return Err(polyfuse::reply::error_code(libc::ENOENT));
     }
 
     reply.attr(
@@ -52,6 +53,6 @@ where
             gid: unsafe { libc::getgid() },
             ..Default::default()
         },
-        Some(std::time::Duration::from_secs(1)),
+        Some(Duration::from_secs(1)),
     )
 }
