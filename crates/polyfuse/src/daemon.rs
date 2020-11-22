@@ -5,7 +5,7 @@ use crate::{
 };
 use async_io::Async;
 use futures::io::AsyncReadExt as _;
-use std::{ffi::OsStr, path::Path, sync::Arc};
+use std::{ffi::OsStr, io, path::Path, sync::Arc};
 
 #[derive(Default)]
 pub struct Builder {
@@ -81,7 +81,7 @@ impl Builder {
         &self,
         mountpoint: impl AsRef<Path>,
         mountopts: &[&OsStr],
-    ) -> anyhow::Result<Daemon> {
+    ) -> io::Result<Daemon> {
         // FIXME: make Connection::open async.
         let conn = Connection::open(mountpoint.as_ref(), mountopts)?;
         let conn = Async::new(conn)?;
@@ -103,12 +103,12 @@ pub struct Daemon {
 
 impl Daemon {
     /// Start a FUSE daemon mount on the specified path.
-    pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> anyhow::Result<Self> {
+    pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<Self> {
         Builder::default().mount(mountpoint, mountopts).await
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub async fn next_request(&mut self) -> anyhow::Result<Option<Request>> {
+    pub async fn next_request(&mut self) -> io::Result<Option<Request>> {
         let mut buf = vec![0u8; self.session.buffer_size()];
 
         loop {
@@ -129,7 +129,7 @@ impl Daemon {
                         tracing::debug!("ENOENT");
                         continue;
                     }
-                    _ => return Err(err.into()),
+                    _ => return Err(err),
                 },
             }
         }

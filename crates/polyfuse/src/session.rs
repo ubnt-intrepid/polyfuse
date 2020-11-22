@@ -225,7 +225,7 @@ impl Default for SessionInitializer {
 }
 
 impl SessionInitializer {
-    pub async fn init<'w, R, W: ?Sized>(&self, reader: R, writer: &'w W) -> anyhow::Result<Session>
+    pub async fn init<'w, R, W: ?Sized>(&self, reader: R, writer: &'w W) -> io::Result<Session>
     where
         R: AsyncRead,
         &'w W: io::Write,
@@ -245,7 +245,7 @@ impl SessionInitializer {
     }
 
     #[allow(clippy::cognitive_complexity)]
-    async fn try_init<W>(&self, buf: &[u8], writer: W) -> anyhow::Result<Option<Session>>
+    async fn try_init<W>(&self, buf: &[u8], writer: W) -> io::Result<Option<Session>>
     where
         W: io::Write,
     {

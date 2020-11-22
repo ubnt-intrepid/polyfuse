@@ -1,3 +1,5 @@
+//! Components used when processing FUSE requests.
+
 use crate::{
     conn::Writer,
     op::{self, SetAttrTime},
@@ -13,6 +15,49 @@ use futures::future::Future;
 use polyfuse_kernel as kernel;
 use std::{ffi::OsStr, fmt, io, sync::Arc, time::Duration};
 
+#[derive(Debug)]
+pub struct Error(ErrorKind);
+
+#[derive(Debug)]
+enum ErrorKind {
+    Code(i32),
+    Fatal(io::Error),
+}
+
+impl Error {
+    fn fatal(err: io::Error) -> Self {
+        Self(ErrorKind::Fatal(err))
+    }
+
+    fn code(&self) -> Option<i32> {
+        match self.0 {
+            ErrorKind::Code(code) => Some(code),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpError").finish()
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl crate::reply::Error for Error {
+    fn from_io_error(io_error: io::Error) -> Self {
+        Self(ErrorKind::Fatal(io_error))
+    }
+
+    fn from_code(code: i32) -> Self
+    where
+        Self: Sized,
+    {
+        Self(ErrorKind::Code(code))
+    }
+}
+
 /// Context about an incoming FUSE request.
 pub struct Request {
     pub(crate) buf: Vec<u8>,
@@ -23,17 +68,18 @@ pub struct Request {
 impl Request {
     // TODO: add unique(), uid(), gid() and pid()
 
-    /// Process the request.
-    pub async fn process<'req, F, Fut>(&'req self, f: F) -> anyhow::Result<()>
+    /// Process the request with the provided callback.
+    pub async fn process<'req, F, Fut>(&'req self, f: F) -> Result<(), Error>
     where
         F: FnOnce(Operation<'req>) -> Fut,
-        Fut: Future<Output = ReplyResult>,
+        Fut: Future<Output = Result<Replied, Error>>,
     {
         if self.session.exited() {
             return Ok(());
         }
 
-        let parse::Request { header, arg, .. } = parse::Request::parse(&self.buf[..])?;
+        let parse::Request { header, arg, .. } =
+            parse::Request::parse(&self.buf[..]).map_err(Error::fatal)?;
 
         let reply_entry = || ReplyEntry {
             writer: &self.writer,
@@ -155,7 +201,8 @@ impl Request {
             Arg::Poll(arg) => dispatch_op!(Poll, arg, reply_poll()),
             op => {
                 tracing::warn!("unsupported operation: {:?}", op);
-                write::send_error(&self.writer, header.unique, libc::ENOSYS)?;
+                write::send_error(&self.writer, header.unique, libc::ENOSYS)
+                    .map_err(Error::fatal)?;
                 return Ok(());
             }
         };
@@ -163,9 +210,9 @@ impl Request {
         if let Err(err) = res {
             match err.code() {
                 Some(code) => {
-                    write::send_error(&self.writer, header.unique, code)?;
+                    write::send_error(&self.writer, header.unique, code).map_err(Error::fatal)?;
                 }
-                None => return Err(err.into()),
+                None => return Err(err),
             }
         }
 
@@ -1088,52 +1135,11 @@ impl<'req> op::Poll for Poll<'req> {
     }
 }
 
-// === replies ====
-
-pub type ReplyResult = std::result::Result<(), ReplyError>;
+// === reply ====
 
 #[derive(Debug)]
-pub struct ReplyError(ReplyErrorKind);
-
-#[derive(Debug)]
-enum ReplyErrorKind {
-    Code(i32),
-    Fatal(io::Error),
-}
-
-impl ReplyError {
-    fn fatal(err: io::Error) -> Self {
-        Self(ReplyErrorKind::Fatal(err))
-    }
-
-    fn code(&self) -> Option<i32> {
-        match self.0 {
-            ReplyErrorKind::Code(code) => Some(code),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for ReplyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OpError").finish()
-    }
-}
-
-impl std::error::Error for ReplyError {}
-
-impl crate::reply::Error for ReplyError {
-    fn from_io_error(io_error: io::Error) -> Self {
-        Self(ReplyErrorKind::Fatal(io_error))
-    }
-
-    fn from_code(code: i32) -> Self
-    where
-        Self: Sized,
-    {
-        Self(ReplyErrorKind::Code(code))
-    }
-}
+#[must_use]
+pub struct Replied(());
 
 pub struct ReplyAttr<'req> {
     writer: &'req Writer,
@@ -1142,10 +1148,10 @@ pub struct ReplyAttr<'req> {
 }
 
 impl reply::ReplyAttr for ReplyAttr<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn attr(mut self, attr: &FileAttr, ttl: Option<Duration>) -> ReplyResult {
+    fn attr(mut self, attr: &FileAttr, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error> {
         fill_attr(attr, &mut self.arg.attr);
 
         if let Some(ttl) = ttl {
@@ -1159,9 +1165,9 @@ impl reply::ReplyAttr for ReplyAttr<'_> {
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1172,10 +1178,10 @@ pub struct ReplyEntry<'req> {
 }
 
 impl reply::ReplyEntry for ReplyEntry<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn entry(mut self, attr: &FileAttr, opts: &EntryOptions) -> ReplyResult {
+    fn entry(mut self, attr: &FileAttr, opts: &EntryOptions) -> Result<Self::Ok, Self::Error> {
         fill_attr(attr, &mut self.arg.attr);
         self.arg.nodeid = opts.ino;
         self.arg.generation = opts.generation;
@@ -1199,9 +1205,9 @@ impl reply::ReplyEntry for ReplyEntry<'_> {
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1211,12 +1217,12 @@ pub struct ReplyOk<'req> {
 }
 
 impl reply::ReplyOk for ReplyOk<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn ok(self) -> ReplyResult {
-        write::send_reply(self.writer, self.header.unique, &[]).map_err(ReplyError::fatal)?;
-        Ok(())
+    fn ok(self) -> Result<Self::Ok, Self::Error> {
+        write::send_reply(self.writer, self.header.unique, &[]).map_err(Error::fatal)?;
+        Ok(Replied(()))
     }
 }
 
@@ -1226,17 +1232,16 @@ pub struct ReplyData<'req> {
 }
 
 impl reply::ReplyData for ReplyData<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn data<T>(self, data: T) -> ReplyResult
+    fn data<T>(self, data: T) -> Result<Self::Ok, Self::Error>
     where
         T: AsRef<[u8]>,
     {
-        write::send_reply(self.writer, self.header.unique, data.as_ref())
-            .map_err(ReplyError::fatal)?;
+        write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1247,10 +1252,10 @@ pub struct ReplyOpen<'req> {
 }
 
 impl reply::ReplyOpen for ReplyOpen<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn open(mut self, fh: u64, opts: &OpenOptions) -> ReplyResult {
+    fn open(mut self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error> {
         self.arg.fh = fh;
 
         if opts.direct_io {
@@ -1272,9 +1277,9 @@ impl reply::ReplyOpen for ReplyOpen<'_> {
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1285,18 +1290,18 @@ pub struct ReplyWrite<'req> {
 }
 
 impl reply::ReplyWrite for ReplyWrite<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn size(mut self, size: u32) -> ReplyResult {
+    fn size(mut self, size: u32) -> Result<Self::Ok, Self::Error> {
         self.arg.size = size;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1307,18 +1312,18 @@ pub struct ReplyStatfs<'req> {
 }
 
 impl reply::ReplyStatfs for ReplyStatfs<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn stat(mut self, stat: &FsStatistics) -> ReplyResult {
+    fn stat(mut self, stat: &FsStatistics) -> Result<Self::Ok, Self::Error> {
         fill_statfs(stat, &mut self.arg.st);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1329,28 +1334,27 @@ pub struct ReplyXattr<'req> {
 }
 
 impl reply::ReplyXattr for ReplyXattr<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn size(mut self, size: u32) -> ReplyResult {
+    fn size(mut self, size: u32) -> Result<Self::Ok, Self::Error> {
         self.arg.size = size;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 
-    fn data<T>(self, data: T) -> ReplyResult
+    fn data<T>(self, data: T) -> Result<Self::Ok, Self::Error>
     where
         T: AsRef<[u8]>,
     {
-        write::send_reply(self.writer, self.header.unique, data.as_ref())
-            .map_err(ReplyError::fatal)?;
+        write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1361,18 +1365,18 @@ pub struct ReplyLk<'req> {
 }
 
 impl reply::ReplyLk for ReplyLk<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn lk(mut self, lk: &FileLock) -> ReplyResult {
+    fn lk(mut self, lk: &FileLock) -> Result<Self::Ok, Self::Error> {
         fill_lk(lk, &mut self.arg.lk);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1390,8 +1394,8 @@ struct CreateArg {
 }
 
 impl reply::ReplyCreate for ReplyCreate<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
     fn create(
         mut self,
@@ -1399,7 +1403,7 @@ impl reply::ReplyCreate for ReplyCreate<'_> {
         attr: &FileAttr,
         entry_opts: &EntryOptions,
         open_opts: &OpenOptions,
-    ) -> ReplyResult {
+    ) -> Result<Self::Ok, Self::Error> {
         fill_attr(attr, &mut self.arg.entry_out.attr);
         self.arg.entry_out.nodeid = entry_opts.ino;
         self.arg.entry_out.generation = entry_opts.generation;
@@ -1441,9 +1445,9 @@ impl reply::ReplyCreate for ReplyCreate<'_> {
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1454,18 +1458,18 @@ pub struct ReplyBmap<'req> {
 }
 
 impl reply::ReplyBmap for ReplyBmap<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn block(mut self, block: u64) -> ReplyResult {
+    fn block(mut self, block: u64) -> Result<Self::Ok, Self::Error> {
         self.arg.block = block;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 
@@ -1476,18 +1480,18 @@ pub struct ReplyPoll<'req> {
 }
 
 impl reply::ReplyPoll for ReplyPoll<'_> {
-    type Ok = ();
-    type Error = ReplyError;
+    type Ok = Replied;
+    type Error = Error;
 
-    fn revents(mut self, revents: u32) -> ReplyResult {
+    fn revents(mut self, revents: u32) -> Result<Self::Ok, Self::Error> {
         self.arg.revents = revents;
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(ReplyError::fatal)?;
+        .map_err(Error::fatal)?;
 
-        Ok(())
+        Ok(Replied(()))
     }
 }
 

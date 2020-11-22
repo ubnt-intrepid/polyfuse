@@ -8,9 +8,9 @@ pub struct Request<'a> {
 }
 
 impl<'a> Request<'a> {
-    pub fn parse(mut buf: &'a [u8]) -> anyhow::Result<Self> {
+    pub fn parse(mut buf: &'a [u8]) -> io::Result<Self> {
         if buf.len() < mem::size_of::<kernel::fuse_in_header>() {
-            anyhow::bail!("request is too short");
+            return Err(io::Error::new(io::ErrorKind::Other, "request is too short"));
         }
 
         let header = unsafe { &*(buf.as_ptr().cast::<kernel::fuse_in_header>()) };
