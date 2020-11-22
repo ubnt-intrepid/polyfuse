@@ -3,17 +3,15 @@
 use crate::{
     conn::Writer,
     op::{self, SetAttrTime},
-    parse::{self, Arg},
     reply::{self, EntryOptions, OpenOptions},
     session::Session,
     types::{FileAttr, FsStatistics, LockOwner},
-    util::as_bytes,
+    util::{as_bytes, Decoder},
     write,
 };
-use either::Either;
 use futures::future::Future;
-use polyfuse_kernel as kernel;
-use std::{ffi::OsStr, fmt, io, sync::Arc, time::Duration};
+use polyfuse_kernel::{self as kernel, fuse_opcode};
+use std::{convert::TryFrom, ffi::OsStr, fmt, io, sync::Arc, time::Duration};
 
 #[derive(Debug)]
 pub struct Error(ErrorKind);
@@ -21,10 +19,15 @@ pub struct Error(ErrorKind);
 #[derive(Debug)]
 enum ErrorKind {
     Code(i32),
+    Decode,
     Fatal(io::Error),
 }
 
 impl Error {
+    fn decode() -> Self {
+        Self(ErrorKind::Decode)
+    }
+
     fn fatal(err: io::Error) -> Self {
         Self(ErrorKind::Fatal(err))
     }
@@ -69,17 +72,20 @@ impl Request {
     // TODO: add unique(), uid(), gid() and pid()
 
     /// Process the request with the provided callback.
-    pub async fn process<'req, F, Fut>(&'req self, f: F) -> Result<(), Error>
+    pub async fn process<'op, F, Fut>(&'op self, f: F) -> Result<(), Error>
     where
-        F: FnOnce(Operation<'req>) -> Fut,
+        F: FnOnce(Operation<'op>) -> Fut,
         Fut: Future<Output = Result<Replied, Error>>,
     {
         if self.session.exited() {
             return Ok(());
         }
 
-        let parse::Request { header, arg, .. } =
-            parse::Request::parse(&self.buf[..]).map_err(Error::fatal)?;
+        let mut decoder = Decoder::new(&self.buf[..]);
+
+        let header = decoder
+            .fetch::<kernel::fuse_in_header>()
+            .ok_or_else(Error::decode)?;
 
         let reply_entry = || ReplyEntry {
             writer: &self.writer,
@@ -151,56 +157,402 @@ impl Request {
             arg: Default::default(),
         };
 
-        macro_rules! dispatch_op {
-            ($Op:ident, $arg:expr, $reply:expr) => {
-                f(Operation::$Op {
-                    op: $Op { header, arg: $arg },
-                    reply: $reply,
+        let res = match fuse_opcode::try_from(header.opcode).ok() {
+            // Some(fuse_opcode::FUSE_FORGET) => {
+            //     let arg = decoder
+            //         .fetch::<kernel::fuse_forget_in>()
+            //         .map_err(Error::fatal)?;
+            //     todo!()
+            // }
+            // Some(fuse_opcode::FUSE_BATCH_FORGET) => {
+            //     let arg = decoder.fetch::<kernel::fuse_batch_forget_in>()?;
+            //     let forgets = decoder.fetch_array(arg.count as usize)?;
+            //     todo!()
+            // }
+            // Some(fuse_opcode::FUSE_INTERRUPT) => {
+            //     let arg = decoder.fetch()?;
+            //     todo!()
+            // }
+            // Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
+            //     let arg = decoder.fetch()?;
+            //     todo!()
+            // }
+            Some(fuse_opcode::FUSE_LOOKUP) => {
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Lookup {
+                    op: Lookup { header, name },
+                    reply: reply_entry(),
                 })
                 .await
-            };
-        }
+            }
 
-        let res = match arg {
-            Arg::Lookup(arg) => dispatch_op!(Lookup, arg, reply_entry()),
-            Arg::Getattr(arg) => dispatch_op!(Getattr, arg, reply_attr()),
-            Arg::Setattr(arg) => dispatch_op!(Setattr, arg, reply_attr()),
-            Arg::Readlink(arg) => dispatch_op!(Readlink, arg, reply_data()),
-            Arg::Symlink(arg) => dispatch_op!(Symlink, arg, reply_entry()),
-            Arg::Mknod(arg) => dispatch_op!(Mknod, arg, reply_entry()),
-            Arg::Mkdir(arg) => dispatch_op!(Mkdir, arg, reply_entry()),
-            Arg::Unlink(arg) => dispatch_op!(Unlink, arg, reply_ok()),
-            Arg::Rmdir(arg) => dispatch_op!(Rmdir, arg, reply_ok()),
-            Arg::Rename(arg) => dispatch_op!(Rename, Either::Left(arg), reply_ok()),
-            Arg::Rename2(arg) => dispatch_op!(Rename, Either::Right(arg), reply_ok()),
-            Arg::Link(arg) => dispatch_op!(Link, arg, reply_entry()),
-            Arg::Open(arg) => dispatch_op!(Open, arg, reply_open()),
-            Arg::Read(arg) => dispatch_op!(Read, arg, reply_data()),
-            Arg::Write(arg) => dispatch_op!(Write, arg, reply_write()),
-            Arg::Release(arg) => dispatch_op!(Release, arg, reply_ok()),
-            Arg::Statfs(arg) => dispatch_op!(Statfs, arg, reply_statfs()),
-            Arg::Fsync(arg) => dispatch_op!(Fsync, arg, reply_ok()),
-            Arg::Setxattr(arg) => dispatch_op!(Setxattr, arg, reply_ok()),
-            Arg::Getxattr(arg) => dispatch_op!(Getxattr, arg, reply_xattr()),
-            Arg::Listxattr(arg) => dispatch_op!(Listxattr, arg, reply_xattr()),
-            Arg::Removexattr(arg) => dispatch_op!(Removexattr, arg, reply_ok()),
-            Arg::Flush(arg) => dispatch_op!(Flush, arg, reply_ok()),
-            Arg::Opendir(arg) => dispatch_op!(Opendir, arg, reply_open()),
-            Arg::Readdir(arg) => dispatch_op!(Readdir, arg, reply_data()),
-            Arg::Readdirplus(arg) => dispatch_op!(Readdirplus, arg, reply_data()),
-            Arg::Releasedir(arg) => dispatch_op!(Releasedir, arg, reply_ok()),
-            Arg::Fsyncdir(arg) => dispatch_op!(Fsyncdir, arg, reply_ok()),
-            Arg::Getlk(arg) => dispatch_op!(Getlk, arg, reply_lk()),
-            Arg::Setlk(arg) => dispatch_op!(Setlk, arg, reply_ok()),
-            Arg::Flock(arg) => dispatch_op!(Flock, arg, reply_ok()),
-            Arg::Access(arg) => dispatch_op!(Access, arg, reply_ok()),
-            Arg::Create(arg) => dispatch_op!(Create, arg, reply_create()),
-            Arg::Bmap(arg) => dispatch_op!(Bmap, arg, reply_bmap()),
-            Arg::Fallocate(arg) => dispatch_op!(Fallocate, arg, reply_ok()),
-            Arg::CopyFileRange(arg) => dispatch_op!(CopyFileRange, arg, reply_write()),
-            Arg::Poll(arg) => dispatch_op!(Poll, arg, reply_poll()),
-            op => {
-                tracing::warn!("unsupported operation: {:?}", op);
+            Some(fuse_opcode::FUSE_GETATTR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Getattr {
+                    op: Getattr { header, arg },
+                    reply: reply_attr(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_SETATTR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Setattr {
+                    op: Setattr { header, arg },
+                    reply: reply_attr(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_READLINK) => {
+                f(Operation::Readlink {
+                    op: Readlink { header },
+                    reply: reply_data(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_SYMLINK) => {
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                let link = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Symlink {
+                    op: Symlink { header, name, link },
+                    reply: reply_entry(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_MKNOD) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Mknod {
+                    op: Mknod { header, arg, name },
+                    reply: reply_entry(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_MKDIR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Mkdir {
+                    op: Mkdir { header, arg, name },
+                    reply: reply_entry(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_UNLINK) => {
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Unlink {
+                    op: Unlink { header, name },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_RMDIR) => {
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Rmdir {
+                    op: Rmdir { header, name },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_RENAME) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                let newname = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Rename {
+                    op: Rename {
+                        header,
+                        arg: RenameArg::V1(arg),
+                        name,
+                        newname,
+                    },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+            Some(fuse_opcode::FUSE_RENAME2) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                let newname = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Rename {
+                    op: Rename {
+                        header,
+                        arg: RenameArg::V2(arg),
+                        name,
+                        newname,
+                    },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_LINK) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                let newname = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Link {
+                    op: Link {
+                        header,
+                        arg,
+                        newname,
+                    },
+                    reply: reply_entry(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_OPEN) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Open {
+                    op: Open { header, arg },
+                    reply: reply_open(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_READ) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Read {
+                    op: Read { header, arg },
+                    reply: reply_data(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_WRITE) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Write {
+                    op: Write { header, arg },
+                    reply: reply_write(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_RELEASE) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Release {
+                    op: Release { header, arg },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_STATFS) => {
+                f(Operation::Statfs {
+                    op: Statfs { header },
+                    reply: reply_statfs(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_FSYNC) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Fsync {
+                    op: Fsync { header, arg },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_SETXATTR) => {
+                let arg = decoder
+                    .fetch::<kernel::fuse_setxattr_in>()
+                    .ok_or_else(Error::decode)?;
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                let value = decoder
+                    .fetch_bytes(arg.size as usize)
+                    .ok_or_else(Error::decode)?;
+                f(Operation::Setxattr {
+                    op: Setxattr {
+                        header,
+                        arg,
+                        name,
+                        value,
+                    },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_GETXATTR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Getxattr {
+                    op: Getxattr { header, arg, name },
+                    reply: reply_xattr(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_LISTXATTR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Listxattr {
+                    op: Listxattr { header, arg },
+                    reply: reply_xattr(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_REMOVEXATTR) => {
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Removexattr {
+                    op: Removexattr { header, name },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_FLUSH) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Flush {
+                    op: Flush { header, arg },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_OPENDIR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Opendir {
+                    op: Opendir { header, arg },
+                    reply: reply_open(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_READDIR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Readdir {
+                    op: Readdir { header, arg },
+                    reply: reply_data(),
+                })
+                .await
+            }
+            Some(fuse_opcode::FUSE_READDIRPLUS) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Readdirplus {
+                    op: Readdirplus { header, arg },
+                    reply: reply_data(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_RELEASEDIR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Releasedir {
+                    op: Releasedir { header, arg },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_FSYNCDIR) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Fsyncdir {
+                    op: Fsyncdir { header, arg },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_GETLK) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Getlk {
+                    op: Getlk { header, arg },
+                    reply: reply_lk(),
+                })
+                .await
+            }
+
+            Some(opcode @ fuse_opcode::FUSE_SETLK) | Some(opcode @ fuse_opcode::FUSE_SETLKW) => {
+                let arg: &kernel::fuse_lk_in = decoder.fetch().ok_or_else(Error::decode)?;
+                let sleep = match opcode {
+                    fuse_opcode::FUSE_SETLK => false,
+                    fuse_opcode::FUSE_SETLKW => true,
+                    _ => unreachable!(),
+                };
+
+                let op = if arg.lk_flags & kernel::FUSE_LK_FLOCK == 0 {
+                    Operation::Setlk {
+                        op: Setlk {
+                            header,
+                            arg,
+                            sleep: false,
+                        },
+                        reply: reply_ok(),
+                    }
+                } else {
+                    let op = convert_to_flock_op(arg.lk.typ, sleep).unwrap_or(0);
+                    Operation::Flock {
+                        op: Flock { header, arg, op },
+                        reply: reply_ok(),
+                    }
+                };
+
+                f(op).await
+            }
+
+            Some(fuse_opcode::FUSE_ACCESS) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Access {
+                    op: Access { header, arg },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_CREATE) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                let name = decoder.fetch_str().ok_or_else(Error::decode)?;
+                f(Operation::Create {
+                    op: Create { header, arg, name },
+                    reply: reply_create(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_BMAP) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Bmap {
+                    op: Bmap { header, arg },
+                    reply: reply_bmap(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_FALLOCATE) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Fallocate {
+                    op: Fallocate { header, arg },
+                    reply: reply_ok(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_COPY_FILE_RANGE) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::CopyFileRange {
+                    op: CopyFileRange { header, arg },
+                    reply: reply_write(),
+                })
+                .await
+            }
+
+            Some(fuse_opcode::FUSE_POLL) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Poll {
+                    op: Poll { header, arg },
+                    reply: reply_poll(),
+                })
+                .await
+            }
+
+            _ => {
+                tracing::warn!("unsupported opcode: {}", header.opcode);
                 write::send_error(&self.writer, header.unique, libc::ENOSYS)
                     .map_err(Error::fatal)?;
                 return Ok(());
@@ -220,205 +572,226 @@ impl Request {
     }
 }
 
+fn convert_to_flock_op(lk_type: u32, sleep: bool) -> Option<u32> {
+    const F_RDLCK: u32 = libc::F_RDLCK as u32;
+    const F_WRLCK: u32 = libc::F_WRLCK as u32;
+    const F_UNLCK: u32 = libc::F_UNLCK as u32;
+
+    let mut op = match lk_type {
+        F_RDLCK => libc::LOCK_SH as u32,
+        F_WRLCK => libc::LOCK_EX as u32,
+        F_UNLCK => libc::LOCK_UN as u32,
+        _ => return None,
+    };
+
+    if !sleep {
+        op |= libc::LOCK_NB as u32;
+    }
+    Some(op)
+}
+
 /// The kind of filesystem operation requested by the kernel.
 #[non_exhaustive]
-pub enum Operation<'req> {
+pub enum Operation<'op> {
     Lookup {
-        op: Lookup<'req>,
-        reply: ReplyEntry<'req>,
+        op: Lookup<'op>,
+        reply: ReplyEntry<'op>,
     },
     Getattr {
-        op: Getattr<'req>,
-        reply: ReplyAttr<'req>,
+        op: Getattr<'op>,
+        reply: ReplyAttr<'op>,
     },
     Setattr {
-        op: Setattr<'req>,
-        reply: ReplyAttr<'req>,
+        op: Setattr<'op>,
+        reply: ReplyAttr<'op>,
     },
     Readlink {
-        op: Readlink<'req>,
-        reply: ReplyData<'req>,
+        op: Readlink<'op>,
+        reply: ReplyData<'op>,
     },
     Symlink {
-        op: Symlink<'req>,
-        reply: ReplyEntry<'req>,
+        op: Symlink<'op>,
+        reply: ReplyEntry<'op>,
     },
     Mknod {
-        op: Mknod<'req>,
-        reply: ReplyEntry<'req>,
+        op: Mknod<'op>,
+        reply: ReplyEntry<'op>,
     },
     Mkdir {
-        op: Mkdir<'req>,
-        reply: ReplyEntry<'req>,
+        op: Mkdir<'op>,
+        reply: ReplyEntry<'op>,
     },
     Unlink {
-        op: Unlink<'req>,
-        reply: ReplyOk<'req>,
+        op: Unlink<'op>,
+        reply: ReplyOk<'op>,
     },
     Rmdir {
-        op: Rmdir<'req>,
-        reply: ReplyOk<'req>,
+        op: Rmdir<'op>,
+        reply: ReplyOk<'op>,
     },
     Rename {
-        op: Rename<'req>,
-        reply: ReplyOk<'req>,
+        op: Rename<'op>,
+        reply: ReplyOk<'op>,
     },
     Link {
-        op: Link<'req>,
-        reply: ReplyEntry<'req>,
+        op: Link<'op>,
+        reply: ReplyEntry<'op>,
     },
     Open {
-        op: Open<'req>,
-        reply: ReplyOpen<'req>,
+        op: Open<'op>,
+        reply: ReplyOpen<'op>,
     },
     Read {
-        op: Read<'req>,
-        reply: ReplyData<'req>,
+        op: Read<'op>,
+        reply: ReplyData<'op>,
     },
     Write {
-        op: Write<'req>,
-        reply: ReplyWrite<'req>,
+        op: Write<'op>,
+        reply: ReplyWrite<'op>,
     },
     Release {
-        op: Release<'req>,
-        reply: ReplyOk<'req>,
+        op: Release<'op>,
+        reply: ReplyOk<'op>,
     },
     Statfs {
-        op: Statfs<'req>,
-        reply: ReplyStatfs<'req>,
+        op: Statfs<'op>,
+        reply: ReplyStatfs<'op>,
     },
     Fsync {
-        op: Fsync<'req>,
-        reply: ReplyOk<'req>,
+        op: Fsync<'op>,
+        reply: ReplyOk<'op>,
     },
     Setxattr {
-        op: Setxattr<'req>,
-        reply: ReplyOk<'req>,
+        op: Setxattr<'op>,
+        reply: ReplyOk<'op>,
     },
     Getxattr {
-        op: Getxattr<'req>,
-        reply: ReplyXattr<'req>,
+        op: Getxattr<'op>,
+        reply: ReplyXattr<'op>,
     },
     Listxattr {
-        op: Listxattr<'req>,
-        reply: ReplyXattr<'req>,
+        op: Listxattr<'op>,
+        reply: ReplyXattr<'op>,
     },
     Removexattr {
-        op: Removexattr<'req>,
-        reply: ReplyOk<'req>,
+        op: Removexattr<'op>,
+        reply: ReplyOk<'op>,
     },
     Flush {
-        op: Flush<'req>,
-        reply: ReplyOk<'req>,
+        op: Flush<'op>,
+        reply: ReplyOk<'op>,
     },
     Opendir {
-        op: Opendir<'req>,
-        reply: ReplyOpen<'req>,
+        op: Opendir<'op>,
+        reply: ReplyOpen<'op>,
     },
     Readdir {
-        op: Readdir<'req>,
-        reply: ReplyData<'req>,
+        op: Readdir<'op>,
+        reply: ReplyData<'op>,
     },
     Readdirplus {
-        op: Readdirplus<'req>,
-        reply: ReplyData<'req>,
+        op: Readdirplus<'op>,
+        reply: ReplyData<'op>,
     },
     Releasedir {
-        op: Releasedir<'req>,
-        reply: ReplyOk<'req>,
+        op: Releasedir<'op>,
+        reply: ReplyOk<'op>,
     },
     Fsyncdir {
-        op: Fsyncdir<'req>,
-        reply: ReplyOk<'req>,
+        op: Fsyncdir<'op>,
+        reply: ReplyOk<'op>,
     },
     Getlk {
-        op: Getlk<'req>,
-        reply: ReplyLk<'req>,
+        op: Getlk<'op>,
+        reply: ReplyLk<'op>,
     },
     Setlk {
-        op: Setlk<'req>,
-        reply: ReplyOk<'req>,
+        op: Setlk<'op>,
+        reply: ReplyOk<'op>,
     },
     Flock {
-        op: Flock<'req>,
-        reply: ReplyOk<'req>,
+        op: Flock<'op>,
+        reply: ReplyOk<'op>,
     },
     Access {
-        op: Access<'req>,
-        reply: ReplyOk<'req>,
+        op: Access<'op>,
+        reply: ReplyOk<'op>,
     },
     Create {
-        op: Create<'req>,
-        reply: ReplyCreate<'req>,
+        op: Create<'op>,
+        reply: ReplyCreate<'op>,
     },
     Bmap {
-        op: Bmap<'req>,
-        reply: ReplyBmap<'req>,
+        op: Bmap<'op>,
+        reply: ReplyBmap<'op>,
     },
     Fallocate {
-        op: Fallocate<'req>,
-        reply: ReplyOk<'req>,
+        op: Fallocate<'op>,
+        reply: ReplyOk<'op>,
     },
     CopyFileRange {
-        op: CopyFileRange<'req>,
-        reply: ReplyWrite<'req>,
+        op: CopyFileRange<'op>,
+        reply: ReplyWrite<'op>,
     },
     Poll {
-        op: Poll<'req>,
-        reply: ReplyPoll<'req>,
+        op: Poll<'op>,
+        reply: ReplyPoll<'op>,
     },
 }
 
 // ==== operations ====
 
-#[doc(hidden)]
-pub struct Op<'req, Arg> {
-    header: &'req kernel::fuse_in_header,
-    arg: Arg,
+pub struct Lookup<'op> {
+    header: &'op kernel::fuse_in_header,
+    name: &'op OsStr,
 }
 
-pub type Lookup<'req> = Op<'req, parse::Lookup<'req>>;
-
-impl<'req> op::Lookup for Lookup<'req> {
+impl<'op> op::Lookup for Lookup<'op> {
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 }
 
-pub type Getattr<'req> = Op<'req, parse::Getattr<'req>>;
+pub struct Getattr<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_getattr_in,
+}
 
-impl<'req> op::Getattr for Getattr<'req> {
+impl<'op> op::Getattr for Getattr<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> Option<u64> {
-        if self.arg.arg.getattr_flags & kernel::FUSE_GETATTR_FH != 0 {
-            Some(self.arg.arg.fh)
+        if self.arg.getattr_flags & kernel::FUSE_GETATTR_FH != 0 {
+            Some(self.arg.fh)
         } else {
             None
         }
     }
 }
 
-pub type Setattr<'req> = Op<'req, parse::Setattr<'req>>;
+pub struct Setattr<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_setattr_in,
+}
 
-impl<'req> Setattr<'req> {
+impl<'op> Setattr<'op> {
     #[inline(always)]
     fn get<R>(&self, flag: u32, f: impl FnOnce(&kernel::fuse_setattr_in) -> R) -> Option<R> {
-        if self.arg.arg.valid & flag != 0 {
-            Some(f(&self.arg.arg))
+        if self.arg.valid & flag != 0 {
+            Some(f(&self.arg))
         } else {
             None
         }
     }
 }
 
-impl<'req> op::Setattr for Setattr<'req> {
+impl<'op> op::Setattr for Setattr<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
@@ -485,139 +858,167 @@ impl<'req> op::Setattr for Setattr<'req> {
     }
 }
 
-pub type Readlink<'req> = Op<'req, parse::Readlink<'req>>;
+pub struct Readlink<'op> {
+    header: &'op kernel::fuse_in_header,
+}
 
-impl<'req> op::Readlink for Readlink<'req> {
+impl<'op> op::Readlink for Readlink<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 }
 
-pub type Symlink<'req> = Op<'req, parse::Symlink<'req>>;
+pub struct Symlink<'op> {
+    header: &'op kernel::fuse_in_header,
+    name: &'op OsStr,
+    link: &'op OsStr,
+}
 
-impl<'req> op::Symlink for Symlink<'req> {
+impl<'op> op::Symlink for Symlink<'op> {
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 
     fn link(&self) -> &OsStr {
-        self.arg.link
+        self.link
     }
 }
 
-pub type Mknod<'req> = Op<'req, parse::Mknod<'req>>;
+pub struct Mknod<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_mknod_in,
+    name: &'op OsStr,
+}
 
-impl<'req> op::Mknod for Mknod<'req> {
+impl<'op> op::Mknod for Mknod<'op> {
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 
     fn mode(&self) -> u32 {
-        self.arg.arg.mode
+        self.arg.mode
     }
 
     fn rdev(&self) -> u32 {
-        self.arg.arg.rdev
+        self.arg.rdev
     }
 
     fn umask(&self) -> u32 {
-        self.arg.arg.umask
+        self.arg.umask
     }
 }
 
-pub type Mkdir<'req> = Op<'req, parse::Mkdir<'req>>;
+pub struct Mkdir<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_mkdir_in,
+    name: &'op OsStr,
+}
 
-impl<'req> op::Mkdir for Mkdir<'req> {
+impl<'op> op::Mkdir for Mkdir<'op> {
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 
     fn mode(&self) -> u32 {
-        self.arg.arg.mode
+        self.arg.mode
     }
 
     fn umask(&self) -> u32 {
-        self.arg.arg.umask
+        self.arg.umask
     }
 }
 
-pub type Unlink<'req> = Op<'req, parse::Unlink<'req>>;
+pub struct Unlink<'op> {
+    header: &'op kernel::fuse_in_header,
+    name: &'op OsStr,
+}
 
-impl<'req> op::Unlink for Unlink<'req> {
+impl<'op> op::Unlink for Unlink<'op> {
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 }
 
-pub type Rmdir<'req> = Op<'req, parse::Rmdir<'req>>;
+pub struct Rmdir<'op> {
+    header: &'op kernel::fuse_in_header,
+    name: &'op OsStr,
+}
 
-impl<'req> op::Rmdir for Rmdir<'req> {
+impl<'op> op::Rmdir for Rmdir<'op> {
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 }
 
-pub type Rename<'req> = Op<'req, Either<parse::Rename<'req>, parse::Rename2<'req>>>;
+pub struct Rename<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: RenameArg<'op>,
+    name: &'op OsStr,
+    newname: &'op OsStr,
+}
 
-impl<'req> op::Rename for Rename<'req> {
+enum RenameArg<'op> {
+    V1(&'op kernel::fuse_rename_in),
+    V2(&'op kernel::fuse_rename2_in),
+}
+
+impl<'op> op::Rename for Rename<'op> {
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        match self.arg {
-            Either::Left(parse::Rename { name, .. }) => name,
-            Either::Right(parse::Rename2 { name, .. }) => name,
-        }
+        self.name
     }
 
     fn newparent(&self) -> u64 {
         match self.arg {
-            Either::Left(parse::Rename { arg, .. }) => arg.newdir,
-            Either::Right(parse::Rename2 { arg, .. }) => arg.newdir,
+            RenameArg::V1(arg) => arg.newdir,
+            RenameArg::V2(arg) => arg.newdir,
         }
     }
 
     fn newname(&self) -> &OsStr {
-        match self.arg {
-            Either::Left(parse::Rename { newname, .. }) => newname,
-            Either::Right(parse::Rename2 { newname, .. }) => newname,
-        }
+        self.newname
     }
 
     fn flags(&self) -> u32 {
         match self.arg {
-            Either::Left(..) => 0,
-            Either::Right(parse::Rename2 { arg, .. }) => arg.flags,
+            RenameArg::V1(..) => 0,
+            RenameArg::V2(arg) => arg.flags,
         }
     }
 }
 
-pub type Link<'req> = Op<'req, parse::Link<'req>>;
+pub struct Link<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_link_in,
+    newname: &'op OsStr,
+}
 
-impl<'req> op::Link for Link<'req> {
+impl<'op> op::Link for Link<'op> {
     fn ino(&self) -> u64 {
-        self.arg.arg.oldnodeid
+        self.arg.oldnodeid
     }
 
     fn newparent(&self) -> u64 {
@@ -625,243 +1026,284 @@ impl<'req> op::Link for Link<'req> {
     }
 
     fn newname(&self) -> &OsStr {
-        self.arg.newname
+        self.newname
     }
 }
 
-pub type Open<'req> = Op<'req, parse::Open<'req>>;
+pub struct Open<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_open_in,
+}
 
-impl<'req> op::Open for Open<'req> {
+impl<'op> op::Open for Open<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn flags(&self) -> u32 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 }
 
-pub type Read<'req> = Op<'req, parse::Read<'req>>;
+pub struct Read<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_read_in,
+}
 
-impl<'req> op::Read for Read<'req> {
+impl<'op> op::Read for Read<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn offset(&self) -> u64 {
-        self.arg.arg.offset
+        self.arg.offset
     }
 
     fn size(&self) -> u32 {
-        self.arg.arg.size
+        self.arg.size
     }
 
     fn flags(&self) -> u32 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 
     fn lock_owner(&self) -> Option<LockOwner> {
-        if self.arg.arg.read_flags & kernel::FUSE_READ_LOCKOWNER != 0 {
-            Some(LockOwner::from_raw(self.arg.arg.lock_owner))
+        if self.arg.read_flags & kernel::FUSE_READ_LOCKOWNER != 0 {
+            Some(LockOwner::from_raw(self.arg.lock_owner))
         } else {
             None
         }
     }
 }
 
-pub type Write<'req> = Op<'req, parse::Write<'req>>;
+pub struct Write<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_write_in,
+}
 
-impl<'req> op::Write for Write<'req> {
+impl<'op> op::Write for Write<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn offset(&self) -> u64 {
-        self.arg.arg.offset
+        self.arg.offset
     }
 
     fn size(&self) -> u32 {
-        self.arg.arg.size
+        self.arg.size
     }
 
     fn flags(&self) -> u32 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 
     fn lock_owner(&self) -> Option<LockOwner> {
-        if self.arg.arg.write_flags & kernel::FUSE_WRITE_LOCKOWNER != 0 {
-            Some(LockOwner::from_raw(self.arg.arg.lock_owner))
+        if self.arg.write_flags & kernel::FUSE_WRITE_LOCKOWNER != 0 {
+            Some(LockOwner::from_raw(self.arg.lock_owner))
         } else {
             None
         }
     }
 }
 
-pub type Release<'req> = Op<'req, parse::Release<'req>>;
+pub struct Release<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_release_in,
+}
 
-impl<'req> op::Release for Release<'req> {
+impl<'op> op::Release for Release<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn flags(&self) -> u32 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 
     fn lock_owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.arg.lock_owner)
+        LockOwner::from_raw(self.arg.lock_owner)
     }
 
     fn flush(&self) -> bool {
-        self.arg.arg.release_flags & kernel::FUSE_RELEASE_FLUSH != 0
+        self.arg.release_flags & kernel::FUSE_RELEASE_FLUSH != 0
     }
 
     fn flock_release(&self) -> bool {
-        self.arg.arg.release_flags & kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
+        self.arg.release_flags & kernel::FUSE_RELEASE_FLOCK_UNLOCK != 0
     }
 }
 
-pub type Statfs<'req> = Op<'req, parse::Statfs<'req>>;
+pub struct Statfs<'op> {
+    header: &'op kernel::fuse_in_header,
+}
 
-impl<'req> op::Statfs for Statfs<'req> {
+impl<'op> op::Statfs for Statfs<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 }
 
-pub type Fsync<'req> = Op<'req, parse::Fsync<'req>>;
+pub struct Fsync<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_fsync_in,
+}
 
-impl<'req> op::Fsync for Fsync<'req> {
+impl<'op> op::Fsync for Fsync<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn datasync(&self) -> bool {
-        self.arg.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
+        self.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 }
 
-pub type Setxattr<'req> = Op<'req, parse::Setxattr<'req>>;
+pub struct Setxattr<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_setxattr_in,
+    name: &'op OsStr,
+    value: &'op [u8],
+}
 
-impl<'req> op::Setxattr for Setxattr<'req> {
+impl<'op> op::Setxattr for Setxattr<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 
     fn value(&self) -> &[u8] {
-        self.arg.value
+        self.value
     }
 
     fn flags(&self) -> u32 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 }
 
-pub type Getxattr<'req> = Op<'req, parse::Getxattr<'req>>;
+pub struct Getxattr<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_getxattr_in,
+    name: &'op OsStr,
+}
 
-impl<'req> op::Getxattr for Getxattr<'req> {
+impl<'op> op::Getxattr for Getxattr<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 
     fn size(&self) -> u32 {
-        self.arg.arg.size
+        self.arg.size
     }
 }
 
-pub type Listxattr<'req> = Op<'req, parse::Listxattr<'req>>;
+pub struct Listxattr<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_getxattr_in,
+}
 
-impl<'req> op::Listxattr for Listxattr<'req> {
+impl<'op> op::Listxattr for Listxattr<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn size(&self) -> u32 {
-        self.arg.arg.size
+        self.arg.size
     }
 }
 
-pub type Removexattr<'req> = Op<'req, parse::Removexattr<'req>>;
+pub struct Removexattr<'op> {
+    header: &'op kernel::fuse_in_header,
+    name: &'op OsStr,
+}
 
-impl<'req> op::Removexattr for Removexattr<'req> {
+impl<'op> op::Removexattr for Removexattr<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 }
 
-pub type Flush<'req> = Op<'req, parse::Flush<'req>>;
+pub struct Flush<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_flush_in,
+}
 
-impl<'req> op::Flush for Flush<'req> {
+impl<'op> op::Flush for Flush<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn lock_owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.arg.lock_owner)
+        LockOwner::from_raw(self.arg.lock_owner)
     }
 }
 
-pub type Opendir<'req> = Op<'req, parse::Opendir<'req>>;
+pub struct Opendir<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_open_in,
+}
 
-impl<'req> op::Opendir for Opendir<'req> {
+impl<'op> op::Opendir for Opendir<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn flags(&self) -> u32 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 }
 
-pub type Readdir<'req> = Op<'req, parse::Readdir<'req>>;
+pub struct Readdir<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_read_in,
+}
 
-impl<'req> op::Readdir for Readdir<'req> {
+impl<'op> op::Readdir for Readdir<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn offset(&self) -> u64 {
-        self.arg.arg.offset
+        self.arg.offset
     }
 
     fn size(&self) -> u32 {
-        self.arg.arg.size
+        self.arg.size
     }
 
     fn is_plus(&self) -> bool {
@@ -869,23 +1311,26 @@ impl<'req> op::Readdir for Readdir<'req> {
     }
 }
 
-pub type Readdirplus<'req> = Op<'req, parse::Readdirplus<'req>>;
+pub struct Readdirplus<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_read_in,
+}
 
-impl<'req> op::Readdir for Readdirplus<'req> {
+impl<'op> op::Readdir for Readdirplus<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn offset(&self) -> u64 {
-        self.arg.arg.offset
+        self.arg.offset
     }
 
     fn size(&self) -> u32 {
-        self.arg.arg.size
+        self.arg.size
     }
 
     fn is_plus(&self) -> bool {
@@ -893,256 +1338,292 @@ impl<'req> op::Readdir for Readdirplus<'req> {
     }
 }
 
-pub type Releasedir<'req> = Op<'req, parse::Releasedir<'req>>;
+pub struct Releasedir<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_release_in,
+}
 
-impl<'req> op::Releasedir for Releasedir<'req> {
+impl<'op> op::Releasedir for Releasedir<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn flags(&self) -> u32 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 }
 
-pub type Fsyncdir<'req> = Op<'req, parse::Fsyncdir<'req>>;
+pub struct Fsyncdir<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_fsync_in,
+}
 
-impl<'req> op::Fsyncdir for Fsyncdir<'req> {
+impl<'op> op::Fsyncdir for Fsyncdir<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn datasync(&self) -> bool {
-        self.arg.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
+        self.arg.fsync_flags & kernel::FUSE_FSYNC_FDATASYNC != 0
     }
 }
 
-pub type Getlk<'req> = Op<'req, parse::Getlk<'req>>;
+pub struct Getlk<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_lk_in,
+}
 
-impl<'req> op::Getlk for Getlk<'req> {
+impl<'op> op::Getlk for Getlk<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.arg.owner)
+        LockOwner::from_raw(self.arg.owner)
     }
 
     fn typ(&self) -> u32 {
-        self.arg.arg.lk.typ
+        self.arg.lk.typ
     }
 
     fn start(&self) -> u64 {
-        self.arg.arg.lk.start
+        self.arg.lk.start
     }
 
     fn end(&self) -> u64 {
-        self.arg.arg.lk.end
+        self.arg.lk.end
     }
 
     fn pid(&self) -> u32 {
-        self.arg.arg.lk.pid
+        self.arg.lk.pid
     }
 }
 
-pub type Setlk<'req> = Op<'req, parse::Setlk<'req>>;
+pub struct Setlk<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_lk_in,
+    sleep: bool,
+}
 
-impl<'req> op::Setlk for Setlk<'req> {
+impl<'op> op::Setlk for Setlk<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.arg.owner)
+        LockOwner::from_raw(self.arg.owner)
     }
 
     fn typ(&self) -> u32 {
-        self.arg.arg.lk.typ
+        self.arg.lk.typ
     }
 
     fn start(&self) -> u64 {
-        self.arg.arg.lk.start
+        self.arg.lk.start
     }
 
     fn end(&self) -> u64 {
-        self.arg.arg.lk.end
+        self.arg.lk.end
     }
 
     fn pid(&self) -> u32 {
-        self.arg.arg.lk.pid
+        self.arg.lk.pid
     }
 
     fn sleep(&self) -> bool {
-        self.arg.sleep
+        self.sleep
     }
 }
 
-pub type Flock<'req> = Op<'req, parse::Flock<'req>>;
+pub struct Flock<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_lk_in,
+    op: u32,
+}
 
-impl<'req> op::Flock for Flock<'req> {
+impl<'op> op::Flock for Flock<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.arg.owner)
+        LockOwner::from_raw(self.arg.owner)
     }
 
     fn op(&self) -> Option<u32> {
-        Some(self.arg.op)
+        Some(self.op)
     }
 }
 
-pub type Access<'req> = Op<'req, parse::Access<'req>>;
+pub struct Access<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_access_in,
+}
 
-impl<'req> op::Access for Access<'req> {
+impl<'op> op::Access for Access<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn mask(&self) -> u32 {
-        self.arg.arg.mask
+        self.arg.mask
     }
 }
 
-pub type Create<'req> = Op<'req, parse::Create<'req>>;
+pub struct Create<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_create_in,
+    name: &'op OsStr,
+}
 
-impl<'req> op::Create for Create<'req> {
+impl<'op> op::Create for Create<'op> {
     fn parent(&self) -> u64 {
         self.header.nodeid
     }
 
     fn name(&self) -> &OsStr {
-        self.arg.name
+        self.name
     }
 
     fn mode(&self) -> u32 {
-        self.arg.arg.mode
+        self.arg.mode
     }
 
     fn open_flags(&self) -> u32 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 
     fn umask(&self) -> u32 {
-        self.arg.arg.umask
+        self.arg.umask
     }
 }
 
-pub type Bmap<'req> = Op<'req, parse::Bmap<'req>>;
+pub struct Bmap<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_bmap_in,
+}
 
-impl<'req> op::Bmap for Bmap<'req> {
+impl<'op> op::Bmap for Bmap<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn block(&self) -> u64 {
-        self.arg.arg.block
+        self.arg.block
     }
 
     fn blocksize(&self) -> u32 {
-        self.arg.arg.blocksize
+        self.arg.blocksize
     }
 }
 
-pub type Fallocate<'req> = Op<'req, parse::Fallocate<'req>>;
+pub struct Fallocate<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_fallocate_in,
+}
 
-impl<'req> op::Fallocate for Fallocate<'req> {
+impl<'op> op::Fallocate for Fallocate<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn offset(&self) -> u64 {
-        self.arg.arg.offset
+        self.arg.offset
     }
 
     fn length(&self) -> u64 {
-        self.arg.arg.length
+        self.arg.length
     }
 
     fn mode(&self) -> u32 {
-        self.arg.arg.mode
+        self.arg.mode
     }
 }
 
-pub type CopyFileRange<'req> = Op<'req, parse::CopyFileRange<'req>>;
+pub struct CopyFileRange<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_copy_file_range_in,
+}
 
-impl<'req> op::CopyFileRange for CopyFileRange<'req> {
+impl<'op> op::CopyFileRange for CopyFileRange<'op> {
     fn ino_in(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh_in(&self) -> u64 {
-        self.arg.arg.fh_in
+        self.arg.fh_in
     }
 
     fn offset_in(&self) -> u64 {
-        self.arg.arg.off_in
+        self.arg.off_in
     }
 
     fn ino_out(&self) -> u64 {
-        self.arg.arg.nodeid_out
+        self.arg.nodeid_out
     }
 
     fn fh_out(&self) -> u64 {
-        self.arg.arg.fh_out
+        self.arg.fh_out
     }
 
     fn offset_out(&self) -> u64 {
-        self.arg.arg.off_out
+        self.arg.off_out
     }
 
     fn length(&self) -> u64 {
-        self.arg.arg.len
+        self.arg.len
     }
 
     fn flags(&self) -> u64 {
-        self.arg.arg.flags
+        self.arg.flags
     }
 }
 
-pub type Poll<'req> = Op<'req, parse::Poll<'req>>;
+pub struct Poll<'op> {
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_poll_in,
+}
 
-impl<'req> op::Poll for Poll<'req> {
+impl<'op> op::Poll for Poll<'op> {
     fn ino(&self) -> u64 {
         self.header.nodeid
     }
 
     fn fh(&self) -> u64 {
-        self.arg.arg.fh
+        self.arg.fh
     }
 
     fn events(&self) -> u32 {
-        self.arg.arg.events
+        self.arg.events
     }
 
     fn kh(&self) -> Option<u64> {
-        if self.arg.arg.flags & kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
-            Some(self.arg.arg.kh)
+        if self.arg.flags & kernel::FUSE_POLL_SCHEDULE_NOTIFY != 0 {
+            Some(self.arg.kh)
         } else {
             None
         }
@@ -1155,9 +1636,9 @@ impl<'req> op::Poll for Poll<'req> {
 #[must_use]
 pub struct Replied(());
 
-pub struct ReplyAttr<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyAttr<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_attr_out,
 }
 
@@ -1188,9 +1669,9 @@ impl reply::ReplyAttr for ReplyAttr<'_> {
     }
 }
 
-pub struct ReplyEntry<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyEntry<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_entry_out,
 }
 
@@ -1231,9 +1712,9 @@ impl reply::ReplyEntry for ReplyEntry<'_> {
     }
 }
 
-pub struct ReplyOk<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyOk<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
 }
 
 impl reply::ReplyOk for ReplyOk<'_> {
@@ -1246,9 +1727,9 @@ impl reply::ReplyOk for ReplyOk<'_> {
     }
 }
 
-pub struct ReplyData<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyData<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
 }
 
 impl reply::ReplyData for ReplyData<'_> {
@@ -1265,9 +1746,9 @@ impl reply::ReplyData for ReplyData<'_> {
     }
 }
 
-pub struct ReplyOpen<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyOpen<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_open_out,
 }
 
@@ -1303,9 +1784,9 @@ impl reply::ReplyOpen for ReplyOpen<'_> {
     }
 }
 
-pub struct ReplyWrite<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyWrite<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_write_out,
 }
 
@@ -1325,9 +1806,9 @@ impl reply::ReplyWrite for ReplyWrite<'_> {
     }
 }
 
-pub struct ReplyStatfs<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyStatfs<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_statfs_out,
 }
 
@@ -1350,9 +1831,9 @@ impl reply::ReplyStatfs for ReplyStatfs<'_> {
     }
 }
 
-pub struct ReplyXattr<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyXattr<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_getxattr_out,
 }
 
@@ -1381,9 +1862,9 @@ impl reply::ReplyXattr for ReplyXattr<'_> {
     }
 }
 
-pub struct ReplyLk<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyLk<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_lk_out,
 }
 
@@ -1406,9 +1887,9 @@ impl reply::ReplyLk for ReplyLk<'_> {
     }
 }
 
-pub struct ReplyCreate<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyCreate<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: CreateArg,
 }
 
@@ -1480,9 +1961,9 @@ impl reply::ReplyCreate for ReplyCreate<'_> {
     }
 }
 
-pub struct ReplyBmap<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyBmap<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_bmap_out,
 }
 
@@ -1502,9 +1983,9 @@ impl reply::ReplyBmap for ReplyBmap<'_> {
     }
 }
 
-pub struct ReplyPoll<'req> {
-    writer: &'req Writer,
-    header: &'req kernel::fuse_in_header,
+pub struct ReplyPoll<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_poll_out,
 }
 

@@ -2,7 +2,6 @@
 
 mod conn;
 mod daemon;
-mod parse;
 mod session;
 mod util;
 mod write;

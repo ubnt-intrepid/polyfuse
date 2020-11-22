@@ -1,13 +1,11 @@
 //! Establish a FUSE session.
 
-use crate::{
-    parse::{Arg, Request},
-    write,
-};
+use crate::{util::Decoder, write};
 use bitflags::bitflags;
 use futures::io::{AsyncRead, AsyncReadExt as _};
-use polyfuse_kernel as kernel;
+use polyfuse_kernel::{self as kernel, fuse_opcode};
 use std::{
+    convert::TryFrom,
     fmt, io,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -249,9 +247,21 @@ impl SessionInitializer {
     where
         W: io::Write,
     {
-        let Request { header, arg, .. } = Request::parse(buf)?;
-        match arg {
-            Arg::Init { arg: init_in } => {
+        let mut decoder = Decoder::new(buf);
+        let header = decoder
+            .fetch::<kernel::fuse_in_header>() //
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "failed to decode fuse_in_header")
+            })?;
+
+        match fuse_opcode::try_from(header.opcode) {
+            Ok(fuse_opcode::FUSE_INIT) => {
+                let init_in = decoder
+                    .fetch::<kernel::fuse_init_in>() //
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::Other, "failed to decode fuse_init_in")
+                    })?;
+
                 let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
                 let readonly_flags = init_in.flags & !CapabilityFlags::all().bits();
                 tracing::debug!("INIT request:");
