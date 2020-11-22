@@ -1,7 +1,7 @@
 //! Establish a FUSE session.
 
 use crate::{
-    parse::{Arg, Request},
+    request::parse::{Arg, Request},
     write,
 };
 use bitflags::bitflags;
