@@ -1650,15 +1650,7 @@ impl reply::ReplyAttr for ReplyAttr<'_> {
     where
         T: FileAttr,
     {
-        fill_attr(attr, &mut self.arg.attr);
-
-        if let Some(ttl) = ttl {
-            self.arg.attr_valid = ttl.as_secs();
-            self.arg.attr_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.attr_valid = u64::MAX;
-            self.arg.attr_valid_nsec = u32::MAX;
-        }
+        fill_attr_out(&mut self.arg, attr, ttl);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1683,25 +1675,7 @@ impl reply::ReplyEntry for ReplyEntry<'_> {
     where
         T: FileAttr,
     {
-        fill_attr(attr, &mut self.arg.attr);
-        self.arg.nodeid = opts.ino;
-        self.arg.generation = opts.generation;
-
-        if let Some(ttl) = opts.ttl_attr {
-            self.arg.attr_valid = ttl.as_secs();
-            self.arg.attr_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.attr_valid = u64::MAX;
-            self.arg.attr_valid_nsec = u32::MAX;
-        }
-
-        if let Some(ttl) = opts.ttl_entry {
-            self.arg.entry_valid = ttl.as_secs();
-            self.arg.entry_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.entry_valid = u64::MAX;
-            self.arg.entry_valid_nsec = u32::MAX;
-        }
+        fill_entry_out(&mut self.arg, attr, opts);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1757,23 +1731,7 @@ impl reply::ReplyOpen for ReplyOpen<'_> {
     type Error = Error;
 
     fn open(mut self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error> {
-        self.arg.fh = fh;
-
-        if opts.direct_io {
-            self.arg.open_flags |= kernel::FOPEN_DIRECT_IO;
-        }
-
-        if opts.keep_cache {
-            self.arg.open_flags |= kernel::FOPEN_KEEP_CACHE;
-        }
-
-        if opts.nonseekable {
-            self.arg.open_flags |= kernel::FOPEN_NONSEEKABLE;
-        }
-
-        if opts.cache_dir {
-            self.arg.open_flags |= kernel::FOPEN_CACHE_DIR;
-        }
+        fill_open_out(&mut self.arg, fh, opts);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1820,7 +1778,7 @@ impl reply::ReplyStatfs for ReplyStatfs<'_> {
     where
         S: FsStatistics,
     {
-        fill_statfs(stat, &mut self.arg.st);
+        fill_statfs(&mut self.arg.st, stat);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1914,43 +1872,8 @@ impl reply::ReplyCreate for ReplyCreate<'_> {
     where
         T: FileAttr,
     {
-        fill_attr(attr, &mut self.arg.entry_out.attr);
-        self.arg.entry_out.nodeid = entry_opts.ino;
-        self.arg.entry_out.generation = entry_opts.generation;
-
-        if let Some(ttl) = entry_opts.ttl_attr {
-            self.arg.entry_out.attr_valid = ttl.as_secs();
-            self.arg.entry_out.attr_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.entry_out.attr_valid = u64::MAX;
-            self.arg.entry_out.attr_valid_nsec = u32::MAX;
-        }
-
-        if let Some(ttl) = entry_opts.ttl_entry {
-            self.arg.entry_out.entry_valid = ttl.as_secs();
-            self.arg.entry_out.entry_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.entry_out.entry_valid = u64::MAX;
-            self.arg.entry_out.entry_valid_nsec = u32::MAX;
-        }
-
-        self.arg.open_out.fh = fh;
-
-        if open_opts.direct_io {
-            self.arg.open_out.open_flags |= kernel::FOPEN_DIRECT_IO;
-        }
-
-        if open_opts.keep_cache {
-            self.arg.open_out.open_flags |= kernel::FOPEN_KEEP_CACHE;
-        }
-
-        if open_opts.nonseekable {
-            self.arg.open_out.open_flags |= kernel::FOPEN_NONSEEKABLE;
-        }
-
-        if open_opts.cache_dir {
-            self.arg.open_out.open_flags |= kernel::FOPEN_CACHE_DIR;
-        }
+        fill_entry_out(&mut self.arg.entry_out, attr, entry_opts);
+        fill_open_out(&mut self.arg.open_out, fh, open_opts);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -2005,7 +1928,62 @@ impl reply::ReplyPoll for ReplyPoll<'_> {
     }
 }
 
-fn fill_attr(src: impl FileAttr, dst: &mut kernel::fuse_attr) {
+fn fill_attr_out(dst: &mut kernel::fuse_attr_out, attr: impl FileAttr, ttl: Option<Duration>) {
+    fill_attr(&mut dst.attr, attr);
+
+    if let Some(ttl) = ttl {
+        dst.attr_valid = ttl.as_secs();
+        dst.attr_valid_nsec = ttl.subsec_nanos();
+    } else {
+        dst.attr_valid = u64::MAX;
+        dst.attr_valid_nsec = u32::MAX;
+    }
+}
+
+fn fill_entry_out(dst: &mut kernel::fuse_entry_out, attr: impl FileAttr, opts: &EntryOptions) {
+    fill_attr(&mut dst.attr, attr);
+
+    dst.nodeid = opts.ino;
+    dst.generation = opts.generation;
+
+    if let Some(ttl) = opts.ttl_attr {
+        dst.attr_valid = ttl.as_secs();
+        dst.attr_valid_nsec = ttl.subsec_nanos();
+    } else {
+        dst.attr_valid = u64::MAX;
+        dst.attr_valid_nsec = u32::MAX;
+    }
+
+    if let Some(ttl) = opts.ttl_entry {
+        dst.entry_valid = ttl.as_secs();
+        dst.entry_valid_nsec = ttl.subsec_nanos();
+    } else {
+        dst.entry_valid = u64::MAX;
+        dst.entry_valid_nsec = u32::MAX;
+    }
+}
+
+fn fill_open_out(dst: &mut kernel::fuse_open_out, fh: u64, opts: &OpenOptions) {
+    dst.fh = fh;
+
+    if opts.direct_io {
+        dst.open_flags |= kernel::FOPEN_DIRECT_IO;
+    }
+
+    if opts.keep_cache {
+        dst.open_flags |= kernel::FOPEN_KEEP_CACHE;
+    }
+
+    if opts.nonseekable {
+        dst.open_flags |= kernel::FOPEN_NONSEEKABLE;
+    }
+
+    if opts.cache_dir {
+        dst.open_flags |= kernel::FOPEN_CACHE_DIR;
+    }
+}
+
+fn fill_attr(dst: &mut kernel::fuse_attr, src: impl FileAttr) {
     dst.ino = src.ino();
     dst.size = src.size();
     dst.mode = src.mode();
@@ -2023,7 +2001,7 @@ fn fill_attr(src: impl FileAttr, dst: &mut kernel::fuse_attr) {
     dst.ctimensec = src.ctime_nsec();
 }
 
-fn fill_statfs(src: impl FsStatistics, dst: &mut kernel::fuse_kstatfs) {
+fn fill_statfs(dst: &mut kernel::fuse_kstatfs, src: impl FsStatistics) {
     dst.bsize = src.bsize();
     dst.frsize = src.frsize();
     dst.blocks = src.blocks();
