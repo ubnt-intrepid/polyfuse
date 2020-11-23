@@ -1,6 +1,6 @@
 use self::non_exhaustive::NonExhaustive;
 use crate::types::{FileAttr, FsStatistics};
-use std::{io, time::Duration};
+use std::{ffi::OsStr, io, time::Duration};
 
 /// The error values caused by the filesystem.
 pub trait Error {
@@ -215,6 +215,29 @@ pub trait ReplyPoll {
     type Error: Error;
 
     fn revents(self, revents: u32) -> Result<Self::Ok, Self::Error>;
+}
+
+pub trait ReplyDirs {
+    type Ok;
+    type Error: Error;
+
+    fn add<D>(&mut self, dirent: D, offset: u64) -> bool
+    where
+        D: DirEntry;
+
+    fn send(self) -> Result<Self::Ok, Self::Error>;
+}
+
+/// A directory entry replied to the kernel.
+pub trait DirEntry {
+    /// Return the inode number of this entry.
+    fn ino(&self) -> u64;
+
+    /// Return the type of this entry.
+    fn typ(&self) -> u32;
+
+    /// Returns the name of this entry.
+    fn name(&self) -> &OsStr;
 }
 
 mod non_exhaustive {

@@ -3,7 +3,7 @@
 use crate::{
     conn::Writer,
     op::{self, SetAttrTime},
-    reply::{self, EntryOptions, OpenOptions},
+    reply::{self, DirEntry, EntryOptions, OpenOptions},
     session::Session,
     types::{FileAttr, FsStatistics, LockOwner},
     util::{as_bytes, Decoder},
@@ -11,7 +11,9 @@ use crate::{
 };
 use futures::future::Future;
 use polyfuse_kernel::{self as kernel, fuse_opcode};
-use std::{convert::TryFrom, ffi::OsStr, fmt, io, sync::Arc, time::Duration};
+use std::{
+    convert::TryFrom, ffi::OsStr, fmt, io, mem, os::unix::prelude::*, sync::Arc, time::Duration,
+};
 
 #[derive(Debug)]
 pub struct Error(ErrorKind);
@@ -155,6 +157,14 @@ impl Request {
             writer: &self.writer,
             header,
             arg: Default::default(),
+        };
+
+        let reply_dirs = |arg| ReplyDirs {
+            writer: &self.writer,
+            header,
+            arg,
+            entries: vec![],
+            buflen: 0,
         };
 
         let res = match fuse_opcode::try_from(header.opcode).ok() {
@@ -428,19 +438,18 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 f(Operation::Readdir {
                     op: Readdir { header, arg },
-                    reply: reply_data(),
+                    reply: reply_dirs(arg),
                 })
                 .await
             }
-            Some(fuse_opcode::FUSE_READDIRPLUS) => {
-                let arg = decoder.fetch().ok_or_else(Error::decode)?;
-                f(Operation::Readdirplus {
-                    op: Readdirplus { header, arg },
-                    reply: reply_data(),
-                })
-                .await
-            }
-
+            // Some(fuse_opcode::FUSE_READDIRPLUS) => {
+            //     let arg = decoder.fetch().ok_or_else(Error::decode)?;
+            //     f(Operation::Readdirplus {
+            //         op: Readdirplus { header, arg },
+            //         reply: reply_data(),
+            //     })
+            //     .await
+            // }
             Some(fuse_opcode::FUSE_RELEASEDIR) => {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 f(Operation::Releasedir {
@@ -687,12 +696,12 @@ pub enum Operation<'op> {
     },
     Readdir {
         op: Readdir<'op>,
-        reply: ReplyData<'op>,
+        reply: ReplyDirs<'op>,
     },
-    Readdirplus {
-        op: Readdirplus<'op>,
-        reply: ReplyData<'op>,
-    },
+    // Readdirplus {
+    //     op: Readdirplus<'op>,
+    //     reply: ReplyData<'op>,
+    // },
     Releasedir {
         op: Releasedir<'op>,
         reply: ReplyOk<'op>,
@@ -1928,6 +1937,66 @@ impl reply::ReplyPoll for ReplyPoll<'_> {
     }
 }
 
+pub struct ReplyDirs<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_read_in,
+    entries: Vec<(kernel::fuse_dirent, Vec<u8>)>,
+    buflen: usize,
+}
+
+impl reply::ReplyDirs for ReplyDirs<'_> {
+    type Ok = Replied;
+    type Error = Error;
+
+    fn add<D>(&mut self, dirent: D, offset: u64) -> bool
+    where
+        D: DirEntry,
+    {
+        let name = dirent.name().as_bytes();
+        let namelen = u32::try_from(name.len()).unwrap();
+
+        let entlen = mem::size_of::<kernel::fuse_dirent>() + name.len();
+        let entsize = aligned(entlen);
+        let padlen = entsize - entlen;
+
+        if self.buflen + entsize > self.arg.size as usize {
+            return true;
+        }
+
+        let dirent = kernel::fuse_dirent {
+            off: offset,
+            ino: dirent.ino(),
+            typ: dirent.typ(),
+            namelen,
+            name: [],
+        };
+
+        let mut padded_name = Vec::with_capacity(name.len() + padlen);
+        padded_name.copy_from_slice(name);
+        padded_name.resize(name.len() + padlen, 0);
+
+        self.entries.push((dirent, padded_name));
+        self.buflen += entsize;
+
+        false
+    }
+
+    fn send(self) -> Result<Self::Ok, Self::Error> {
+        // FIXME: avoid redundant allocations.
+        let data: Vec<_> = self
+            .entries
+            .iter()
+            .flat_map(|(header, padded_name)| vec![unsafe { as_bytes(header) }, &padded_name[..]])
+            .collect();
+
+        write::send_reply(self.writer, self.header.unique, data) //
+            .map_err(Error::fatal)?;
+
+        Ok(Replied(()))
+    }
+}
+
 fn fill_attr_out(dst: &mut kernel::fuse_attr_out, attr: impl FileAttr, ttl: Option<Duration>) {
     fill_attr(&mut dst.attr, attr);
 
@@ -2010,4 +2079,9 @@ fn fill_statfs(dst: &mut kernel::fuse_kstatfs, src: impl FsStatistics) {
     dst.files = src.files();
     dst.ffree = src.ffree();
     dst.namelen = src.namelen();
+}
+
+#[inline]
+const fn aligned(len: usize) -> usize {
+    (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
