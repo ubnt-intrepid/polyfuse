@@ -443,9 +443,6 @@ pub trait Readdir {
 
     /// Return the maximum length of returned data.
     fn size(&self) -> u32;
-
-    /// Return whether the operation is "plus" mode or not.
-    fn is_plus(&self) -> bool;
 }
 
 /// Release an opened directory.

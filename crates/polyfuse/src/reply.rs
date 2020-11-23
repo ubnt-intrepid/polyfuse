@@ -228,6 +228,18 @@ pub trait ReplyDirs {
     fn send(self) -> Result<Self::Ok, Self::Error>;
 }
 
+pub trait ReplyDirsPlus {
+    type Ok;
+    type Error: Error;
+
+    fn add<D, A>(&mut self, dirent: D, offset: u64, attr: A, opts: &EntryOptions) -> bool
+    where
+        D: DirEntry,
+        A: FileAttr;
+
+    fn send(self) -> Result<Self::Ok, Self::Error>;
+}
+
 /// A directory entry replied to the kernel.
 pub trait DirEntry {
     /// Return the inode number of this entry.

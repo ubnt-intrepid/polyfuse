@@ -167,6 +167,14 @@ impl Request {
             buflen: 0,
         };
 
+        let reply_dirs_plus = |arg| ReplyDirsPlus {
+            writer: &self.writer,
+            header,
+            arg,
+            entries: vec![],
+            buflen: 0,
+        };
+
         let res = match fuse_opcode::try_from(header.opcode).ok() {
             // Some(fuse_opcode::FUSE_FORGET) => {
             //     let arg = decoder
@@ -442,14 +450,15 @@ impl Request {
                 })
                 .await
             }
-            // Some(fuse_opcode::FUSE_READDIRPLUS) => {
-            //     let arg = decoder.fetch().ok_or_else(Error::decode)?;
-            //     f(Operation::Readdirplus {
-            //         op: Readdirplus { header, arg },
-            //         reply: reply_data(),
-            //     })
-            //     .await
-            // }
+            Some(fuse_opcode::FUSE_READDIRPLUS) => {
+                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                f(Operation::Readdirplus {
+                    op: Readdir { header, arg },
+                    reply: reply_dirs_plus(arg),
+                })
+                .await
+            }
+
             Some(fuse_opcode::FUSE_RELEASEDIR) => {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 f(Operation::Releasedir {
@@ -698,10 +707,10 @@ pub enum Operation<'op> {
         op: Readdir<'op>,
         reply: ReplyDirs<'op>,
     },
-    // Readdirplus {
-    //     op: Readdirplus<'op>,
-    //     reply: ReplyData<'op>,
-    // },
+    Readdirplus {
+        op: Readdir<'op>,
+        reply: ReplyDirsPlus<'op>,
+    },
     Releasedir {
         op: Releasedir<'op>,
         reply: ReplyOk<'op>,
@@ -1313,37 +1322,6 @@ impl<'op> op::Readdir for Readdir<'op> {
 
     fn size(&self) -> u32 {
         self.arg.size
-    }
-
-    fn is_plus(&self) -> bool {
-        false
-    }
-}
-
-pub struct Readdirplus<'op> {
-    header: &'op kernel::fuse_in_header,
-    arg: &'op kernel::fuse_read_in,
-}
-
-impl<'op> op::Readdir for Readdirplus<'op> {
-    fn ino(&self) -> u64 {
-        self.header.nodeid
-    }
-
-    fn fh(&self) -> u64 {
-        self.arg.fh
-    }
-
-    fn offset(&self) -> u64 {
-        self.arg.offset
-    }
-
-    fn size(&self) -> u32 {
-        self.arg.size
-    }
-
-    fn is_plus(&self) -> bool {
-        true
     }
 }
 
@@ -1988,6 +1966,75 @@ impl reply::ReplyDirs for ReplyDirs<'_> {
             .entries
             .iter()
             .flat_map(|(header, padded_name)| vec![unsafe { as_bytes(header) }, &padded_name[..]])
+            .collect();
+
+        write::send_reply(self.writer, self.header.unique, data) //
+            .map_err(Error::fatal)?;
+
+        Ok(Replied(()))
+    }
+}
+
+pub struct ReplyDirsPlus<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_read_in,
+    entries: Vec<(kernel::fuse_dirent, Vec<u8>, kernel::fuse_entry_out)>,
+    buflen: usize,
+}
+
+impl reply::ReplyDirsPlus for ReplyDirsPlus<'_> {
+    type Ok = Replied;
+    type Error = Error;
+
+    fn add<D, A>(&mut self, dirent: D, offset: u64, attr: A, opts: &EntryOptions) -> bool
+    where
+        D: DirEntry,
+        A: FileAttr,
+    {
+        let name = dirent.name().as_bytes();
+        let namelen = u32::try_from(name.len()).unwrap();
+
+        let entlen = mem::size_of::<kernel::fuse_dirent>() + name.len();
+        let entsize = aligned(entlen);
+        let padlen = entsize - entlen;
+
+        if self.buflen + entsize + mem::size_of::<kernel::fuse_entry_out>() > self.arg.size as usize
+        {
+            return true;
+        }
+
+        let dirent = kernel::fuse_dirent {
+            off: offset,
+            ino: dirent.ino(),
+            typ: dirent.typ(),
+            namelen,
+            name: [],
+        };
+
+        let mut padded_name = Vec::with_capacity(name.len() + padlen);
+        padded_name.copy_from_slice(name);
+        padded_name.resize(name.len() + padlen, 0);
+
+        let mut entry_out = kernel::fuse_entry_out::default();
+        fill_entry_out(&mut entry_out, attr, opts);
+
+        self.entries.push((dirent, padded_name, entry_out));
+        self.buflen += entsize;
+
+        false
+    }
+
+    fn send(self) -> Result<Self::Ok, Self::Error> {
+        // FIXME: avoid redundant allocations.
+        let data: Vec<_> = self
+            .entries
+            .iter()
+            .flat_map(|(header, padded_name, entry_out)| {
+                vec![unsafe { as_bytes(header) }, &padded_name[..], unsafe {
+                    as_bytes(entry_out)
+                }]
+            })
             .collect();
 
         write::send_reply(self.writer, self.header.unique, data) //
