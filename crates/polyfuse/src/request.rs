@@ -12,7 +12,8 @@ use crate::{
 use futures::future::Future;
 use polyfuse_kernel::{self as kernel, fuse_opcode};
 use std::{
-    convert::TryFrom, ffi::OsStr, fmt, io, mem, os::unix::prelude::*, sync::Arc, time::Duration,
+    convert::TryFrom, ffi::OsStr, fmt, io, mem, os::unix::prelude::*, ptr, sync::Arc,
+    time::Duration,
 };
 
 #[derive(Debug)]
@@ -1951,8 +1952,11 @@ impl reply::ReplyDirs for ReplyDirs<'_> {
         };
 
         let mut padded_name = Vec::with_capacity(name.len() + padlen);
-        padded_name.copy_from_slice(name);
-        padded_name.resize(name.len() + padlen, 0);
+        unsafe {
+            ptr::copy_nonoverlapping(name.as_ptr(), padded_name.as_mut_ptr(), name.len());
+            ptr::write_bytes(padded_name.as_mut_ptr().add(name.len()), 0, padlen);
+            padded_name.set_len(name.len() + padlen);
+        }
 
         self.entries.push((dirent, padded_name));
         self.buflen += entsize;
