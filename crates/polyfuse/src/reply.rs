@@ -221,9 +221,7 @@ pub trait ReplyDirs {
     type Ok;
     type Error: Error;
 
-    fn add<D>(&mut self, dirent: D, offset: u64) -> bool
-    where
-        D: DirEntry;
+    fn add(&mut self, ino: u64, typ: u32, name: &OsStr, offset: u64) -> bool;
 
     fn send(self) -> Result<Self::Ok, Self::Error>;
 }
@@ -232,24 +230,19 @@ pub trait ReplyDirsPlus {
     type Ok;
     type Error: Error;
 
-    fn add<D, A>(&mut self, dirent: D, offset: u64, attr: A, opts: &EntryOptions) -> bool
+    fn add<A>(
+        &mut self,
+        ino: u64,
+        typ: u32,
+        name: &OsStr,
+        offset: u64,
+        attr: A,
+        opts: &EntryOptions,
+    ) -> bool
     where
-        D: DirEntry,
         A: FileAttr;
 
     fn send(self) -> Result<Self::Ok, Self::Error>;
-}
-
-/// A directory entry replied to the kernel.
-pub trait DirEntry {
-    /// Return the inode number of this entry.
-    fn ino(&self) -> u64;
-
-    /// Return the type of this entry.
-    fn typ(&self) -> u32;
-
-    /// Returns the name of this entry.
-    fn name(&self) -> &OsStr;
 }
 
 mod non_exhaustive {

@@ -3,7 +3,7 @@
 use crate::{
     conn::Writer,
     op::{self, SetAttrTime},
-    reply::{self, DirEntry, EntryOptions, OpenOptions},
+    reply::{self, EntryOptions, OpenOptions},
     session::Session,
     types::{FileAttr, FsStatistics, LockOwner},
     util::{as_bytes, Decoder},
@@ -1928,11 +1928,8 @@ impl reply::ReplyDirs for ReplyDirs<'_> {
     type Ok = Replied;
     type Error = Error;
 
-    fn add<D>(&mut self, dirent: D, offset: u64) -> bool
-    where
-        D: DirEntry,
-    {
-        let name = dirent.name().as_bytes();
+    fn add(&mut self, ino: u64, typ: u32, name: &OsStr, offset: u64) -> bool {
+        let name = name.as_bytes();
         let namelen = u32::try_from(name.len()).unwrap();
 
         let entlen = mem::size_of::<kernel::fuse_dirent>() + name.len();
@@ -1945,8 +1942,8 @@ impl reply::ReplyDirs for ReplyDirs<'_> {
 
         let dirent = kernel::fuse_dirent {
             off: offset,
-            ino: dirent.ino(),
-            typ: dirent.typ(),
+            ino,
+            typ,
             namelen,
             name: [],
         };
@@ -1991,12 +1988,19 @@ impl reply::ReplyDirsPlus for ReplyDirsPlus<'_> {
     type Ok = Replied;
     type Error = Error;
 
-    fn add<D, A>(&mut self, dirent: D, offset: u64, attr: A, opts: &EntryOptions) -> bool
+    fn add<A>(
+        &mut self,
+        ino: u64,
+        typ: u32,
+        name: &OsStr,
+        offset: u64,
+        attr: A,
+        opts: &EntryOptions,
+    ) -> bool
     where
-        D: DirEntry,
         A: FileAttr,
     {
-        let name = dirent.name().as_bytes();
+        let name = name.as_bytes();
         let namelen = u32::try_from(name.len()).unwrap();
 
         let entlen = mem::size_of::<kernel::fuse_dirent>() + name.len();
@@ -2010,8 +2014,8 @@ impl reply::ReplyDirsPlus for ReplyDirsPlus<'_> {
 
         let dirent = kernel::fuse_dirent {
             off: offset,
-            ino: dirent.ino(),
-            typ: dirent.typ(),
+            ino,
+            typ,
             namelen,
             name: [],
         };

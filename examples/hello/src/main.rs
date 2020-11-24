@@ -7,7 +7,7 @@ use polyfuse::{
     reply::{self, EntryOptions},
     Daemon, Operation,
 };
-use std::{ffi::OsStr, mem, os::unix::prelude::*, path::PathBuf, time::Duration};
+use std::{mem, os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const ROOT_INO: u64 = 1;
@@ -53,6 +53,12 @@ struct Hello {
     entries: Vec<DirEntry>,
 }
 
+struct DirEntry {
+    name: &'static str,
+    ino: u64,
+    typ: u32,
+}
+
 impl Hello {
     fn new() -> Self {
         let root_attr = root_attr();
@@ -60,19 +66,19 @@ impl Hello {
 
         let mut entries = Vec::with_capacity(3);
         entries.push(DirEntry {
-            ino: ROOT_INO,
-            entry_type: DirEntryType::Directory,
             name: ".",
-        });
-        entries.push(DirEntry {
             ino: ROOT_INO,
-            entry_type: DirEntryType::Directory,
-            name: "..",
+            typ: libc::DT_DIR as u32,
         });
         entries.push(DirEntry {
-            ino: HELLO_INO,
-            entry_type: DirEntryType::File,
+            name: "..",
+            ino: ROOT_INO,
+            typ: libc::DT_DIR as u32,
+        });
+        entries.push(DirEntry {
             name: HELLO_FILENAME,
+            ino: HELLO_INO,
+            typ: libc::DT_REG as u32,
         });
 
         Self {
@@ -153,8 +159,8 @@ impl Hello {
             return Err(polyfuse::reply::error_code(libc::ENOTDIR));
         }
 
-        for (i, dir_entry) in self.dir_entries().skip(op.offset() as usize) {
-            let full = reply.add(dir_entry, i + 1);
+        for (i, entry) in self.dir_entries().skip(op.offset() as usize) {
+            let full = reply.add(entry.ino, entry.typ, entry.name.as_ref(), i + 1);
             if full {
                 break;
             }
@@ -183,32 +189,4 @@ fn hello_attr() -> libc::stat {
     attr.st_uid = unsafe { libc::getuid() };
     attr.st_gid = unsafe { libc::getgid() };
     attr
-}
-
-struct DirEntry {
-    ino: u64,
-    entry_type: DirEntryType,
-    name: &'static str,
-}
-
-enum DirEntryType {
-    Directory,
-    File,
-}
-
-impl polyfuse::reply::DirEntry for &DirEntry {
-    fn ino(&self) -> u64 {
-        self.ino
-    }
-
-    fn typ(&self) -> u32 {
-        match self.entry_type {
-            DirEntryType::Directory => libc::DT_DIR as u32,
-            DirEntryType::File => libc::DT_REG as u32,
-        }
-    }
-
-    fn name(&self) -> &OsStr {
-        self.name.as_ref()
-    }
 }
