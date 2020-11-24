@@ -4,7 +4,7 @@ use crate::{
     conn::Writer,
     op::{self, SetAttrTime},
     reply::{self, EntryOptions, OpenOptions},
-    session::Session,
+    session::SessionInner,
     types::{FileAttr, FsStatistics, LockOwner},
     util::{as_bytes, Decoder},
     write,
@@ -67,7 +67,7 @@ impl crate::reply::Error for Error {
 /// Context about an incoming FUSE request.
 pub struct Request {
     pub(crate) buf: Vec<u8>,
-    pub(crate) session: Arc<Session>,
+    pub(crate) session: Arc<SessionInner>,
     pub(crate) writer: Writer,
 }
 

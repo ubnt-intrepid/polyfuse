@@ -1,4 +1,4 @@
-use polyfuse::{op, reply, Daemon, Operation};
+use polyfuse::{op, reply, Operation, Session};
 
 use anyhow::Context as _;
 use std::{path::PathBuf, time::Duration};
@@ -15,10 +15,10 @@ async fn main() -> anyhow::Result<()> {
     anyhow::ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Start the FUSE daemon mounted on the specified path.
-    let mut daemon = Daemon::mount(mountpoint, &[]).await?;
+    let mut session = Session::mount(mountpoint, &[]).await?;
 
     // Receive an incoming FUSE request from the kernel.
-    while let Some(req) = daemon.next_request().await? {
+    while let Some(req) = session.next_request().await? {
         // Process the request.
         req.process(|op| async {
             match op {

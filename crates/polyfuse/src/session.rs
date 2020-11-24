@@ -1,13 +1,20 @@
 //! Establish a FUSE session.
 
+use crate::{conn::Connection, request::Request};
 use crate::{util::Decoder, write};
+use async_io::Async;
 use bitflags::bitflags;
 use futures::io::{AsyncRead, AsyncReadExt as _};
 use polyfuse_kernel::{self as kernel, fuse_opcode};
 use std::{
     convert::TryFrom,
+    ffi::OsStr,
     fmt, io,
-    sync::atomic::{AtomicBool, Ordering},
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 // The minimum supported ABI minor version by polyfuse.
@@ -197,18 +204,18 @@ impl Default for CapabilityFlags {
     }
 }
 
-pub struct SessionInitializer {
-    pub(crate) max_readahead: u32,
-    pub(crate) flags: CapabilityFlags,
-    pub(crate) max_background: u16,
-    pub(crate) congestion_threshold: u16,
-    pub(crate) max_write: u32,
-    pub(crate) time_gran: u32,
+pub struct Builder {
+    max_readahead: u32,
+    flags: CapabilityFlags,
+    max_background: u16,
+    congestion_threshold: u16,
+    max_write: u32,
+    time_gran: u32,
     #[allow(dead_code)]
-    pub(crate) max_pages: u16,
+    max_pages: u16,
 }
 
-impl Default for SessionInitializer {
+impl Default for Builder {
     fn default() -> Self {
         Self {
             max_readahead: u32::max_value(),
@@ -222,8 +229,89 @@ impl Default for SessionInitializer {
     }
 }
 
-impl SessionInitializer {
-    pub async fn init<'w, R, W: ?Sized>(&self, reader: R, writer: &'w W) -> io::Result<Session>
+impl Builder {
+    /// Return a reference to the capability flags.
+    pub fn flags(&mut self) -> &mut CapabilityFlags {
+        &mut self.flags
+    }
+
+    /// Set the maximum readahead.
+    pub fn max_readahead(&mut self, value: u32) -> &mut Self {
+        self.max_readahead = value;
+        self
+    }
+
+    /// Set the maximum size of the write buffer.
+    // ///
+    // /// # Panic
+    // /// It causes an assertion panic if the setting value is
+    // /// less than the absolute minimum.
+    pub fn max_write(&mut self, value: u32) -> &mut Self {
+        // assert!(
+        //     value >= MIN_MAX_WRITE,
+        //     "max_write must be greater or equal to {}",
+        //     MIN_MAX_WRITE,
+        // );
+        self.max_write = value;
+        self
+    }
+
+    /// Return the maximum number of pending *background* requests.
+    pub fn max_background(&mut self, max_background: u16) -> &mut Self {
+        self.max_background = max_background;
+        self
+    }
+
+    /// Set the threshold number of pending background requests
+    /// that the kernel marks the filesystem as *congested*.
+    ///
+    /// If the setting value is 0, the value is automatically
+    /// calculated by using max_background.
+    ///
+    /// # Panics
+    /// It cause a panic if the setting value is greater than `max_background`.
+    pub fn congestion_threshold(&mut self, mut threshold: u16) -> &mut Self {
+        assert!(
+            threshold <= self.max_background,
+            "The congestion_threshold must be less or equal to max_background"
+        );
+        if threshold == 0 {
+            threshold = self.max_background * 3 / 4;
+            tracing::debug!(congestion_threshold = threshold);
+        }
+        self.congestion_threshold = threshold;
+        self
+    }
+
+    /// Set the timestamp resolution supported by the filesystem.
+    ///
+    /// The setting value has the nanosecond unit and should be a power of 10.
+    ///
+    /// The default value is 1.
+    pub fn time_gran(&mut self, time_gran: u32) -> &mut Self {
+        self.time_gran = time_gran;
+        self
+    }
+
+    /// Start a FUSE daemon mount on the specified path.
+    pub async fn mount(
+        &self,
+        mountpoint: impl AsRef<Path>,
+        mountopts: &[&OsStr],
+    ) -> io::Result<Session> {
+        // FIXME: make Connection::open async.
+        let conn = Connection::open(mountpoint.as_ref(), mountopts)?;
+        let conn = Async::new(conn)?;
+
+        let session = self.init(&conn, conn.get_ref()).await?;
+
+        Ok(Session {
+            inner: Arc::new(session),
+            conn,
+        })
+    }
+
+    async fn init<'w, R, W: ?Sized>(&self, reader: R, writer: &'w W) -> io::Result<SessionInner>
     where
         R: AsyncRead,
         &'w W: io::Write,
@@ -243,7 +331,7 @@ impl SessionInitializer {
     }
 
     #[allow(clippy::cognitive_complexity)]
-    async fn try_init<W>(&self, buf: &[u8], writer: W) -> io::Result<Option<Session>>
+    async fn try_init<W>(&self, buf: &[u8], writer: W) -> io::Result<Option<SessionInner>>
     where
         W: io::Write,
     {
@@ -350,7 +438,7 @@ impl SessionInitializer {
                 let conn = ConnectionInfo(init_out);
                 let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
 
-                Ok(Some(Session {
+                Ok(Some(SessionInner {
                     conn,
                     bufsize,
                     exited: AtomicBool::new(false),
@@ -369,28 +457,81 @@ impl SessionInitializer {
     }
 }
 
-pub struct Session {
+pub(crate) struct SessionInner {
     #[allow(dead_code)]
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
 }
 
-impl Session {
+impl SessionInner {
     #[inline]
-    pub fn buffer_size(&self) -> usize {
+    pub(crate) fn buffer_size(&self) -> usize {
         self.bufsize
     }
 
     #[inline]
-    pub fn exited(&self) -> bool {
+    pub(crate) fn exited(&self) -> bool {
         // FIXME: choose appropriate atomic ordering.
         self.exited.load(Ordering::SeqCst)
     }
 
     #[inline]
-    pub fn exit(&self) {
+    pub(crate) fn exit(&self) {
         // FIXME: choose appropriate atomic ordering.
         self.exited.store(true, Ordering::SeqCst)
+    }
+}
+
+/// The instance of FUSE daemon for interaction with the kernel driver.
+pub struct Session {
+    conn: Async<Connection>,
+    inner: Arc<SessionInner>,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.inner.exit();
+    }
+}
+
+impl Session {
+    /// Start a FUSE daemon mount on the specified path.
+    pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<Self> {
+        Builder::default().mount(mountpoint, mountopts).await
+    }
+
+    /// Receive an incoming FUSE request from the kernel.
+    pub async fn next_request(&mut self) -> io::Result<Option<Request>> {
+        let mut buf = vec![0u8; self.inner.buffer_size()];
+
+        loop {
+            match self.conn.read(&mut buf[..]).await {
+                Ok(len) => {
+                    unsafe {
+                        buf.set_len(len);
+                    }
+                    break;
+                }
+
+                Err(err) => match err.raw_os_error() {
+                    Some(libc::ENODEV) => {
+                        tracing::debug!("ENODEV");
+                        return Ok(None);
+                    }
+                    Some(libc::ENOENT) => {
+                        tracing::debug!("ENOENT");
+                        continue;
+                    }
+                    _ => return Err(err),
+                },
+            }
+        }
+
+        Ok(Some(Request {
+            buf,
+            session: self.inner.clone(),
+            writer: self.conn.get_ref().writer(),
+        }))
     }
 }

@@ -5,7 +5,7 @@ use anyhow::Context as _;
 use polyfuse::{
     op,
     reply::{self, EntryOptions},
-    Daemon, Operation,
+    Operation, Session,
 };
 use std::{mem, os::unix::prelude::*, path::PathBuf, time::Duration};
 
@@ -26,11 +26,11 @@ async fn main() -> anyhow::Result<()> {
         .context("missing mountpoint specified")?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let mut daemon = Daemon::mount(mountpoint, &[]).await?;
+    let mut session = Session::mount(mountpoint, &[]).await?;
 
     let fs = Hello::new();
 
-    while let Some(req) = daemon.next_request().await? {
+    while let Some(req) = session.next_request().await? {
         req.process(|op| async {
             match op {
                 Operation::Lookup { op, reply, .. } => fs.lookup(op, reply).await,
