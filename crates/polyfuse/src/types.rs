@@ -1,7 +1,6 @@
 //! Common types used in the filesystem representation.
 
-use self::non_exhaustive::NonExhaustive;
-use std::{borrow::Cow, ffi::OsStr, fmt};
+use std::fmt;
 
 /// Attributes about a file.
 pub trait FileAttr {
@@ -294,47 +293,5 @@ impl LockOwner {
     #[inline]
     pub const fn into_raw(self) -> u64 {
         self.0
-    }
-}
-
-/// A directory entry replied to the kernel.
-#[derive(Clone, Debug)]
-pub struct DirEntry {
-    /// Return the inode number of this entry.
-    pub ino: u64,
-
-    /// Return the offset value of this entry.
-    pub offset: u64,
-
-    /// Return the type of this entry.
-    pub typ: u32,
-
-    /// Returns the name of this entry.
-    pub name: Cow<'static, OsStr>,
-
-    #[doc(hidden)] // non_exhaustive
-    pub __non_exhaustive: NonExhaustive,
-}
-
-impl Default for DirEntry {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            ino: 0,
-            offset: 0,
-            typ: 0,
-            name: Cow::Borrowed("".as_ref()),
-
-            __non_exhaustive: NonExhaustive::INIT,
-        }
-    }
-}
-
-mod non_exhaustive {
-    #[derive(Copy, Clone, Debug)]
-    pub struct NonExhaustive(());
-
-    impl NonExhaustive {
-        pub(crate) const INIT: Self = Self(());
     }
 }

@@ -11,7 +11,10 @@ use crate::{
 };
 use futures::future::Future;
 use polyfuse_kernel::{self as kernel, fuse_opcode};
-use std::{convert::TryFrom, ffi::OsStr, fmt, io, sync::Arc, time::Duration};
+use std::{
+    convert::TryFrom, ffi::OsStr, fmt, io, mem, os::unix::prelude::*, ptr, sync::Arc,
+    time::Duration,
+};
 
 #[derive(Debug)]
 pub struct Error(ErrorKind);
@@ -155,6 +158,22 @@ impl Request {
             writer: &self.writer,
             header,
             arg: Default::default(),
+        };
+
+        let reply_dirs = |arg| ReplyDirs {
+            writer: &self.writer,
+            header,
+            arg,
+            entries: vec![],
+            buflen: 0,
+        };
+
+        let reply_dirs_plus = |arg| ReplyDirsPlus {
+            writer: &self.writer,
+            header,
+            arg,
+            entries: vec![],
+            buflen: 0,
         };
 
         let res = match fuse_opcode::try_from(header.opcode).ok() {
@@ -428,15 +447,15 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 f(Operation::Readdir {
                     op: Readdir { header, arg },
-                    reply: reply_data(),
+                    reply: reply_dirs(arg),
                 })
                 .await
             }
             Some(fuse_opcode::FUSE_READDIRPLUS) => {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 f(Operation::Readdirplus {
-                    op: Readdirplus { header, arg },
-                    reply: reply_data(),
+                    op: Readdir { header, arg },
+                    reply: reply_dirs_plus(arg),
                 })
                 .await
             }
@@ -687,11 +706,11 @@ pub enum Operation<'op> {
     },
     Readdir {
         op: Readdir<'op>,
-        reply: ReplyData<'op>,
+        reply: ReplyDirs<'op>,
     },
     Readdirplus {
-        op: Readdirplus<'op>,
-        reply: ReplyData<'op>,
+        op: Readdir<'op>,
+        reply: ReplyDirsPlus<'op>,
     },
     Releasedir {
         op: Releasedir<'op>,
@@ -1305,37 +1324,6 @@ impl<'op> op::Readdir for Readdir<'op> {
     fn size(&self) -> u32 {
         self.arg.size
     }
-
-    fn is_plus(&self) -> bool {
-        false
-    }
-}
-
-pub struct Readdirplus<'op> {
-    header: &'op kernel::fuse_in_header,
-    arg: &'op kernel::fuse_read_in,
-}
-
-impl<'op> op::Readdir for Readdirplus<'op> {
-    fn ino(&self) -> u64 {
-        self.header.nodeid
-    }
-
-    fn fh(&self) -> u64 {
-        self.arg.fh
-    }
-
-    fn offset(&self) -> u64 {
-        self.arg.offset
-    }
-
-    fn size(&self) -> u32 {
-        self.arg.size
-    }
-
-    fn is_plus(&self) -> bool {
-        true
-    }
 }
 
 pub struct Releasedir<'op> {
@@ -1650,15 +1638,7 @@ impl reply::ReplyAttr for ReplyAttr<'_> {
     where
         T: FileAttr,
     {
-        fill_attr(attr, &mut self.arg.attr);
-
-        if let Some(ttl) = ttl {
-            self.arg.attr_valid = ttl.as_secs();
-            self.arg.attr_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.attr_valid = u64::MAX;
-            self.arg.attr_valid_nsec = u32::MAX;
-        }
+        fill_attr_out(&mut self.arg, attr, ttl);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1683,25 +1663,7 @@ impl reply::ReplyEntry for ReplyEntry<'_> {
     where
         T: FileAttr,
     {
-        fill_attr(attr, &mut self.arg.attr);
-        self.arg.nodeid = opts.ino;
-        self.arg.generation = opts.generation;
-
-        if let Some(ttl) = opts.ttl_attr {
-            self.arg.attr_valid = ttl.as_secs();
-            self.arg.attr_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.attr_valid = u64::MAX;
-            self.arg.attr_valid_nsec = u32::MAX;
-        }
-
-        if let Some(ttl) = opts.ttl_entry {
-            self.arg.entry_valid = ttl.as_secs();
-            self.arg.entry_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.entry_valid = u64::MAX;
-            self.arg.entry_valid_nsec = u32::MAX;
-        }
+        fill_entry_out(&mut self.arg, attr, opts);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1757,23 +1719,7 @@ impl reply::ReplyOpen for ReplyOpen<'_> {
     type Error = Error;
 
     fn open(mut self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error> {
-        self.arg.fh = fh;
-
-        if opts.direct_io {
-            self.arg.open_flags |= kernel::FOPEN_DIRECT_IO;
-        }
-
-        if opts.keep_cache {
-            self.arg.open_flags |= kernel::FOPEN_KEEP_CACHE;
-        }
-
-        if opts.nonseekable {
-            self.arg.open_flags |= kernel::FOPEN_NONSEEKABLE;
-        }
-
-        if opts.cache_dir {
-            self.arg.open_flags |= kernel::FOPEN_CACHE_DIR;
-        }
+        fill_open_out(&mut self.arg, fh, opts);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1820,7 +1766,7 @@ impl reply::ReplyStatfs for ReplyStatfs<'_> {
     where
         S: FsStatistics,
     {
-        fill_statfs(stat, &mut self.arg.st);
+        fill_statfs(&mut self.arg.st, stat);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -1914,43 +1860,8 @@ impl reply::ReplyCreate for ReplyCreate<'_> {
     where
         T: FileAttr,
     {
-        fill_attr(attr, &mut self.arg.entry_out.attr);
-        self.arg.entry_out.nodeid = entry_opts.ino;
-        self.arg.entry_out.generation = entry_opts.generation;
-
-        if let Some(ttl) = entry_opts.ttl_attr {
-            self.arg.entry_out.attr_valid = ttl.as_secs();
-            self.arg.entry_out.attr_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.entry_out.attr_valid = u64::MAX;
-            self.arg.entry_out.attr_valid_nsec = u32::MAX;
-        }
-
-        if let Some(ttl) = entry_opts.ttl_entry {
-            self.arg.entry_out.entry_valid = ttl.as_secs();
-            self.arg.entry_out.entry_valid_nsec = ttl.subsec_nanos();
-        } else {
-            self.arg.entry_out.entry_valid = u64::MAX;
-            self.arg.entry_out.entry_valid_nsec = u32::MAX;
-        }
-
-        self.arg.open_out.fh = fh;
-
-        if open_opts.direct_io {
-            self.arg.open_out.open_flags |= kernel::FOPEN_DIRECT_IO;
-        }
-
-        if open_opts.keep_cache {
-            self.arg.open_out.open_flags |= kernel::FOPEN_KEEP_CACHE;
-        }
-
-        if open_opts.nonseekable {
-            self.arg.open_out.open_flags |= kernel::FOPEN_NONSEEKABLE;
-        }
-
-        if open_opts.cache_dir {
-            self.arg.open_out.open_flags |= kernel::FOPEN_CACHE_DIR;
-        }
+        fill_entry_out(&mut self.arg.entry_out, attr, entry_opts);
+        fill_open_out(&mut self.arg.open_out, fh, open_opts);
 
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
@@ -2005,7 +1916,198 @@ impl reply::ReplyPoll for ReplyPoll<'_> {
     }
 }
 
-fn fill_attr(src: impl FileAttr, dst: &mut kernel::fuse_attr) {
+pub struct ReplyDirs<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_read_in,
+    entries: Vec<(kernel::fuse_dirent, Vec<u8>)>,
+    buflen: usize,
+}
+
+impl reply::ReplyDirs for ReplyDirs<'_> {
+    type Ok = Replied;
+    type Error = Error;
+
+    fn add(&mut self, ino: u64, typ: u32, name: &OsStr, offset: u64) -> bool {
+        let name = name.as_bytes();
+        let namelen = u32::try_from(name.len()).unwrap();
+
+        let entlen = mem::size_of::<kernel::fuse_dirent>() + name.len();
+        let entsize = aligned(entlen);
+        let padlen = entsize - entlen;
+
+        if self.buflen + entsize > self.arg.size as usize {
+            return true;
+        }
+
+        let dirent = kernel::fuse_dirent {
+            off: offset,
+            ino,
+            typ,
+            namelen,
+            name: [],
+        };
+
+        let mut padded_name = Vec::with_capacity(name.len() + padlen);
+        unsafe {
+            ptr::copy_nonoverlapping(name.as_ptr(), padded_name.as_mut_ptr(), name.len());
+            ptr::write_bytes(padded_name.as_mut_ptr().add(name.len()), 0, padlen);
+            padded_name.set_len(name.len() + padlen);
+        }
+
+        self.entries.push((dirent, padded_name));
+        self.buflen += entsize;
+
+        false
+    }
+
+    fn send(self) -> Result<Self::Ok, Self::Error> {
+        // FIXME: avoid redundant allocations.
+        let data: Vec<_> = self
+            .entries
+            .iter()
+            .flat_map(|(header, padded_name)| vec![unsafe { as_bytes(header) }, &padded_name[..]])
+            .collect();
+
+        write::send_reply(self.writer, self.header.unique, data) //
+            .map_err(Error::fatal)?;
+
+        Ok(Replied(()))
+    }
+}
+
+pub struct ReplyDirsPlus<'op> {
+    writer: &'op Writer,
+    header: &'op kernel::fuse_in_header,
+    arg: &'op kernel::fuse_read_in,
+    entries: Vec<(kernel::fuse_dirent, Vec<u8>, kernel::fuse_entry_out)>,
+    buflen: usize,
+}
+
+impl reply::ReplyDirsPlus for ReplyDirsPlus<'_> {
+    type Ok = Replied;
+    type Error = Error;
+
+    fn add<A>(
+        &mut self,
+        ino: u64,
+        typ: u32,
+        name: &OsStr,
+        offset: u64,
+        attr: A,
+        opts: &EntryOptions,
+    ) -> bool
+    where
+        A: FileAttr,
+    {
+        let name = name.as_bytes();
+        let namelen = u32::try_from(name.len()).unwrap();
+
+        let entlen = mem::size_of::<kernel::fuse_dirent>() + name.len();
+        let entsize = aligned(entlen);
+        let padlen = entsize - entlen;
+
+        if self.buflen + entsize + mem::size_of::<kernel::fuse_entry_out>() > self.arg.size as usize
+        {
+            return true;
+        }
+
+        let dirent = kernel::fuse_dirent {
+            off: offset,
+            ino,
+            typ,
+            namelen,
+            name: [],
+        };
+
+        let mut padded_name = Vec::with_capacity(name.len() + padlen);
+        padded_name.copy_from_slice(name);
+        padded_name.resize(name.len() + padlen, 0);
+
+        let mut entry_out = kernel::fuse_entry_out::default();
+        fill_entry_out(&mut entry_out, attr, opts);
+
+        self.entries.push((dirent, padded_name, entry_out));
+        self.buflen += entsize;
+
+        false
+    }
+
+    fn send(self) -> Result<Self::Ok, Self::Error> {
+        // FIXME: avoid redundant allocations.
+        let data: Vec<_> = self
+            .entries
+            .iter()
+            .flat_map(|(header, padded_name, entry_out)| {
+                vec![unsafe { as_bytes(header) }, &padded_name[..], unsafe {
+                    as_bytes(entry_out)
+                }]
+            })
+            .collect();
+
+        write::send_reply(self.writer, self.header.unique, data) //
+            .map_err(Error::fatal)?;
+
+        Ok(Replied(()))
+    }
+}
+
+fn fill_attr_out(dst: &mut kernel::fuse_attr_out, attr: impl FileAttr, ttl: Option<Duration>) {
+    fill_attr(&mut dst.attr, attr);
+
+    if let Some(ttl) = ttl {
+        dst.attr_valid = ttl.as_secs();
+        dst.attr_valid_nsec = ttl.subsec_nanos();
+    } else {
+        dst.attr_valid = u64::MAX;
+        dst.attr_valid_nsec = u32::MAX;
+    }
+}
+
+fn fill_entry_out(dst: &mut kernel::fuse_entry_out, attr: impl FileAttr, opts: &EntryOptions) {
+    fill_attr(&mut dst.attr, attr);
+
+    dst.nodeid = opts.ino;
+    dst.generation = opts.generation;
+
+    if let Some(ttl) = opts.ttl_attr {
+        dst.attr_valid = ttl.as_secs();
+        dst.attr_valid_nsec = ttl.subsec_nanos();
+    } else {
+        dst.attr_valid = u64::MAX;
+        dst.attr_valid_nsec = u32::MAX;
+    }
+
+    if let Some(ttl) = opts.ttl_entry {
+        dst.entry_valid = ttl.as_secs();
+        dst.entry_valid_nsec = ttl.subsec_nanos();
+    } else {
+        dst.entry_valid = u64::MAX;
+        dst.entry_valid_nsec = u32::MAX;
+    }
+}
+
+fn fill_open_out(dst: &mut kernel::fuse_open_out, fh: u64, opts: &OpenOptions) {
+    dst.fh = fh;
+
+    if opts.direct_io {
+        dst.open_flags |= kernel::FOPEN_DIRECT_IO;
+    }
+
+    if opts.keep_cache {
+        dst.open_flags |= kernel::FOPEN_KEEP_CACHE;
+    }
+
+    if opts.nonseekable {
+        dst.open_flags |= kernel::FOPEN_NONSEEKABLE;
+    }
+
+    if opts.cache_dir {
+        dst.open_flags |= kernel::FOPEN_CACHE_DIR;
+    }
+}
+
+fn fill_attr(dst: &mut kernel::fuse_attr, src: impl FileAttr) {
     dst.ino = src.ino();
     dst.size = src.size();
     dst.mode = src.mode();
@@ -2023,7 +2125,7 @@ fn fill_attr(src: impl FileAttr, dst: &mut kernel::fuse_attr) {
     dst.ctimensec = src.ctime_nsec();
 }
 
-fn fill_statfs(src: impl FsStatistics, dst: &mut kernel::fuse_kstatfs) {
+fn fill_statfs(dst: &mut kernel::fuse_kstatfs, src: impl FsStatistics) {
     dst.bsize = src.bsize();
     dst.frsize = src.frsize();
     dst.blocks = src.blocks();
@@ -2032,4 +2134,9 @@ fn fill_statfs(src: impl FsStatistics, dst: &mut kernel::fuse_kstatfs) {
     dst.files = src.files();
     dst.ffree = src.ffree();
     dst.namelen = src.namelen();
+}
+
+#[inline]
+const fn aligned(len: usize) -> usize {
+    (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }

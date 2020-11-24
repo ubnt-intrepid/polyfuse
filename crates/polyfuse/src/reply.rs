@@ -1,6 +1,6 @@
 use self::non_exhaustive::NonExhaustive;
 use crate::types::{FileAttr, FsStatistics};
-use std::{io, time::Duration};
+use std::{ffi::OsStr, io, time::Duration};
 
 /// The error values caused by the filesystem.
 pub trait Error {
@@ -215,6 +215,34 @@ pub trait ReplyPoll {
     type Error: Error;
 
     fn revents(self, revents: u32) -> Result<Self::Ok, Self::Error>;
+}
+
+pub trait ReplyDirs {
+    type Ok;
+    type Error: Error;
+
+    fn add(&mut self, ino: u64, typ: u32, name: &OsStr, offset: u64) -> bool;
+
+    fn send(self) -> Result<Self::Ok, Self::Error>;
+}
+
+pub trait ReplyDirsPlus {
+    type Ok;
+    type Error: Error;
+
+    fn add<A>(
+        &mut self,
+        ino: u64,
+        typ: u32,
+        name: &OsStr,
+        offset: u64,
+        attr: A,
+        opts: &EntryOptions,
+    ) -> bool
+    where
+        A: FileAttr;
+
+    fn send(self) -> Result<Self::Ok, Self::Error>;
 }
 
 mod non_exhaustive {
