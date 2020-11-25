@@ -24,16 +24,14 @@ async fn main() -> anyhow::Result<()> {
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request(&conn).await? {
         // Process the request.
-        req.process(&conn, |op| async {
-            match op {
-                // Dispatch your callbacks to the supported operations...
-                Operation::Getattr { op, reply, .. } => getattr(op, reply).await,
+        let op = req.operation(&conn)?;
+        let _replied = match op {
+            // Dispatch your callbacks to the supported operations...
+            Operation::Getattr { op, reply, .. } => getattr(op, reply).await?,
 
-                // Or annotate that the operation is not supported.
-                op => op.unimplemented(),
-            }
-        })
-        .await?;
+            // Or annotate that the operation is not supported.
+            op => op.unimplemented()?,
+        };
     }
 
     Ok(())

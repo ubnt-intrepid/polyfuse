@@ -35,16 +35,14 @@ async fn main() -> anyhow::Result<()> {
     let fs = Hello::new();
 
     while let Some(req) = session.next_request(&conn).await? {
-        req.process(&conn, |op| async {
-            match op {
-                Operation::Lookup { op, reply, .. } => fs.lookup(op, reply).await,
-                Operation::Getattr { op, reply, .. } => fs.getattr(op, reply).await,
-                Operation::Read { op, reply, .. } => fs.read(op, reply).await,
-                Operation::Readdir { op, reply, .. } => fs.readdir(op, reply).await,
-                _ => op.unimplemented(),
-            }
-        })
-        .await?;
+        let op = req.operation(&conn)?;
+        let _replied = match op {
+            Operation::Lookup { op, reply, .. } => fs.lookup(op, reply).await,
+            Operation::Getattr { op, reply, .. } => fs.getattr(op, reply).await,
+            Operation::Read { op, reply, .. } => fs.read(op, reply).await,
+            Operation::Readdir { op, reply, .. } => fs.readdir(op, reply).await,
+            _ => op.unimplemented(),
+        };
     }
 
     Ok(())
