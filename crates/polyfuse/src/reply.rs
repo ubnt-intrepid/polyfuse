@@ -1,38 +1,16 @@
 use self::non_exhaustive::NonExhaustive;
 use crate::types::{FileAttr, FsStatistics};
-use std::{ffi::OsStr, io, time::Duration};
-
-/// The error values caused by the filesystem.
-pub trait Error {
-    /// Construct the error value from an I/O error.
-    fn from_io_error(io_error: io::Error) -> Self;
-
-    /// Construct the error value from an OS error code.
-    #[inline]
-    fn from_code(code: i32) -> Self
-    where
-        Self: Sized,
-    {
-        Self::from_io_error(io::Error::from_raw_os_error(code))
-    }
-}
-
-/// Equivalent to `<E as Error>::from_code(code)`.
-#[inline]
-pub fn error_code<E>(code: i32) -> E
-where
-    E: Error,
-{
-    E::from_code(code)
-}
+use std::{ffi::OsStr, time::Duration};
 
 pub trait ReplyEntry {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn entry<T>(self, attr: T, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>
     where
         T: FileAttr;
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 /// The option values for `ReplyEntry`.
@@ -89,34 +67,39 @@ impl Default for EntryOptions {
 
 pub trait ReplyAttr {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn attr<T>(self, attr: T, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error>
     where
         T: FileAttr;
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyOk {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn ok(self) -> Result<Self::Ok, Self::Error>;
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyData {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn data<T>(self, data: T) -> Result<Self::Ok, Self::Error>
     where
         T: AsRef<[u8]>;
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyOpen {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn open(self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error>;
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 /// The option values for `ReplyOpen`.
@@ -156,41 +139,48 @@ impl Default for OpenOptions {
 
 pub trait ReplyWrite {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn size(self, size: u32) -> Result<Self::Ok, Self::Error>;
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyStatfs {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn stat<S>(self, stat: S) -> Result<Self::Ok, Self::Error>
     where
         S: FsStatistics;
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyXattr {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn size(self, size: u32) -> Result<Self::Ok, Self::Error>;
 
     fn data<T>(self, data: T) -> Result<Self::Ok, Self::Error>
     where
         T: AsRef<[u8]>;
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyLk {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn lk(self, typ: u32, start: u64, end: u64, pid: u32) -> Result<Self::Ok, Self::Error>;
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyCreate {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn create<T>(
         self,
@@ -201,34 +191,41 @@ pub trait ReplyCreate {
     ) -> Result<Self::Ok, Self::Error>
     where
         T: FileAttr;
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyBmap {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn block(self, block: u64) -> Result<Self::Ok, Self::Error>;
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyPoll {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn revents(self, revents: u32) -> Result<Self::Ok, Self::Error>;
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyDirs {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn add(&mut self, ino: u64, typ: u32, name: &OsStr, offset: u64) -> bool;
 
     fn send(self) -> Result<Self::Ok, Self::Error>;
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 pub trait ReplyDirsPlus {
     type Ok;
-    type Error: Error;
+    type Error;
 
     fn add<A>(
         &mut self,
@@ -243,6 +240,7 @@ pub trait ReplyDirsPlus {
         A: FileAttr;
 
     fn send(self) -> Result<Self::Ok, Self::Error>;
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
 }
 
 mod non_exhaustive {

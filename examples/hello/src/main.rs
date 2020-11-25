@@ -41,8 +41,7 @@ async fn main() -> anyhow::Result<()> {
                 Operation::Getattr { op, reply, .. } => fs.getattr(op, reply).await,
                 Operation::Read { op, reply, .. } => fs.read(op, reply).await,
                 Operation::Readdir { op, reply, .. } => fs.readdir(op, reply).await,
-
-                _ => Err(polyfuse::reply::error_code(libc::ENOSYS)),
+                _ => op.unimplemented(),
             }
         })
         .await?;
@@ -107,7 +106,7 @@ impl Hello {
                     ..Default::default()
                 },
             ),
-            _ => Err(polyfuse::reply::error_code(libc::ENOENT)),
+            _ => reply.error(libc::ENOENT),
         }
     }
 
@@ -119,7 +118,7 @@ impl Hello {
         let attr = match op.ino() {
             ROOT_INO => &self.root_attr,
             HELLO_INO => &self.hello_attr,
-            _ => return Err(polyfuse::reply::error_code(libc::ENOENT)),
+            _ => return reply.error(libc::ENOENT),
         };
         reply.attr(attr, Some(TTL))
     }
@@ -130,9 +129,9 @@ impl Hello {
         R: reply::ReplyData,
     {
         match op.ino() {
-            ROOT_INO => return Err(polyfuse::reply::error_code(libc::EISDIR)),
+            ROOT_INO => return reply.error(libc::EISDIR),
             HELLO_INO => (),
-            _ => return Err(polyfuse::reply::error_code(libc::ENOENT)),
+            _ => return reply.error(libc::ENOENT),
         }
 
         let offset = op.offset() as usize;
@@ -160,7 +159,7 @@ impl Hello {
         R: reply::ReplyDirs,
     {
         if op.ino() != ROOT_INO {
-            return Err(polyfuse::reply::error_code(libc::ENOTDIR));
+            return reply.error(libc::ENOTDIR);
         }
 
         for (i, entry) in self.dir_entries().skip(op.offset() as usize) {

@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
                 Operation::Getattr { op, reply, .. } => getattr(op, reply).await,
 
                 // Or annotate that the operation is not supported.
-                _ => Err(polyfuse::reply::error_code(libc::ENOSYS)),
+                op => op.unimplemented(),
             }
         })
         .await?;
@@ -45,7 +45,7 @@ where
     R: reply::ReplyAttr,
 {
     if op.ino() != 1 {
-        return Err(polyfuse::reply::error_code(libc::ENOENT));
+        return reply.error(libc::ENOENT);
     }
 
     let mut attr = unsafe { std::mem::zeroed::<libc::stat>() };

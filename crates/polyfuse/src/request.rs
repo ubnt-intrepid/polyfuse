@@ -20,9 +20,8 @@ pub struct Error(ErrorKind);
 
 #[derive(Debug)]
 enum ErrorKind {
-    Code(i32),
     Decode,
-    Fatal(io::Error),
+    Reply(io::Error),
 }
 
 impl Error {
@@ -30,15 +29,8 @@ impl Error {
         Self(ErrorKind::Decode)
     }
 
-    fn fatal(err: io::Error) -> Self {
-        Self(ErrorKind::Fatal(err))
-    }
-
-    fn code(&self) -> Option<i32> {
-        match self.0 {
-            ErrorKind::Code(code) => Some(code),
-            _ => None,
-        }
+    fn reply(err: io::Error) -> Self {
+        Self(ErrorKind::Reply(err))
     }
 }
 
@@ -49,19 +41,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-impl crate::reply::Error for Error {
-    fn from_io_error(io_error: io::Error) -> Self {
-        Self(ErrorKind::Fatal(io_error))
-    }
-
-    fn from_code(code: i32) -> Self
-    where
-        Self: Sized,
-    {
-        Self(ErrorKind::Code(code))
-    }
-}
 
 /// Context about an incoming FUSE request.
 pub struct Request {
@@ -569,19 +548,12 @@ impl Request {
 
             _ => {
                 tracing::warn!("unsupported opcode: {}", header.opcode);
-                write::send_error(writer, header.unique, libc::ENOSYS).map_err(Error::fatal)?;
+                write::send_error(writer, header.unique, libc::ENOSYS).map_err(Error::reply)?;
                 return Ok(());
             }
         };
 
-        if let Err(err) = res {
-            match err.code() {
-                Some(code) => {
-                    write::send_error(writer, header.unique, code).map_err(Error::fatal)?;
-                }
-                None => return Err(err),
-            }
-        }
+        let _replied = res?;
 
         Ok(())
     }
@@ -752,6 +724,64 @@ pub enum Operation<'op, W: ?Sized> {
         op: Poll<'op>,
         reply: ReplyPoll<'op, W>,
     },
+}
+
+impl<'op, W: ?Sized> Operation<'op, W>
+where
+    &'op W: io::Write,
+{
+    pub fn unimplemented(self) -> Result<Replied, Error> {
+        use crate::reply::*;
+
+        macro_rules! f {
+            ( $( $Op:ident ),* $(,)? ) => {
+                match self {
+                    $(
+                        Operation::$Op { reply, .. } => reply.error(libc::ENOSYS),
+                    )*
+                }
+            };
+        }
+
+        f! {
+            Lookup,
+            Getattr,
+            Setattr,
+            Readlink,
+            Symlink,
+            Mknod,
+            Mkdir,
+            Unlink,
+            Rmdir,
+            Rename,
+            Link,
+            Open,
+            Read,
+            Write,
+            Release,
+            Statfs,
+            Fsync,
+            Setxattr,
+            Getxattr,
+            Listxattr,
+            Removexattr,
+            Flush,
+            Opendir,
+            Readdir,
+            Readdirplus,
+            Releasedir,
+            Fsyncdir,
+            Getlk,
+            Setlk,
+            Flock,
+            Access,
+            Create,
+            Bmap,
+            Fallocate,
+            CopyFileRange,
+            Poll,
+        }
+    }
 }
 
 // ==== operations ====
@@ -1642,8 +1672,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1670,8 +1705,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1689,7 +1729,12 @@ where
     type Error = Error;
 
     fn ok(self) -> Result<Self::Ok, Self::Error> {
-        write::send_reply(self.writer, self.header.unique, &[]).map_err(Error::fatal)?;
+        write::send_reply(self.writer, self.header.unique, &[]).map_err(Error::reply)?;
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1710,8 +1755,13 @@ where
     where
         T: AsRef<[u8]>,
     {
-        write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::fatal)?;
+        write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1735,8 +1785,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1760,8 +1815,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1788,8 +1848,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1813,7 +1878,7 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -1822,8 +1887,13 @@ where
     where
         T: AsRef<[u8]>,
     {
-        write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::fatal)?;
+        write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1850,8 +1920,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1892,8 +1967,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1917,8 +1997,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -1942,8 +2027,13 @@ where
         write::send_reply(self.writer, self.header.unique, unsafe {
             as_bytes(&self.arg)
         })
-        .map_err(Error::fatal)?;
+        .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -2005,8 +2095,13 @@ where
             .collect();
 
         write::send_reply(self.writer, self.header.unique, data) //
-            .map_err(Error::fatal)?;
+            .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
@@ -2084,8 +2179,13 @@ where
             .collect();
 
         write::send_reply(self.writer, self.header.unique, data) //
-            .map_err(Error::fatal)?;
+            .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 }
