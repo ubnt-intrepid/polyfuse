@@ -24,16 +24,14 @@ async fn main() -> anyhow::Result<()> {
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request(&conn).await? {
         // Process the request.
-        req.process(&conn, |op| async {
-            match op {
-                // Dispatch your callbacks to the supported operations...
-                Operation::Getattr { op, reply, .. } => getattr(op, reply).await,
+        let op = req.operation(&conn)?;
+        let _replied = match op {
+            // Dispatch your callbacks to the supported operations...
+            Operation::Getattr { op, reply, .. } => getattr(op, reply).await?,
 
-                // Or annotate that the operation is not supported.
-                _ => Err(polyfuse::reply::error_code(libc::ENOSYS)),
-            }
-        })
-        .await?;
+            // Or annotate that the operation is not supported.
+            op => op.unimplemented()?,
+        };
     }
 
     Ok(())
@@ -45,7 +43,7 @@ where
     R: reply::ReplyAttr,
 {
     if op.ino() != 1 {
-        return Err(polyfuse::reply::error_code(libc::ENOENT));
+        return reply.error(libc::ENOENT);
     }
 
     let mut attr = unsafe { std::mem::zeroed::<libc::stat>() };
