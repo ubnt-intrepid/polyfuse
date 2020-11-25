@@ -8,9 +8,7 @@ use futures::io::{AsyncRead, AsyncReadExt as _};
 use polyfuse_kernel::{self as kernel, fuse_opcode};
 use std::{
     convert::TryFrom,
-    ffi::OsStr,
     fmt, io,
-    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -204,7 +202,7 @@ impl Default for CapabilityFlags {
     }
 }
 
-pub struct Builder {
+pub struct Config {
     max_readahead: u32,
     flags: CapabilityFlags,
     max_background: u16,
@@ -215,7 +213,7 @@ pub struct Builder {
     max_pages: u16,
 }
 
-impl Default for Builder {
+impl Default for Config {
     fn default() -> Self {
         Self {
             max_readahead: u32::max_value(),
@@ -229,7 +227,7 @@ impl Default for Builder {
     }
 }
 
-impl Builder {
+impl Config {
     /// Return a reference to the capability flags.
     pub fn flags(&mut self) -> &mut CapabilityFlags {
         &mut self.flags
@@ -292,184 +290,23 @@ impl Builder {
         self.time_gran = time_gran;
         self
     }
-
-    /// Start a FUSE daemon mount on the specified path.
-    pub async fn mount(
-        &self,
-        mountpoint: impl AsRef<Path>,
-        mountopts: &[&OsStr],
-    ) -> io::Result<Session> {
-        // FIXME: make Connection::open async.
-        let conn = Connection::open(mountpoint.as_ref(), mountopts)?;
-        let conn = Async::new(conn)?;
-
-        let session = self.init(&conn, conn.get_ref()).await?;
-
-        Ok(Session {
-            inner: Arc::new(session),
-            conn,
-        })
-    }
-
-    async fn init<'w, R, W: ?Sized>(&self, reader: R, writer: &'w W) -> io::Result<SessionInner>
-    where
-        R: AsyncRead,
-        &'w W: io::Write,
-    {
-        let init_buf_size = BUFFER_HEADER_SIZE + pagesize() * MAX_MAX_PAGES;
-        let mut buf = vec![0u8; init_buf_size];
-
-        futures::pin_mut!(reader);
-
-        loop {
-            reader.read(&mut buf[..]).await?;
-            match self.try_init(&buf[..], writer).await? {
-                Some(session) => return Ok(session),
-                None => continue,
-            }
-        }
-    }
-
-    #[allow(clippy::cognitive_complexity)]
-    async fn try_init<W>(&self, buf: &[u8], writer: W) -> io::Result<Option<SessionInner>>
-    where
-        W: io::Write,
-    {
-        let mut decoder = Decoder::new(buf);
-        let header = decoder
-            .fetch::<kernel::fuse_in_header>() //
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::Other, "failed to decode fuse_in_header")
-            })?;
-
-        match fuse_opcode::try_from(header.opcode) {
-            Ok(fuse_opcode::FUSE_INIT) => {
-                let init_in = decoder
-                    .fetch::<kernel::fuse_init_in>() //
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::Other, "failed to decode fuse_init_in")
-                    })?;
-
-                let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
-                let readonly_flags = init_in.flags & !CapabilityFlags::all().bits();
-                tracing::debug!("INIT request:");
-                tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
-                tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
-                tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
-                tracing::debug!(
-                    "  max_pages = {}",
-                    init_in.flags & kernel::FUSE_MAX_PAGES != 0
-                );
-                tracing::debug!(
-                    "  no_open_support = {}",
-                    init_in.flags & kernel::FUSE_NO_OPEN_SUPPORT != 0
-                );
-                tracing::debug!(
-                    "  no_opendir_support = {}",
-                    init_in.flags & kernel::FUSE_NO_OPENDIR_SUPPORT != 0
-                );
-
-                let mut init_out = kernel::fuse_init_out::default();
-                init_out.major = kernel::FUSE_KERNEL_VERSION;
-                init_out.minor = kernel::FUSE_KERNEL_MINOR_VERSION;
-
-                if init_in.major > 7 {
-                    tracing::debug!("wait for a second INIT request with an older version.");
-                    write::send_reply(writer, header.unique, unsafe {
-                        crate::util::as_bytes(&init_out)
-                    })?;
-                    return Ok(None);
-                }
-
-                if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
-                    tracing::warn!(
-                        "polyfuse supports only ABI 7.{} or later. {}.{} is not supported",
-                        MINIMUM_SUPPORTED_MINOR_VERSION,
-                        init_in.major,
-                        init_in.minor
-                    );
-                    write::send_error(writer, header.unique, libc::EPROTO)?;
-                    return Ok(None);
-                }
-
-                init_out.minor = std::cmp::min(init_out.minor, init_in.minor);
-
-                init_out.flags = (self.flags & capable).bits();
-                init_out.flags |= kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
-
-                init_out.max_readahead = std::cmp::min(self.max_readahead, init_in.max_readahead);
-                init_out.max_write = self.max_write;
-                init_out.max_background = self.max_background;
-                init_out.congestion_threshold = self.congestion_threshold;
-                init_out.time_gran = self.time_gran;
-
-                if init_in.flags & kernel::FUSE_MAX_PAGES != 0 {
-                    init_out.flags |= kernel::FUSE_MAX_PAGES;
-                    init_out.max_pages = std::cmp::min(
-                        (init_out.max_write - 1) / (pagesize() as u32) + 1,
-                        u16::max_value() as u32,
-                    ) as u16;
-                }
-
-                debug_assert_eq!(init_out.major, kernel::FUSE_KERNEL_VERSION);
-                debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
-
-                tracing::debug!("Reply to INIT:");
-                tracing::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
-                tracing::debug!(
-                    "  flags = 0x{:08x} ({:?})",
-                    init_out.flags,
-                    CapabilityFlags::from_bits_truncate(init_out.flags)
-                );
-                tracing::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
-                tracing::debug!("  max_write = 0x{:08X}", init_out.max_write);
-                tracing::debug!("  max_background = 0x{:04X}", init_out.max_background);
-                tracing::debug!(
-                    "  congestion_threshold = 0x{:04X}",
-                    init_out.congestion_threshold
-                );
-                tracing::debug!("  time_gran = {}", init_out.time_gran);
-                write::send_reply(writer, header.unique, unsafe {
-                    crate::util::as_bytes(&init_out)
-                })?;
-
-                init_out.flags |= readonly_flags;
-
-                let conn = ConnectionInfo(init_out);
-                let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
-
-                Ok(Some(SessionInner {
-                    conn,
-                    bufsize,
-                    exited: AtomicBool::new(false),
-                }))
-            }
-
-            _ => {
-                tracing::warn!(
-                    "ignoring an operation before init (opcode={:?})",
-                    header.opcode
-                );
-                write::send_error(writer, header.unique, libc::EIO)?;
-                Ok(None)
-            }
-        }
-    }
 }
 
-pub(crate) struct SessionInner {
+/// The instance of FUSE daemon for interaction with the kernel driver.
+pub struct Session {
     #[allow(dead_code)]
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
 }
 
-impl SessionInner {
-    #[inline]
-    pub(crate) fn buffer_size(&self) -> usize {
-        self.bufsize
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.exit();
     }
+}
 
+impl Session {
     #[inline]
     pub(crate) fn exited(&self) -> bool {
         // FIXME: choose appropriate atomic ordering.
@@ -481,32 +318,23 @@ impl SessionInner {
         // FIXME: choose appropriate atomic ordering.
         self.exited.store(true, Ordering::SeqCst)
     }
-}
 
-/// The instance of FUSE daemon for interaction with the kernel driver.
-pub struct Session {
-    conn: Async<Connection>,
-    inner: Arc<SessionInner>,
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        self.inner.exit();
-    }
-}
-
-impl Session {
     /// Start a FUSE daemon mount on the specified path.
-    pub async fn mount(mountpoint: impl AsRef<Path>, mountopts: &[&OsStr]) -> io::Result<Self> {
-        Builder::default().mount(mountpoint, mountopts).await
+    pub async fn start(conn: &Async<Connection>, config: Config) -> io::Result<Arc<Self>> {
+        init(config, conn, conn.get_ref()).await.map(Arc::new)
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub async fn next_request(&mut self) -> io::Result<Option<Request>> {
-        let mut buf = vec![0u8; self.inner.buffer_size()];
+    pub async fn next_request(
+        self: &Arc<Self>,
+        conn: &Async<Connection>,
+    ) -> io::Result<Option<Request>> {
+        let mut conn = conn;
+
+        let mut buf = vec![0u8; self.bufsize];
 
         loop {
-            match self.conn.read(&mut buf[..]).await {
+            match conn.read(&mut buf[..]).await {
                 Ok(len) => {
                     unsafe {
                         buf.set_len(len);
@@ -530,8 +358,150 @@ impl Session {
 
         Ok(Some(Request {
             buf,
-            session: self.inner.clone(),
-            writer: self.conn.get_ref().writer(),
+            session: self.clone(),
         }))
+    }
+}
+
+async fn init<'w, R, W: ?Sized>(config: Config, reader: R, writer: &'w W) -> io::Result<Session>
+where
+    R: AsyncRead,
+    &'w W: io::Write,
+{
+    let init_buf_size = BUFFER_HEADER_SIZE + pagesize() * MAX_MAX_PAGES;
+    let mut buf = vec![0u8; init_buf_size];
+
+    futures::pin_mut!(reader);
+
+    loop {
+        reader.read(&mut buf[..]).await?;
+        match try_init(&config, &buf[..], writer).await? {
+            Some(session) => return Ok(session),
+            None => continue,
+        }
+    }
+}
+
+#[allow(clippy::cognitive_complexity)]
+async fn try_init<W>(config: &Config, buf: &[u8], writer: W) -> io::Result<Option<Session>>
+where
+    W: io::Write,
+{
+    let mut decoder = Decoder::new(buf);
+    let header = decoder
+        .fetch::<kernel::fuse_in_header>() //
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to decode fuse_in_header"))?;
+
+    match fuse_opcode::try_from(header.opcode) {
+        Ok(fuse_opcode::FUSE_INIT) => {
+            let init_in = decoder
+                .fetch::<kernel::fuse_init_in>() //
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::Other, "failed to decode fuse_init_in")
+                })?;
+
+            let capable = CapabilityFlags::from_bits_truncate(init_in.flags);
+            let readonly_flags = init_in.flags & !CapabilityFlags::all().bits();
+            tracing::debug!("INIT request:");
+            tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
+            tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
+            tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
+            tracing::debug!(
+                "  max_pages = {}",
+                init_in.flags & kernel::FUSE_MAX_PAGES != 0
+            );
+            tracing::debug!(
+                "  no_open_support = {}",
+                init_in.flags & kernel::FUSE_NO_OPEN_SUPPORT != 0
+            );
+            tracing::debug!(
+                "  no_opendir_support = {}",
+                init_in.flags & kernel::FUSE_NO_OPENDIR_SUPPORT != 0
+            );
+
+            let mut init_out = kernel::fuse_init_out::default();
+            init_out.major = kernel::FUSE_KERNEL_VERSION;
+            init_out.minor = kernel::FUSE_KERNEL_MINOR_VERSION;
+
+            if init_in.major > 7 {
+                tracing::debug!("wait for a second INIT request with an older version.");
+                write::send_reply(writer, header.unique, unsafe {
+                    crate::util::as_bytes(&init_out)
+                })?;
+                return Ok(None);
+            }
+
+            if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
+                tracing::warn!(
+                    "polyfuse supports only ABI 7.{} or later. {}.{} is not supported",
+                    MINIMUM_SUPPORTED_MINOR_VERSION,
+                    init_in.major,
+                    init_in.minor
+                );
+                write::send_error(writer, header.unique, libc::EPROTO)?;
+                return Ok(None);
+            }
+
+            init_out.minor = std::cmp::min(init_out.minor, init_in.minor);
+
+            init_out.flags = (config.flags & capable).bits();
+            init_out.flags |= kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
+
+            init_out.max_readahead = std::cmp::min(config.max_readahead, init_in.max_readahead);
+            init_out.max_write = config.max_write;
+            init_out.max_background = config.max_background;
+            init_out.congestion_threshold = config.congestion_threshold;
+            init_out.time_gran = config.time_gran;
+
+            if init_in.flags & kernel::FUSE_MAX_PAGES != 0 {
+                init_out.flags |= kernel::FUSE_MAX_PAGES;
+                init_out.max_pages = std::cmp::min(
+                    (init_out.max_write - 1) / (pagesize() as u32) + 1,
+                    u16::max_value() as u32,
+                ) as u16;
+            }
+
+            debug_assert_eq!(init_out.major, kernel::FUSE_KERNEL_VERSION);
+            debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
+
+            tracing::debug!("Reply to INIT:");
+            tracing::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
+            tracing::debug!(
+                "  flags = 0x{:08x} ({:?})",
+                init_out.flags,
+                CapabilityFlags::from_bits_truncate(init_out.flags)
+            );
+            tracing::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
+            tracing::debug!("  max_write = 0x{:08X}", init_out.max_write);
+            tracing::debug!("  max_background = 0x{:04X}", init_out.max_background);
+            tracing::debug!(
+                "  congestion_threshold = 0x{:04X}",
+                init_out.congestion_threshold
+            );
+            tracing::debug!("  time_gran = {}", init_out.time_gran);
+            write::send_reply(writer, header.unique, unsafe {
+                crate::util::as_bytes(&init_out)
+            })?;
+
+            init_out.flags |= readonly_flags;
+
+            let conn = ConnectionInfo(init_out);
+            let bufsize = BUFFER_HEADER_SIZE + conn.max_write() as usize;
+
+            Ok(Some(Session {
+                conn,
+                bufsize,
+                exited: AtomicBool::new(false),
+            }))
+        }
+
+        _ => {
+            tracing::warn!(
+                "ignoring an operation before init (opcode={:?})",
+                header.opcode
+            );
+            write::send_error(writer, header.unique, libc::EIO)?;
+            Ok(None)
+        }
     }
 }

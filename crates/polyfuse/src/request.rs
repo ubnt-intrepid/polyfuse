@@ -4,7 +4,7 @@ use crate::{
     conn::Writer,
     op::{self, SetAttrTime},
     reply::{self, EntryOptions, OpenOptions},
-    session::SessionInner,
+    session::Session,
     types::{FileAttr, FsStatistics, LockOwner},
     util::{as_bytes, Decoder},
     write,
@@ -67,15 +67,14 @@ impl crate::reply::Error for Error {
 /// Context about an incoming FUSE request.
 pub struct Request {
     pub(crate) buf: Vec<u8>,
-    pub(crate) session: Arc<SessionInner>,
-    pub(crate) writer: Writer,
+    pub(crate) session: Arc<Session>,
 }
 
 impl Request {
     // TODO: add unique(), uid(), gid() and pid()
 
     /// Process the request with the provided callback.
-    pub async fn process<'op, F, Fut>(&'op self, f: F) -> Result<(), Error>
+    pub async fn process<'op, F, Fut>(&'op self, writer: &'op Writer, f: F) -> Result<(), Error>
     where
         F: FnOnce(Operation<'op>) -> Fut,
         Fut: Future<Output = Result<Replied, Error>>,
@@ -91,77 +90,71 @@ impl Request {
             .ok_or_else(Error::decode)?;
 
         let reply_entry = || ReplyEntry {
-            writer: &self.writer,
+            writer,
             header,
             arg: kernel::fuse_entry_out::default(),
         };
 
         let reply_attr = || ReplyAttr {
-            writer: &self.writer,
+            writer,
             header,
             arg: kernel::fuse_attr_out::default(),
         };
 
-        let reply_ok = || ReplyOk {
-            writer: &self.writer,
-            header,
-        };
+        let reply_ok = || ReplyOk { writer, header };
 
-        let reply_data = || ReplyData {
-            writer: &self.writer,
-            header,
-        };
+        let reply_data = || ReplyData { writer, header };
 
         let reply_open = || ReplyOpen {
-            writer: &self.writer,
+            writer,
             header,
             arg: kernel::fuse_open_out::default(),
         };
 
         let reply_write = || ReplyWrite {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_statfs = || ReplyStatfs {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_xattr = || ReplyXattr {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_create = || ReplyCreate {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_lk = || ReplyLk {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_bmap = || ReplyBmap {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_poll = || ReplyPoll {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_dirs = |arg| ReplyDirs {
-            writer: &self.writer,
+            writer,
             header,
             arg,
             entries: vec![],
@@ -169,7 +162,7 @@ impl Request {
         };
 
         let reply_dirs_plus = |arg| ReplyDirsPlus {
-            writer: &self.writer,
+            writer,
             header,
             arg,
             entries: vec![],
@@ -572,8 +565,7 @@ impl Request {
 
             _ => {
                 tracing::warn!("unsupported opcode: {}", header.opcode);
-                write::send_error(&self.writer, header.unique, libc::ENOSYS)
-                    .map_err(Error::fatal)?;
+                write::send_error(writer, header.unique, libc::ENOSYS).map_err(Error::fatal)?;
                 return Ok(());
             }
         };
@@ -581,7 +573,7 @@ impl Request {
         if let Err(err) = res {
             match err.code() {
                 Some(code) => {
-                    write::send_error(&self.writer, header.unique, code).map_err(Error::fatal)?;
+                    write::send_error(writer, header.unique, code).map_err(Error::fatal)?;
                 }
                 None => return Err(err),
             }
