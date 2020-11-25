@@ -1,7 +1,6 @@
 //! Components used when processing FUSE requests.
 
 use crate::{
-    conn::Writer,
     op::{self, SetAttrTime},
     reply::{self, EntryOptions, OpenOptions},
     session::Session,
@@ -68,17 +67,21 @@ impl crate::reply::Error for Error {
 pub struct Request {
     pub(crate) buf: Vec<u8>,
     pub(crate) session: Arc<Session>,
-    pub(crate) writer: Writer,
 }
 
 impl Request {
     // TODO: add unique(), uid(), gid() and pid()
 
     /// Process the request with the provided callback.
-    pub async fn process<'op, F, Fut>(&'op self, f: F) -> Result<(), Error>
+    pub async fn process<'op, W: ?Sized, F, Fut>(
+        &'op self,
+        writer: &'op W,
+        f: F,
+    ) -> Result<(), Error>
     where
-        F: FnOnce(Operation<'op>) -> Fut,
+        F: FnOnce(Operation<'op, W>) -> Fut,
         Fut: Future<Output = Result<Replied, Error>>,
+        &'op W: io::Write,
     {
         if self.session.exited() {
             return Ok(());
@@ -91,77 +94,71 @@ impl Request {
             .ok_or_else(Error::decode)?;
 
         let reply_entry = || ReplyEntry {
-            writer: &self.writer,
+            writer,
             header,
             arg: kernel::fuse_entry_out::default(),
         };
 
         let reply_attr = || ReplyAttr {
-            writer: &self.writer,
+            writer,
             header,
             arg: kernel::fuse_attr_out::default(),
         };
 
-        let reply_ok = || ReplyOk {
-            writer: &self.writer,
-            header,
-        };
+        let reply_ok = || ReplyOk { writer, header };
 
-        let reply_data = || ReplyData {
-            writer: &self.writer,
-            header,
-        };
+        let reply_data = || ReplyData { writer, header };
 
         let reply_open = || ReplyOpen {
-            writer: &self.writer,
+            writer,
             header,
             arg: kernel::fuse_open_out::default(),
         };
 
         let reply_write = || ReplyWrite {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_statfs = || ReplyStatfs {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_xattr = || ReplyXattr {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_create = || ReplyCreate {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_lk = || ReplyLk {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_bmap = || ReplyBmap {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_poll = || ReplyPoll {
-            writer: &self.writer,
+            writer,
             header,
             arg: Default::default(),
         };
 
         let reply_dirs = |arg| ReplyDirs {
-            writer: &self.writer,
+            writer,
             header,
             arg,
             entries: vec![],
@@ -169,7 +166,7 @@ impl Request {
         };
 
         let reply_dirs_plus = |arg| ReplyDirsPlus {
-            writer: &self.writer,
+            writer,
             header,
             arg,
             entries: vec![],
@@ -572,8 +569,7 @@ impl Request {
 
             _ => {
                 tracing::warn!("unsupported opcode: {}", header.opcode);
-                write::send_error(&self.writer, header.unique, libc::ENOSYS)
-                    .map_err(Error::fatal)?;
+                write::send_error(writer, header.unique, libc::ENOSYS).map_err(Error::fatal)?;
                 return Ok(());
             }
         };
@@ -581,7 +577,7 @@ impl Request {
         if let Err(err) = res {
             match err.code() {
                 Some(code) => {
-                    write::send_error(&self.writer, header.unique, code).map_err(Error::fatal)?;
+                    write::send_error(writer, header.unique, code).map_err(Error::fatal)?;
                 }
                 None => return Err(err),
             }
@@ -611,150 +607,150 @@ fn convert_to_flock_op(lk_type: u32, sleep: bool) -> Option<u32> {
 
 /// The kind of filesystem operation requested by the kernel.
 #[non_exhaustive]
-pub enum Operation<'op> {
+pub enum Operation<'op, W: ?Sized> {
     Lookup {
         op: Lookup<'op>,
-        reply: ReplyEntry<'op>,
+        reply: ReplyEntry<'op, W>,
     },
     Getattr {
         op: Getattr<'op>,
-        reply: ReplyAttr<'op>,
+        reply: ReplyAttr<'op, W>,
     },
     Setattr {
         op: Setattr<'op>,
-        reply: ReplyAttr<'op>,
+        reply: ReplyAttr<'op, W>,
     },
     Readlink {
         op: Readlink<'op>,
-        reply: ReplyData<'op>,
+        reply: ReplyData<'op, W>,
     },
     Symlink {
         op: Symlink<'op>,
-        reply: ReplyEntry<'op>,
+        reply: ReplyEntry<'op, W>,
     },
     Mknod {
         op: Mknod<'op>,
-        reply: ReplyEntry<'op>,
+        reply: ReplyEntry<'op, W>,
     },
     Mkdir {
         op: Mkdir<'op>,
-        reply: ReplyEntry<'op>,
+        reply: ReplyEntry<'op, W>,
     },
     Unlink {
         op: Unlink<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Rmdir {
         op: Rmdir<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Rename {
         op: Rename<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Link {
         op: Link<'op>,
-        reply: ReplyEntry<'op>,
+        reply: ReplyEntry<'op, W>,
     },
     Open {
         op: Open<'op>,
-        reply: ReplyOpen<'op>,
+        reply: ReplyOpen<'op, W>,
     },
     Read {
         op: Read<'op>,
-        reply: ReplyData<'op>,
+        reply: ReplyData<'op, W>,
     },
     Write {
         op: Write<'op>,
-        reply: ReplyWrite<'op>,
+        reply: ReplyWrite<'op, W>,
     },
     Release {
         op: Release<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Statfs {
         op: Statfs<'op>,
-        reply: ReplyStatfs<'op>,
+        reply: ReplyStatfs<'op, W>,
     },
     Fsync {
         op: Fsync<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Setxattr {
         op: Setxattr<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Getxattr {
         op: Getxattr<'op>,
-        reply: ReplyXattr<'op>,
+        reply: ReplyXattr<'op, W>,
     },
     Listxattr {
         op: Listxattr<'op>,
-        reply: ReplyXattr<'op>,
+        reply: ReplyXattr<'op, W>,
     },
     Removexattr {
         op: Removexattr<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Flush {
         op: Flush<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Opendir {
         op: Opendir<'op>,
-        reply: ReplyOpen<'op>,
+        reply: ReplyOpen<'op, W>,
     },
     Readdir {
         op: Readdir<'op>,
-        reply: ReplyDirs<'op>,
+        reply: ReplyDirs<'op, W>,
     },
     Readdirplus {
         op: Readdir<'op>,
-        reply: ReplyDirsPlus<'op>,
+        reply: ReplyDirsPlus<'op, W>,
     },
     Releasedir {
         op: Releasedir<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Fsyncdir {
         op: Fsyncdir<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Getlk {
         op: Getlk<'op>,
-        reply: ReplyLk<'op>,
+        reply: ReplyLk<'op, W>,
     },
     Setlk {
         op: Setlk<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Flock {
         op: Flock<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Access {
         op: Access<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     Create {
         op: Create<'op>,
-        reply: ReplyCreate<'op>,
+        reply: ReplyCreate<'op, W>,
     },
     Bmap {
         op: Bmap<'op>,
-        reply: ReplyBmap<'op>,
+        reply: ReplyBmap<'op, W>,
     },
     Fallocate {
         op: Fallocate<'op>,
-        reply: ReplyOk<'op>,
+        reply: ReplyOk<'op, W>,
     },
     CopyFileRange {
         op: CopyFileRange<'op>,
-        reply: ReplyWrite<'op>,
+        reply: ReplyWrite<'op, W>,
     },
     Poll {
         op: Poll<'op>,
-        reply: ReplyPoll<'op>,
+        reply: ReplyPoll<'op, W>,
     },
 }
 
@@ -1624,13 +1620,16 @@ impl<'op> op::Poll for Poll<'op> {
 #[must_use]
 pub struct Replied(());
 
-pub struct ReplyAttr<'op> {
-    writer: &'op Writer,
+pub struct ReplyAttr<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_attr_out,
 }
 
-impl reply::ReplyAttr for ReplyAttr<'_> {
+impl<'op, W: ?Sized> reply::ReplyAttr for ReplyAttr<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1649,13 +1648,16 @@ impl reply::ReplyAttr for ReplyAttr<'_> {
     }
 }
 
-pub struct ReplyEntry<'op> {
-    writer: &'op Writer,
+pub struct ReplyEntry<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_entry_out,
 }
 
-impl reply::ReplyEntry for ReplyEntry<'_> {
+impl<'op, W: ?Sized> reply::ReplyEntry for ReplyEntry<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1674,12 +1676,15 @@ impl reply::ReplyEntry for ReplyEntry<'_> {
     }
 }
 
-pub struct ReplyOk<'op> {
-    writer: &'op Writer,
+pub struct ReplyOk<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
 }
 
-impl reply::ReplyOk for ReplyOk<'_> {
+impl<'op, W: ?Sized> reply::ReplyOk for ReplyOk<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1689,12 +1694,15 @@ impl reply::ReplyOk for ReplyOk<'_> {
     }
 }
 
-pub struct ReplyData<'op> {
-    writer: &'op Writer,
+pub struct ReplyData<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
 }
 
-impl reply::ReplyData for ReplyData<'_> {
+impl<'op, W: ?Sized> reply::ReplyData for ReplyData<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1708,13 +1716,16 @@ impl reply::ReplyData for ReplyData<'_> {
     }
 }
 
-pub struct ReplyOpen<'op> {
-    writer: &'op Writer,
+pub struct ReplyOpen<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_open_out,
 }
 
-impl reply::ReplyOpen for ReplyOpen<'_> {
+impl<'op, W: ?Sized> reply::ReplyOpen for ReplyOpen<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1730,13 +1741,16 @@ impl reply::ReplyOpen for ReplyOpen<'_> {
     }
 }
 
-pub struct ReplyWrite<'op> {
-    writer: &'op Writer,
+pub struct ReplyWrite<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_write_out,
 }
 
-impl reply::ReplyWrite for ReplyWrite<'_> {
+impl<'op, W: ?Sized> reply::ReplyWrite for ReplyWrite<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1752,13 +1766,16 @@ impl reply::ReplyWrite for ReplyWrite<'_> {
     }
 }
 
-pub struct ReplyStatfs<'op> {
-    writer: &'op Writer,
+pub struct ReplyStatfs<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_statfs_out,
 }
 
-impl reply::ReplyStatfs for ReplyStatfs<'_> {
+impl<'op, W: ?Sized> reply::ReplyStatfs for ReplyStatfs<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1777,13 +1794,16 @@ impl reply::ReplyStatfs for ReplyStatfs<'_> {
     }
 }
 
-pub struct ReplyXattr<'op> {
-    writer: &'op Writer,
+pub struct ReplyXattr<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_getxattr_out,
 }
 
-impl reply::ReplyXattr for ReplyXattr<'_> {
+impl<'op, W: ?Sized> reply::ReplyXattr for ReplyXattr<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1808,13 +1828,16 @@ impl reply::ReplyXattr for ReplyXattr<'_> {
     }
 }
 
-pub struct ReplyLk<'op> {
-    writer: &'op Writer,
+pub struct ReplyLk<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_lk_out,
 }
 
-impl reply::ReplyLk for ReplyLk<'_> {
+impl<'op, W: ?Sized> reply::ReplyLk for ReplyLk<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1833,8 +1856,8 @@ impl reply::ReplyLk for ReplyLk<'_> {
     }
 }
 
-pub struct ReplyCreate<'op> {
-    writer: &'op Writer,
+pub struct ReplyCreate<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: CreateArg,
 }
@@ -1846,7 +1869,10 @@ struct CreateArg {
     open_out: kernel::fuse_open_out,
 }
 
-impl reply::ReplyCreate for ReplyCreate<'_> {
+impl<'op, W: ?Sized> reply::ReplyCreate for ReplyCreate<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1872,13 +1898,16 @@ impl reply::ReplyCreate for ReplyCreate<'_> {
     }
 }
 
-pub struct ReplyBmap<'op> {
-    writer: &'op Writer,
+pub struct ReplyBmap<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_bmap_out,
 }
 
-impl reply::ReplyBmap for ReplyBmap<'_> {
+impl<'op, W: ?Sized> reply::ReplyBmap for ReplyBmap<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1894,13 +1923,16 @@ impl reply::ReplyBmap for ReplyBmap<'_> {
     }
 }
 
-pub struct ReplyPoll<'op> {
-    writer: &'op Writer,
+pub struct ReplyPoll<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: kernel::fuse_poll_out,
 }
 
-impl reply::ReplyPoll for ReplyPoll<'_> {
+impl<'op, W: ?Sized> reply::ReplyPoll for ReplyPoll<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1916,15 +1948,18 @@ impl reply::ReplyPoll for ReplyPoll<'_> {
     }
 }
 
-pub struct ReplyDirs<'op> {
-    writer: &'op Writer,
+pub struct ReplyDirs<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: &'op kernel::fuse_read_in,
     entries: Vec<(kernel::fuse_dirent, Vec<u8>)>,
     buflen: usize,
 }
 
-impl reply::ReplyDirs for ReplyDirs<'_> {
+impl<'op, W: ?Sized> reply::ReplyDirs for ReplyDirs<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 
@@ -1976,15 +2011,18 @@ impl reply::ReplyDirs for ReplyDirs<'_> {
     }
 }
 
-pub struct ReplyDirsPlus<'op> {
-    writer: &'op Writer,
+pub struct ReplyDirsPlus<'op, W: ?Sized> {
+    writer: &'op W,
     header: &'op kernel::fuse_in_header,
     arg: &'op kernel::fuse_read_in,
     entries: Vec<(kernel::fuse_dirent, Vec<u8>, kernel::fuse_entry_out)>,
     buflen: usize,
 }
 
-impl reply::ReplyDirsPlus for ReplyDirsPlus<'_> {
+impl<'op, W: ?Sized> reply::ReplyDirsPlus for ReplyDirsPlus<'op, W>
+where
+    &'op W: io::Write,
+{
     type Ok = Replied;
     type Error = Error;
 

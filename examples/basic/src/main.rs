@@ -1,4 +1,5 @@
-use polyfuse::{op, reply, Daemon, Operation};
+use polyfuse::{op, reply, Config, Operation, Session};
+use polyfuse_async_std::Connection;
 
 use anyhow::Context as _;
 use std::{path::PathBuf, time::Duration};
@@ -14,13 +15,16 @@ async fn main() -> anyhow::Result<()> {
         .context("missing mountpoint specified")?;
     anyhow::ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    // Start the FUSE daemon mounted on the specified path.
-    let mut daemon = Daemon::mount(mountpoint, &[]).await?;
+    // Establish connection to FUSE kernel driver mounted on the specified path.
+    let conn = Connection::open(&mountpoint, &[]).await?;
+
+    // Start FUSE session.
+    let session = Session::start(&conn, Config::default()).await?;
 
     // Receive an incoming FUSE request from the kernel.
-    while let Some(req) = daemon.next_request().await? {
+    while let Some(req) = session.next_request(&conn).await? {
         // Process the request.
-        req.process(|op| async {
+        req.process(&conn, |op| async {
             match op {
                 // Dispatch your callbacks to the supported operations...
                 Operation::Getattr { op, reply, .. } => getattr(op, reply).await,

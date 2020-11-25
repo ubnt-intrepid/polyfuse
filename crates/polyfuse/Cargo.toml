@@ -13,7 +13,6 @@ keywords = [ "fuse", "filesystem", "async", "futures" ]
 [dependencies]
 polyfuse-kernel = { version = "0.1.0-dev", path = "../polyfuse-kernel" }
 
-async-io = "1.2"
 bitflags = "1.2"
 futures = "0.3"
 libc = "0.2"
