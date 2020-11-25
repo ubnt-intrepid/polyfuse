@@ -1,8 +1,7 @@
 //! Establish a FUSE session.
 
-use crate::{conn::Connection, request::Request};
+use crate::request::Request;
 use crate::{util::Decoder, write};
-use async_io::Async;
 use bitflags::bitflags;
 use futures::io::{AsyncRead, AsyncReadExt as _};
 use polyfuse_kernel::{self as kernel, fuse_opcode};
@@ -320,15 +319,18 @@ impl Session {
     }
 
     /// Start a FUSE daemon mount on the specified path.
-    pub async fn start(conn: &Async<Connection>, config: Config) -> io::Result<Arc<Self>> {
-        init(config, conn, conn.get_ref()).await.map(Arc::new)
+    pub async fn start<T>(conn: T, config: Config) -> io::Result<Arc<Self>>
+    where
+        T: AsyncRead + io::Write + Unpin,
+    {
+        init(conn, config).await.map(Arc::new)
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub async fn next_request(
-        self: &Arc<Self>,
-        conn: &Async<Connection>,
-    ) -> io::Result<Option<Request>> {
+    pub async fn next_request<T>(self: &Arc<Self>, conn: T) -> io::Result<Option<Request>>
+    where
+        T: AsyncRead + Unpin,
+    {
         let mut conn = conn;
 
         let mut buf = vec![0u8; self.bufsize];
@@ -363,19 +365,16 @@ impl Session {
     }
 }
 
-async fn init<'w, R, W: ?Sized>(config: Config, reader: R, writer: &'w W) -> io::Result<Session>
+async fn init<T>(mut conn: T, config: Config) -> io::Result<Session>
 where
-    R: AsyncRead,
-    &'w W: io::Write,
+    T: AsyncRead + io::Write + Unpin,
 {
     let init_buf_size = BUFFER_HEADER_SIZE + pagesize() * MAX_MAX_PAGES;
     let mut buf = vec![0u8; init_buf_size];
 
-    futures::pin_mut!(reader);
-
     loop {
-        reader.read(&mut buf[..]).await?;
-        match try_init(&config, &buf[..], writer).await? {
+        conn.read(&mut buf[..]).await?;
+        match try_init(&config, &buf[..], &mut conn).await? {
             Some(session) => return Ok(session),
             None => continue,
         }

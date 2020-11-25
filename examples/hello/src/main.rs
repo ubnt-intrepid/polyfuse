@@ -1,13 +1,14 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
 
-use anyhow::Context as _;
-use async_io::Async;
 use polyfuse::{
     op,
     reply::{self, EntryOptions},
-    Config, Connection, Operation, Session,
+    Config, Operation, Session,
 };
+use polyfuse_async_std::Connection;
+
+use anyhow::Context as _;
 use std::{mem, os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -27,15 +28,14 @@ async fn main() -> anyhow::Result<()> {
         .context("missing mountpoint specified")?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let conn = Connection::open(&mountpoint, &[])?;
-    let writer = conn.writer();
-    let conn = Async::new(conn)?;
+    let conn = Connection::open(&mountpoint, &[]).await?;
 
     let session = Session::start(&conn, Config::default()).await?;
+
     let fs = Hello::new();
 
     while let Some(req) = session.next_request(&conn).await? {
-        req.process(&writer, |op| async {
+        req.process(&conn, |op| async {
             match op {
                 Operation::Lookup { op, reply, .. } => fs.lookup(op, reply).await,
                 Operation::Getattr { op, reply, .. } => fs.getattr(op, reply).await,
