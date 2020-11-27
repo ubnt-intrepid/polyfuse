@@ -1,10 +1,9 @@
 //! Components used when processing FUSE requests.
 
 use crate::{
-    op::{self, SetAttrTime},
-    reply::{self, EntryOptions, OpenOptions},
+    op::{self, LockOwner, SetAttrTime},
+    reply,
     session::Session,
-    types::{FileAttr, FsStatistics, LockOwner},
     util::{as_bytes, Decoder},
     write,
 };
@@ -65,86 +64,6 @@ impl Request {
             .fetch::<kernel::fuse_in_header>()
             .ok_or_else(Error::decode)?;
 
-        let reply_entry = || ReplyEntry {
-            writer,
-            header,
-            arg: kernel::fuse_entry_out::default(),
-        };
-
-        let reply_attr = || ReplyAttr {
-            writer,
-            header,
-            arg: kernel::fuse_attr_out::default(),
-        };
-
-        let reply_ok = || ReplyOk { writer, header };
-
-        let reply_data = || ReplyData { writer, header };
-
-        let reply_open = || ReplyOpen {
-            writer,
-            header,
-            arg: kernel::fuse_open_out::default(),
-        };
-
-        let reply_write = || ReplyWrite {
-            writer,
-            header,
-            arg: Default::default(),
-        };
-
-        let reply_statfs = || ReplyStatfs {
-            writer,
-            header,
-            arg: Default::default(),
-        };
-
-        let reply_xattr = || ReplyXattr {
-            writer,
-            header,
-            arg: Default::default(),
-        };
-
-        let reply_create = || ReplyCreate {
-            writer,
-            header,
-            arg: Default::default(),
-        };
-
-        let reply_lk = || ReplyLk {
-            writer,
-            header,
-            arg: Default::default(),
-        };
-
-        let reply_bmap = || ReplyBmap {
-            writer,
-            header,
-            arg: Default::default(),
-        };
-
-        let reply_poll = || ReplyPoll {
-            writer,
-            header,
-            arg: Default::default(),
-        };
-
-        let reply_dirs = |arg| ReplyDirs {
-            writer,
-            header,
-            arg,
-            entries: vec![],
-            buflen: 0,
-        };
-
-        let reply_dirs_plus = |arg| ReplyDirsPlus {
-            writer,
-            header,
-            arg,
-            entries: vec![],
-            buflen: 0,
-        };
-
         match fuse_opcode::try_from(header.opcode).ok() {
             // Some(fuse_opcode::FUSE_FORGET) => {
             //     let arg = decoder
@@ -169,7 +88,7 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Lookup {
                     op: Lookup { header, name },
-                    reply: reply_entry(),
+                    reply: ReplyEntry { writer, header },
                 })
             }
 
@@ -177,7 +96,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Getattr {
                     op: Getattr { header, arg },
-                    reply: reply_attr(),
+                    reply: ReplyAttr { writer, header },
                 })
             }
 
@@ -185,13 +104,13 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Setattr {
                     op: Setattr { header, arg },
-                    reply: reply_attr(),
+                    reply: ReplyAttr { writer, header },
                 })
             }
 
             Some(fuse_opcode::FUSE_READLINK) => Ok(Operation::Readlink {
                 op: Readlink { header },
-                reply: reply_data(),
+                reply: ReplyReadlink { writer, header },
             }),
 
             Some(fuse_opcode::FUSE_SYMLINK) => {
@@ -199,7 +118,7 @@ impl Request {
                 let link = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Symlink {
                     op: Symlink { header, name, link },
-                    reply: reply_entry(),
+                    reply: ReplyEntry { writer, header },
                 })
             }
 
@@ -208,7 +127,7 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Mknod {
                     op: Mknod { header, arg, name },
-                    reply: reply_entry(),
+                    reply: ReplyEntry { writer, header },
                 })
             }
 
@@ -217,7 +136,7 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Mkdir {
                     op: Mkdir { header, arg, name },
-                    reply: reply_entry(),
+                    reply: ReplyEntry { writer, header },
                 })
             }
 
@@ -225,7 +144,7 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Unlink {
                     op: Unlink { header, name },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -233,7 +152,7 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Rmdir {
                     op: Rmdir { header, name },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -248,7 +167,7 @@ impl Request {
                         name,
                         newname,
                     },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
             Some(fuse_opcode::FUSE_RENAME2) => {
@@ -262,7 +181,7 @@ impl Request {
                         name,
                         newname,
                     },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -275,7 +194,7 @@ impl Request {
                         arg,
                         newname,
                     },
-                    reply: reply_entry(),
+                    reply: ReplyEntry { writer, header },
                 })
             }
 
@@ -283,7 +202,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Open {
                     op: Open { header, arg },
-                    reply: reply_open(),
+                    reply: ReplyOpen { writer, header },
                 })
             }
 
@@ -291,7 +210,13 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Read {
                     op: Read { header, arg },
-                    reply: reply_data(),
+                    reply: ReplyData {
+                        writer,
+                        header,
+                        maxlen: arg.size as usize,
+                        chunks: vec![],
+                        len: 0,
+                    },
                 })
             }
 
@@ -299,7 +224,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Write {
                     op: Write { header, arg },
-                    reply: reply_write(),
+                    reply: ReplyWrite { writer, header },
                 })
             }
 
@@ -307,20 +232,20 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Release {
                     op: Release { header, arg },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
             Some(fuse_opcode::FUSE_STATFS) => Ok(Operation::Statfs {
                 op: Statfs { header },
-                reply: reply_statfs(),
+                reply: ReplyStatfs { writer, header },
             }),
 
             Some(fuse_opcode::FUSE_FSYNC) => {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Fsync {
                     op: Fsync { header, arg },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -339,32 +264,46 @@ impl Request {
                         name,
                         value,
                     },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
             Some(fuse_opcode::FUSE_GETXATTR) => {
-                let arg = decoder.fetch().ok_or_else(Error::decode)?;
+                let arg: &kernel::fuse_getxattr_in = decoder.fetch().ok_or_else(Error::decode)?;
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
-                Ok(Operation::Getxattr {
-                    op: Getxattr { header, arg, name },
-                    reply: reply_xattr(),
-                })
+                if arg.size == 0 {
+                    Ok(Operation::GetxattrSize {
+                        op: Getxattr { header, arg, name },
+                        reply: ReplyXattrSize { writer, header },
+                    })
+                } else {
+                    Ok(Operation::GetxattrData {
+                        op: Getxattr { header, arg, name },
+                        reply: ReplyXattrData { writer, header },
+                    })
+                }
             }
 
             Some(fuse_opcode::FUSE_LISTXATTR) => {
-                let arg = decoder.fetch().ok_or_else(Error::decode)?;
-                Ok(Operation::Listxattr {
-                    op: Listxattr { header, arg },
-                    reply: reply_xattr(),
-                })
+                let arg: &kernel::fuse_getxattr_in = decoder.fetch().ok_or_else(Error::decode)?;
+                if arg.size == 0 {
+                    Ok(Operation::ListxattrSize {
+                        op: Listxattr { header, arg },
+                        reply: ReplyXattrSize { writer, header },
+                    })
+                } else {
+                    Ok(Operation::ListxattrData {
+                        op: Listxattr { header, arg },
+                        reply: ReplyXattrData { writer, header },
+                    })
+                }
             }
 
             Some(fuse_opcode::FUSE_REMOVEXATTR) => {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Removexattr {
                     op: Removexattr { header, name },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -372,7 +311,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Flush {
                     op: Flush { header, arg },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -380,7 +319,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Opendir {
                     op: Opendir { header, arg },
-                    reply: reply_open(),
+                    reply: ReplyOpen { writer, header },
                 })
             }
 
@@ -388,14 +327,26 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Readdir {
                     op: Readdir { header, arg },
-                    reply: reply_dirs(arg),
+                    reply: ReplyDirs {
+                        writer,
+                        header,
+                        maxlen: arg.size as usize,
+                        entries: vec![],
+                        len: 0,
+                    },
                 })
             }
             Some(fuse_opcode::FUSE_READDIRPLUS) => {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Readdirplus {
                     op: Readdir { header, arg },
-                    reply: reply_dirs_plus(arg),
+                    reply: ReplyDirsPlus {
+                        writer,
+                        header,
+                        maxlen: arg.size as usize,
+                        entries: vec![],
+                        len: 0,
+                    },
                 })
             }
 
@@ -403,7 +354,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Releasedir {
                     op: Releasedir { header, arg },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -411,7 +362,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Fsyncdir {
                     op: Fsyncdir { header, arg },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -419,7 +370,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Getlk {
                     op: Getlk { header, arg },
-                    reply: reply_lk(),
+                    reply: ReplyLk { writer, header },
                 })
             }
 
@@ -438,13 +389,13 @@ impl Request {
                             arg,
                             sleep: false,
                         },
-                        reply: reply_ok(),
+                        reply: ReplyOk { writer, header },
                     })
                 } else {
                     let op = convert_to_flock_op(arg.lk.typ, sleep).unwrap_or(0);
                     Ok(Operation::Flock {
                         op: Flock { header, arg, op },
-                        reply: reply_ok(),
+                        reply: ReplyOk { writer, header },
                     })
                 }
             }
@@ -453,7 +404,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Access {
                     op: Access { header, arg },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -462,7 +413,7 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Create {
                     op: Create { header, arg, name },
-                    reply: reply_create(),
+                    reply: ReplyCreate { writer, header },
                 })
             }
 
@@ -470,7 +421,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Bmap {
                     op: Bmap { header, arg },
-                    reply: reply_bmap(),
+                    reply: ReplyBmap { writer, header },
                 })
             }
 
@@ -478,7 +429,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Fallocate {
                     op: Fallocate { header, arg },
-                    reply: reply_ok(),
+                    reply: ReplyOk { writer, header },
                 })
             }
 
@@ -486,7 +437,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::CopyFileRange {
                     op: CopyFileRange { header, arg },
-                    reply: reply_write(),
+                    reply: ReplyWrite { writer, header },
                 })
             }
 
@@ -494,7 +445,7 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Poll {
                     op: Poll { header, arg },
-                    reply: reply_poll(),
+                    reply: ReplyPoll { writer, header },
                 })
             }
 
@@ -541,7 +492,7 @@ pub enum Operation<'op, W: ?Sized> {
     },
     Readlink {
         op: Readlink<'op>,
-        reply: ReplyData<'op, W>,
+        reply: ReplyReadlink<'op, W>,
     },
     Symlink {
         op: Symlink<'op>,
@@ -599,13 +550,21 @@ pub enum Operation<'op, W: ?Sized> {
         op: Setxattr<'op>,
         reply: ReplyOk<'op, W>,
     },
-    Getxattr {
+    GetxattrSize {
         op: Getxattr<'op>,
-        reply: ReplyXattr<'op, W>,
+        reply: ReplyXattrSize<'op, W>,
     },
-    Listxattr {
+    GetxattrData {
+        op: Getxattr<'op>,
+        reply: ReplyXattrData<'op, W>,
+    },
+    ListxattrSize {
         op: Listxattr<'op>,
-        reply: ReplyXattr<'op, W>,
+        reply: ReplyXattrSize<'op, W>,
+    },
+    ListxattrData {
+        op: Listxattr<'op>,
+        reply: ReplyXattrData<'op, W>,
     },
     Removexattr {
         op: Removexattr<'op>,
@@ -718,8 +677,10 @@ where
             Statfs,
             Fsync,
             Setxattr,
-            Getxattr,
-            Listxattr,
+            GetxattrSize,
+            GetxattrData,
+            ListxattrSize,
+            ListxattrData,
             Removexattr,
             Flush,
             Opendir,
@@ -1625,7 +1586,6 @@ pub struct Replied(());
 pub struct ReplyAttr<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_attr_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyAttr for ReplyAttr<'op, W>
@@ -1635,16 +1595,15 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn attr<T>(mut self, attr: T, ttl: Option<Duration>) -> Result<Self::Ok, Self::Error>
+    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
     where
-        T: FileAttr,
+        F: FnOnce(&mut dyn reply::AttrOut),
     {
-        fill_attr_out(&mut self.arg, attr, ttl);
+        let mut out = kernel::fuse_attr_out::default();
+        f(&mut AttrOutFiller { out: &mut out });
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -1658,7 +1617,6 @@ where
 pub struct ReplyEntry<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_entry_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyEntry for ReplyEntry<'op, W>
@@ -1668,17 +1626,42 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn entry<T>(mut self, attr: T, opts: &EntryOptions) -> Result<Self::Ok, Self::Error>
+    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
     where
-        T: FileAttr,
+        F: FnOnce(&mut dyn reply::EntryOut),
     {
-        fill_entry_out(&mut self.arg, attr, opts);
+        let mut out = kernel::fuse_entry_out::default();
+        f(&mut EntryOutFiller { out: &mut out });
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
+        Ok(Replied(()))
+    }
+
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
+        Ok(Replied(()))
+    }
+}
+
+pub struct ReplyReadlink<'op, W: ?Sized> {
+    writer: &'op W,
+    header: &'op kernel::fuse_in_header,
+}
+
+impl<'op, W: ?Sized> reply::ReplyReadlink for ReplyReadlink<'op, W>
+where
+    &'op W: io::Write,
+{
+    type Ok = Replied;
+    type Error = Error;
+
+    fn send<T>(self, link: T) -> Result<Self::Ok, Self::Error>
+    where
+        T: AsRef<OsStr> + Send + 'static,
+    {
+        write::send_reply(self.writer, self.header.unique, link.as_ref()).map_err(Error::reply)?;
         Ok(Replied(()))
     }
 
@@ -1700,7 +1683,7 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn ok(self) -> Result<Self::Ok, Self::Error> {
+    fn send(self) -> Result<Self::Ok, Self::Error> {
         write::send_reply(self.writer, self.header.unique, &[]).map_err(Error::reply)?;
         Ok(Replied(()))
     }
@@ -1714,6 +1697,9 @@ where
 pub struct ReplyData<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
+    maxlen: usize,
+    chunks: Vec<Box<dyn AsRef<[u8]> + Send>>,
+    len: usize,
 }
 
 impl<'op, W: ?Sized> reply::ReplyData for ReplyData<'op, W>
@@ -1723,11 +1709,28 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn data<T>(self, data: T) -> Result<Self::Ok, Self::Error>
+    #[inline]
+    fn remaining(&self) -> usize {
+        self.maxlen - self.len
+    }
+
+    #[inline]
+    fn chunk<T>(&mut self, chunk: T) -> Option<T>
     where
-        T: AsRef<[u8]>,
+        T: AsRef<[u8]> + Send + 'static,
     {
-        write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::reply)?;
+        let chunk_len = chunk.as_ref().len();
+        if chunk_len > self.remaining() {
+            return Some(chunk);
+        }
+        self.chunks.push(Box::new(chunk));
+        None
+    }
+
+    fn send(self) -> Result<Self::Ok, Self::Error> {
+        let data: Vec<&[u8]> = self.chunks.iter().map(|chunk| (**chunk).as_ref()).collect();
+
+        write::send_reply(self.writer, self.header.unique, &data).map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -1741,7 +1744,6 @@ where
 pub struct ReplyOpen<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_open_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyOpen for ReplyOpen<'op, W>
@@ -1751,13 +1753,15 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn open(mut self, fh: u64, opts: &OpenOptions) -> Result<Self::Ok, Self::Error> {
-        fill_open_out(&mut self.arg, fh, opts);
+    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
+    where
+        F: FnOnce(&mut dyn reply::OpenOut),
+    {
+        let mut out = kernel::fuse_open_out::default();
+        f(&mut OpenOutFiller { out: &mut out });
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -1771,7 +1775,6 @@ where
 pub struct ReplyWrite<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_write_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyWrite for ReplyWrite<'op, W>
@@ -1781,13 +1784,14 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn size(mut self, size: u32) -> Result<Self::Ok, Self::Error> {
-        self.arg.size = size;
+    fn send(self, size: u32) -> Result<Self::Ok, Self::Error> {
+        let out = kernel::fuse_write_out {
+            size,
+            ..Default::default()
+        };
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -1801,7 +1805,6 @@ where
 pub struct ReplyStatfs<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_statfs_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyStatfs for ReplyStatfs<'op, W>
@@ -1811,16 +1814,15 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn stat<S>(mut self, stat: S) -> Result<Self::Ok, Self::Error>
+    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
     where
-        S: FsStatistics,
+        F: FnOnce(&mut dyn reply::StatfsOut),
     {
-        fill_statfs(&mut self.arg.st, stat);
+        let mut out = kernel::fuse_statfs_out::default();
+        f(&mut StatfsOutFiller { out: &mut out });
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -1831,33 +1833,51 @@ where
     }
 }
 
-pub struct ReplyXattr<'op, W: ?Sized> {
+pub struct ReplyXattrSize<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_getxattr_out,
 }
 
-impl<'op, W: ?Sized> reply::ReplyXattr for ReplyXattr<'op, W>
+impl<'op, W: ?Sized> reply::ReplyXattrSize for ReplyXattrSize<'op, W>
 where
     &'op W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
 
-    fn size(mut self, size: u32) -> Result<Self::Ok, Self::Error> {
-        self.arg.size = size;
+    fn send(self, size: u32) -> Result<Self::Ok, Self::Error> {
+        let out = kernel::fuse_getxattr_out {
+            size,
+            ..Default::default()
+        };
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
 
-    fn data<T>(self, data: T) -> Result<Self::Ok, Self::Error>
+    fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
+        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
+        Ok(Replied(()))
+    }
+}
+
+pub struct ReplyXattrData<'op, W: ?Sized> {
+    writer: &'op W,
+    header: &'op kernel::fuse_in_header,
+}
+
+impl<'op, W: ?Sized> reply::ReplyXattrData for ReplyXattrData<'op, W>
+where
+    &'op W: io::Write,
+{
+    type Ok = Replied;
+    type Error = Error;
+
+    fn send<T>(self, data: T) -> Result<Self::Ok, Self::Error>
     where
-        T: AsRef<[u8]>,
+        T: AsRef<[u8]> + Send + 'static,
     {
         write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::reply)?;
 
@@ -1873,7 +1893,6 @@ where
 pub struct ReplyLk<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_lk_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyLk for ReplyLk<'op, W>
@@ -1883,16 +1902,15 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn lk(mut self, typ: u32, start: u64, end: u64, pid: u32) -> Result<Self::Ok, Self::Error> {
-        self.arg.lk.typ = typ;
-        self.arg.lk.start = start;
-        self.arg.lk.end = end;
-        self.arg.lk.pid = pid;
+    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
+    where
+        F: FnOnce(&mut dyn reply::LkOut),
+    {
+        let mut out = kernel::fuse_lk_out::default();
+        f(&mut LkOutFiller { out: &mut out });
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -1906,14 +1924,6 @@ where
 pub struct ReplyCreate<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: CreateArg,
-}
-
-#[derive(Default)]
-#[repr(C)]
-struct CreateArg {
-    entry_out: kernel::fuse_entry_out,
-    open_out: kernel::fuse_open_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyCreate for ReplyCreate<'op, W>
@@ -1923,21 +1933,21 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn create<T>(
-        mut self,
-        fh: u64,
-        attr: T,
-        entry_opts: &EntryOptions,
-        open_opts: &OpenOptions,
-    ) -> Result<Self::Ok, Self::Error>
+    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
     where
-        T: FileAttr,
+        F: FnOnce(&mut dyn reply::EntryOut, &mut dyn reply::OpenOut),
     {
-        fill_entry_out(&mut self.arg.entry_out, attr, entry_opts);
-        fill_open_out(&mut self.arg.open_out, fh, open_opts);
+        let mut entry_out = kernel::fuse_entry_out::default();
+        let mut open_out = kernel::fuse_open_out::default();
+        f(
+            &mut EntryOutFiller {
+                out: &mut entry_out,
+            },
+            &mut OpenOutFiller { out: &mut open_out },
+        );
 
         write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
+            &[as_bytes(&entry_out), as_bytes(&open_out)] as &[_]
         })
         .map_err(Error::reply)?;
 
@@ -1953,7 +1963,6 @@ where
 pub struct ReplyBmap<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_bmap_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyBmap for ReplyBmap<'op, W>
@@ -1963,13 +1972,11 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn block(mut self, block: u64) -> Result<Self::Ok, Self::Error> {
-        self.arg.block = block;
+    fn send(self, block: u64) -> Result<Self::Ok, Self::Error> {
+        let out = kernel::fuse_bmap_out { block };
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -1983,7 +1990,6 @@ where
 pub struct ReplyPoll<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: kernel::fuse_poll_out,
 }
 
 impl<'op, W: ?Sized> reply::ReplyPoll for ReplyPoll<'op, W>
@@ -1993,13 +1999,14 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn revents(mut self, revents: u32) -> Result<Self::Ok, Self::Error> {
-        self.arg.revents = revents;
+    fn send(self, revents: u32) -> Result<Self::Ok, Self::Error> {
+        let out = kernel::fuse_poll_out {
+            revents,
+            ..Default::default()
+        };
 
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            as_bytes(&self.arg)
-        })
-        .map_err(Error::reply)?;
+        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
+            .map_err(Error::reply)?;
 
         Ok(Replied(()))
     }
@@ -2013,9 +2020,9 @@ where
 pub struct ReplyDirs<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: &'op kernel::fuse_read_in,
+    maxlen: usize,
     entries: Vec<(kernel::fuse_dirent, Vec<u8>)>,
-    buflen: usize,
+    len: usize,
 }
 
 impl<'op, W: ?Sized> reply::ReplyDirs for ReplyDirs<'op, W>
@@ -2025,7 +2032,10 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn add(&mut self, ino: u64, typ: u32, name: &OsStr, offset: u64) -> bool {
+    fn entry<F>(&mut self, name: &OsStr, f: F) -> bool
+    where
+        F: FnOnce(&mut dyn reply::DirEntry),
+    {
         let name = name.as_bytes();
         let namelen = u32::try_from(name.len()).unwrap();
 
@@ -2033,17 +2043,18 @@ where
         let entsize = aligned(entlen);
         let padlen = entsize - entlen;
 
-        if self.buflen + entsize > self.arg.size as usize {
+        if self.len + entsize > self.maxlen {
             return true;
         }
 
-        let dirent = kernel::fuse_dirent {
-            off: offset,
-            ino,
-            typ,
+        let mut dirent = kernel::fuse_dirent {
             namelen,
             name: [],
+            ..Default::default()
         };
+        f(&mut DirEntryOutFiller {
+            dirent: &mut dirent,
+        });
 
         let mut padded_name = Vec::with_capacity(name.len() + padlen);
         unsafe {
@@ -2053,7 +2064,7 @@ where
         }
 
         self.entries.push((dirent, padded_name));
-        self.buflen += entsize;
+        self.len += entsize;
 
         false
     }
@@ -2081,9 +2092,9 @@ where
 pub struct ReplyDirsPlus<'op, W: ?Sized> {
     writer: &'op W,
     header: &'op kernel::fuse_in_header,
-    arg: &'op kernel::fuse_read_in,
-    entries: Vec<(kernel::fuse_dirent, Vec<u8>, kernel::fuse_entry_out)>,
-    buflen: usize,
+    maxlen: usize,
+    entries: Vec<(kernel::fuse_direntplus, Vec<u8>)>,
+    len: usize,
 }
 
 impl<'op, W: ?Sized> reply::ReplyDirsPlus for ReplyDirsPlus<'op, W>
@@ -2093,17 +2104,9 @@ where
     type Ok = Replied;
     type Error = Error;
 
-    fn add<A>(
-        &mut self,
-        ino: u64,
-        typ: u32,
-        name: &OsStr,
-        offset: u64,
-        attr: A,
-        opts: &EntryOptions,
-    ) -> bool
+    fn entry<F>(&mut self, name: &OsStr, f: F) -> bool
     where
-        A: FileAttr,
+        F: FnOnce(&mut dyn reply::EntryOut, &mut dyn reply::DirEntry),
     {
         let name = name.as_bytes();
         let namelen = u32::try_from(name.len()).unwrap();
@@ -2112,43 +2115,44 @@ where
         let entsize = aligned(entlen);
         let padlen = entsize - entlen;
 
-        if self.buflen + entsize + mem::size_of::<kernel::fuse_entry_out>() > self.arg.size as usize
-        {
+        if self.len + entsize + mem::size_of::<kernel::fuse_entry_out>() > self.maxlen {
             return true;
         }
 
-        let dirent = kernel::fuse_dirent {
-            off: offset,
-            ino,
-            typ,
-            namelen,
-            name: [],
+        let mut entry_header = kernel::fuse_direntplus {
+            dirent: kernel::fuse_dirent {
+                namelen,
+                name: [],
+                ..Default::default()
+            },
+            ..Default::default()
         };
+        f(
+            &mut EntryOutFiller {
+                out: &mut entry_header.entry_out,
+            },
+            &mut DirEntryOutFiller {
+                dirent: &mut entry_header.dirent,
+            },
+        );
 
         let mut padded_name = Vec::with_capacity(name.len() + padlen);
         padded_name.copy_from_slice(name);
         padded_name.resize(name.len() + padlen, 0);
 
-        let mut entry_out = kernel::fuse_entry_out::default();
-        fill_entry_out(&mut entry_out, attr, opts);
-
-        self.entries.push((dirent, padded_name, entry_out));
-        self.buflen += entsize;
+        self.entries.push((entry_header, padded_name));
+        self.len += entsize;
 
         false
     }
 
     fn send(self) -> Result<Self::Ok, Self::Error> {
         // FIXME: avoid redundant allocations.
-        let data: Vec<_> = self
-            .entries
-            .iter()
-            .flat_map(|(header, padded_name, entry_out)| {
-                vec![unsafe { as_bytes(header) }, &padded_name[..], unsafe {
-                    as_bytes(entry_out)
-                }]
-            })
-            .collect();
+        let mut data = Vec::with_capacity(self.entries.len() * 2);
+        for (header, padded_name) in &self.entries {
+            data.push(unsafe { as_bytes(header) });
+            data.push(&padded_name[..]);
+        }
 
         write::send_reply(self.writer, self.header.unique, data) //
             .map_err(Error::reply)?;
@@ -2162,88 +2166,280 @@ where
     }
 }
 
-fn fill_attr_out(dst: &mut kernel::fuse_attr_out, attr: impl FileAttr, ttl: Option<Duration>) {
-    fill_attr(&mut dst.attr, attr);
+struct AttrOutFiller<'a> {
+    out: &'a mut kernel::fuse_attr_out,
+}
 
-    if let Some(ttl) = ttl {
-        dst.attr_valid = ttl.as_secs();
-        dst.attr_valid_nsec = ttl.subsec_nanos();
-    } else {
-        dst.attr_valid = u64::MAX;
-        dst.attr_valid_nsec = u32::MAX;
+impl reply::FileAttr for AttrOutFiller<'_> {
+    fn ino(&mut self, ino: u64) {
+        self.out.attr.ino = ino;
+    }
+
+    fn size(&mut self, size: u64) {
+        self.out.attr.size = size;
+    }
+
+    fn mode(&mut self, mode: u32) {
+        self.out.attr.mode = mode;
+    }
+
+    fn nlink(&mut self, nlink: u32) {
+        self.out.attr.nlink = nlink;
+    }
+
+    fn uid(&mut self, uid: u32) {
+        self.out.attr.uid = uid;
+    }
+
+    fn gid(&mut self, gid: u32) {
+        self.out.attr.gid = gid;
+    }
+
+    fn rdev(&mut self, rdev: u32) {
+        self.out.attr.rdev = rdev;
+    }
+
+    fn blksize(&mut self, blksize: u32) {
+        self.out.attr.blksize = blksize;
+    }
+
+    fn blocks(&mut self, blocks: u64) {
+        self.out.attr.blocks = blocks;
+    }
+
+    fn atime(&mut self, sec: u64, nsec: u32) {
+        self.out.attr.atime = sec;
+        self.out.attr.atimensec = nsec;
+    }
+
+    fn mtime(&mut self, sec: u64, nsec: u32) {
+        self.out.attr.mtime = sec;
+        self.out.attr.mtimensec = nsec;
+    }
+
+    fn ctime(&mut self, sec: u64, nsec: u32) {
+        self.out.attr.ctime = sec;
+        self.out.attr.ctimensec = nsec;
     }
 }
 
-fn fill_entry_out(dst: &mut kernel::fuse_entry_out, attr: impl FileAttr, opts: &EntryOptions) {
-    fill_attr(&mut dst.attr, attr);
-
-    dst.nodeid = opts.ino;
-    dst.generation = opts.generation;
-
-    if let Some(ttl) = opts.ttl_attr {
-        dst.attr_valid = ttl.as_secs();
-        dst.attr_valid_nsec = ttl.subsec_nanos();
-    } else {
-        dst.attr_valid = u64::MAX;
-        dst.attr_valid_nsec = u32::MAX;
+impl reply::AttrOut for AttrOutFiller<'_> {
+    fn attr(&mut self) -> &mut dyn reply::FileAttr {
+        self
     }
 
-    if let Some(ttl) = opts.ttl_entry {
-        dst.entry_valid = ttl.as_secs();
-        dst.entry_valid_nsec = ttl.subsec_nanos();
-    } else {
-        dst.entry_valid = u64::MAX;
-        dst.entry_valid_nsec = u32::MAX;
+    fn ttl(&mut self, ttl: Duration) {
+        self.out.attr_valid = ttl.as_secs();
+        self.out.attr_valid_nsec = ttl.subsec_nanos();
     }
 }
 
-fn fill_open_out(dst: &mut kernel::fuse_open_out, fh: u64, opts: &OpenOptions) {
-    dst.fh = fh;
+struct EntryOutFiller<'a> {
+    out: &'a mut kernel::fuse_entry_out,
+}
 
-    if opts.direct_io {
-        dst.open_flags |= kernel::FOPEN_DIRECT_IO;
+impl reply::FileAttr for EntryOutFiller<'_> {
+    fn ino(&mut self, ino: u64) {
+        self.out.attr.ino = ino;
     }
 
-    if opts.keep_cache {
-        dst.open_flags |= kernel::FOPEN_KEEP_CACHE;
+    fn size(&mut self, size: u64) {
+        self.out.attr.size = size;
     }
 
-    if opts.nonseekable {
-        dst.open_flags |= kernel::FOPEN_NONSEEKABLE;
+    fn mode(&mut self, mode: u32) {
+        self.out.attr.mode = mode;
     }
 
-    if opts.cache_dir {
-        dst.open_flags |= kernel::FOPEN_CACHE_DIR;
+    fn nlink(&mut self, nlink: u32) {
+        self.out.attr.nlink = nlink;
+    }
+
+    fn uid(&mut self, uid: u32) {
+        self.out.attr.uid = uid;
+    }
+
+    fn gid(&mut self, gid: u32) {
+        self.out.attr.gid = gid;
+    }
+
+    fn rdev(&mut self, rdev: u32) {
+        self.out.attr.rdev = rdev;
+    }
+
+    fn blksize(&mut self, blksize: u32) {
+        self.out.attr.blksize = blksize;
+    }
+
+    fn blocks(&mut self, blocks: u64) {
+        self.out.attr.blocks = blocks;
+    }
+
+    fn atime(&mut self, sec: u64, nsec: u32) {
+        self.out.attr.atime = sec;
+        self.out.attr.atimensec = nsec;
+    }
+
+    fn mtime(&mut self, sec: u64, nsec: u32) {
+        self.out.attr.mtime = sec;
+        self.out.attr.mtimensec = nsec;
+    }
+
+    fn ctime(&mut self, sec: u64, nsec: u32) {
+        self.out.attr.ctime = sec;
+        self.out.attr.ctimensec = nsec;
     }
 }
 
-fn fill_attr(dst: &mut kernel::fuse_attr, src: impl FileAttr) {
-    dst.ino = src.ino();
-    dst.size = src.size();
-    dst.mode = src.mode();
-    dst.nlink = src.nlink();
-    dst.uid = src.uid();
-    dst.gid = src.gid();
-    dst.rdev = src.rdev();
-    dst.blksize = src.blksize();
-    dst.blocks = src.blocks();
-    dst.atime = src.atime();
-    dst.atimensec = src.atime_nsec();
-    dst.mtime = src.mtime();
-    dst.mtimensec = src.mtime_nsec();
-    dst.ctime = src.ctime();
-    dst.ctimensec = src.ctime_nsec();
+impl reply::EntryOut for EntryOutFiller<'_> {
+    fn attr(&mut self) -> &mut dyn reply::FileAttr {
+        self
+    }
+
+    fn ino(&mut self, ino: u64) {
+        self.out.nodeid = ino;
+    }
+
+    fn generation(&mut self, generation: u64) {
+        self.out.generation = generation;
+    }
+
+    fn ttl_attr(&mut self, ttl: Duration) {
+        self.out.attr_valid = ttl.as_secs();
+        self.out.attr_valid_nsec = ttl.subsec_nanos();
+    }
+
+    fn ttl_entry(&mut self, ttl: Duration) {
+        self.out.entry_valid = ttl.as_secs();
+        self.out.entry_valid_nsec = ttl.subsec_nanos();
+    }
 }
 
-fn fill_statfs(dst: &mut kernel::fuse_kstatfs, src: impl FsStatistics) {
-    dst.bsize = src.bsize();
-    dst.frsize = src.frsize();
-    dst.blocks = src.blocks();
-    dst.bfree = src.bfree();
-    dst.bavail = src.bavail();
-    dst.files = src.files();
-    dst.ffree = src.ffree();
-    dst.namelen = src.namelen();
+struct OpenOutFiller<'a> {
+    out: &'a mut kernel::fuse_open_out,
+}
+
+impl OpenOutFiller<'_> {
+    fn set_flag(&mut self, flag: u32, enabled: bool) {
+        if enabled {
+            self.out.open_flags |= flag;
+        } else {
+            self.out.open_flags &= !flag;
+        }
+    }
+}
+
+impl reply::OpenOut for OpenOutFiller<'_> {
+    fn fh(&mut self, fh: u64) {
+        self.out.fh = fh;
+    }
+
+    fn direct_io(&mut self, enabled: bool) {
+        self.set_flag(kernel::FOPEN_DIRECT_IO, enabled);
+    }
+
+    fn keep_cache(&mut self, enabled: bool) {
+        self.set_flag(kernel::FOPEN_KEEP_CACHE, enabled);
+    }
+
+    fn nonseekable(&mut self, enabled: bool) {
+        self.set_flag(kernel::FOPEN_NONSEEKABLE, enabled);
+    }
+
+    fn cache_dir(&mut self, enabled: bool) {
+        self.set_flag(kernel::FOPEN_CACHE_DIR, enabled);
+    }
+}
+
+struct StatfsOutFiller<'a> {
+    out: &'a mut kernel::fuse_statfs_out,
+}
+
+impl reply::Statfs for StatfsOutFiller<'_> {
+    fn bsize(&mut self, bsize: u32) {
+        self.out.st.bsize = bsize;
+    }
+
+    fn frsize(&mut self, frsize: u32) {
+        self.out.st.frsize = frsize;
+    }
+
+    fn blocks(&mut self, blocks: u64) {
+        self.out.st.blocks = blocks;
+    }
+
+    fn bfree(&mut self, bfree: u64) {
+        self.out.st.bfree = bfree;
+    }
+
+    fn bavail(&mut self, bavail: u64) {
+        self.out.st.bavail = bavail;
+    }
+
+    fn files(&mut self, files: u64) {
+        self.out.st.files = files;
+    }
+
+    fn ffree(&mut self, ffree: u64) {
+        self.out.st.ffree = ffree;
+    }
+
+    fn namelen(&mut self, namelen: u32) {
+        self.out.st.namelen = namelen;
+    }
+}
+
+impl reply::StatfsOut for StatfsOutFiller<'_> {
+    #[inline]
+    fn statfs(&mut self) -> &mut dyn reply::Statfs {
+        self
+    }
+}
+
+struct LkOutFiller<'a> {
+    out: &'a mut kernel::fuse_lk_out,
+}
+
+impl reply::FileLock for LkOutFiller<'_> {
+    fn typ(&mut self, typ: u32) {
+        self.out.lk.typ = typ;
+    }
+
+    fn start(&mut self, start: u64) {
+        self.out.lk.start = start;
+    }
+
+    fn end(&mut self, end: u64) {
+        self.out.lk.end = end;
+    }
+
+    fn pid(&mut self, pid: u32) {
+        self.out.lk.pid = pid;
+    }
+}
+
+impl reply::LkOut for LkOutFiller<'_> {
+    fn flock(&mut self) -> &mut dyn reply::FileLock {
+        self
+    }
+}
+
+struct DirEntryOutFiller<'a> {
+    dirent: &'a mut kernel::fuse_dirent,
+}
+
+impl reply::DirEntry for DirEntryOutFiller<'_> {
+    fn ino(&mut self, ino: u64) {
+        self.dirent.ino = ino;
+    }
+
+    fn typ(&mut self, typ: u32) {
+        self.dirent.typ = typ;
+    }
+
+    fn offset(&mut self, offset: u64) {
+        self.dirent.off = offset;
+    }
 }
 
 #[inline]

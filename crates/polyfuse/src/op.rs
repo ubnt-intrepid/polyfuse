@@ -1,5 +1,29 @@
-use crate::types::LockOwner;
-use std::{ffi::OsStr, time::Duration, u32, u64};
+use std::{ffi::OsStr, fmt, time::Duration, u32, u64};
+
+/// The identifier for locking operations.
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct LockOwner(u64);
+
+impl fmt::Debug for LockOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LockOwner {{ .. }}")
+    }
+}
+
+impl LockOwner {
+    /// Create a `LockOwner` from the raw value.
+    #[inline]
+    pub const fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// Take the raw value of this identifier.
+    #[inline]
+    pub const fn into_raw(self) -> u64 {
+        self.0
+    }
+}
 
 /// A forget information.
 pub trait Forget {

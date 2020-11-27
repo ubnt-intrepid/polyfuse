@@ -3,13 +3,13 @@
 
 use polyfuse::{
     op,
-    reply::{self, EntryOptions},
+    reply::{self, AttrOut, EntryOut, FileAttr},
     Config, Operation, Session,
 };
 use polyfuse_async_std::Connection;
 
 use anyhow::Context as _;
-use std::{mem, os::unix::prelude::*, path::PathBuf, time::Duration};
+use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const ROOT_INO: u64 = 1;
@@ -49,9 +49,9 @@ async fn main() -> anyhow::Result<()> {
 }
 
 struct Hello {
-    root_attr: libc::stat,
-    hello_attr: libc::stat,
     entries: Vec<DirEntry>,
+    uid: u32,
+    gid: u32,
 }
 
 struct DirEntry {
@@ -62,9 +62,6 @@ struct DirEntry {
 
 impl Hello {
     fn new() -> Self {
-        let root_attr = root_attr();
-        let hello_attr = hello_attr();
-
         let mut entries = Vec::with_capacity(3);
         entries.push(DirEntry {
             name: ".",
@@ -83,10 +80,27 @@ impl Hello {
         });
 
         Self {
-            root_attr,
-            hello_attr,
             entries,
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
         }
+    }
+
+    fn fill_root_attr(&self, attr: &mut dyn FileAttr) {
+        attr.ino(ROOT_INO);
+        attr.mode(libc::S_IFDIR as u32 | 0o555);
+        attr.nlink(2);
+        attr.uid(self.uid);
+        attr.gid(self.gid);
+    }
+
+    fn fill_hello_attr(&self, attr: &mut dyn FileAttr) {
+        attr.ino(HELLO_INO);
+        attr.size(HELLO_CONTENT.len() as u64);
+        attr.mode(libc::S_IFREG as u32 | 0o444);
+        attr.nlink(1);
+        attr.uid(self.uid);
+        attr.gid(self.gid);
     }
 
     async fn lookup<Op, R>(&self, op: Op, reply: R) -> Result<R::Ok, R::Error>
@@ -95,15 +109,14 @@ impl Hello {
         R: reply::ReplyEntry,
     {
         match op.parent() {
-            ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => reply.entry(
-                &self.hello_attr,
-                &EntryOptions {
-                    ino: HELLO_INO,
-                    ttl_attr: Some(TTL),
-                    ttl_entry: Some(TTL),
-                    ..Default::default()
-                },
-            ),
+            ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
+                reply.send(|out: &mut dyn EntryOut| {
+                    self.fill_hello_attr(out.attr());
+                    out.ino(HELLO_INO);
+                    out.ttl_attr(TTL);
+                    out.ttl_entry(TTL);
+                })
+            }
             _ => reply.error(libc::ENOENT),
         }
     }
@@ -113,15 +126,19 @@ impl Hello {
         Op: op::Getattr,
         R: reply::ReplyAttr,
     {
-        let attr = match op.ino() {
-            ROOT_INO => &self.root_attr,
-            HELLO_INO => &self.hello_attr,
+        let fill_attr = match op.ino() {
+            ROOT_INO => Self::fill_root_attr,
+            HELLO_INO => Self::fill_hello_attr,
             _ => return reply.error(libc::ENOENT),
         };
-        reply.attr(attr, Some(TTL))
+
+        reply.send(|out: &mut dyn AttrOut| {
+            fill_attr(self, out.attr());
+            out.ttl(TTL);
+        })
     }
 
-    async fn read<Op, R>(&self, op: Op, reply: R) -> Result<R::Ok, R::Error>
+    async fn read<Op, R>(&self, op: Op, mut reply: R) -> Result<R::Ok, R::Error>
     where
         Op: op::Read,
         R: reply::ReplyData,
@@ -133,15 +150,15 @@ impl Hello {
         }
 
         let offset = op.offset() as usize;
-        if offset >= HELLO_CONTENT.len() {
-            return reply.data(&[]);
+        if offset < HELLO_CONTENT.len() {
+            let size = op.size() as usize;
+            let data = &HELLO_CONTENT[offset..];
+            let data = &data[..std::cmp::min(data.len(), size)];
+
+            reply.chunk(data);
         }
 
-        let size = op.size() as usize;
-        let data = &HELLO_CONTENT[offset..];
-        let data = &data[..std::cmp::min(data.len(), size)];
-
-        reply.data(data)
+        reply.send()
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -161,7 +178,11 @@ impl Hello {
         }
 
         for (i, entry) in self.dir_entries().skip(op.offset() as usize) {
-            let full = reply.add(entry.ino, entry.typ, entry.name.as_ref(), i + 1);
+            let full = reply.entry(entry.name.as_ref(), |out| {
+                out.ino(entry.ino);
+                out.typ(entry.typ);
+                out.offset(i + 1);
+            });
             if full {
                 break;
             }
@@ -169,25 +190,4 @@ impl Hello {
 
         reply.send()
     }
-}
-
-fn root_attr() -> libc::stat {
-    let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-    attr.st_mode = libc::S_IFDIR as u32 | 0o555;
-    attr.st_ino = ROOT_INO;
-    attr.st_nlink = 2;
-    attr.st_uid = unsafe { libc::getuid() };
-    attr.st_gid = unsafe { libc::getgid() };
-    attr
-}
-
-fn hello_attr() -> libc::stat {
-    let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-    attr.st_size = HELLO_CONTENT.len() as libc::off_t;
-    attr.st_mode = libc::S_IFREG as u32 | 0o444;
-    attr.st_ino = HELLO_INO;
-    attr.st_nlink = 1;
-    attr.st_uid = unsafe { libc::getuid() };
-    attr.st_gid = unsafe { libc::getgid() };
-    attr
 }

@@ -1,4 +1,8 @@
-use polyfuse::{op, reply, Config, Operation, Session};
+use polyfuse::{
+    op,
+    reply::{self, AttrOut},
+    Config, Operation, Session,
+};
 use polyfuse_async_std::Connection;
 
 use anyhow::Context as _;
@@ -46,12 +50,14 @@ where
         return reply.error(libc::ENOENT);
     }
 
-    let mut attr = unsafe { std::mem::zeroed::<libc::stat>() };
-    attr.st_ino = 1;
-    attr.st_mode = libc::S_IFREG as u32 | 0o444;
-    attr.st_nlink = 1;
-    attr.st_uid = unsafe { libc::getuid() };
-    attr.st_gid = unsafe { libc::getgid() };
+    reply.send(|out: &mut dyn AttrOut| {
+        let attr = out.attr();
+        attr.ino(1);
+        attr.mode(libc::S_IFREG as u32 | 0o444);
+        attr.nlink(1);
+        attr.uid(unsafe { libc::getuid() });
+        attr.gid(unsafe { libc::getgid() });
 
-    reply.attr(attr, Some(Duration::from_secs(1)))
+        out.ttl(Duration::from_secs(1));
+    })
 }
