@@ -291,9 +291,9 @@ impl Config {
     }
 }
 
-/// The instance of FUSE daemon for interaction with the kernel driver.
+/// The object containing the contextrual information about a FUSE session.
+#[derive(Debug)]
 pub struct Session {
-    #[allow(dead_code)]
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
@@ -316,6 +316,12 @@ impl Session {
     pub(crate) fn exit(&self) {
         // FIXME: choose appropriate atomic ordering.
         self.exited.store(true, Ordering::SeqCst)
+    }
+
+    /// Returns the information about the FUSE connection.
+    #[inline]
+    pub fn connection_info(&self) -> &ConnectionInfo {
+        &self.conn
     }
 
     /// Start a FUSE daemon mount on the specified path.
@@ -372,13 +378,18 @@ where
     let init_buf_size = BUFFER_HEADER_SIZE + pagesize() * MAX_MAX_PAGES;
     let mut buf = vec![0u8; init_buf_size];
 
-    loop {
+    for _ in 0..10 {
         conn.read(&mut buf[..]).await?;
         match try_init(&config, &buf[..], &mut conn).await? {
             Some(session) => return Ok(session),
             None => continue,
         }
     }
+
+    Err(io::Error::new(
+        io::ErrorKind::ConnectionRefused,
+        "session initialization is aborted",
+    ))
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -502,5 +513,177 @@ where
             write::send_error(writer, header.unique, libc::EIO)?;
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use futures::{
+        executor::block_on,
+        io::AsyncRead,
+        task::{self, Poll},
+    };
+    use pin_project_lite::pin_project;
+    use polyfuse_kernel::{
+        fuse_in_header, fuse_init_in, fuse_init_out, fuse_opcode, fuse_out_header,
+    };
+    use std::{
+        io::{self, Write},
+        mem,
+        pin::Pin,
+    };
+
+    pin_project! {
+        struct Unite<R, W> {
+            #[pin]
+            reader: R,
+            #[pin]
+            writer: W,
+        }
+    }
+
+    impl<R, W> AsyncRead for Unite<R, W>
+    where
+        R: AsyncRead,
+    {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            self.project().reader.poll_read(cx, buf)
+        }
+
+        fn poll_read_vectored(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            bufs: &mut [io::IoSliceMut<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.project().reader.poll_read_vectored(cx, bufs)
+        }
+    }
+
+    impl<R, W> Write for Unite<R, W>
+    where
+        W: Write,
+    {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writer.write(buf)
+        }
+
+        fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+            self.writer.write_vectored(bufs)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.writer.flush()
+        }
+    }
+
+    #[test]
+    fn init_default() {
+        let input_len = mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>();
+        let in_header = fuse_in_header {
+            len: input_len as u32,
+            opcode: fuse_opcode::FUSE_INIT as u32,
+            unique: 2,
+            nodeid: 0,
+            uid: 100,
+            gid: 100,
+            pid: 12,
+            padding: 0,
+        };
+        let init_in = fuse_init_in {
+            major: 7,
+            minor: 23,
+            max_readahead: 40,
+            flags: CapabilityFlags::all().bits()
+                | kernel::FUSE_MAX_PAGES
+                | kernel::FUSE_NO_OPEN_SUPPORT
+                | kernel::FUSE_NO_OPENDIR_SUPPORT,
+        };
+
+        let mut input = Vec::with_capacity(input_len);
+        input.extend_from_slice(unsafe { crate::util::as_bytes(&in_header) });
+        input.extend_from_slice(unsafe { crate::util::as_bytes(&init_in) });
+        assert_eq!(input.len(), input_len);
+
+        let mut output = Vec::<u8>::new();
+
+        let session = block_on(Session::start(
+            Unite {
+                reader: &input[..],
+                writer: &mut output,
+            },
+            Config::default(),
+        ))
+        .expect("initialization failed");
+
+        let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
+
+        let output_len = mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>();
+        let out_header = fuse_out_header {
+            len: output_len as u32,
+            error: 0,
+            unique: 2,
+        };
+        let init_out = fuse_init_out {
+            major: 7,
+            minor: 23,
+            max_readahead: 40,
+            flags: CapabilityFlags::default().bits()
+                | kernel::FUSE_MAX_PAGES
+                | kernel::FUSE_BIG_WRITES,
+            max_background: 0,
+            congestion_threshold: 0,
+            max_write: DEFAULT_MAX_WRITE,
+            time_gran: 1,
+            max_pages: expected_max_pages,
+            padding: 0,
+            unused: [0; 8],
+        };
+
+        let mut expected = Vec::with_capacity(output_len);
+        expected.extend_from_slice(unsafe { crate::util::as_bytes(&out_header) });
+        expected.extend_from_slice(unsafe { crate::util::as_bytes(&init_out) });
+        assert_eq!(output.len(), output_len);
+
+        assert_eq!(expected[0..4], output[0..4], "out_header.len");
+        assert_eq!(expected[4..8], output[4..8], "out_header.error");
+        assert_eq!(expected[8..16], output[8..16], "out_header.unique");
+
+        let expected = &expected[mem::size_of::<fuse_out_header>()..];
+        let output = &output[mem::size_of::<fuse_out_header>()..];
+        assert_eq!(expected[0..4], output[0..4], "init_out.major");
+        assert_eq!(expected[4..8], output[4..8], "init_out.minor");
+        assert_eq!(expected[8..12], output[8..12], "init_out.max_readahead");
+        assert_eq!(expected[12..16], output[12..16], "init_out.flags");
+        assert_eq!(expected[16..18], output[16..18], "init_out.max_background");
+        assert_eq!(
+            expected[18..20],
+            output[18..20],
+            "init_out.congestion_threshold"
+        );
+        assert_eq!(expected[20..24], output[20..24], "init_out.max_write");
+        assert_eq!(expected[24..28], output[24..28], "init_out.time_gran");
+        assert_eq!(expected[28..30], output[28..30], "init_out.max_pages");
+        assert!(
+            output[30..30 + 2 + 4 * 8].iter().all(|&b| b == 0x00),
+            "init_out.paddings"
+        );
+
+        let conn = &session.conn;
+        assert_eq!(conn.proto_major(), 7);
+        assert_eq!(conn.proto_minor(), 23);
+        assert_eq!(conn.max_readahead(), 40);
+        assert_eq!(conn.max_background(), 0);
+        assert_eq!(conn.congestion_threshold(), 0);
+        assert_eq!(conn.max_write(), DEFAULT_MAX_WRITE);
+        assert_eq!(conn.max_pages(), Some(expected_max_pages));
+        assert_eq!(conn.time_gran(), 1);
+        assert!(conn.no_open_support());
+        assert!(conn.no_opendir_support());
     }
 }
