@@ -1,3 +1,4 @@
+use crate::{env::Env, lint::Linter};
 use std::{
     fs::OpenOptions, //
     io::Write as _,
@@ -5,8 +6,8 @@ use std::{
     path::PathBuf,
 };
 
-fn resolve_git_dir() -> anyhow::Result<PathBuf> {
-    let mut project_root = crate::project_root();
+fn resolve_git_dir(env: &Env) -> anyhow::Result<PathBuf> {
+    let mut project_root = env.project_root.clone();
     if !project_root.has_root() {
         project_root = project_root.canonicalize()?;
     }
@@ -21,8 +22,8 @@ fn resolve_git_dir() -> anyhow::Result<PathBuf> {
     anyhow::bail!("Git directory is not found");
 }
 
-pub fn install(force: bool) -> anyhow::Result<()> {
-    let hooks_dir = resolve_git_dir()?.join("hooks");
+pub fn install(env: &Env, force: bool) -> anyhow::Result<()> {
+    let hooks_dir = resolve_git_dir(env)?.join("hooks");
 
     let install = |name: &str| -> anyhow::Result<()> {
         let hook_path = hooks_dir.join(name);
@@ -62,8 +63,8 @@ pub fn install(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn pre_commit() -> anyhow::Result<()> {
+pub fn pre_commit(env: &Env) -> anyhow::Result<()> {
     eprintln!("[cargo-xtask] run pre-commit hook");
-    crate::do_lint()?;
+    Linter { env }.run_rustfmt()?;
     Ok(())
 }
