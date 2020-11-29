@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
             Operation::Getattr { op, reply, .. } => getattr(op, reply).await?,
 
             // Or annotate that the operation is not supported.
-            op => op.unimplemented()?,
+            op => op.default()?,
         };
     }
 

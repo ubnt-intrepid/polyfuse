@@ -55,7 +55,10 @@ impl Request {
         W: io::Write,
     {
         if self.session.exited() {
-            return Ok(Operation::Null);
+            return Ok(Operation::Unknown(UnknownOperation {
+                sender: None,
+                _marker: PhantomData,
+            }));
         }
 
         let mut decoder = Decoder::new(&self.buf[..]);
@@ -561,8 +564,8 @@ impl Request {
 
             _ => {
                 tracing::warn!("unsupported opcode: {}", header.opcode);
-                Ok(Operation::Unsupported(Unsupported {
-                    sender,
+                Ok(Operation::Unknown(UnknownOperation {
+                    sender: Some(sender),
                     _marker: PhantomData,
                 }))
             }
@@ -745,17 +748,14 @@ pub enum Operation<'op, W> {
     },
 
     #[doc(hidden)]
-    Null,
-
-    #[doc(hidden)]
-    Unsupported(Unsupported<'op, W>),
+    Unknown(UnknownOperation<'op, W>),
 }
 
 impl<'op, W> Operation<'op, W>
 where
     W: io::Write,
 {
-    pub fn unimplemented(self) -> Result<Replied, Error> {
+    pub fn default(self) -> Result<Replied, Error> {
         use crate::reply::*;
 
         macro_rules! f {
@@ -765,8 +765,7 @@ where
                         Operation::$Op { reply, .. } => reply.error(libc::ENOSYS),
                     )*
 
-                    Operation::Null => Ok(Replied(())),
-                    Operation::Unsupported(op) => op.send_error(),
+                    Operation::Unknown(op) => op.default(),
                 }
             };
         }
@@ -815,20 +814,20 @@ where
 }
 
 #[doc(hidden)]
-pub struct Unsupported<'op, W> {
-    sender: ReplySender<W>,
+pub struct UnknownOperation<'op, W> {
+    sender: Option<ReplySender<W>>,
     _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W> Unsupported<'op, W>
+impl<'op, W> UnknownOperation<'op, W>
 where
     W: io::Write,
 {
-    fn send_error(self) -> Result<Replied, Error> {
-        self.sender
-            .error(libc::ENOSYS)
-            .map(Replied)
-            .map_err(Error::reply)
+    fn default(self) -> Result<Replied, Error> {
+        if let Some(sender) = self.sender {
+            sender.error(libc::ENOSYS).map_err(Error::reply)?;
+        }
+        Ok(Replied(()))
     }
 }
 

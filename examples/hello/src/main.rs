@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
             Operation::Getattr { op, reply, .. } => fs.getattr(op, reply).await,
             Operation::Read { op, reply, .. } => fs.read(op, reply).await,
             Operation::Readdir { op, reply, .. } => fs.readdir(op, reply).await,
-            _ => op.unimplemented(),
+            _ => op.default(),
         };
     }
 
