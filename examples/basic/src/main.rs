@@ -1,12 +1,8 @@
-use polyfuse::{
-    op,
-    reply::{self, AttrOut},
-    Config, Operation, Session,
-};
+use polyfuse::{op, reply::AttrOut, Config, Operation, Request, Session};
 use polyfuse_async_std::Connection;
 
 use anyhow::Context as _;
-use std::{path::PathBuf, time::Duration};
+use std::{io, path::PathBuf, time::Duration};
 
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,36 +24,35 @@ async fn main() -> anyhow::Result<()> {
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request(&conn).await? {
         // Process the request.
-        let op = req.operation(&conn)?;
-        let _replied = match op {
+        let op = req.operation()?;
+        match op {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr { op, reply, .. } => getattr(op, reply).await?,
+            Operation::Getattr(op) => getattr(&req, op, &conn).await?,
 
             // Or annotate that the operation is not supported.
-            op => op.default()?,
+            _ => req.reply_error(&conn, libc::ENOSYS)?,
         };
     }
 
     Ok(())
 }
 
-async fn getattr<Op, R>(op: Op, reply: R) -> Result<R::Ok, R::Error>
+async fn getattr<Op, W>(req: &Request, op: Op, writer: W) -> io::Result<()>
 where
     Op: op::Getattr,
-    R: reply::ReplyAttr,
+    W: io::Write,
 {
     if op.ino() != 1 {
-        return reply.error(libc::ENOENT);
+        return req.reply_error(writer, libc::ENOENT);
     }
 
-    reply.send(|out: &mut dyn AttrOut| {
-        let attr = out.attr();
-        attr.ino(1);
-        attr.mode(libc::S_IFREG as u32 | 0o444);
-        attr.nlink(1);
-        attr.uid(unsafe { libc::getuid() });
-        attr.gid(unsafe { libc::getgid() });
+    let mut out = AttrOut::default();
+    out.attr().ino(1);
+    out.attr().mode(libc::S_IFREG as u32 | 0o444);
+    out.attr().nlink(1);
+    out.attr().uid(unsafe { libc::getuid() });
+    out.attr().gid(unsafe { libc::getgid() });
+    out.ttl(Duration::from_secs(1));
 
-        out.ttl(Duration::from_secs(1));
-    })
+    req.reply(writer, out)
 }

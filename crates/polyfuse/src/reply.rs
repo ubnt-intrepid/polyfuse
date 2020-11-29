@@ -1,58 +1,123 @@
-use std::{ffi::OsStr, time::Duration};
+use crate::{
+    util::as_bytes,
+    write::{Bytes, Collector},
+};
+use polyfuse_kernel::{
+    fuse_attr, fuse_attr_out, fuse_bmap_out, fuse_dirent, fuse_entry_out, fuse_file_lock,
+    fuse_getxattr_out, fuse_kstatfs, fuse_lk_out, fuse_open_out, fuse_poll_out, fuse_statfs_out,
+    fuse_write_out, FOPEN_CACHE_DIR, FOPEN_DIRECT_IO, FOPEN_KEEP_CACHE, FOPEN_NONSEEKABLE,
+};
+use std::{convert::TryInto as _, ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
 
 /// Attributes about a file.
-pub trait FileAttr {
+#[repr(transparent)]
+pub struct FileAttr {
+    attr: fuse_attr,
+}
+
+impl FileAttr {
+    #[inline]
+    fn from_attr_mut(attr: &mut fuse_attr) -> &mut FileAttr {
+        unsafe { &mut *(attr as *mut fuse_attr as *mut FileAttr) }
+    }
+
     /// Set the inode number.
-    fn ino(&mut self, ino: u64);
+    #[inline]
+    pub fn ino(&mut self, ino: u64) {
+        self.attr.ino = ino;
+    }
 
     /// Set the size of content.
-    fn size(&mut self, size: u64);
+    #[inline]
+    pub fn size(&mut self, size: u64) {
+        self.attr.size = size;
+    }
 
     /// Set the permission of the inode.
-    fn mode(&mut self, mode: u32);
+    #[inline]
+    pub fn mode(&mut self, mode: u32) {
+        self.attr.mode = mode;
+    }
 
     /// Set the number of hard links.
-    fn nlink(&mut self, nlink: u32);
+    #[inline]
+    pub fn nlink(&mut self, nlink: u32) {
+        self.attr.nlink = nlink;
+    }
 
     /// Set the user ID.
-    fn uid(&mut self, uid: u32);
+    #[inline]
+    pub fn uid(&mut self, uid: u32) {
+        self.attr.uid = uid;
+    }
 
     /// Set the group ID.
-    fn gid(&mut self, gid: u32);
+    #[inline]
+    pub fn gid(&mut self, gid: u32) {
+        self.attr.gid = gid;
+    }
 
     /// Set the device ID.
-    fn rdev(&mut self, rdev: u32);
+    #[inline]
+    pub fn rdev(&mut self, rdev: u32) {
+        self.attr.rdev = rdev;
+    }
 
     /// Set the block size.
-    fn blksize(&mut self, blksize: u32);
+    #[inline]
+    pub fn blksize(&mut self, blksize: u32) {
+        self.attr.blksize = blksize;
+    }
 
     /// Set the number of allocated blocks.
-    fn blocks(&mut self, blocks: u64);
+    #[inline]
+    pub fn blocks(&mut self, blocks: u64) {
+        self.attr.blocks = blocks;
+    }
 
     /// Set the last accessed time.
-    fn atime(&mut self, sec: u64, nsec: u32);
+    #[inline]
+    pub fn atime(&mut self, atime: Duration) {
+        self.attr.atime = atime.as_secs();
+        self.attr.atimensec = atime.subsec_nanos();
+    }
 
     /// Set the last modification time.
-    fn mtime(&mut self, sec: u64, nsec: u32);
+    #[inline]
+    pub fn mtime(&mut self, mtime: Duration) {
+        self.attr.mtime = mtime.as_secs();
+        self.attr.mtimensec = mtime.subsec_nanos();
+    }
 
     /// Set the last created time.
-    fn ctime(&mut self, sec: u64, nsec: u32);
+    #[inline]
+    pub fn ctime(&mut self, ctime: Duration) {
+        self.attr.ctime = ctime.as_secs();
+        self.attr.ctimensec = ctime.subsec_nanos();
+    }
 }
 
-pub trait ReplyEntry {
-    type Ok;
-    type Error;
+#[derive(Default)]
+#[repr(transparent)]
+pub struct EntryOut {
+    out: fuse_entry_out,
+}
 
-    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
+impl Bytes for EntryOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        F: FnOnce(&mut dyn EntryOut);
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
 }
 
-pub trait EntryOut {
+impl EntryOut {
     /// Return the object to fill attribute values about this entry.
-    fn attr(&mut self) -> &mut dyn FileAttr;
+    #[inline]
+    pub fn attr(&mut self) -> &mut FileAttr {
+        FileAttr::from_attr_mut(&mut self.out.attr)
+    }
 
     /// Set the inode number of this entry.
     ///
@@ -60,7 +125,10 @@ pub trait EntryOut {
     /// Returning a negative entry is also possible with the `ENOENT` error,
     /// but the *zeroed* entries also have the ability to specify the lifetime
     /// of the entry cache by using the `ttl_entry` parameter.
-    fn ino(&mut self, ino: u64);
+    #[inline]
+    pub fn ino(&mut self, ino: u64) {
+        self.out.nodeid = ino;
+    }
 
     /// Set the generation of this entry.
     ///
@@ -68,268 +136,373 @@ pub trait EntryOut {
     /// when the filesystem reuse inode numbers.  That is, the operations
     /// must ensure that the pair of entry's inode number and generation
     /// are unique for the lifetime of the filesystem.
-    fn generation(&mut self, generation: u64);
+    pub fn generation(&mut self, generation: u64) {
+        self.out.generation = generation;
+    }
 
     /// Set the validity timeout for inode attributes.
     ///
     /// The operations should set this value to very large
     /// when the changes of inode attributes are caused
     /// only by FUSE requests.
-    fn ttl_attr(&mut self, ttl: Duration);
+    pub fn ttl_attr(&mut self, ttl: Duration) {
+        self.out.attr_valid = ttl.as_secs();
+        self.out.attr_valid_nsec = ttl.subsec_nanos();
+    }
 
     /// Set the validity timeout for the name.
     ///
     /// The operations should set this value to very large
     /// when the changes/deletions of directory entries are
     /// caused only by FUSE requests.
-    fn ttl_entry(&mut self, ttl: Duration);
+    pub fn ttl_entry(&mut self, ttl: Duration) {
+        self.out.entry_valid = ttl.as_secs();
+        self.out.entry_valid_nsec = ttl.subsec_nanos();
+    }
 }
 
-pub trait ReplyAttr {
-    type Ok;
-    type Error;
-
-    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
-    where
-        F: FnOnce(&mut dyn AttrOut);
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+#[derive(Default)]
+#[repr(transparent)]
+pub struct AttrOut {
+    out: fuse_attr_out,
 }
 
-pub trait AttrOut {
+impl AttrOut {
     /// Return the object to fill attribute values.
-    fn attr(&mut self) -> &mut dyn FileAttr;
+    #[inline]
+    pub fn attr(&mut self) -> &mut FileAttr {
+        FileAttr::from_attr_mut(&mut self.out.attr)
+    }
 
     /// Set the validity timeout for this attribute.
-    fn ttl(&mut self, ttl: Duration);
+    pub fn ttl(&mut self, ttl: Duration) {
+        self.out.attr_valid = ttl.as_secs();
+        self.out.attr_valid_nsec = ttl.subsec_nanos();
+    }
 }
 
-pub trait ReplyOk {
-    type Ok;
-    type Error;
-
-    fn send(self) -> Result<Self::Ok, Self::Error>;
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
-}
-
-pub trait ReplyReadlink {
-    type Ok;
-    type Error;
-
-    fn send<T>(self, link: T) -> Result<Self::Ok, Self::Error>
+impl Bytes for AttrOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        T: AsRef<OsStr> + Send + 'static;
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
 }
 
-pub trait ReplyData {
-    type Ok;
-    type Error;
+#[derive(Default)]
+#[repr(transparent)]
+pub struct OpenOut {
+    out: fuse_open_out,
+}
 
-    /// Return the remaining length of bytes that can be added.
-    fn remaining(&self) -> usize;
-
-    /// Append a chunk of bytes to the end of the reply.
-    fn chunk<T>(&mut self, chunk: T) -> Option<T>
+impl Bytes for OpenOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        T: AsRef<[u8]> + Send + 'static;
-
-    fn send(self) -> Result<Self::Ok, Self::Error>;
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
 }
 
-pub trait ReplyOpen {
-    type Ok;
-    type Error;
-
-    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
-    where
-        F: FnOnce(&mut dyn OpenOut);
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
-}
-
-pub trait OpenOut {
+impl OpenOut {
     /// Set the handle of opened file.
-    fn fh(&mut self, fh: u64);
+    pub fn fh(&mut self, fh: u64) {
+        self.out.fh = fh;
+    }
+
+    #[inline]
+    fn set_flag(&mut self, flag: u32, enabled: bool) {
+        if enabled {
+            self.out.open_flags |= flag;
+        } else {
+            self.out.open_flags &= !flag;
+        }
+    }
 
     /// Indicates that the direct I/O is used on this file.
-    fn direct_io(&mut self, enabled: bool);
+    pub fn direct_io(&mut self, enabled: bool) {
+        self.set_flag(FOPEN_DIRECT_IO, enabled);
+    }
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
-    fn keep_cache(&mut self, enabled: bool);
+    pub fn keep_cache(&mut self, enabled: bool) {
+        self.set_flag(FOPEN_KEEP_CACHE, enabled);
+    }
 
     /// Indicates that the opened file is not seekable.
-    fn nonseekable(&mut self, enabled: bool);
+    pub fn nonseekable(&mut self, enabled: bool) {
+        self.set_flag(FOPEN_NONSEEKABLE, enabled);
+    }
 
     /// Enable caching of entries returned by `readdir`.
     ///
     /// This flag is meaningful only for `opendir` operations.
-    fn cache_dir(&mut self, enabled: bool);
+    pub fn cache_dir(&mut self, enabled: bool) {
+        self.set_flag(FOPEN_CACHE_DIR, enabled);
+    }
 }
 
-pub trait ReplyWrite {
-    type Ok;
-    type Error;
-
-    fn send(self, size: u32) -> Result<Self::Ok, Self::Error>;
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+#[derive(Default)]
+#[repr(transparent)]
+pub struct WriteOut {
+    out: fuse_write_out,
 }
 
-pub trait ReplyStatfs {
-    type Ok;
-    type Error;
-
-    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
+impl Bytes for WriteOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        F: FnOnce(&mut dyn StatfsOut);
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
 }
 
-pub trait StatfsOut {
+impl WriteOut {
+    pub fn size(&mut self, size: u32) {
+        self.out.size = size;
+    }
+}
+
+#[derive(Default)]
+#[repr(transparent)]
+pub struct StatfsOut {
+    out: fuse_statfs_out,
+}
+
+impl Bytes for StatfsOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
+    where
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
+}
+
+impl StatfsOut {
     /// Return the object to fill the filesystem statistics.
-    fn statfs(&mut self) -> &mut dyn Statfs;
+    pub fn statfs(&mut self) -> &mut Statfs {
+        Statfs::from_kstatfs_mut(&mut self.out.st)
+    }
 }
 
-pub trait Statfs {
+#[derive(Default)]
+#[repr(transparent)]
+pub struct Statfs {
+    st: fuse_kstatfs,
+}
+
+impl Statfs {
+    #[inline]
+    fn from_kstatfs_mut(st: &mut fuse_kstatfs) -> &mut Statfs {
+        unsafe { &mut *(st as *mut fuse_kstatfs as *mut Statfs) }
+    }
+
     /// Set the block size.
-    fn bsize(&mut self, bsize: u32);
+    pub fn bsize(&mut self, bsize: u32) {
+        self.st.bsize = bsize;
+    }
 
     /// Set the fragment size.
-    fn frsize(&mut self, frsize: u32);
+    pub fn frsize(&mut self, frsize: u32) {
+        self.st.frsize = frsize;
+    }
 
     /// Set the number of blocks in the filesystem.
-    fn blocks(&mut self, blocks: u64);
+    pub fn blocks(&mut self, blocks: u64) {
+        self.st.blocks = blocks;
+    }
 
     /// Set the number of free blocks.
-    fn bfree(&mut self, bfree: u64);
+    pub fn bfree(&mut self, bfree: u64) {
+        self.st.bfree = bfree;
+    }
 
     /// Set the number of free blocks for non-priviledge users.
-    fn bavail(&mut self, bavail: u64);
+    pub fn bavail(&mut self, bavail: u64) {
+        self.st.bavail = bavail;
+    }
 
     /// Set the number of inodes.
-    fn files(&mut self, files: u64);
+    pub fn files(&mut self, files: u64) {
+        self.st.files = files;
+    }
 
     /// Set the number of free inodes.
-    fn ffree(&mut self, ffree: u64);
+    pub fn ffree(&mut self, ffree: u64) {
+        self.st.ffree = ffree;
+    }
 
     /// Set the maximum length of file names.
-    fn namelen(&mut self, namelen: u32);
+    pub fn namelen(&mut self, namelen: u32) {
+        self.st.namelen = namelen;
+    }
 }
 
-pub trait ReplyXattrSize {
-    type Ok;
-    type Error;
-
-    fn send(self, size: u32) -> Result<Self::Ok, Self::Error>;
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+#[derive(Default)]
+#[repr(transparent)]
+pub struct XattrOut {
+    out: fuse_getxattr_out,
 }
 
-pub trait ReplyXattrData {
-    type Ok;
-    type Error;
-
-    fn send<T>(self, data: T) -> Result<Self::Ok, Self::Error>
+impl Bytes for XattrOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        T: AsRef<[u8]> + Send + 'static;
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
 }
 
-pub trait ReplyLk {
-    type Ok;
-    type Error;
+impl XattrOut {
+    pub fn size(&mut self, size: u32) {
+        self.out.size = size;
+    }
+}
 
-    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
+#[derive(Default)]
+#[repr(transparent)]
+pub struct LkOut {
+    out: fuse_lk_out,
+}
+
+impl Bytes for LkOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        F: FnOnce(&mut dyn LkOut);
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
 }
 
-pub trait LkOut {
-    /// Return the object to fill the lock information.
-    fn flock(&mut self) -> &mut dyn FileLock;
+impl LkOut {
+    pub fn file_lock(&mut self) -> &mut FileLock {
+        FileLock::from_file_lock_mut(&mut self.out.lk)
+    }
 }
 
-pub trait FileLock {
+#[repr(transparent)]
+pub struct FileLock {
+    lk: fuse_file_lock,
+}
+
+impl FileLock {
+    #[inline]
+    fn from_file_lock_mut(lk: &mut fuse_file_lock) -> &mut Self {
+        unsafe { &mut *(lk as *mut fuse_file_lock as *mut Self) }
+    }
+
     /// Set the type of this lock.
-    fn typ(&mut self, typ: u32);
+    pub fn typ(&mut self, typ: u32) {
+        self.lk.typ = typ;
+    }
 
     /// Set the starting offset to be locked.
-    fn start(&mut self, start: u64);
+    pub fn start(&mut self, start: u64) {
+        self.lk.start = start;
+    }
 
     /// Set the ending offset to be locked.
-    fn end(&mut self, end: u64);
+    pub fn end(&mut self, end: u64) {
+        self.lk.end = end;
+    }
 
     /// Set the process ID.
-    fn pid(&mut self, pid: u32);
+    pub fn pid(&mut self, pid: u32) {
+        self.lk.pid = pid;
+    }
 }
 
-pub trait ReplyCreate {
-    type Ok;
-    type Error;
+#[derive(Default)]
+#[repr(transparent)]
+pub struct BmapOut {
+    out: fuse_bmap_out,
+}
 
-    fn send<F>(self, f: F) -> Result<Self::Ok, Self::Error>
+impl Bytes for BmapOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        F: FnOnce(&mut dyn EntryOut, &mut dyn OpenOut);
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
 }
 
-pub trait ReplyBmap {
-    type Ok;
-    type Error;
-
-    fn send(self, block: u64) -> Result<Self::Ok, Self::Error>;
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+impl BmapOut {
+    pub fn block(&mut self, block: u64) {
+        self.out.block = block;
+    }
 }
 
-pub trait ReplyPoll {
-    type Ok;
-    type Error;
-
-    fn send(self, revents: u32) -> Result<Self::Ok, Self::Error>;
-
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+#[derive(Default)]
+#[repr(transparent)]
+pub struct PollOut {
+    out: fuse_poll_out,
 }
 
-pub trait ReplyDirs {
-    type Ok;
-    type Error;
-
-    fn entry<F>(&mut self, name: &OsStr, f: F) -> bool
+impl Bytes for PollOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        F: FnOnce(&mut dyn DirEntry);
-
-    fn send(self) -> Result<Self::Ok, Self::Error>;
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(unsafe { as_bytes(self) });
+    }
 }
 
-pub trait ReplyDirsPlus {
-    type Ok;
-    type Error;
+impl PollOut {
+    pub fn revents(&mut self, revents: u32) {
+        self.out.revents = revents;
+    }
+}
 
-    fn entry<F>(&mut self, name: &OsStr, f: F) -> bool
+pub struct ReaddirOut {
+    buf: Vec<u8>,
+}
+
+impl Bytes for ReaddirOut {
+    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
-        F: FnOnce(&mut dyn EntryOut, &mut dyn DirEntry);
-
-    fn send(self) -> Result<Self::Ok, Self::Error>;
-    fn error(self, code: i32) -> Result<Self::Ok, Self::Error>;
+        T: Collector<'a>,
+    {
+        collector.append(&self.buf[..]);
+    }
 }
 
-pub trait DirEntry {
-    /// Set the inode number of this entry.
-    fn ino(&mut self, ino: u64);
+impl ReaddirOut {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(capacity),
+        }
+    }
 
-    /// Set the file type of this entry.
-    fn typ(&mut self, typ: u32);
+    pub fn entry(&mut self, name: &OsStr, ino: u64, typ: u32, off: u64) -> bool {
+        let name = name.as_bytes();
+        let remaining = self.buf.capacity() - self.buf.len();
 
-    /// Set the offset value of this entry.
-    fn offset(&mut self, offset: u64);
+        let entry_size = mem::size_of::<fuse_dirent>() + name.len();
+        let aligned_entry_size = aligned(entry_size);
+
+        if remaining < aligned_entry_size {
+            return true;
+        }
+
+        let dirent = fuse_dirent {
+            ino,
+            off,
+            namelen: name.len().try_into().expect("name length is too long"),
+            typ,
+            name: [],
+        };
+        self.buf.extend_from_slice(unsafe { as_bytes(&dirent) });
+        self.buf.extend_from_slice(name);
+        self.buf.resize(self.buf.len() + aligned_entry_size, 0);
+
+        false
+    }
+}
+
+#[inline]
+const fn aligned(len: usize) -> usize {
+    (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }

@@ -3,13 +3,13 @@
 
 use polyfuse::{
     op,
-    reply::{self, AttrOut, EntryOut, FileAttr},
-    Config, Operation, Session,
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
+    Config, Operation, Request, Session,
 };
 use polyfuse_async_std::Connection;
 
 use anyhow::Context as _;
-use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
+use std::{io, os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const ROOT_INO: u64 = 1;
@@ -35,14 +35,13 @@ async fn main() -> anyhow::Result<()> {
     let fs = Hello::new();
 
     while let Some(req) = session.next_request(&conn).await? {
-        let op = req.operation(&conn)?;
-        let _replied = match op {
-            Operation::Lookup { op, reply, .. } => fs.lookup(op, reply).await,
-            Operation::Getattr { op, reply, .. } => fs.getattr(op, reply).await,
-            Operation::Read { op, reply, .. } => fs.read(op, reply).await,
-            Operation::Readdir { op, reply, .. } => fs.readdir(op, reply).await,
-            _ => op.default(),
-        };
+        match req.operation()? {
+            Operation::Lookup(op) => fs.lookup(&req, &conn, op).await?,
+            Operation::Getattr(op) => fs.getattr(&req, &conn, op).await?,
+            Operation::Read(op) => fs.read(&req, &conn, op).await?,
+            Operation::Readdir(op) => fs.readdir(&req, &conn, op).await?,
+            _ => req.reply_error(&conn, libc::ENOSYS)?,
+        }
     }
 
     Ok(())
@@ -86,7 +85,7 @@ impl Hello {
         }
     }
 
-    fn fill_root_attr(&self, attr: &mut dyn FileAttr) {
+    fn fill_root_attr(&self, attr: &mut FileAttr) {
         attr.ino(ROOT_INO);
         attr.mode(libc::S_IFDIR as u32 | 0o555);
         attr.nlink(2);
@@ -94,7 +93,7 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    fn fill_hello_attr(&self, attr: &mut dyn FileAttr) {
+    fn fill_hello_attr(&self, attr: &mut FileAttr) {
         attr.ino(HELLO_INO);
         attr.size(HELLO_CONTENT.len() as u64);
         attr.mode(libc::S_IFREG as u32 | 0o444);
@@ -103,62 +102,61 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    async fn lookup<Op, R>(&self, op: Op, reply: R) -> Result<R::Ok, R::Error>
-    where
-        Op: op::Lookup,
-        R: reply::ReplyEntry,
-    {
+    async fn lookup(
+        &self,
+        req: &Request,
+        conn: impl io::Write,
+        op: impl op::Lookup,
+    ) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
-                reply.send(|out: &mut dyn EntryOut| {
-                    self.fill_hello_attr(out.attr());
-                    out.ino(HELLO_INO);
-                    out.ttl_attr(TTL);
-                    out.ttl_entry(TTL);
-                })
+                let mut out = EntryOut::default();
+                self.fill_hello_attr(out.attr());
+                out.ino(HELLO_INO);
+                out.ttl_attr(TTL);
+                out.ttl_entry(TTL);
+                req.reply(conn, out)
             }
-            _ => reply.error(libc::ENOENT),
+            _ => req.reply_error(conn, libc::ENOENT),
         }
     }
 
-    async fn getattr<Op, R>(&self, op: Op, reply: R) -> Result<R::Ok, R::Error>
-    where
-        Op: op::Getattr,
-        R: reply::ReplyAttr,
-    {
+    async fn getattr(
+        &self,
+        req: &Request,
+        conn: impl io::Write,
+        op: impl op::Getattr,
+    ) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
-            _ => return reply.error(libc::ENOENT),
+            _ => return req.reply_error(conn, libc::ENOENT),
         };
 
-        reply.send(|out: &mut dyn AttrOut| {
-            fill_attr(self, out.attr());
-            out.ttl(TTL);
-        })
+        let mut out = AttrOut::default();
+        fill_attr(self, out.attr());
+        out.ttl(TTL);
+
+        req.reply(conn, out)
     }
 
-    async fn read<Op, R>(&self, op: Op, mut reply: R) -> Result<R::Ok, R::Error>
-    where
-        Op: op::Read,
-        R: reply::ReplyData,
-    {
+    async fn read(&self, req: &Request, conn: impl io::Write, op: impl op::Read) -> io::Result<()> {
         match op.ino() {
-            ROOT_INO => return reply.error(libc::EISDIR),
             HELLO_INO => (),
-            _ => return reply.error(libc::ENOENT),
+            ROOT_INO => return req.reply_error(conn, libc::EISDIR),
+            _ => return req.reply_error(conn, libc::ENOENT),
         }
+
+        let mut data: &[u8] = &[];
 
         let offset = op.offset() as usize;
         if offset < HELLO_CONTENT.len() {
             let size = op.size() as usize;
-            let data = &HELLO_CONTENT[offset..];
-            let data = &data[..std::cmp::min(data.len(), size)];
-
-            reply.chunk(data);
+            data = &HELLO_CONTENT[offset..];
+            data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        reply.send()
+        req.reply(conn, data)
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -168,26 +166,30 @@ impl Hello {
         })
     }
 
-    async fn readdir<Op, R>(&self, op: Op, mut reply: R) -> Result<R::Ok, R::Error>
-    where
-        Op: op::Readdir,
-        R: reply::ReplyDirs,
-    {
+    async fn readdir(
+        &self,
+        req: &Request,
+        conn: impl io::Write,
+        op: impl op::Readdir,
+    ) -> io::Result<()> {
         if op.ino() != ROOT_INO {
-            return reply.error(libc::ENOTDIR);
+            return req.reply_error(conn, libc::ENOTDIR);
         }
 
+        let mut out = ReaddirOut::new(op.size() as usize);
+
         for (i, entry) in self.dir_entries().skip(op.offset() as usize) {
-            let full = reply.entry(entry.name.as_ref(), |out| {
-                out.ino(entry.ino);
-                out.typ(entry.typ);
-                out.offset(i + 1);
-            });
+            let full = out.entry(
+                entry.name.as_ref(), //
+                entry.ino,
+                entry.typ,
+                i + 1,
+            );
             if full {
                 break;
             }
         }
 
-        reply.send()
+        req.reply(conn, out)
     }
 }
