@@ -1,81 +1,103 @@
 use polyfuse_kernel::{fuse_notify_code, fuse_out_header};
 use smallvec::SmallVec;
-use std::convert::TryFrom;
-use std::ffi::{OsStr, OsString};
-use std::io;
-use std::mem;
-use std::os::unix::prelude::*;
+use std::{
+    convert::TryInto as _,
+    ffi::{OsStr, OsString},
+    io, mem,
+    os::unix::prelude::*,
+};
 
-#[inline]
-pub fn send_reply<W, T>(writer: W, unique: u64, data: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    send_msg(writer, unique, 0, data)
+pub(crate) struct ReplySender<W> {
+    writer: W,
+    header: fuse_out_header,
 }
 
-#[inline]
-pub fn send_error<W>(writer: W, unique: u64, error: i32) -> io::Result<()>
+impl<W> ReplySender<W>
 where
     W: io::Write,
 {
-    send_msg(writer, unique, -error, &[])
-}
-
-#[allow(dead_code)]
-#[inline]
-pub fn send_notify<W, T>(writer: W, code: fuse_notify_code, data: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    send_msg(writer, 0, unsafe { mem::transmute::<_, i32>(code) }, data)
-}
-
-fn send_msg<W, T>(mut writer: W, unique: u64, error: i32, data: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    struct VecCollector<'a, 'v> {
-        vec: &'v mut Vec<&'a [u8]>,
-        total_len: usize,
-    }
-
-    impl<'a> Collector<'a> for VecCollector<'a, '_> {
-        fn append(&mut self, bytes: &'a [u8]) {
-            self.vec.push(bytes);
-            self.total_len += bytes.len();
+    #[inline]
+    pub(crate) fn new(writer: W, unique: u64) -> Self {
+        Self {
+            writer,
+            header: fuse_out_header {
+                len: 0,
+                error: 0,
+                unique,
+            },
         }
     }
 
-    let mut vec = Vec::new();
-    let mut collector = VecCollector {
-        vec: &mut vec,
-        total_len: 0,
-    };
-    data.collect(&mut collector);
+    #[inline]
+    pub(crate) fn reply<T>(self, data: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        self.send_msg(0, data)
+    }
 
-    let len = u32::try_from(mem::size_of::<fuse_out_header>() + collector.total_len).unwrap();
-    let header = fuse_out_header { unique, error, len };
+    #[inline]
+    pub(crate) fn error(self, code: i32) -> io::Result<()> {
+        self.send_msg(-code, &[])
+    }
 
-    drop(collector);
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) fn notify<T>(self, code: fuse_notify_code, data: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        self.send_msg(unsafe { mem::transmute::<_, i32>(code) }, data)
+    }
 
-    let vec: SmallVec<[_; 4]> = Some(io::IoSlice::new(unsafe { crate::util::as_bytes(&header) }))
+    fn send_msg<T>(mut self, error: i32, data: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        self.header.error = error;
+
+        struct VecCollector<'a, 'v> {
+            vec: &'v mut Vec<&'a [u8]>,
+            total_len: usize,
+        }
+
+        impl<'a> Collector<'a> for VecCollector<'a, '_> {
+            fn append(&mut self, bytes: &'a [u8]) {
+                self.vec.push(bytes);
+                self.total_len += bytes.len();
+            }
+        }
+
+        let mut vec = Vec::new();
+        let mut collector = VecCollector {
+            vec: &mut vec,
+            total_len: 0,
+        };
+        data.collect(&mut collector);
+
+        self.header.len = (mem::size_of::<fuse_out_header>() + collector.total_len)
+            .try_into()
+            .expect("too large data");
+
+        drop(collector);
+
+        let vec: SmallVec<[_; 4]> = Some(io::IoSlice::new(unsafe {
+            crate::util::as_bytes(&self.header)
+        }))
         .into_iter()
         .chain(vec.iter().map(|t| io::IoSlice::new(&*t)))
         .collect();
 
-    let count = writer.write_vectored(&*vec)?;
-    if count < header.len as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "written data is too short",
-        ));
-    }
+        let count = self.writer.write_vectored(&*vec)?;
+        if count < self.header.len as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "written data is too short",
+            ));
+        }
 
-    Ok(())
+        Ok(())
+    }
 }
 
 /// A trait that represents a collection of bytes.
@@ -308,7 +330,7 @@ mod tests {
     #[test]
     fn send_msg_empty() {
         let mut buf = vec![0u8; 0];
-        send_msg(&mut buf, 42, 4, &[]).unwrap();
+        ReplySender::new(&mut buf, 42).send_msg(4, &[]).unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -321,7 +343,7 @@ mod tests {
     #[test]
     fn send_msg_single_data() {
         let mut buf = vec![0u8; 0];
-        send_msg(&mut buf, 42, 0, "hello").unwrap();
+        ReplySender::new(&mut buf, 42).send_msg(0, "hello").unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -341,7 +363,7 @@ mod tests {
             "message.".as_ref(),
         ];
         let mut buf = vec![0u8; 0];
-        send_msg(&mut buf, 26, 0, payload).unwrap();
+        ReplySender::new(&mut buf, 26).send_msg(0, payload).unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(

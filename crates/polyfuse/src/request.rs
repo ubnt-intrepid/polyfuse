@@ -5,12 +5,12 @@ use crate::{
     reply,
     session::Session,
     util::{as_bytes, Decoder},
-    write,
+    write::ReplySender,
 };
 use polyfuse_kernel::{self as kernel, fuse_opcode};
 use std::{
-    convert::TryFrom, ffi::OsStr, fmt, io, mem, os::unix::prelude::*, ptr, sync::Arc,
-    time::Duration,
+    convert::TryFrom, ffi::OsStr, fmt, io, marker::PhantomData, mem, os::unix::prelude::*, ptr,
+    sync::Arc, time::Duration,
 };
 
 #[derive(Debug)]
@@ -50,9 +50,9 @@ impl Request {
     // TODO: add unique(), uid(), gid() and pid()
 
     /// Decode the argument of this request.
-    pub fn operation<'op, W: ?Sized>(&'op self, writer: &'op W) -> Result<Operation<'op, W>, Error>
+    pub fn operation<W>(&self, writer: W) -> Result<Operation<'_, W>, Error>
     where
-        &'op W: io::Write,
+        W: io::Write,
     {
         if self.session.exited() {
             return Ok(Operation::Null);
@@ -63,6 +63,8 @@ impl Request {
         let header = decoder
             .fetch::<kernel::fuse_in_header>()
             .ok_or_else(Error::decode)?;
+
+        let sender = ReplySender::new(writer, header.unique);
 
         match fuse_opcode::try_from(header.opcode).ok() {
             // Some(fuse_opcode::FUSE_FORGET) => {
@@ -88,7 +90,10 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Lookup {
                     op: Lookup { header, name },
-                    reply: ReplyEntry { writer, header },
+                    reply: ReplyEntry {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -96,7 +101,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Getattr {
                     op: Getattr { header, arg },
-                    reply: ReplyAttr { writer, header },
+                    reply: ReplyAttr {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -104,13 +112,19 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Setattr {
                     op: Setattr { header, arg },
-                    reply: ReplyAttr { writer, header },
+                    reply: ReplyAttr {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
             Some(fuse_opcode::FUSE_READLINK) => Ok(Operation::Readlink {
                 op: Readlink { header },
-                reply: ReplyReadlink { writer, header },
+                reply: ReplyReadlink {
+                    sender,
+                    _marker: PhantomData,
+                },
             }),
 
             Some(fuse_opcode::FUSE_SYMLINK) => {
@@ -118,7 +132,10 @@ impl Request {
                 let link = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Symlink {
                     op: Symlink { header, name, link },
-                    reply: ReplyEntry { writer, header },
+                    reply: ReplyEntry {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -127,7 +144,10 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Mknod {
                     op: Mknod { header, arg, name },
-                    reply: ReplyEntry { writer, header },
+                    reply: ReplyEntry {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -136,7 +156,10 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Mkdir {
                     op: Mkdir { header, arg, name },
-                    reply: ReplyEntry { writer, header },
+                    reply: ReplyEntry {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -144,7 +167,10 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Unlink {
                     op: Unlink { header, name },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -152,7 +178,10 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Rmdir {
                     op: Rmdir { header, name },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -167,7 +196,10 @@ impl Request {
                         name,
                         newname,
                     },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
             Some(fuse_opcode::FUSE_RENAME2) => {
@@ -181,7 +213,10 @@ impl Request {
                         name,
                         newname,
                     },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -194,7 +229,10 @@ impl Request {
                         arg,
                         newname,
                     },
-                    reply: ReplyEntry { writer, header },
+                    reply: ReplyEntry {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -202,7 +240,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Open {
                     op: Open { header, arg },
-                    reply: ReplyOpen { writer, header },
+                    reply: ReplyOpen {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -211,11 +252,11 @@ impl Request {
                 Ok(Operation::Read {
                     op: Read { header, arg },
                     reply: ReplyData {
-                        writer,
-                        header,
+                        sender,
                         maxlen: arg.size as usize,
                         chunks: vec![],
                         len: 0,
+                        _marker: PhantomData,
                     },
                 })
             }
@@ -224,7 +265,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Write {
                     op: Write { header, arg },
-                    reply: ReplyWrite { writer, header },
+                    reply: ReplyWrite {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -232,20 +276,29 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Release {
                     op: Release { header, arg },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
             Some(fuse_opcode::FUSE_STATFS) => Ok(Operation::Statfs {
                 op: Statfs { header },
-                reply: ReplyStatfs { writer, header },
+                reply: ReplyStatfs {
+                    sender,
+                    _marker: PhantomData,
+                },
             }),
 
             Some(fuse_opcode::FUSE_FSYNC) => {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Fsync {
                     op: Fsync { header, arg },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -264,7 +317,10 @@ impl Request {
                         name,
                         value,
                     },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -274,12 +330,18 @@ impl Request {
                 if arg.size == 0 {
                     Ok(Operation::GetxattrSize {
                         op: Getxattr { header, arg, name },
-                        reply: ReplyXattrSize { writer, header },
+                        reply: ReplyXattrSize {
+                            sender,
+                            _marker: PhantomData,
+                        },
                     })
                 } else {
                     Ok(Operation::GetxattrData {
                         op: Getxattr { header, arg, name },
-                        reply: ReplyXattrData { writer, header },
+                        reply: ReplyXattrData {
+                            sender,
+                            _marker: PhantomData,
+                        },
                     })
                 }
             }
@@ -289,12 +351,18 @@ impl Request {
                 if arg.size == 0 {
                     Ok(Operation::ListxattrSize {
                         op: Listxattr { header, arg },
-                        reply: ReplyXattrSize { writer, header },
+                        reply: ReplyXattrSize {
+                            sender,
+                            _marker: PhantomData,
+                        },
                     })
                 } else {
                     Ok(Operation::ListxattrData {
                         op: Listxattr { header, arg },
-                        reply: ReplyXattrData { writer, header },
+                        reply: ReplyXattrData {
+                            sender,
+                            _marker: PhantomData,
+                        },
                     })
                 }
             }
@@ -303,7 +371,10 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Removexattr {
                     op: Removexattr { header, name },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -311,7 +382,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Flush {
                     op: Flush { header, arg },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -319,7 +393,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Opendir {
                     op: Opendir { header, arg },
-                    reply: ReplyOpen { writer, header },
+                    reply: ReplyOpen {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -328,11 +405,11 @@ impl Request {
                 Ok(Operation::Readdir {
                     op: Readdir { header, arg },
                     reply: ReplyDirs {
-                        writer,
-                        header,
+                        sender,
                         maxlen: arg.size as usize,
                         entries: vec![],
                         len: 0,
+                        _marker: PhantomData,
                     },
                 })
             }
@@ -341,11 +418,11 @@ impl Request {
                 Ok(Operation::Readdirplus {
                     op: Readdir { header, arg },
                     reply: ReplyDirsPlus {
-                        writer,
-                        header,
+                        sender,
                         maxlen: arg.size as usize,
                         entries: vec![],
                         len: 0,
+                        _marker: PhantomData,
                     },
                 })
             }
@@ -354,7 +431,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Releasedir {
                     op: Releasedir { header, arg },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -362,7 +442,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Fsyncdir {
                     op: Fsyncdir { header, arg },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -370,7 +453,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Getlk {
                     op: Getlk { header, arg },
-                    reply: ReplyLk { writer, header },
+                    reply: ReplyLk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -389,13 +475,19 @@ impl Request {
                             arg,
                             sleep: false,
                         },
-                        reply: ReplyOk { writer, header },
+                        reply: ReplyOk {
+                            sender,
+                            _marker: PhantomData,
+                        },
                     })
                 } else {
                     let op = convert_to_flock_op(arg.lk.typ, sleep).unwrap_or(0);
                     Ok(Operation::Flock {
                         op: Flock { header, arg, op },
-                        reply: ReplyOk { writer, header },
+                        reply: ReplyOk {
+                            sender,
+                            _marker: PhantomData,
+                        },
                     })
                 }
             }
@@ -404,7 +496,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Access {
                     op: Access { header, arg },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -413,7 +508,10 @@ impl Request {
                 let name = decoder.fetch_str().ok_or_else(Error::decode)?;
                 Ok(Operation::Create {
                     op: Create { header, arg, name },
-                    reply: ReplyCreate { writer, header },
+                    reply: ReplyCreate {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -421,7 +519,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Bmap {
                     op: Bmap { header, arg },
-                    reply: ReplyBmap { writer, header },
+                    reply: ReplyBmap {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -429,7 +530,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Fallocate {
                     op: Fallocate { header, arg },
-                    reply: ReplyOk { writer, header },
+                    reply: ReplyOk {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -437,7 +541,10 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::CopyFileRange {
                     op: CopyFileRange { header, arg },
-                    reply: ReplyWrite { writer, header },
+                    reply: ReplyWrite {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
@@ -445,13 +552,19 @@ impl Request {
                 let arg = decoder.fetch().ok_or_else(Error::decode)?;
                 Ok(Operation::Poll {
                     op: Poll { header, arg },
-                    reply: ReplyPoll { writer, header },
+                    reply: ReplyPoll {
+                        sender,
+                        _marker: PhantomData,
+                    },
                 })
             }
 
             _ => {
                 tracing::warn!("unsupported opcode: {}", header.opcode);
-                Ok(Operation::Unsupported(Unsupported { header, writer }))
+                Ok(Operation::Unsupported(Unsupported {
+                    sender,
+                    _marker: PhantomData,
+                }))
             }
         }
     }
@@ -477,7 +590,7 @@ fn convert_to_flock_op(lk_type: u32, sleep: bool) -> Option<u32> {
 
 /// The kind of filesystem operation requested by the kernel.
 #[non_exhaustive]
-pub enum Operation<'op, W: ?Sized> {
+pub enum Operation<'op, W> {
     Lookup {
         op: Lookup<'op>,
         reply: ReplyEntry<'op, W>,
@@ -638,9 +751,9 @@ pub enum Operation<'op, W: ?Sized> {
     Unsupported(Unsupported<'op, W>),
 }
 
-impl<'op, W: ?Sized> Operation<'op, W>
+impl<'op, W> Operation<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     pub fn unimplemented(self) -> Result<Replied, Error> {
         use crate::reply::*;
@@ -702,18 +815,20 @@ where
 }
 
 #[doc(hidden)]
-pub struct Unsupported<'op, W: ?Sized> {
-    header: &'op kernel::fuse_in_header,
-    writer: &'op W,
+pub struct Unsupported<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> Unsupported<'op, W>
+impl<'op, W> Unsupported<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     fn send_error(self) -> Result<Replied, Error> {
-        write::send_error(self.writer, self.header.unique, libc::ENOSYS).map_err(Error::reply)?;
-        Ok(Replied(()))
+        self.sender
+            .error(libc::ENOSYS)
+            .map(Replied)
+            .map_err(Error::reply)
     }
 }
 
@@ -1583,14 +1698,19 @@ impl<'op> op::Poll for Poll<'op> {
 #[must_use]
 pub struct Replied(());
 
-pub struct ReplyAttr<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+#[inline]
+fn cvt(res: io::Result<()>) -> Result<Replied, Error> {
+    res.map(Replied).map_err(Error::reply)
 }
 
-impl<'op, W: ?Sized> reply::ReplyAttr for ReplyAttr<'op, W>
+pub struct ReplyAttr<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
+}
+
+impl<'op, W> reply::ReplyAttr for ReplyAttr<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1601,27 +1721,22 @@ where
     {
         let mut out = kernel::fuse_attr_out::default();
         f(&mut AttrOutFiller { out: &mut out });
-
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyEntry<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyEntry<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyEntry for ReplyEntry<'op, W>
+impl<'op, W> reply::ReplyEntry for ReplyEntry<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1632,27 +1747,22 @@ where
     {
         let mut out = kernel::fuse_entry_out::default();
         f(&mut EntryOutFiller { out: &mut out });
-
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyReadlink<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyReadlink<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyReadlink for ReplyReadlink<'op, W>
+impl<'op, W> reply::ReplyReadlink for ReplyReadlink<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1661,50 +1771,46 @@ where
     where
         T: AsRef<OsStr> + Send + 'static,
     {
-        write::send_reply(self.writer, self.header.unique, link.as_ref()).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.reply(link.as_ref()))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyOk<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyOk<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyOk for ReplyOk<'op, W>
+impl<'op, W> reply::ReplyOk for ReplyOk<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
 
     fn send(self) -> Result<Self::Ok, Self::Error> {
-        write::send_reply(self.writer, self.header.unique, &[]).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.reply(&[]))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyData<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyData<'op, W> {
+    sender: ReplySender<W>,
     maxlen: usize,
     chunks: Vec<Box<dyn AsRef<[u8]> + Send>>,
     len: usize,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyData for ReplyData<'op, W>
+impl<'op, W> reply::ReplyData for ReplyData<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1729,26 +1835,22 @@ where
 
     fn send(self) -> Result<Self::Ok, Self::Error> {
         let data: Vec<&[u8]> = self.chunks.iter().map(|chunk| (**chunk).as_ref()).collect();
-
-        write::send_reply(self.writer, self.header.unique, &data).map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(data))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyOpen<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyOpen<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyOpen for ReplyOpen<'op, W>
+impl<'op, W> reply::ReplyOpen for ReplyOpen<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1760,26 +1862,22 @@ where
         let mut out = kernel::fuse_open_out::default();
         f(&mut OpenOutFiller { out: &mut out });
 
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyWrite<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyWrite<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyWrite for ReplyWrite<'op, W>
+impl<'op, W> reply::ReplyWrite for ReplyWrite<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1790,26 +1888,22 @@ where
             ..Default::default()
         };
 
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyStatfs<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyStatfs<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyStatfs for ReplyStatfs<'op, W>
+impl<'op, W> reply::ReplyStatfs for ReplyStatfs<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1821,26 +1915,22 @@ where
         let mut out = kernel::fuse_statfs_out::default();
         f(&mut StatfsOutFiller { out: &mut out });
 
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyXattrSize<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyXattrSize<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyXattrSize for ReplyXattrSize<'op, W>
+impl<'op, W> reply::ReplyXattrSize for ReplyXattrSize<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1851,26 +1941,22 @@ where
             ..Default::default()
         };
 
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyXattrData<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyXattrData<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyXattrData for ReplyXattrData<'op, W>
+impl<'op, W> reply::ReplyXattrData for ReplyXattrData<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1879,25 +1965,22 @@ where
     where
         T: AsRef<[u8]> + Send + 'static,
     {
-        write::send_reply(self.writer, self.header.unique, data.as_ref()).map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(data.as_ref()))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyLk<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyLk<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyLk for ReplyLk<'op, W>
+impl<'op, W> reply::ReplyLk for ReplyLk<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1909,26 +1992,22 @@ where
         let mut out = kernel::fuse_lk_out::default();
         f(&mut LkOutFiller { out: &mut out });
 
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyCreate<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyCreate<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyCreate for ReplyCreate<'op, W>
+impl<'op, W> reply::ReplyCreate for ReplyCreate<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -1945,56 +2024,46 @@ where
             },
             &mut OpenOutFiller { out: &mut open_out },
         );
-
-        write::send_reply(self.writer, self.header.unique, unsafe {
-            &[as_bytes(&entry_out), as_bytes(&open_out)] as &[_]
-        })
-        .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self
+            .sender
+            .reply(unsafe { &[as_bytes(&entry_out), as_bytes(&open_out)] as &[_] }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyBmap<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyBmap<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyBmap for ReplyBmap<'op, W>
+impl<'op, W> reply::ReplyBmap for ReplyBmap<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
 
     fn send(self, block: u64) -> Result<Self::Ok, Self::Error> {
         let out = kernel::fuse_bmap_out { block };
-
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyPoll<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyPoll<'op, W> {
+    sender: ReplySender<W>,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyPoll for ReplyPoll<'op, W>
+impl<'op, W> reply::ReplyPoll for ReplyPoll<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -2005,29 +2074,25 @@ where
             ..Default::default()
         };
 
-        write::send_reply(self.writer, self.header.unique, unsafe { as_bytes(&out) })
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(unsafe { as_bytes(&out) }))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyDirs<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyDirs<'op, W> {
+    sender: ReplySender<W>,
     maxlen: usize,
     entries: Vec<(kernel::fuse_dirent, Vec<u8>)>,
     len: usize,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyDirs for ReplyDirs<'op, W>
+impl<'op, W> reply::ReplyDirs for ReplyDirs<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -2076,30 +2141,25 @@ where
             .iter()
             .flat_map(|(header, padded_name)| vec![unsafe { as_bytes(header) }, &padded_name[..]])
             .collect();
-
-        write::send_reply(self.writer, self.header.unique, data) //
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(data))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 
-pub struct ReplyDirsPlus<'op, W: ?Sized> {
-    writer: &'op W,
-    header: &'op kernel::fuse_in_header,
+pub struct ReplyDirsPlus<'op, W> {
+    sender: ReplySender<W>,
     maxlen: usize,
     entries: Vec<(kernel::fuse_direntplus, Vec<u8>)>,
     len: usize,
+    _marker: PhantomData<&'op ()>,
 }
 
-impl<'op, W: ?Sized> reply::ReplyDirsPlus for ReplyDirsPlus<'op, W>
+impl<'op, W> reply::ReplyDirsPlus for ReplyDirsPlus<'op, W>
 where
-    &'op W: io::Write,
+    W: io::Write,
 {
     type Ok = Replied;
     type Error = Error;
@@ -2154,15 +2214,11 @@ where
             data.push(&padded_name[..]);
         }
 
-        write::send_reply(self.writer, self.header.unique, data) //
-            .map_err(Error::reply)?;
-
-        Ok(Replied(()))
+        cvt(self.sender.reply(data))
     }
 
     fn error(self, code: i32) -> Result<Self::Ok, Self::Error> {
-        write::send_error(self.writer, self.header.unique, code).map_err(Error::reply)?;
-        Ok(Replied(()))
+        cvt(self.sender.error(code))
     }
 }
 

@@ -1,7 +1,6 @@
 //! Establish a FUSE session.
 
-use crate::request::Request;
-use crate::{util::Decoder, write};
+use crate::{request::Request, util::Decoder, write::ReplySender};
 use bitflags::bitflags;
 use futures::io::{AsyncRead, AsyncReadExt as _};
 use polyfuse_kernel::{self as kernel, fuse_opcode};
@@ -401,6 +400,7 @@ where
     let header = decoder
         .fetch::<kernel::fuse_in_header>() //
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to decode fuse_in_header"))?;
+    let sender = ReplySender::new(writer, header.unique);
 
     match fuse_opcode::try_from(header.opcode) {
         Ok(fuse_opcode::FUSE_INIT) => {
@@ -435,9 +435,7 @@ where
 
             if init_in.major > 7 {
                 tracing::debug!("wait for a second INIT request with an older version.");
-                write::send_reply(writer, header.unique, unsafe {
-                    crate::util::as_bytes(&init_out)
-                })?;
+                sender.reply(unsafe { crate::util::as_bytes(&init_out) })?;
                 return Ok(None);
             }
 
@@ -448,7 +446,7 @@ where
                     init_in.major,
                     init_in.minor
                 );
-                write::send_error(writer, header.unique, libc::EPROTO)?;
+                sender.error(libc::EPROTO)?;
                 return Ok(None);
             }
 
@@ -489,9 +487,7 @@ where
                 init_out.congestion_threshold
             );
             tracing::debug!("  time_gran = {}", init_out.time_gran);
-            write::send_reply(writer, header.unique, unsafe {
-                crate::util::as_bytes(&init_out)
-            })?;
+            sender.reply(unsafe { crate::util::as_bytes(&init_out) })?;
 
             init_out.flags |= readonly_flags;
 
@@ -510,7 +506,7 @@ where
                 "ignoring an operation before init (opcode={:?})",
                 header.opcode
             );
-            write::send_error(writer, header.unique, libc::EIO)?;
+            sender.error(libc::EIO)?;
             Ok(None)
         }
     }
