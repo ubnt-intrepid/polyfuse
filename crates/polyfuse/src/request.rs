@@ -7,7 +7,7 @@ use crate::{
     util::{as_bytes, Decoder},
     write::ReplySender,
 };
-use polyfuse_kernel::{self as kernel, fuse_opcode};
+use polyfuse_kernel::{self as kernel, fuse_in_header, fuse_opcode};
 use std::{
     convert::TryFrom, ffi::OsStr, fmt, io, marker::PhantomData, mem, os::unix::prelude::*, ptr,
     sync::Arc, time::Duration,
@@ -42,12 +42,35 @@ impl std::error::Error for Error {}
 
 /// Context about an incoming FUSE request.
 pub struct Request {
-    pub(crate) buf: Vec<u8>,
     pub(crate) session: Arc<Session>,
+    pub(crate) header: fuse_in_header,
+    pub(crate) arg: Vec<u8>,
 }
 
 impl Request {
-    // TODO: add unique(), uid(), gid() and pid()
+    /// Return the unique ID of the request.
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.header.unique
+    }
+
+    /// Return the user ID of the calling process.
+    #[inline]
+    pub fn uid(&self) -> u32 {
+        self.header.uid
+    }
+
+    /// Return the group ID of the calling process.
+    #[inline]
+    pub fn gid(&self) -> u32 {
+        self.header.gid
+    }
+
+    /// Return the process ID of the calling process.
+    #[inline]
+    pub fn pid(&self) -> u32 {
+        self.header.pid
+    }
 
     /// Decode the argument of this request.
     pub fn operation<W>(&self, writer: W) -> Result<Operation<'_, W>, Error>
@@ -61,13 +84,10 @@ impl Request {
             }));
         }
 
-        let mut decoder = Decoder::new(&self.buf[..]);
-
-        let header = decoder
-            .fetch::<kernel::fuse_in_header>()
-            .ok_or_else(Error::decode)?;
-
+        let header = &self.header;
         let sender = ReplySender::new(writer, header.unique);
+
+        let mut decoder = Decoder::new(&self.arg[..]);
 
         match fuse_opcode::try_from(header.opcode).ok() {
             // Some(fuse_opcode::FUSE_FORGET) => {
