@@ -61,6 +61,10 @@ pub enum Operation<'op> {
     CopyFileRange(CopyFileRange<'op>),
     Poll(Poll<'op>),
 
+    Forget(Forgets<'op>),
+    Interrupt(Interrupt<'op>),
+    NotifyReply(NotifyReply<'op>),
+
     #[doc(hidden)]
     Unknown,
 }
@@ -75,25 +79,36 @@ impl<'op> Operation<'op> {
         let mut decoder = Decoder::new(arg);
 
         match fuse_opcode::try_from(header.opcode).ok() {
-            // Some(fuse_opcode::FUSE_FORGET) => {
-            //     let arg = decoder
-            //         .fetch::<kernel::fuse_forget_in>()
-            //         .map_err(Error::fatal)?;
-            //     todo!()
-            // }
-            // Some(fuse_opcode::FUSE_BATCH_FORGET) => {
-            //     let arg = decoder.fetch::<kernel::fuse_batch_forget_in>()?;
-            //     let forgets = decoder.fetch_array(arg.count as usize)?;
-            //     todo!()
-            // }
-            // Some(fuse_opcode::FUSE_INTERRUPT) => {
-            //     let arg = decoder.fetch()?;
-            //     todo!()
-            // }
-            // Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
-            //     let arg = decoder.fetch()?;
-            //     todo!()
-            // }
+            Some(fuse_opcode::FUSE_FORGET) => {
+                let arg: &fuse_forget_in = decoder.fetch().map_err(DecodeError::new)?;
+                let forget = fuse_forget_one {
+                    nodeid: header.nodeid,
+                    nlookup: arg.nlookup,
+                };
+                Ok(Operation::Forget(Forgets {
+                    inner: ForgetsInner::Single(forget),
+                }))
+            }
+            Some(fuse_opcode::FUSE_BATCH_FORGET) => {
+                let arg: &fuse_batch_forget_in = decoder.fetch().map_err(DecodeError::new)?;
+                let forgets = decoder
+                    .fetch_array::<fuse_forget_one>(arg.count as usize)
+                    .map_err(DecodeError::new)?;
+                Ok(Operation::Forget(Forgets {
+                    inner: ForgetsInner::Batch(forgets),
+                }))
+            }
+
+            Some(fuse_opcode::FUSE_INTERRUPT) => {
+                let arg = decoder.fetch().map_err(DecodeError::new)?;
+                Ok(Operation::Interrupt(Interrupt { header, arg }))
+            }
+
+            Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
+                let arg = decoder.fetch().map_err(DecodeError::new)?;
+                Ok(Operation::NotifyReply(NotifyReply { header, arg }))
+            }
+
             Some(fuse_opcode::FUSE_LOOKUP) => {
                 let name = decoder.fetch_str().map_err(DecodeError::new)?;
                 Ok(Operation::Lookup(Lookup { header, name }))
@@ -372,13 +387,97 @@ impl LockOwner {
     }
 }
 
+/// A set of forget information removed from the kernel's internal caches.
+pub struct Forgets<'op> {
+    inner: ForgetsInner<'op>,
+}
+
+enum ForgetsInner<'op> {
+    Single(fuse_forget_one),
+    Batch(&'op [fuse_forget_one]),
+}
+
+impl<'op> std::ops::Deref for Forgets<'op> {
+    type Target = [Forget];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        let (ptr, len) = match &self.inner {
+            ForgetsInner::Single(forget) => (forget as *const fuse_forget_one, 1),
+            ForgetsInner::Batch(forgets) => (forgets.as_ptr(), forgets.len()),
+        };
+        unsafe {
+            // Safety: Forget has the same layout with fuse_forget_one
+            std::slice::from_raw_parts(ptr as *const Forget, len)
+        }
+    }
+}
+
 /// A forget information.
-pub trait Forget {
+#[repr(transparent)]
+pub struct Forget {
+    forget: fuse_forget_one,
+}
+
+impl Forget {
     /// Return the inode number of the target inode.
-    fn ino(&self) -> u64;
+    #[inline]
+    pub fn ino(&self) -> u64 {
+        self.forget.nodeid
+    }
 
     /// Return the released lookup count of the target inode.
-    fn nlookup(&self) -> u64;
+    #[inline]
+    pub fn nlookup(&self) -> u64 {
+        self.forget.nlookup
+    }
+}
+
+/// A reply to a `NOTIFY_RETRIEVE` notification.
+pub struct NotifyReply<'a> {
+    header: &'a fuse_in_header,
+    arg: &'a fuse_notify_retrieve_in,
+}
+
+impl<'a> NotifyReply<'a> {
+    /// Return the unique ID of the corresponding notification message.
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.header.unique
+    }
+
+    /// Return the inode number corresponding with the cache data.
+    #[inline]
+    pub fn ino(&self) -> u64 {
+        self.header.nodeid
+    }
+
+    /// Return the starting position of the cache data.
+    #[inline]
+    pub fn offset(&self) -> u64 {
+        self.arg.offset
+    }
+
+    /// Return the length of the retrieved cache data.
+    #[inline]
+    pub fn size(&self) -> u32 {
+        self.arg.size
+    }
+}
+
+/// Interrupt a previous FUSE request.
+pub struct Interrupt<'a> {
+    #[allow(dead_code)]
+    header: &'a fuse_in_header,
+    arg: &'a fuse_interrupt_in,
+}
+
+impl Interrupt<'_> {
+    /// Return the target unique ID to be interrupted.
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.arg.unique
+    }
 }
 
 /// Lookup a directory entry by name.

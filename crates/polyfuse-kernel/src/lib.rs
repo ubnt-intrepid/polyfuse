@@ -702,13 +702,13 @@ define_notify_code! {
     FUSE_NOTIFY_DELETE = 6,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_notify_poll_wakeup_out {
     pub kh: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_notify_inval_inode_out {
     pub ino: u64,
@@ -716,7 +716,7 @@ pub struct fuse_notify_inval_inode_out {
     pub len: i64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_notify_inval_entry_out {
     pub parent: u64,
@@ -724,7 +724,7 @@ pub struct fuse_notify_inval_entry_out {
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_notify_delete_out {
     pub parent: u64,
@@ -733,7 +733,7 @@ pub struct fuse_notify_delete_out {
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_notify_store_out {
     pub nodeid: u64,
@@ -742,7 +742,7 @@ pub struct fuse_notify_store_out {
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_notify_retrieve_out {
     pub notify_unique: u64,
@@ -752,6 +752,7 @@ pub struct fuse_notify_retrieve_out {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_notify_retrieve_in {
     pub dummy1: u64,
@@ -762,6 +763,7 @@ pub struct fuse_notify_retrieve_in {
     pub dummy4: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct cuse_init_in {
     pub major: u32,
@@ -770,6 +772,7 @@ pub struct cuse_init_in {
     pub flags: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct cuse_init_out {
     pub major: u32,
