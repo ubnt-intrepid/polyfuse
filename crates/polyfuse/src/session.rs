@@ -1,7 +1,7 @@
 //! Establish a FUSE session.
 
 use crate::{
-    request::Request,
+    op::{DecodeError, Operation},
     util::{as_bytes, as_bytes_mut, Decoder},
     write::ReplySender,
 };
@@ -390,6 +390,62 @@ impl Session {
             header,
             arg,
         }))
+    }
+}
+
+/// Context about an incoming FUSE request.
+pub struct Request {
+    session: Arc<Session>,
+    header: fuse_in_header,
+    arg: Vec<u8>,
+}
+
+impl Request {
+    /// Return the unique ID of the request.
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.header.unique
+    }
+
+    /// Return the user ID of the calling process.
+    #[inline]
+    pub fn uid(&self) -> u32 {
+        self.header.uid
+    }
+
+    /// Return the group ID of the calling process.
+    #[inline]
+    pub fn gid(&self) -> u32 {
+        self.header.gid
+    }
+
+    /// Return the process ID of the calling process.
+    #[inline]
+    pub fn pid(&self) -> u32 {
+        self.header.pid
+    }
+
+    /// Decode the argument of this request.
+    pub fn operation(&self) -> Result<Operation<'_>, DecodeError> {
+        if self.session.exited() {
+            return Ok(Operation::unknown());
+        }
+        Operation::decode(&self.header, &self.arg[..])
+    }
+
+    pub fn reply<W, T>(&self, writer: W, data: T) -> io::Result<()>
+    where
+        W: io::Write,
+        T: crate::write::Bytes,
+    {
+        ReplySender::new(writer, self.unique()).reply(data)
+    }
+
+    pub fn reply_error<W>(&self, writer: W, code: i32) -> io::Result<()>
+    where
+        W: io::Write,
+    {
+        ReplySender::new(writer, self.unique()).error(code)
     }
 }
 

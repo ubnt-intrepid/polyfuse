@@ -37,9 +37,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn getattr<Op, W>(req: &Request, op: Op, writer: W) -> io::Result<()>
+async fn getattr<W>(req: &Request, op: op::Getattr<'_>, writer: W) -> io::Result<()>
 where
-    Op: op::Getattr,
     W: io::Write,
 {
     if op.ino() != 1 {

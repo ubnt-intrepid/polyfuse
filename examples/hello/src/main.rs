@@ -106,7 +106,7 @@ impl Hello {
         &self,
         req: &Request,
         conn: impl io::Write,
-        op: impl op::Lookup,
+        op: op::Lookup<'_>,
     ) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
@@ -125,7 +125,7 @@ impl Hello {
         &self,
         req: &Request,
         conn: impl io::Write,
-        op: impl op::Getattr,
+        op: op::Getattr<'_>,
     ) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
@@ -140,7 +140,7 @@ impl Hello {
         req.reply(conn, out)
     }
 
-    async fn read(&self, req: &Request, conn: impl io::Write, op: impl op::Read) -> io::Result<()> {
+    async fn read(&self, req: &Request, conn: impl io::Write, op: op::Read<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
             ROOT_INO => return req.reply_error(conn, libc::EISDIR),
@@ -170,7 +170,7 @@ impl Hello {
         &self,
         req: &Request,
         conn: impl io::Write,
-        op: impl op::Readdir,
+        op: op::Readdir<'_>,
     ) -> io::Result<()> {
         if op.ino() != ROOT_INO {
             return req.reply_error(conn, libc::ENOTDIR);
