@@ -1,6 +1,6 @@
 use crate::{
+    bytes::{Bytes, Collector},
     util::as_bytes,
-    write::{Bytes, Collector},
 };
 use polyfuse_kernel::{
     fuse_attr, fuse_attr_out, fuse_bmap_out, fuse_dirent, fuse_entry_out, fuse_file_lock,

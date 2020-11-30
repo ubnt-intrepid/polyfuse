@@ -1,4 +1,4 @@
-use crate::util::Decoder;
+use crate::decoder::Decoder;
 use polyfuse_kernel::*;
 use std::{convert::TryFrom, ffi::OsStr, fmt, time::Duration, u32, u64};
 

@@ -1,8 +1,10 @@
 //! Establish a FUSE session.
 
 use crate::{
+    bytes::Bytes,
+    decoder::Decoder,
     op::{DecodeError, Operation},
-    util::{as_bytes, as_bytes_mut, Decoder},
+    util::{as_bytes, as_bytes_mut},
     write::ReplySender,
 };
 use bitflags::bitflags;
@@ -436,7 +438,7 @@ impl Request {
     pub fn reply<W, T>(&self, writer: W, data: T) -> io::Result<()>
     where
         W: io::Write,
-        T: crate::write::Bytes,
+        T: Bytes,
     {
         ReplySender::new(writer, self.unique()).reply(data)
     }
