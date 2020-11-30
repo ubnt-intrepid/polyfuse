@@ -7,6 +7,8 @@
 use std::convert::TryFrom;
 use std::error;
 use std::fmt;
+use zerocopy::AsBytes;
+use zerocopy::FromBytes;
 
 /// The major version number of FUSE protocol.
 pub const FUSE_KERNEL_VERSION: u32 = 7;
@@ -109,7 +111,7 @@ pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
 pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 
-#[derive(Default, Copy, Clone)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_attr {
     pub ino: u64,
@@ -130,7 +132,7 @@ pub struct fuse_attr {
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_dirent {
     pub ino: u64,
@@ -140,14 +142,14 @@ pub struct fuse_dirent {
     pub name: [u8; 0],
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_direntplus {
     pub entry_out: fuse_entry_out,
     pub dirent: fuse_dirent,
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_kstatfs {
     pub blocks: u64,
@@ -162,7 +164,7 @@ pub struct fuse_kstatfs {
     pub spare: [u32; 6usize],
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_file_lock {
     pub start: u64,
@@ -181,7 +183,7 @@ macro_rules! define_opcode {
             pub const $VARIANT: u32 = $val;
         )*
 
-        #[derive(Copy, Clone, PartialEq, Hash)]
+        #[derive(Clone, Copy, Hash, PartialEq)]
         #[repr(u32)]
         pub enum fuse_opcode {
             $(
@@ -269,6 +271,7 @@ impl fmt::Display for UnknownOpcode {
 
 impl error::Error for UnknownOpcode {}
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_in_header {
     pub len: u32,
@@ -281,6 +284,7 @@ pub struct fuse_in_header {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_init_in {
     pub major: u32,
@@ -289,11 +293,13 @@ pub struct fuse_init_in {
     pub flags: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_forget_in {
     pub nlookup: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_getattr_in {
     pub getattr_flags: u32,
@@ -301,6 +307,7 @@ pub struct fuse_getattr_in {
     pub fh: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_setattr_in {
     pub valid: u32,
@@ -321,6 +328,7 @@ pub struct fuse_setattr_in {
     pub unused5: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_mknod_in {
     pub mode: u32,
@@ -329,28 +337,33 @@ pub struct fuse_mknod_in {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_mkdir_in {
     pub mode: u32,
     pub umask: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_rename_in {
     pub newdir: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_link_in {
     pub oldnodeid: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_open_in {
     pub flags: u32,
     pub unused: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_read_in {
     pub fh: u64,
@@ -362,6 +375,7 @@ pub struct fuse_read_in {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_write_in {
     pub fh: u64,
@@ -373,6 +387,7 @@ pub struct fuse_write_in {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_flush_in {
     pub fh: u64,
@@ -381,6 +396,7 @@ pub struct fuse_flush_in {
     pub lock_owner: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_release_in {
     pub fh: u64,
@@ -389,6 +405,7 @@ pub struct fuse_release_in {
     pub lock_owner: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_fsync_in {
     pub fh: u64,
@@ -396,18 +413,21 @@ pub struct fuse_fsync_in {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_getxattr_in {
     pub size: u32,
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_setxattr_in {
     pub size: u32,
     pub flags: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_lk_in {
     pub fh: u64,
@@ -417,13 +437,14 @@ pub struct fuse_lk_in {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_access_in {
     pub mask: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_create_in {
     pub flags: u32,
@@ -432,6 +453,7 @@ pub struct fuse_create_in {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_bmap_in {
     pub block: u64,
@@ -439,7 +461,7 @@ pub struct fuse_bmap_in {
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_out_header {
     pub len: u32,
@@ -447,7 +469,7 @@ pub struct fuse_out_header {
     pub unique: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_attr_out {
     pub attr_valid: u64,
@@ -456,7 +478,7 @@ pub struct fuse_attr_out {
     pub attr: fuse_attr,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_entry_out {
     pub nodeid: u64,
@@ -468,6 +490,7 @@ pub struct fuse_entry_out {
     pub attr: fuse_attr,
 }
 
+#[derive(Clone, Copy, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_init_out {
     pub major: u32,
@@ -501,14 +524,14 @@ impl Default for fuse_init_out {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_getxattr_out {
     pub size: u32,
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_open_out {
     pub fh: u64,
@@ -516,31 +539,32 @@ pub struct fuse_open_out {
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_write_out {
     pub size: u32,
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_statfs_out {
     pub st: fuse_kstatfs,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_lk_out {
     pub lk: fuse_file_lock,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_bmap_out {
     pub block: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_ioctl_in {
     pub fh: u64,
@@ -551,7 +575,7 @@ pub struct fuse_ioctl_in {
     pub out_size: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_ioctl_out {
     pub result: i32,
@@ -560,13 +584,14 @@ pub struct fuse_ioctl_out {
     pub out_iovs: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_ioctl_iovec {
     pub base: u64,
     pub len: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_poll_in {
     pub fh: u64,
@@ -575,19 +600,20 @@ pub struct fuse_poll_in {
     pub events: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_poll_out {
     pub revents: u32,
-    #[doc(hidden)]
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_interrupt_in {
     pub unique: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_fallocate_in {
     pub fh: u64,
@@ -597,18 +623,21 @@ pub struct fuse_fallocate_in {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_batch_forget_in {
     pub count: u32,
     pub dummy: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_forget_one {
     pub nodeid: u64,
     pub nlookup: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_rename2_in {
     pub newdir: u64,
@@ -616,6 +645,7 @@ pub struct fuse_rename2_in {
     pub padding: u32,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_lseek_in {
     pub fh: u64,
@@ -624,12 +654,13 @@ pub struct fuse_lseek_in {
     pub padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_lseek_out {
     pub offset: u64,
 }
 
+#[derive(Clone, Copy, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct fuse_copy_file_range_in {
     pub fh_in: u64,
@@ -651,7 +682,7 @@ macro_rules! define_notify_code {
             pub const $VARIANT: u32 = $val;
         )*
 
-        #[derive(Copy, Clone, PartialEq, Hash)]
+        #[derive(Clone, Copy, PartialEq, Hash)]
         #[repr(u32)]
         pub enum fuse_notify_code {
             $(

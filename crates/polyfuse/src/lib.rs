@@ -2,7 +2,6 @@
 
 mod decoder;
 mod session;
-mod util;
 mod write;
 
 pub mod bytes;
