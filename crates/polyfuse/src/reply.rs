@@ -1,13 +1,11 @@
-use crate::{
-    bytes::{Bytes, Collector},
-    util::as_bytes,
-};
+use crate::bytes::{Bytes, Collector};
 use polyfuse_kernel::{
     fuse_attr, fuse_attr_out, fuse_bmap_out, fuse_dirent, fuse_entry_out, fuse_file_lock,
     fuse_getxattr_out, fuse_kstatfs, fuse_lk_out, fuse_open_out, fuse_poll_out, fuse_statfs_out,
     fuse_write_out, FOPEN_CACHE_DIR, FOPEN_DIRECT_IO, FOPEN_KEEP_CACHE, FOPEN_NONSEEKABLE,
 };
 use std::{convert::TryInto as _, ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
+use zerocopy::AsBytes as _;
 
 /// Attributes about a file.
 #[repr(transparent)]
@@ -98,7 +96,6 @@ impl FileAttr {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct EntryOut {
     out: fuse_entry_out,
 }
@@ -108,7 +105,7 @@ impl Bytes for EntryOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
@@ -162,7 +159,6 @@ impl EntryOut {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct AttrOut {
     out: fuse_attr_out,
 }
@@ -186,12 +182,11 @@ impl Bytes for AttrOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct OpenOut {
     out: fuse_open_out,
 }
@@ -201,7 +196,7 @@ impl Bytes for OpenOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
@@ -245,7 +240,6 @@ impl OpenOut {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct WriteOut {
     out: fuse_write_out,
 }
@@ -255,7 +249,7 @@ impl Bytes for WriteOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
@@ -266,7 +260,6 @@ impl WriteOut {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct StatfsOut {
     out: fuse_statfs_out,
 }
@@ -276,7 +269,7 @@ impl Bytes for StatfsOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
@@ -288,7 +281,6 @@ impl StatfsOut {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct Statfs {
     st: fuse_kstatfs,
 }
@@ -341,7 +333,6 @@ impl Statfs {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct XattrOut {
     out: fuse_getxattr_out,
 }
@@ -351,7 +342,7 @@ impl Bytes for XattrOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
@@ -362,7 +353,6 @@ impl XattrOut {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct LkOut {
     out: fuse_lk_out,
 }
@@ -372,7 +362,7 @@ impl Bytes for LkOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
@@ -415,7 +405,6 @@ impl FileLock {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct BmapOut {
     out: fuse_bmap_out,
 }
@@ -425,7 +414,7 @@ impl Bytes for BmapOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
@@ -436,7 +425,6 @@ impl BmapOut {
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct PollOut {
     out: fuse_poll_out,
 }
@@ -446,7 +434,7 @@ impl Bytes for PollOut {
     where
         T: Collector<'a>,
     {
-        collector.append(unsafe { as_bytes(self) });
+        collector.append(self.out.as_bytes());
     }
 }
 
@@ -494,7 +482,7 @@ impl ReaddirOut {
             typ,
             name: [],
         };
-        self.buf.extend_from_slice(unsafe { as_bytes(&dirent) });
+        self.buf.extend_from_slice(dirent.as_bytes());
         self.buf.extend_from_slice(name);
         self.buf.resize(self.buf.len() + aligned_entry_size, 0);
 

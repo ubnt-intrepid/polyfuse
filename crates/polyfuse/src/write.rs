@@ -2,6 +2,7 @@ use crate::bytes::{Bytes, Collector};
 use polyfuse_kernel::{fuse_notify_code, fuse_out_header};
 use smallvec::SmallVec;
 use std::{convert::TryInto as _, io, mem};
+use zerocopy::AsBytes as _;
 
 pub(crate) struct ReplySender<W> {
     writer: W,
@@ -43,7 +44,7 @@ where
     where
         T: Bytes,
     {
-        self.send_msg(unsafe { mem::transmute::<_, i32>(code) }, data)
+        self.send_msg(code as i32, data)
     }
 
     fn send_msg<T>(mut self, error: i32, data: T) -> io::Result<()>
@@ -67,7 +68,7 @@ where
                 .expect("too large data");
         }
 
-        vec[0] = io::IoSlice::new(unsafe { crate::util::as_bytes(&self.header) });
+        vec[0] = io::IoSlice::new(self.header.as_bytes());
 
         let count = self.writer.write_vectored(&*vec)?;
         if count < self.header.len as usize {
