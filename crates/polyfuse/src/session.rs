@@ -1,13 +1,19 @@
 //! Establish a FUSE session.
 
-use crate::request::Request;
-use crate::{util::Decoder, write};
+use crate::{
+    bytes::Bytes,
+    decoder::Decoder,
+    op::{DecodeError, Operation},
+    util::{as_bytes, as_bytes_mut},
+    write::ReplySender,
+};
 use bitflags::bitflags;
 use futures::io::{AsyncRead, AsyncReadExt as _};
-use polyfuse_kernel::{self as kernel, fuse_opcode};
+use polyfuse_kernel::{self as kernel, fuse_in_header, fuse_opcode};
 use std::{
     convert::TryFrom,
     fmt, io,
+    mem::{self, MaybeUninit},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -339,14 +345,29 @@ impl Session {
     {
         let mut conn = conn;
 
-        let mut buf = vec![0u8; self.bufsize];
+        let mut header = MaybeUninit::<fuse_in_header>::uninit();
+        // FIXME: Align with the argument types in polyfuse_kernel.
+        let mut arg = vec![0u8; self.bufsize - mem::size_of::<fuse_in_header>()];
 
         loop {
-            match conn.read(&mut buf[..]).await {
+            match conn
+                .read_vectored(&mut [
+                    io::IoSliceMut::new(unsafe { as_bytes_mut(&mut header) }),
+                    io::IoSliceMut::new(&mut arg[..]),
+                ])
+                .await
+            {
                 Ok(len) => {
-                    unsafe {
-                        buf.set_len(len);
+                    if len < mem::size_of::<fuse_in_header>() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "dequeued request message is too short",
+                        ));
                     }
+                    unsafe {
+                        arg.set_len(len - mem::size_of::<fuse_in_header>());
+                    }
+
                     break;
                 }
 
@@ -364,10 +385,69 @@ impl Session {
             }
         }
 
+        let header = unsafe { header.assume_init() };
+
         Ok(Some(Request {
-            buf,
             session: self.clone(),
+            header,
+            arg,
         }))
+    }
+}
+
+/// Context about an incoming FUSE request.
+pub struct Request {
+    session: Arc<Session>,
+    header: fuse_in_header,
+    arg: Vec<u8>,
+}
+
+impl Request {
+    /// Return the unique ID of the request.
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.header.unique
+    }
+
+    /// Return the user ID of the calling process.
+    #[inline]
+    pub fn uid(&self) -> u32 {
+        self.header.uid
+    }
+
+    /// Return the group ID of the calling process.
+    #[inline]
+    pub fn gid(&self) -> u32 {
+        self.header.gid
+    }
+
+    /// Return the process ID of the calling process.
+    #[inline]
+    pub fn pid(&self) -> u32 {
+        self.header.pid
+    }
+
+    /// Decode the argument of this request.
+    pub fn operation(&self) -> Result<Operation<'_>, DecodeError> {
+        if self.session.exited() {
+            return Ok(Operation::unknown());
+        }
+        Operation::decode(&self.header, &self.arg[..])
+    }
+
+    pub fn reply<W, T>(&self, writer: W, data: T) -> io::Result<()>
+    where
+        W: io::Write,
+        T: Bytes,
+    {
+        ReplySender::new(writer, self.unique()).reply(data)
+    }
+
+    pub fn reply_error<W>(&self, writer: W, code: i32) -> io::Result<()>
+    where
+        W: io::Write,
+    {
+        ReplySender::new(writer, self.unique()).error(code)
     }
 }
 
@@ -399,8 +479,9 @@ where
 {
     let mut decoder = Decoder::new(buf);
     let header = decoder
-        .fetch::<kernel::fuse_in_header>() //
+        .fetch::<fuse_in_header>() //
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to decode fuse_in_header"))?;
+    let sender = ReplySender::new(writer, header.unique);
 
     match fuse_opcode::try_from(header.opcode) {
         Ok(fuse_opcode::FUSE_INIT) => {
@@ -435,9 +516,7 @@ where
 
             if init_in.major > 7 {
                 tracing::debug!("wait for a second INIT request with an older version.");
-                write::send_reply(writer, header.unique, unsafe {
-                    crate::util::as_bytes(&init_out)
-                })?;
+                sender.reply(unsafe { as_bytes(&init_out) })?;
                 return Ok(None);
             }
 
@@ -448,7 +527,7 @@ where
                     init_in.major,
                     init_in.minor
                 );
-                write::send_error(writer, header.unique, libc::EPROTO)?;
+                sender.error(libc::EPROTO)?;
                 return Ok(None);
             }
 
@@ -489,9 +568,7 @@ where
                 init_out.congestion_threshold
             );
             tracing::debug!("  time_gran = {}", init_out.time_gran);
-            write::send_reply(writer, header.unique, unsafe {
-                crate::util::as_bytes(&init_out)
-            })?;
+            sender.reply(unsafe { as_bytes(&init_out) })?;
 
             init_out.flags |= readonly_flags;
 
@@ -510,7 +587,7 @@ where
                 "ignoring an operation before init (opcode={:?})",
                 header.opcode
             );
-            write::send_error(writer, header.unique, libc::EIO)?;
+            sender.error(libc::EIO)?;
             Ok(None)
         }
     }
@@ -606,8 +683,8 @@ mod tests {
         };
 
         let mut input = Vec::with_capacity(input_len);
-        input.extend_from_slice(unsafe { crate::util::as_bytes(&in_header) });
-        input.extend_from_slice(unsafe { crate::util::as_bytes(&init_in) });
+        input.extend_from_slice(unsafe { as_bytes(&in_header) });
+        input.extend_from_slice(unsafe { as_bytes(&init_in) });
         assert_eq!(input.len(), input_len);
 
         let mut output = Vec::<u8>::new();
@@ -646,8 +723,8 @@ mod tests {
         };
 
         let mut expected = Vec::with_capacity(output_len);
-        expected.extend_from_slice(unsafe { crate::util::as_bytes(&out_header) });
-        expected.extend_from_slice(unsafe { crate::util::as_bytes(&init_out) });
+        expected.extend_from_slice(unsafe { as_bytes(&out_header) });
+        expected.extend_from_slice(unsafe { as_bytes(&init_out) });
         assert_eq!(output.len(), output_len);
 
         assert_eq!(expected[0..4], output[0..4], "out_header.len");
