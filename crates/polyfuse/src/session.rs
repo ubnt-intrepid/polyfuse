@@ -7,11 +7,17 @@ use crate::{
     write::ReplySender,
 };
 use bitflags::bitflags;
-use futures::io::{AsyncRead, AsyncReadExt as _};
-use polyfuse_kernel::{self as kernel, fuse_in_header, fuse_opcode};
+use futures::{
+    io::{AsyncBufRead, AsyncRead, AsyncReadExt as _},
+    task::{self, Poll},
+};
+use polyfuse_kernel::{self as kernel, fuse_in_header, fuse_opcode, fuse_write_in};
 use std::{
     convert::TryFrom,
-    fmt, io, mem,
+    fmt,
+    io::{self, IoSliceMut},
+    mem,
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -425,11 +431,19 @@ impl Request {
     }
 
     /// Decode the argument of this request.
-    pub fn operation(&self) -> Result<Operation<'_>, DecodeError> {
+    pub fn operation(&self) -> Result<Operation<'_, Data<'_>>, DecodeError> {
         if self.session.exited() {
             return Ok(Operation::unknown());
         }
-        Operation::decode(&self.header, &self.arg[..])
+
+        let (arg, data) = match fuse_opcode::try_from(self.header.opcode).ok() {
+            Some(fuse_opcode::FUSE_WRITE) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
+                self.arg.split_at(mem::size_of::<fuse_write_in>())
+            }
+            _ => (&self.arg[..], &[] as &[_]),
+        };
+
+        Operation::decode(&self.header, arg, Data { data })
     }
 
     pub fn reply<W, T>(&self, writer: W, data: T) -> io::Result<()>
@@ -445,6 +459,43 @@ impl Request {
         W: io::Write,
     {
         ReplySender::new(writer, self.unique()).error(code)
+    }
+}
+
+/// The remaining part of request message.
+pub struct Data<'op> {
+    data: &'op [u8],
+}
+
+impl<'op> AsyncRead for Data<'op> {
+    #[inline]
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut task::Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(io::Read::read(&mut self.get_mut().data, buf))
+    }
+
+    #[inline]
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        _: &mut task::Context<'_>,
+        bufs: &mut [IoSliceMut<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(io::Read::read_vectored(&mut self.get_mut().data, bufs))
+    }
+}
+
+impl<'op> AsyncBufRead for Data<'op> {
+    #[inline]
+    fn poll_fill_buf(self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<io::Result<&[u8]>> {
+        Poll::Ready(io::BufRead::fill_buf(&mut self.get_mut().data))
+    }
+
+    #[inline]
+    fn consume(self: Pin<&mut Self>, amt: usize) {
+        io::BufRead::consume(&mut self.get_mut().data, amt)
     }
 }
 

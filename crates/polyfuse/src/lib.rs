@@ -10,5 +10,5 @@ pub mod reply;
 
 pub use crate::{
     op::Operation,
-    session::{CapabilityFlags, Config, ConnectionInfo, Request, Session},
+    session::{CapabilityFlags, Config, ConnectionInfo, Data, Request, Session},
 };
