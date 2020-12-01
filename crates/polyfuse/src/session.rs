@@ -11,15 +11,17 @@ use futures::{
     io::{AsyncBufRead, AsyncRead, AsyncReadExt as _},
     task::{self, Poll},
 };
-use polyfuse_kernel::{self as kernel, fuse_in_header, fuse_opcode, fuse_write_in};
+use polyfuse_kernel::*;
 use std::{
     convert::TryFrom,
+    ffi::OsStr,
     fmt,
     io::{self, IoSliceMut},
     mem,
+    os::unix::prelude::*,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -29,7 +31,7 @@ use zerocopy::AsBytes as _;
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
 
 const DEFAULT_MAX_WRITE: u32 = 16 * 1024 * 1024;
-//const MIN_MAX_WRITE: u32 = kernel::FUSE_MIN_READ_BUFFER - BUFFER_HEADER_SIZE as u32;
+//const MIN_MAX_WRITE: u32 = FUSE_MIN_READ_BUFFER - BUFFER_HEADER_SIZE as u32;
 
 // copied from fuse_i.h
 const MAX_MAX_PAGES: usize = 256;
@@ -42,7 +44,7 @@ fn pagesize() -> usize {
 }
 
 /// Information about the connection associated with a session.
-pub struct ConnectionInfo(kernel::fuse_init_out);
+pub struct ConnectionInfo(fuse_init_out);
 
 impl fmt::Debug for ConnectionInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -85,14 +87,14 @@ impl ConnectionInfo {
     /// subsequent `open` requests.  Otherwise, the filesystem should
     /// implement the handler for `open` requests appropriately.
     pub fn no_open_support(&self) -> bool {
-        self.0.flags & kernel::FUSE_NO_OPEN_SUPPORT != 0
+        self.0.flags & FUSE_NO_OPEN_SUPPORT != 0
     }
 
     /// Return whether the kernel supports for zero-message opendirs.
     ///
     /// See the documentation of `no_open_support` for details.
     pub fn no_opendir_support(&self) -> bool {
-        self.0.flags & kernel::FUSE_NO_OPENDIR_SUPPORT != 0
+        self.0.flags & FUSE_NO_OPENDIR_SUPPORT != 0
     }
 
     /// Returns the maximum readahead.
@@ -122,7 +124,7 @@ impl ConnectionInfo {
 
     #[doc(hidden)]
     pub fn max_pages(&self) -> Option<u16> {
-        if self.0.flags & kernel::FUSE_MAX_PAGES != 0 {
+        if self.0.flags & FUSE_MAX_PAGES != 0 {
             Some(self.0.max_pages)
         } else {
             None
@@ -137,66 +139,66 @@ bitflags! {
         /// The filesystem supports asynchronous read requests.
         ///
         /// Enabled by default.
-        const ASYNC_READ = kernel::FUSE_ASYNC_READ;
+        const ASYNC_READ = FUSE_ASYNC_READ;
 
         /// The filesystem supports the `O_TRUNC` open flag.
         ///
         /// Enabled by default.
-        const ATOMIC_O_TRUNC = kernel::FUSE_ATOMIC_O_TRUNC;
+        const ATOMIC_O_TRUNC = FUSE_ATOMIC_O_TRUNC;
 
         /// The kernel check the validity of attributes on every read.
         ///
         /// Enabled by default.
-        const AUTO_INVAL_DATA = kernel::FUSE_AUTO_INVAL_DATA;
+        const AUTO_INVAL_DATA = FUSE_AUTO_INVAL_DATA;
 
         /// The filesystem supports asynchronous direct I/O submission.
         ///
         /// Enabled by default.
-        const ASYNC_DIO = kernel::FUSE_ASYNC_DIO;
+        const ASYNC_DIO = FUSE_ASYNC_DIO;
 
         /// The kernel supports parallel directory operations.
         ///
         /// Enabled by default.
-        const PARALLEL_DIROPS = kernel::FUSE_PARALLEL_DIROPS;
+        const PARALLEL_DIROPS = FUSE_PARALLEL_DIROPS;
 
         /// The filesystem is responsible for unsetting setuid and setgid bits
         /// when a file is written, truncated, or its owner is changed.
         ///
         /// Enabled by default.
-        const HANDLE_KILLPRIV = kernel::FUSE_HANDLE_KILLPRIV;
+        const HANDLE_KILLPRIV = FUSE_HANDLE_KILLPRIV;
 
         /// The filesystem supports the POSIX-style file lock.
-        const POSIX_LOCKS = kernel::FUSE_POSIX_LOCKS;
+        const POSIX_LOCKS = FUSE_POSIX_LOCKS;
 
         /// The filesystem supports the `flock` handling.
-        const FLOCK_LOCKS = kernel::FUSE_FLOCK_LOCKS;
+        const FLOCK_LOCKS = FUSE_FLOCK_LOCKS;
 
         /// The filesystem supports lookups of `"."` and `".."`.
-        const EXPORT_SUPPORT = kernel::FUSE_EXPORT_SUPPORT;
+        const EXPORT_SUPPORT = FUSE_EXPORT_SUPPORT;
 
         /// The kernel should not apply the umask to the file mode on create
         /// operations.
-        const DONT_MASK = kernel::FUSE_DONT_MASK;
+        const DONT_MASK = FUSE_DONT_MASK;
 
         /// The writeback caching should be enabled.
-        const WRITEBACK_CACHE = kernel::FUSE_WRITEBACK_CACHE;
+        const WRITEBACK_CACHE = FUSE_WRITEBACK_CACHE;
 
         /// The filesystem supports POSIX access control lists.
-        const POSIX_ACL = kernel::FUSE_POSIX_ACL;
+        const POSIX_ACL = FUSE_POSIX_ACL;
 
         /// The filesystem supports `readdirplus` operations.
-        const READDIRPLUS = kernel::FUSE_DO_READDIRPLUS;
+        const READDIRPLUS = FUSE_DO_READDIRPLUS;
 
         /// Indicates that the kernel uses the adaptive readdirplus.
-        const READDIRPLUS_AUTO = kernel::FUSE_READDIRPLUS_AUTO;
+        const READDIRPLUS_AUTO = FUSE_READDIRPLUS_AUTO;
 
         // TODO: splice read/write
-        // const SPLICE_WRITE = kernel::FUSE_SPLICE_WRITE;
-        // const SPLICE_MOVE = kernel::FUSE_SPLICE_MOVE;
-        // const SPLICE_READ = kernel::FUSE_SPLICE_READ;
+        // const SPLICE_WRITE = FUSE_SPLICE_WRITE;
+        // const SPLICE_MOVE = FUSE_SPLICE_MOVE;
+        // const SPLICE_READ = FUSE_SPLICE_READ;
 
         // TODO: ioctl
-        // const IOCTL_DIR = kernel::FUSE_IOCTL_DIR;
+        // const IOCTL_DIR = FUSE_IOCTL_DIR;
     }
 }
 
@@ -308,6 +310,7 @@ pub struct Session {
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
+    notify_unique: AtomicU64,
 }
 
 impl Drop for Session {
@@ -395,6 +398,150 @@ impl Session {
             header,
             arg,
         }))
+    }
+
+    fn ensure_session_is_alived(&self) -> io::Result<()> {
+        if !self.exited() {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "session is closed",
+            ))
+        }
+    }
+
+    /// Notify the cache invalidation about an inode to the kernel.
+    pub fn notify_inval_inode<W>(&self, writer: W, ino: u64, off: i64, len: i64) -> io::Result<()>
+    where
+        W: io::Write,
+    {
+        self.ensure_session_is_alived()?;
+
+        let out = fuse_notify_inval_inode_out { ino, off, len };
+
+        ReplySender::new(writer, 0)
+            .notify(fuse_notify_code::FUSE_NOTIFY_INVAL_INODE, out.as_bytes())
+    }
+
+    /// Notify the invalidation about a directory entry to the kernel.
+    pub fn notify_inval_entry<W>(
+        &self,
+        writer: W,
+        parent: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
+    where
+        W: io::Write,
+    {
+        self.ensure_session_is_alived()?;
+
+        let name = name.as_ref();
+        let namelen = u32::try_from(name.len()).unwrap();
+        let out = fuse_notify_inval_entry_out {
+            parent,
+            namelen,
+            ..Default::default()
+        };
+        ReplySender::new(writer, 0).notify(
+            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+            &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
+        )
+    }
+
+    /// Notify the invalidation about a directory entry to the kernel.
+    ///
+    /// The role of this notification is similar to `notify_inval_entry`.
+    /// Additionally, when the provided `child` inode matches the inode
+    /// in the dentry cache, the inotify will inform the deletion to
+    /// watchers if exists.
+    pub fn notify_delete<W>(
+        &self,
+        writer: W,
+        parent: u64,
+        child: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
+    where
+        W: io::Write,
+    {
+        self.ensure_session_is_alived()?;
+
+        let name = name.as_ref();
+        let namelen = u32::try_from(name.len()).unwrap();
+        let out = fuse_notify_delete_out {
+            parent,
+            child,
+            namelen,
+            ..Default::default()
+        };
+
+        ReplySender::new(writer, 0).notify(
+            fuse_notify_code::FUSE_NOTIFY_DELETE,
+            &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
+        )
+    }
+
+    /// Push the data in an inode for updating the kernel cache.
+    pub fn notify_store<W>(
+        &self,
+        writer: W,
+        ino: u64,
+        offset: u64,
+        data: &[&[u8]],
+    ) -> io::Result<()>
+    where
+        W: io::Write,
+    {
+        self.ensure_session_is_alived()?;
+
+        let size = u32::try_from(data.iter().map(|t| t.len()).sum::<usize>()).unwrap();
+        let out = fuse_notify_store_out {
+            nodeid: ino,
+            offset,
+            size,
+            ..Default::default()
+        };
+        let data: smallvec::SmallVec<[_; 4]> = Some(out.as_bytes())
+            .into_iter()
+            .chain(data.iter().copied())
+            .collect();
+
+        ReplySender::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_STORE, &*data)
+    }
+
+    /// Retrieve data in an inode from the kernel cache.
+    pub fn notify_retrieve<W>(&self, writer: W, ino: u64, offset: u64, size: u32) -> io::Result<u64>
+    where
+        W: io::Write,
+    {
+        self.ensure_session_is_alived()?;
+
+        let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
+        let out = fuse_notify_retrieve_out {
+            notify_unique: unique,
+            nodeid: ino,
+            offset,
+            size,
+            ..Default::default()
+        };
+
+        ReplySender::new(writer, 0)
+            .notify(fuse_notify_code::FUSE_NOTIFY_RETRIEVE, out.as_bytes())?;
+
+        Ok(unique)
+    }
+
+    /// Send I/O readiness to the kernel.
+    pub fn notify_poll_wakeup<W>(&self, writer: W, kh: u64) -> io::Result<()>
+    where
+        W: io::Write,
+    {
+        self.ensure_session_is_alived()?;
+
+        let out = fuse_notify_poll_wakeup_out { kh };
+
+        ReplySender::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_POLL, out.as_bytes())
     }
 }
 
@@ -535,7 +682,7 @@ where
     match fuse_opcode::try_from(header.opcode) {
         Ok(fuse_opcode::FUSE_INIT) => {
             let init_in = decoder
-                .fetch::<kernel::fuse_init_in>() //
+                .fetch::<fuse_init_in>() //
                 .map_err(|_| {
                     io::Error::new(io::ErrorKind::Other, "failed to decode fuse_init_in")
                 })?;
@@ -546,22 +693,19 @@ where
             tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
             tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
             tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
-            tracing::debug!(
-                "  max_pages = {}",
-                init_in.flags & kernel::FUSE_MAX_PAGES != 0
-            );
+            tracing::debug!("  max_pages = {}", init_in.flags & FUSE_MAX_PAGES != 0);
             tracing::debug!(
                 "  no_open_support = {}",
-                init_in.flags & kernel::FUSE_NO_OPEN_SUPPORT != 0
+                init_in.flags & FUSE_NO_OPEN_SUPPORT != 0
             );
             tracing::debug!(
                 "  no_opendir_support = {}",
-                init_in.flags & kernel::FUSE_NO_OPENDIR_SUPPORT != 0
+                init_in.flags & FUSE_NO_OPENDIR_SUPPORT != 0
             );
 
-            let mut init_out = kernel::fuse_init_out::default();
-            init_out.major = kernel::FUSE_KERNEL_VERSION;
-            init_out.minor = kernel::FUSE_KERNEL_MINOR_VERSION;
+            let mut init_out = fuse_init_out::default();
+            init_out.major = FUSE_KERNEL_VERSION;
+            init_out.minor = FUSE_KERNEL_MINOR_VERSION;
 
             if init_in.major > 7 {
                 tracing::debug!("wait for a second INIT request with an older version.");
@@ -583,7 +727,7 @@ where
             init_out.minor = std::cmp::min(init_out.minor, init_in.minor);
 
             init_out.flags = (config.flags & capable).bits();
-            init_out.flags |= kernel::FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
+            init_out.flags |= FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
 
             init_out.max_readahead = std::cmp::min(config.max_readahead, init_in.max_readahead);
             init_out.max_write = config.max_write;
@@ -591,15 +735,15 @@ where
             init_out.congestion_threshold = config.congestion_threshold;
             init_out.time_gran = config.time_gran;
 
-            if init_in.flags & kernel::FUSE_MAX_PAGES != 0 {
-                init_out.flags |= kernel::FUSE_MAX_PAGES;
+            if init_in.flags & FUSE_MAX_PAGES != 0 {
+                init_out.flags |= FUSE_MAX_PAGES;
                 init_out.max_pages = std::cmp::min(
                     (init_out.max_write - 1) / (pagesize() as u32) + 1,
                     u16::max_value() as u32,
                 ) as u16;
             }
 
-            debug_assert_eq!(init_out.major, kernel::FUSE_KERNEL_VERSION);
+            debug_assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
             debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
 
             tracing::debug!("Reply to INIT:");
@@ -628,6 +772,7 @@ where
                 conn,
                 bufsize,
                 exited: AtomicBool::new(false),
+                notify_unique: AtomicU64::new(0),
             }))
         }
 
@@ -652,9 +797,6 @@ mod tests {
         task::{self, Poll},
     };
     use pin_project_lite::pin_project;
-    use polyfuse_kernel::{
-        fuse_in_header, fuse_init_in, fuse_init_out, fuse_opcode, fuse_out_header,
-    };
     use std::{
         io::{self, Write},
         mem,
@@ -726,9 +868,9 @@ mod tests {
             minor: 23,
             max_readahead: 40,
             flags: CapabilityFlags::all().bits()
-                | kernel::FUSE_MAX_PAGES
-                | kernel::FUSE_NO_OPEN_SUPPORT
-                | kernel::FUSE_NO_OPENDIR_SUPPORT,
+                | FUSE_MAX_PAGES
+                | FUSE_NO_OPEN_SUPPORT
+                | FUSE_NO_OPENDIR_SUPPORT,
         };
 
         let mut input = Vec::with_capacity(input_len);
@@ -759,9 +901,7 @@ mod tests {
             major: 7,
             minor: 23,
             max_readahead: 40,
-            flags: CapabilityFlags::default().bits()
-                | kernel::FUSE_MAX_PAGES
-                | kernel::FUSE_BIG_WRITES,
+            flags: CapabilityFlags::default().bits() | FUSE_MAX_PAGES | FUSE_BIG_WRITES,
             max_background: 0,
             congestion_threshold: 0,
             max_write: DEFAULT_MAX_WRITE,
