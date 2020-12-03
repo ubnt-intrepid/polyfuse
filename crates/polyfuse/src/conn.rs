@@ -3,26 +3,10 @@ use std::{
     cmp,
     ffi::OsStr,
     io,
-    mem::{self, MaybeUninit},
-    os::unix::{net::UnixDatagram, prelude::*},
+    os::unix::prelude::*,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
-    ptr,
     sync::{Arc, Weak},
 };
-
-const FUSERMOUNT_PROG: &str = "fusermount";
-const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
-
-macro_rules! syscall {
-    ($fn:ident ( $($arg:expr),* $(,)* ) ) => {{
-        let res = unsafe { libc::$fn($($arg),*) };
-        if res == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        res
-    }};
-}
 
 #[derive(Debug)]
 struct Inner {
@@ -78,14 +62,7 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let _ = Command::new(FUSERMOUNT_PROG)
-            .args(&["-u", "-q", "-z", "--"])
-            .arg(&self.mountpoint)
-            .status();
-
-        unsafe {
-            libc::close(self.fd);
-        }
+        crate::mount::unmount(self.fd, &self.mountpoint);
     }
 }
 
@@ -98,7 +75,7 @@ pub struct Connection {
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
     pub fn open(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<Self> {
-        let fd = open_connection(mountpoint, mountopts)?;
+        let fd = crate::mount::mount(mountpoint, mountopts)?;
 
         Ok(Self {
             inner: Arc::new(Inner {
@@ -237,93 +214,4 @@ impl io::Write for &Writer {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-}
-
-// ==== mount ====
-
-fn open_connection(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<RawFd> {
-    let (pid, mut reader) = exec_fusermount(mountpoint, mountopts)?;
-
-    // Check if the `fusermount` command is started successfully.
-    let mut status = 0;
-    syscall! { waitpid(pid, &mut status, 0) };
-    let status = ExitStatus::from_raw(status);
-    if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("fusermount failed with: {}", status),
-        ));
-    }
-
-    let fd = receive_fd(&mut reader)?;
-
-    // Unmounting is executed when `reader` is dropped and the connection
-    // with `fusermount` is closed.
-    let _ = reader.into_raw_fd();
-
-    Ok(fd)
-}
-
-fn exec_fusermount(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<(c_int, UnixDatagram)> {
-    let (reader, writer) = UnixDatagram::pair()?;
-
-    let pid = syscall! { fork() };
-    if pid == 0 {
-        drop(reader);
-        let writer = writer.into_raw_fd();
-        unsafe { libc::fcntl(writer, libc::F_SETFD, 0) };
-
-        let mut fusermount = Command::new(FUSERMOUNT_PROG);
-        fusermount.env(FUSE_COMMFD_ENV, writer.to_string());
-        fusermount.args(mountopts);
-        fusermount.arg("--").arg(mountpoint);
-
-        return Err(fusermount.exec());
-    }
-
-    Ok((pid, reader))
-}
-
-fn receive_fd(reader: &mut UnixDatagram) -> io::Result<RawFd> {
-    let mut buf = [0u8; 1];
-    let mut iov = libc::iovec {
-        iov_base: buf.as_mut_ptr() as *mut c_void,
-        iov_len: 1,
-    };
-
-    #[repr(C)]
-    struct Cmsg {
-        header: libc::cmsghdr,
-        fd: c_int,
-    }
-    let mut cmsg = MaybeUninit::<Cmsg>::uninit();
-
-    let mut msg = libc::msghdr {
-        msg_name: ptr::null_mut(),
-        msg_namelen: 0,
-        msg_iov: &mut iov,
-        msg_iovlen: 1,
-        msg_control: cmsg.as_mut_ptr() as *mut c_void,
-        msg_controllen: mem::size_of_val(&cmsg),
-        msg_flags: 0,
-    };
-
-    syscall! { recvmsg(reader.as_raw_fd(), &mut msg, 0) };
-
-    if msg.msg_controllen < mem::size_of_val(&cmsg) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "too short control message length",
-        ));
-    }
-    let cmsg = unsafe { cmsg.assume_init() };
-
-    if cmsg.header.cmsg_type != libc::SCM_RIGHTS {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "got control message with unknown type",
-        ));
-    }
-
-    Ok(cmsg.fd)
 }

@@ -13,9 +13,8 @@ use std::{fs, time::Duration};
 const CARGO_DOC_TIMEOUT: Duration = Duration::from_secs(60 * 15);
 
 const DOC_PACKAGES: &[&str] = &[
-    "polyfuse",
+    "polyfuse", //
     "polyfuse-kernel",
-    "polyfuse-mount",
     "polyfuse-async-std",
 ];
 
