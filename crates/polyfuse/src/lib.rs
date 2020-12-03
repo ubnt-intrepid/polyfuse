@@ -3,17 +3,18 @@
 #[macro_use]
 mod syscall;
 
+mod conn;
 mod decoder;
 mod mount;
 mod session;
 mod write;
 
 pub mod bytes;
-pub mod conn;
 pub mod op;
 pub mod reply;
 
 pub use crate::{
+    conn::Connection,
     op::Operation,
     session::{CapabilityFlags, Config, ConnectionInfo, Data, Request, Session},
 };

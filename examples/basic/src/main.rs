@@ -1,7 +1,7 @@
-use polyfuse::{op, reply::AttrOut, Config, Operation, Request, Session};
-use polyfuse_async_std::Connection;
+use polyfuse::{op, reply::AttrOut, Config, Connection, Operation, Request, Session};
 
 use anyhow::Context as _;
+use async_io::Async;
 use std::{io, path::PathBuf, time::Duration};
 
 #[async_std::main]
@@ -16,10 +16,11 @@ async fn main() -> anyhow::Result<()> {
     anyhow::ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let conn = Connection::open(&mountpoint, &[]).await?;
+    let conn = async_std::task::spawn_blocking(move || Connection::open(&mountpoint, &[])).await?;
+    let conn = Async::new(conn)?;
 
     // Start FUSE session.
-    let session = Session::start(&conn, Config::default()).await?;
+    let session = Session::start(&conn, conn.get_ref(), Config::default()).await?;
 
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request(&conn).await? {
@@ -27,10 +28,10 @@ async fn main() -> anyhow::Result<()> {
         let op = req.operation()?;
         match op {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&req, op, &conn).await?,
+            Operation::Getattr(op) => getattr(&req, op, conn.get_ref()).await?,
 
             // Or annotate that the operation is not supported.
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            _ => req.reply_error(conn.get_ref(), libc::ENOSYS)?,
         };
     }
 
