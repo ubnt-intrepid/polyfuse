@@ -15,7 +15,6 @@ const CARGO_DOC_TIMEOUT: Duration = Duration::from_secs(60 * 15);
 const DOC_PACKAGES: &[&str] = &[
     "polyfuse", //
     "polyfuse-kernel",
-    "polyfuse-async-std",
 ];
 
 pub struct DocBuilder<'env> {

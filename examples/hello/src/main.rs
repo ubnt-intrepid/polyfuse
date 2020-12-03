@@ -4,11 +4,11 @@
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Config, Operation, Request, Session,
+    Config, Connection, Operation, Request, Session,
 };
-use polyfuse_async_std::Connection;
 
 use anyhow::Context as _;
+use async_io::Async;
 use std::{io, os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -28,19 +28,20 @@ async fn main() -> anyhow::Result<()> {
         .context("missing mountpoint specified")?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let conn = Connection::open(&mountpoint, &[]).await?;
+    let conn = async_std::task::spawn_blocking(move || Connection::open(&mountpoint, &[])).await?;
+    let conn = Async::new(conn)?;
 
-    let session = Session::start(&conn, Config::default()).await?;
+    let session = Session::start(&conn, conn.get_ref(), Config::default()).await?;
 
     let fs = Hello::new();
 
     while let Some(req) = session.next_request(&conn).await? {
         match req.operation()? {
-            Operation::Lookup(op) => fs.lookup(&req, &conn, op).await?,
-            Operation::Getattr(op) => fs.getattr(&req, &conn, op).await?,
-            Operation::Read(op) => fs.read(&req, &conn, op).await?,
-            Operation::Readdir(op) => fs.readdir(&req, &conn, op).await?,
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            Operation::Lookup(op) => fs.lookup(&req, conn.get_ref(), op).await?,
+            Operation::Getattr(op) => fs.getattr(&req, conn.get_ref(), op).await?,
+            Operation::Read(op) => fs.read(&req, conn.get_ref(), op).await?,
+            Operation::Readdir(op) => fs.readdir(&req, conn.get_ref(), op).await?,
+            _ => req.reply_error(conn.get_ref(), libc::ENOSYS)?,
         }
     }
 

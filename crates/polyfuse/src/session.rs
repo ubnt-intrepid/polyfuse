@@ -339,11 +339,12 @@ impl Session {
     }
 
     /// Start a FUSE daemon mount on the specified path.
-    pub async fn start<T>(conn: T, config: Config) -> io::Result<Arc<Self>>
+    pub async fn start<R, W>(reader: R, writer: W, config: Config) -> io::Result<Arc<Self>>
     where
-        T: AsyncRead + io::Write + Unpin,
+        R: AsyncRead + Unpin,
+        W: io::Write,
     {
-        init(conn, config).await.map(Arc::new)
+        init(reader, writer, config).await.map(Arc::new)
     }
 
     /// Receive an incoming FUSE request from the kernel.
@@ -646,17 +647,18 @@ impl<'op> AsyncBufRead for Data<'op> {
     }
 }
 
-async fn init<T>(mut conn: T, config: Config) -> io::Result<Session>
+async fn init<R, W>(mut reader: R, mut writer: W, config: Config) -> io::Result<Session>
 where
-    T: AsyncRead + io::Write + Unpin,
+    R: AsyncRead + Unpin,
+    W: io::Write,
 {
     // FIXME: align the allocated buffer in `buf` with FUSE argument types.
     let init_buf_size = BUFFER_HEADER_SIZE + pagesize() * MAX_MAX_PAGES;
     let mut buf = vec![0u8; init_buf_size];
 
     for _ in 0..10 {
-        conn.read(&mut buf[..]).await?;
-        match try_init(&config, &buf[..], &mut conn).await? {
+        reader.read(&mut buf[..]).await?;
+        match try_init(&config, &buf[..], &mut writer).await? {
             Some(session) => return Ok(session),
             None => continue,
         }
@@ -791,64 +793,8 @@ where
 mod tests {
     use super::*;
 
-    use futures::{
-        executor::block_on,
-        io::AsyncRead,
-        task::{self, Poll},
-    };
-    use pin_project_lite::pin_project;
-    use std::{
-        io::{self, Write},
-        mem,
-        pin::Pin,
-    };
-
-    pin_project! {
-        struct Unite<R, W> {
-            #[pin]
-            reader: R,
-            #[pin]
-            writer: W,
-        }
-    }
-
-    impl<R, W> AsyncRead for Unite<R, W>
-    where
-        R: AsyncRead,
-    {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            buf: &mut [u8],
-        ) -> Poll<io::Result<usize>> {
-            self.project().reader.poll_read(cx, buf)
-        }
-
-        fn poll_read_vectored(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            bufs: &mut [io::IoSliceMut<'_>],
-        ) -> Poll<io::Result<usize>> {
-            self.project().reader.poll_read_vectored(cx, bufs)
-        }
-    }
-
-    impl<R, W> Write for Unite<R, W>
-    where
-        W: Write,
-    {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.writer.write(buf)
-        }
-
-        fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-            self.writer.write_vectored(bufs)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.writer.flush()
-        }
-    }
+    use futures::executor::block_on;
+    use std::mem;
 
     #[test]
     fn init_default() {
@@ -880,14 +826,8 @@ mod tests {
 
         let mut output = Vec::<u8>::new();
 
-        let session = block_on(Session::start(
-            Unite {
-                reader: &input[..],
-                writer: &mut output,
-            },
-            Config::default(),
-        ))
-        .expect("initialization failed");
+        let session = block_on(Session::start(&input[..], &mut output, Config::default()))
+            .expect("initialization failed");
 
         let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
 
