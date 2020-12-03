@@ -6,7 +6,7 @@ authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-polyfuse-mount = { version = "0.1.0-dev", path = "../polyfuse-mount" }
+polyfuse = { version = "0.4.0-dev", path = "../polyfuse" }
 
 async-io = "1.2"
 futures = "0.3"

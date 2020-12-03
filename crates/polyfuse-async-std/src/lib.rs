@@ -1,4 +1,4 @@
-pub use polyfuse_mount::Writer;
+pub use polyfuse::conn::Writer;
 
 use async_io::Async;
 use futures::{
@@ -13,13 +13,13 @@ use std::{
 };
 
 pub struct Connection {
-    inner: Async<polyfuse_mount::Connection>,
+    inner: Async<polyfuse::conn::Connection>,
 }
 
 impl Connection {
     pub async fn open(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<Self> {
         // TODO: asyncify.
-        let inner = polyfuse_mount::Connection::open(mountpoint, mountopts)?;
+        let inner = polyfuse::conn::Connection::open(mountpoint, mountopts)?;
         Ok(Self {
             inner: Async::new(inner)?,
         })
