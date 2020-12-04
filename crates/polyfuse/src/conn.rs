@@ -154,40 +154,43 @@ impl io::Write for &Connection {
 // ==== mount ====
 
 fn mount(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<RawFd> {
-    let (reader, writer) = UnixDatagram::pair()?;
+    match unsafe { fork_with_socket_pair()? } {
+        ForkResult::Child { output, .. } => {
+            let writer = output.into_raw_fd();
+            unsafe { libc::fcntl(writer, libc::F_SETFD, 0) };
 
-    let pid = syscall! { fork() };
-    if pid == 0 {
-        drop(reader);
-        let writer = writer.into_raw_fd();
-        unsafe { libc::fcntl(writer, libc::F_SETFD, 0) };
+            let mut fusermount = Command::new(FUSERMOUNT_PROG);
+            fusermount.env(FUSE_COMMFD_ENV, writer.to_string());
+            fusermount.args(mountopts);
+            fusermount.arg("--").arg(mountpoint);
 
-        let mut fusermount = Command::new(FUSERMOUNT_PROG);
-        fusermount.env(FUSE_COMMFD_ENV, writer.to_string());
-        fusermount.args(mountopts);
-        fusermount.arg("--").arg(mountpoint);
+            Err(fusermount.exec())
+        }
 
-        return Err(fusermount.exec());
+        ForkResult::Parent {
+            child_pid, input, ..
+        } => {
+            // Check if the `fusermount` command is started successfully.
+            let mut status = 0;
+            syscall! { waitpid(child_pid, &mut status, 0) };
+            let status = ExitStatus::from_raw(status);
+
+            if !status.success() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("fusermount failed with: {}", status),
+                ));
+            }
+
+            let fd = receive_fd(&input)?;
+
+            // Unmounting is executed when `reader` is dropped and the connection
+            // with `fusermount` is closed.
+            let _ = input.into_raw_fd();
+
+            Ok(fd)
+        }
     }
-
-    // Check if the `fusermount` command is started successfully.
-    let mut status = 0;
-    syscall! { waitpid(pid, &mut status, 0) };
-    let status = ExitStatus::from_raw(status);
-    if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("fusermount failed with: {}", status),
-        ));
-    }
-
-    let fd = receive_fd(&reader)?;
-
-    // Unmounting is executed when `reader` is dropped and the connection
-    // with `fusermount` is closed.
-    let _ = reader.into_raw_fd();
-
-    Ok(fd)
 }
 
 fn unmount(fd: RawFd, mountpoint: &Path) {
@@ -243,4 +246,34 @@ fn receive_fd(reader: &UnixDatagram) -> io::Result<RawFd> {
     }
 
     Ok(cmsg.fd)
+}
+
+// ==== util ====
+
+enum ForkResult {
+    Parent {
+        child_pid: c_int,
+        input: UnixDatagram,
+    },
+    Child {
+        output: UnixDatagram,
+    },
+}
+
+unsafe fn fork_with_socket_pair() -> io::Result<ForkResult> {
+    let (input, output) = UnixDatagram::pair()?;
+
+    let pid = syscall! { fork() };
+    if pid == 0 {
+        drop(input);
+
+        Ok(ForkResult::Child { output })
+    } else {
+        drop(output);
+
+        Ok(ForkResult::Parent {
+            child_pid: pid,
+            input,
+        })
+    }
 }
