@@ -1,8 +1,5 @@
 #![warn(clippy::todo, clippy::unimplemented)]
 
-#[macro_use]
-mod syscall;
-
 mod conn;
 mod decoder;
 mod session;

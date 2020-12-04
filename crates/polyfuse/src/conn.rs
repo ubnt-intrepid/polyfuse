@@ -13,6 +13,17 @@ use std::{
 const FUSERMOUNT_PROG: &str = "/usr/bin/fusermount";
 const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
 
+macro_rules! syscall {
+    ($fn:ident ( $($arg:expr),* $(,)* ) ) => {{
+        #[allow(unused_unsafe)]
+        let res = unsafe { libc::$fn($($arg),*) };
+        if res == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        res
+    }};
+}
+
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
 pub struct Connection {
