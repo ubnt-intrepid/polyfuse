@@ -5,7 +5,6 @@ mod syscall;
 
 mod conn;
 mod decoder;
-mod mount;
 mod session;
 mod write;
 
