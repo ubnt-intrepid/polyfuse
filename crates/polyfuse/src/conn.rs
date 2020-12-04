@@ -1,7 +1,7 @@
 use libc::{c_int, c_void, iovec};
 use std::{
     cmp,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     io,
     mem::{self, MaybeUninit},
     os::unix::{net::UnixDatagram, prelude::*},
@@ -10,7 +10,7 @@ use std::{
     ptr,
 };
 
-const FUSERMOUNT_PROG: &str = "fusermount";
+const FUSERMOUNT_PROG: &str = "/usr/bin/fusermount";
 const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
 
 /// A connection with the FUSE kernel driver.
@@ -28,7 +28,7 @@ impl Drop for Connection {
 
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
-    pub fn open(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<Self> {
+    pub fn open(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<Self> {
         let fd = mount(mountpoint, mountopts)?;
         Ok(Self {
             fd,
@@ -153,15 +153,97 @@ impl io::Write for &Connection {
 
 // ==== mount ====
 
-fn mount(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<RawFd> {
+#[derive(Debug)]
+pub struct MountOptions {
+    auto_unmount: bool,
+    opts: Vec<String>,
+    fusermount_path: Option<PathBuf>,
+    fuse_comm_fd: Option<OsString>,
+}
+
+impl Default for MountOptions {
+    fn default() -> Self {
+        Self {
+            auto_unmount: false,
+            opts: vec![],
+            fusermount_path: None,
+            fuse_comm_fd: None,
+        }
+    }
+}
+
+impl MountOptions {
+    #[doc(hidden)] // TODO: dox
+    pub fn auto_unmount(&mut self, enabled: bool) -> &mut Self {
+        self.auto_unmount = enabled;
+        self
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn opt(&mut self, opt: &str) -> &mut Self {
+        self.opts.push(opt.to_owned());
+        self
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn opts<I>(&mut self, opts: I) -> &mut Self
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        self.opts
+            .extend(opts.into_iter().map(|opt| opt.as_ref().to_owned()));
+        self
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn fusermount_path(&mut self, program: impl AsRef<OsStr>) -> &mut Self {
+        let program = Path::new(program.as_ref());
+        assert!(program.is_absolute());
+        self.fusermount_path = Some(program.to_owned());
+        self
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn fuse_comm_fd(&mut self, name: impl AsRef<OsStr>) -> &mut Self {
+        self.fuse_comm_fd = Some(name.as_ref().to_owned());
+        self
+    }
+}
+
+fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<RawFd> {
     match unsafe { fork_with_socket_pair()? } {
         ForkResult::Child { output, .. } => {
             let writer = output.into_raw_fd();
             unsafe { libc::fcntl(writer, libc::F_SETFD, 0) };
 
-            let mut fusermount = Command::new(FUSERMOUNT_PROG);
-            fusermount.env(FUSE_COMMFD_ENV, writer.to_string());
-            fusermount.args(mountopts);
+            let mut opts = mountopts.opts.clone();
+            if mountopts.auto_unmount {
+                opts.push("auto_unmount".to_owned());
+            }
+
+            let opts = opts.into_iter().fold(String::new(), |mut acc, opt| {
+                if !acc.is_empty() {
+                    acc.push(',');
+                }
+                acc.push_str(&opt);
+                acc
+            });
+
+            let mut fusermount = Command::new(
+                mountopts
+                    .fusermount_path
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new(FUSERMOUNT_PROG)),
+            );
+            fusermount.env(
+                mountopts
+                    .fuse_comm_fd
+                    .as_deref()
+                    .unwrap_or_else(|| OsStr::new(FUSE_COMMFD_ENV)),
+                writer.to_string(),
+            );
+            fusermount.arg("-o").arg(opts);
             fusermount.arg("--").arg(mountpoint);
 
             Err(fusermount.exec())

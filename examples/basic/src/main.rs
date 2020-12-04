@@ -1,4 +1,4 @@
-use polyfuse::{op, reply::AttrOut, Config, Connection, Operation, Request, Session};
+use polyfuse::{op, reply::AttrOut, Config, Connection, MountOptions, Operation, Request, Session};
 
 use anyhow::Context as _;
 use async_io::Async;
@@ -16,7 +16,10 @@ async fn main() -> anyhow::Result<()> {
     anyhow::ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let conn = async_std::task::spawn_blocking(move || Connection::open(&mountpoint, &[])).await?;
+    let conn = async_std::task::spawn_blocking(move || {
+        Connection::open(&mountpoint, &MountOptions::default())
+    })
+    .await?;
     let conn = Async::new(conn)?;
 
     // Start FUSE session.
