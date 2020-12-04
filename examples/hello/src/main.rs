@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
     let conn = async_std::task::spawn_blocking(move || {
-        Connection::open(&mountpoint, &MountOptions::default())
+        Connection::open(mountpoint, MountOptions::default())
     })
     .await?;
     let conn = Async::new(conn)?;

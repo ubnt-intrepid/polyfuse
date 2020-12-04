@@ -29,6 +29,7 @@ macro_rules! syscall {
 pub struct Connection {
     fd: RawFd,
     mountpoint: PathBuf,
+    mountopts: MountOptions,
 }
 
 impl Drop for Connection {
@@ -39,12 +40,23 @@ impl Drop for Connection {
 
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
-    pub fn open(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<Self> {
-        let fd = mount(mountpoint, mountopts)?;
+    pub fn open(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<Self> {
+        let fd = mount(&mountpoint, &mountopts)?;
         Ok(Self {
             fd,
-            mountpoint: mountpoint.into(),
+            mountpoint,
+            mountopts,
         })
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn mountpoint(&self) -> &Path {
+        &self.mountpoint
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn mount_options(&self) -> &MountOptions {
+        &self.mountopts
     }
 
     pub fn set_nonblocking(&self) -> io::Result<()> {
@@ -166,8 +178,8 @@ impl io::Write for &Connection {
 
 #[derive(Debug)]
 pub struct MountOptions {
+    options: Vec<String>,
     auto_unmount: bool,
-    opts: Vec<String>,
     fusermount_path: Option<PathBuf>,
     fuse_comm_fd: Option<OsString>,
 }
@@ -175,8 +187,8 @@ pub struct MountOptions {
 impl Default for MountOptions {
     fn default() -> Self {
         Self {
+            options: vec![],
             auto_unmount: false,
-            opts: vec![],
             fusermount_path: None,
             fuse_comm_fd: None,
         }
@@ -184,39 +196,34 @@ impl Default for MountOptions {
 }
 
 impl MountOptions {
+    fn recognzie_option(&mut self, option: &str) {
+        match option {
+            "auto_unmount" => self.auto_unmount = true,
+            option => self.options.push(option.to_owned()),
+        }
+    }
+
     #[doc(hidden)] // TODO: dox
-    pub fn auto_unmount(&mut self, enabled: bool) -> &mut Self {
-        self.auto_unmount = enabled;
+    pub fn option(mut self, option: &str) -> Self {
+        for option in option.split(',').map(|s| s.trim()) {
+            self.recognzie_option(option);
+        }
         self
     }
 
     #[doc(hidden)] // TODO: dox
-    pub fn opt(&mut self, opt: &str) -> &mut Self {
-        self.opts.push(opt.to_owned());
-        self
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn opts<I>(&mut self, opts: I) -> &mut Self
-    where
-        I: IntoIterator,
-        I::Item: AsRef<str>,
-    {
-        self.opts
-            .extend(opts.into_iter().map(|opt| opt.as_ref().to_owned()));
-        self
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn fusermount_path(&mut self, program: impl AsRef<OsStr>) -> &mut Self {
+    pub fn fusermount_path(mut self, program: impl AsRef<OsStr>) -> Self {
         let program = Path::new(program.as_ref());
-        assert!(program.is_absolute());
+        assert!(
+            program.is_absolute(),
+            "the fusermount binary path must be absolute."
+        );
         self.fusermount_path = Some(program.to_owned());
         self
     }
 
     #[doc(hidden)] // TODO: dox
-    pub fn fuse_comm_fd(&mut self, name: impl AsRef<OsStr>) -> &mut Self {
+    pub fn fuse_comm_fd(mut self, name: impl AsRef<OsStr>) -> Self {
         self.fuse_comm_fd = Some(name.as_ref().to_owned());
         self
     }
@@ -228,18 +235,22 @@ fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<RawFd> {
             let writer = output.into_raw_fd();
             unsafe { libc::fcntl(writer, libc::F_SETFD, 0) };
 
-            let mut opts = mountopts.opts.clone();
-            if mountopts.auto_unmount {
-                opts.push("auto_unmount".to_owned());
-            }
-
-            let opts = opts.into_iter().fold(String::new(), |mut acc, opt| {
-                if !acc.is_empty() {
-                    acc.push(',');
-                }
-                acc.push_str(&opt);
-                acc
-            });
+            let opts = mountopts
+                .options
+                .iter()
+                .map(|opt| opt.as_str())
+                .chain(if mountopts.auto_unmount {
+                    Some("auto_unmount")
+                } else {
+                    None
+                })
+                .fold(String::new(), |mut opts, opt| {
+                    if !opts.is_empty() {
+                        opts.push(',');
+                    }
+                    opts.push_str(&opt);
+                    opts
+                });
 
             let mut fusermount = Command::new(
                 mountopts
@@ -257,29 +268,38 @@ fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<RawFd> {
             fusermount.arg("-o").arg(opts);
             fusermount.arg("--").arg(mountpoint);
 
+            tracing::trace!("exec {:?}", fusermount);
             Err(fusermount.exec())
         }
 
         ForkResult::Parent {
             child_pid, input, ..
         } => {
-            // Check if the `fusermount` command is started successfully.
-            let mut status = 0;
-            syscall! { waitpid(child_pid, &mut status, 0) };
-            let status = ExitStatus::from_raw(status);
-
-            if !status.success() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("fusermount failed with: {}", status),
-                ));
-            }
-
             let fd = receive_fd(&input)?;
 
-            // Unmounting is executed when `reader` is dropped and the connection
-            // with `fusermount` is closed.
-            let _ = input.into_raw_fd();
+            if !mountopts.auto_unmount {
+                drop(input);
+
+                // When auto_unmount is not specified, `fusermount` exits immediately
+                // after sending the file descriptor and thus we need to wait until
+                // the command is exited.
+                let mut status = 0;
+                syscall! { waitpid(child_pid, &mut status, 0) };
+                let status = ExitStatus::from_raw(status);
+
+                if !status.success() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("fusermount failed with: {}", status),
+                    ));
+                }
+            } else {
+                // `fusermount` is automatically exited with unmounting when
+                // the half of Unix socket is lost. For simplicity, associate
+                // the socket closing with the process termination with CLOEXEC
+                // flag.
+                let _ = input.into_raw_fd();
+            }
 
             Ok(fd)
         }
@@ -338,7 +358,10 @@ fn receive_fd(reader: &UnixDatagram) -> io::Result<RawFd> {
         ));
     }
 
-    Ok(cmsg.fd)
+    let fd = cmsg.fd;
+    syscall! { fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+
+    Ok(fd)
 }
 
 // ==== util ====

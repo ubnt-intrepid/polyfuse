@@ -17,7 +17,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
     let conn = async_std::task::spawn_blocking(move || {
-        Connection::open(&mountpoint, &MountOptions::default())
+        Connection::open(
+            mountpoint,
+            MountOptions::default() //
+                .option("auto_unmount"),
+        )
     })
     .await?;
     let conn = Async::new(conn)?;
