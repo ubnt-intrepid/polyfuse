@@ -4,7 +4,7 @@ use std::{
     ffi::{OsStr, OsString},
     io,
     mem::{self, MaybeUninit},
-    os::unix::{net::UnixDatagram, prelude::*},
+    os::unix::{net::UnixStream, prelude::*},
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
     ptr,
@@ -28,22 +28,24 @@ macro_rules! syscall {
 #[derive(Debug)]
 pub struct Connection {
     fd: RawFd,
+    child: Option<Fusermount>,
     mountpoint: PathBuf,
     mountopts: MountOptions,
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        unmount(self.fd, &self.mountpoint);
+        self.unmount();
     }
 }
 
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
     pub fn open(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<Self> {
-        let fd = mount(&mountpoint, &mountopts)?;
+        let (fd, child) = mount(&mountpoint, &mountopts)?;
         Ok(Self {
             fd,
+            child,
             mountpoint,
             mountopts,
         })
@@ -107,6 +109,18 @@ impl Connection {
             )
         };
         Ok(res as usize)
+    }
+
+    fn unmount(&mut self) {
+        unsafe {
+            libc::close(self.fd);
+        }
+
+        if let Some(child) = self.child.take() {
+            let _ = child.wait();
+        }
+
+        unmount(&self.mountpoint);
     }
 }
 
@@ -229,7 +243,22 @@ impl MountOptions {
     }
 }
 
-fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<RawFd> {
+#[derive(Debug)]
+struct Fusermount {
+    pid: c_int,
+    input: UnixStream,
+}
+
+impl Fusermount {
+    fn wait(self) -> io::Result<ExitStatus> {
+        drop(self.input);
+        let mut status = 0;
+        syscall! { waitpid(self.pid, &mut status, 0) };
+        Ok(ExitStatus::from_raw(status))
+    }
+}
+
+fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<(RawFd, Option<Fusermount>)> {
     match unsafe { fork_with_socket_pair()? } {
         ForkResult::Child { output, .. } => {
             let writer = output.into_raw_fd();
@@ -269,7 +298,9 @@ fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<RawFd> {
             fusermount.arg("--").arg(mountpoint);
 
             tracing::trace!("exec {:?}", fusermount);
-            Err(fusermount.exec())
+            let _err = fusermount.exec();
+            // exit immediately since the environment may be broken.
+            std::process::exit(libc::EXIT_FAILURE)
         }
 
         ForkResult::Parent {
@@ -277,47 +308,32 @@ fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<RawFd> {
         } => {
             let fd = receive_fd(&input)?;
 
-            if !mountopts.auto_unmount {
-                drop(input);
+            let mut child = Some(Fusermount {
+                pid: child_pid,
+                input,
+            });
 
+            if !mountopts.auto_unmount {
                 // When auto_unmount is not specified, `fusermount` exits immediately
                 // after sending the file descriptor and thus we need to wait until
                 // the command is exited.
-                let mut status = 0;
-                syscall! { waitpid(child_pid, &mut status, 0) };
-                let status = ExitStatus::from_raw(status);
-
-                if !status.success() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("fusermount failed with: {}", status),
-                    ));
-                }
-            } else {
-                // `fusermount` is automatically exited with unmounting when
-                // the half of Unix socket is lost. For simplicity, associate
-                // the socket closing with the process termination with CLOEXEC
-                // flag.
-                let _ = input.into_raw_fd();
+                let child = child.take().unwrap();
+                let _st = child.wait()?;
             }
 
-            Ok(fd)
+            Ok((fd, child))
         }
     }
 }
 
-fn unmount(fd: RawFd, mountpoint: &Path) {
-    unsafe {
-        libc::close(fd);
-    }
-
+fn unmount(mountpoint: &Path) {
     let _ = Command::new(FUSERMOUNT_PROG)
         .args(&["-u", "-q", "-z", "--"])
         .arg(&mountpoint)
         .status();
 }
 
-fn receive_fd(reader: &UnixDatagram) -> io::Result<RawFd> {
+fn receive_fd(reader: &UnixStream) -> io::Result<RawFd> {
     let mut buf = [0u8; 1];
     let mut iov = libc::iovec {
         iov_base: buf.as_mut_ptr() as *mut c_void,
@@ -367,17 +383,12 @@ fn receive_fd(reader: &UnixDatagram) -> io::Result<RawFd> {
 // ==== util ====
 
 enum ForkResult {
-    Parent {
-        child_pid: c_int,
-        input: UnixDatagram,
-    },
-    Child {
-        output: UnixDatagram,
-    },
+    Parent { child_pid: c_int, input: UnixStream },
+    Child { output: UnixStream },
 }
 
 unsafe fn fork_with_socket_pair() -> io::Result<ForkResult> {
-    let (input, output) = UnixDatagram::pair()?;
+    let (input, output) = UnixStream::pair()?;
 
     let pid = syscall! { fork() };
     if pid == 0 {
