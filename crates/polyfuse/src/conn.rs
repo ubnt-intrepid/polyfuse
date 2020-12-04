@@ -1,33 +1,64 @@
 use libc::{c_int, c_void, iovec};
 use std::{
     cmp,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     io,
-    os::unix::prelude::*,
+    mem::{self, MaybeUninit},
+    os::unix::{net::UnixStream, prelude::*},
     path::{Path, PathBuf},
+    process::{Command, ExitStatus},
+    ptr,
 };
+
+const FUSERMOUNT_PROG: &str = "/usr/bin/fusermount";
+const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
+
+macro_rules! syscall {
+    ($fn:ident ( $($arg:expr),* $(,)* ) ) => {{
+        #[allow(unused_unsafe)]
+        let res = unsafe { libc::$fn($($arg),*) };
+        if res == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        res
+    }};
+}
 
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
 pub struct Connection {
     fd: RawFd,
+    child: Option<Fusermount>,
     mountpoint: PathBuf,
+    mountopts: MountOptions,
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        crate::mount::unmount(self.fd, &self.mountpoint);
+        self.unmount();
     }
 }
 
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
-    pub fn open(mountpoint: &Path, mountopts: &[&OsStr]) -> io::Result<Self> {
-        let fd = crate::mount::mount(mountpoint, mountopts)?;
+    pub fn open(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<Self> {
+        let (fd, child) = mount(&mountpoint, &mountopts)?;
         Ok(Self {
             fd,
-            mountpoint: mountpoint.into(),
+            child,
+            mountpoint,
+            mountopts,
         })
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn mountpoint(&self) -> &Path {
+        &self.mountpoint
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn mount_options(&self) -> &MountOptions {
+        &self.mountopts
     }
 
     pub fn set_nonblocking(&self) -> io::Result<()> {
@@ -78,6 +109,18 @@ impl Connection {
             )
         };
         Ok(res as usize)
+    }
+
+    fn unmount(&mut self) {
+        unsafe {
+            libc::close(self.fd);
+        }
+
+        if let Some(child) = self.child.take() {
+            let _ = child.wait();
+        }
+
+        unmount(&self.mountpoint);
     }
 }
 
@@ -142,5 +185,222 @@ impl io::Write for &Connection {
     #[inline]
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+// ==== mount ====
+
+#[derive(Debug)]
+pub struct MountOptions {
+    options: Vec<String>,
+    auto_unmount: bool,
+    fusermount_path: Option<PathBuf>,
+    fuse_comm_fd: Option<OsString>,
+}
+
+impl Default for MountOptions {
+    fn default() -> Self {
+        Self {
+            options: vec![],
+            auto_unmount: false,
+            fusermount_path: None,
+            fuse_comm_fd: None,
+        }
+    }
+}
+
+impl MountOptions {
+    fn recognzie_option(&mut self, option: &str) {
+        match option {
+            "auto_unmount" => self.auto_unmount = true,
+            option => self.options.push(option.to_owned()),
+        }
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn option(mut self, option: &str) -> Self {
+        for option in option.split(',').map(|s| s.trim()) {
+            self.recognzie_option(option);
+        }
+        self
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn fusermount_path(mut self, program: impl AsRef<OsStr>) -> Self {
+        let program = Path::new(program.as_ref());
+        assert!(
+            program.is_absolute(),
+            "the fusermount binary path must be absolute."
+        );
+        self.fusermount_path = Some(program.to_owned());
+        self
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn fuse_comm_fd(mut self, name: impl AsRef<OsStr>) -> Self {
+        self.fuse_comm_fd = Some(name.as_ref().to_owned());
+        self
+    }
+}
+
+#[derive(Debug)]
+struct Fusermount {
+    pid: c_int,
+    input: UnixStream,
+}
+
+impl Fusermount {
+    fn wait(self) -> io::Result<ExitStatus> {
+        drop(self.input);
+        let mut status = 0;
+        syscall! { waitpid(self.pid, &mut status, 0) };
+        Ok(ExitStatus::from_raw(status))
+    }
+}
+
+fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<(RawFd, Option<Fusermount>)> {
+    match unsafe { fork_with_socket_pair()? } {
+        ForkResult::Child { output, .. } => {
+            let writer = output.into_raw_fd();
+            unsafe { libc::fcntl(writer, libc::F_SETFD, 0) };
+
+            let opts = mountopts
+                .options
+                .iter()
+                .map(|opt| opt.as_str())
+                .chain(if mountopts.auto_unmount {
+                    Some("auto_unmount")
+                } else {
+                    None
+                })
+                .fold(String::new(), |mut opts, opt| {
+                    if !opts.is_empty() {
+                        opts.push(',');
+                    }
+                    opts.push_str(&opt);
+                    opts
+                });
+
+            let mut fusermount = Command::new(
+                mountopts
+                    .fusermount_path
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new(FUSERMOUNT_PROG)),
+            );
+            fusermount.env(
+                mountopts
+                    .fuse_comm_fd
+                    .as_deref()
+                    .unwrap_or_else(|| OsStr::new(FUSE_COMMFD_ENV)),
+                writer.to_string(),
+            );
+            fusermount.arg("-o").arg(opts);
+            fusermount.arg("--").arg(mountpoint);
+
+            tracing::trace!("exec {:?}", fusermount);
+            let _err = fusermount.exec();
+            // exit immediately since the environment may be broken.
+            std::process::exit(libc::EXIT_FAILURE)
+        }
+
+        ForkResult::Parent {
+            child_pid, input, ..
+        } => {
+            let fd = receive_fd(&input)?;
+
+            let mut child = Some(Fusermount {
+                pid: child_pid,
+                input,
+            });
+
+            if !mountopts.auto_unmount {
+                // When auto_unmount is not specified, `fusermount` exits immediately
+                // after sending the file descriptor and thus we need to wait until
+                // the command is exited.
+                let child = child.take().unwrap();
+                let _st = child.wait()?;
+            }
+
+            Ok((fd, child))
+        }
+    }
+}
+
+fn unmount(mountpoint: &Path) {
+    let _ = Command::new(FUSERMOUNT_PROG)
+        .args(&["-u", "-q", "-z", "--"])
+        .arg(&mountpoint)
+        .status();
+}
+
+fn receive_fd(reader: &UnixStream) -> io::Result<RawFd> {
+    let mut buf = [0u8; 1];
+    let mut iov = libc::iovec {
+        iov_base: buf.as_mut_ptr() as *mut c_void,
+        iov_len: 1,
+    };
+
+    #[repr(C)]
+    struct Cmsg {
+        header: libc::cmsghdr,
+        fd: c_int,
+    }
+    let mut cmsg = MaybeUninit::<Cmsg>::uninit();
+
+    let mut msg = libc::msghdr {
+        msg_name: ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: cmsg.as_mut_ptr() as *mut c_void,
+        msg_controllen: mem::size_of_val(&cmsg),
+        msg_flags: 0,
+    };
+
+    syscall! { recvmsg(reader.as_raw_fd(), &mut msg, 0) };
+
+    if msg.msg_controllen < mem::size_of_val(&cmsg) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too short control message length",
+        ));
+    }
+    let cmsg = unsafe { cmsg.assume_init() };
+
+    if cmsg.header.cmsg_type != libc::SCM_RIGHTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "got control message with unknown type",
+        ));
+    }
+
+    let fd = cmsg.fd;
+    syscall! { fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+
+    Ok(fd)
+}
+
+// ==== util ====
+
+enum ForkResult {
+    Parent { child_pid: c_int, input: UnixStream },
+    Child { output: UnixStream },
+}
+
+unsafe fn fork_with_socket_pair() -> io::Result<ForkResult> {
+    let (input, output) = UnixStream::pair()?;
+
+    let pid = syscall! { fork() };
+    if pid == 0 {
+        drop(input);
+
+        Ok(ForkResult::Child { output })
+    } else {
+        drop(output);
+
+        Ok(ForkResult::Parent {
+            child_pid: pid,
+            input,
+        })
     }
 }
