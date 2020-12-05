@@ -1,5 +1,5 @@
 #![allow(clippy::unnecessary_mut_passed)]
-#![warn(clippy::unimplemented, clippy::todo)]
+#![deny(clippy::unimplemented, clippy::todo)]
 
 // This example is another version of `passthrough.rs` that uses the
 // path strings instead of the file descriptors with `O_PATH` flag
@@ -11,45 +11,93 @@
 // This example is inteded to be used as a templete for implementing
 // the path based filesystems such as libfuse's highlevel API.
 
-use pico_args::Arguments;
 use polyfuse::{
-    io::{Reader, Writer},
-    op,
-    reply::{Reply, ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite},
-    Context, DirEntry, FileAttr, Filesystem, Forget, Operation,
+    op::{self, Forget},
+    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
+    Config, Connection, MountOptions, Operation, Session,
 };
+
+use anyhow::Context as _;
+use async_io::Async;
+use async_std::{
+    fs::{File, OpenOptions, ReadDir},
+    sync::Mutex,
+};
+use futures::{io::AsyncBufRead, prelude::*};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
-    convert::TryInto,
+    ffi::OsString,
     io,
     os::unix::prelude::*,
     path::{Path, PathBuf},
     sync::Arc,
-};
-use tokio::{
-    fs::{File, OpenOptions, ReadDir},
-    sync::Mutex,
+    time::Duration,
 };
 
-#[tokio::main]
+#[async_std::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let mut args = Arguments::from_env();
+    let mut args = pico_args::Arguments::from_env();
 
     let source: PathBuf = args
         .opt_value_from_str(["-s", "--source"])?
         .unwrap_or_else(|| std::env::current_dir().unwrap());
     anyhow::ensure!(source.is_dir(), "the source path must be a directory");
 
-    let mountpoint: PathBuf = args
-        .free_from_str()?
-        .ok_or_else(|| anyhow::anyhow!("missing mountpoint"))?;
+    let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
+    let conn = async_std::task::spawn_blocking(move || {
+        Connection::open(mountpoint, MountOptions::default())
+    })
+    .await?;
+    let conn = Async::new(conn)?;
+
+    let session = Session::start(&conn, conn.get_ref(), Config::default()).await?;
+
     let fs = PathThrough::new(source)?;
-    polyfuse_tokio::mount(fs, mountpoint, &[]).await?;
+
+    while let Some(req) = session.next_request(&conn).await? {
+        let op = req.operation()?;
+        tracing::debug!("handle operation: {:#?}", op);
+
+        macro_rules! try_reply {
+            ($e:expr) => {
+                match ($e).await {
+                    Ok(reply) => req.reply(conn.get_ref(), reply)?,
+                    Err(err) => {
+                        req.reply_error(conn.get_ref(), err.raw_os_error().unwrap_or(libc::EIO))?
+                    }
+                }
+            };
+        }
+
+        match op {
+            Operation::Lookup(op) => try_reply!(fs.do_lookup(&op)),
+            Operation::Forget(forgets) => {
+                fs.do_forget(forgets.as_ref()).await;
+            }
+            Operation::Getattr(op) => try_reply!(fs.do_getattr(&op)),
+            Operation::Setattr(op) => try_reply!(fs.do_setattr(&op)),
+            Operation::Readlink(op) => try_reply!(fs.do_readlink(&op)),
+            Operation::Opendir(op) => try_reply!(fs.do_opendir(&op)),
+            Operation::Readdir(op) => try_reply!(fs.do_readdir(&op)),
+            Operation::Releasedir(op) => try_reply!(fs.do_releasedir(&op)),
+            Operation::Open(op) => try_reply!(fs.do_open(&op)),
+            Operation::Read(op) => try_reply!(fs.do_read(&op)),
+            Operation::Write(op, mut data) => {
+                let res = fs.do_write(&op, &mut data).await;
+                try_reply!(async { res })
+            }
+            Operation::Flush(op) => try_reply!(fs.do_flush(&op)),
+            Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
+            Operation::Release(op) => try_reply!(fs.do_release(&op)),
+
+            _ => req.reply_error(conn.get_ref(), libc::ENOSYS)?,
+        }
+    }
 
     Ok(())
 }
@@ -112,6 +160,12 @@ struct DirHandle {
     offset: u64,
 }
 
+struct DirEntry {
+    name: OsString,
+    ino: Ino,
+    typ: u32,
+}
+
 struct FileHandle {
     file: File,
 }
@@ -142,48 +196,64 @@ impl PathThrough {
         })
     }
 
-    fn make_entry_out(&self, ino: Ino, attr: FileAttr) -> io::Result<ReplyEntry> {
-        let mut reply = ReplyEntry::default();
-        reply.ino(ino);
-        reply.attr(attr);
-        Ok(reply)
+    async fn fill_attr(&self, path: impl AsRef<Path>, attr: &mut FileAttr) -> io::Result<()> {
+        let metadata = async_std::fs::symlink_metadata(self.source.join(path)).await?;
+
+        attr.ino(metadata.ino());
+        attr.size(metadata.size());
+        attr.mode(metadata.mode());
+        attr.nlink(metadata.nlink() as u32);
+        attr.uid(metadata.uid());
+        attr.gid(metadata.gid());
+        attr.rdev(metadata.rdev() as u32);
+        attr.blksize(metadata.blksize() as u32);
+        attr.blocks(metadata.blocks());
+        attr.atime(Duration::new(
+            metadata.atime() as u64,
+            metadata.atime_nsec() as u32,
+        ));
+        attr.mtime(Duration::new(
+            metadata.mtime() as u64,
+            metadata.mtime_nsec() as u32,
+        ));
+        attr.ctime(Duration::new(
+            metadata.ctime() as u64,
+            metadata.ctime_nsec() as u32,
+        ));
+
+        Ok(())
     }
 
-    async fn get_attr(&self, path: impl AsRef<Path>) -> io::Result<FileAttr> {
-        let metadata = tokio::fs::symlink_metadata(self.source.join(path)).await?;
-        metadata
-            .try_into()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
-    }
-
-    async fn do_lookup(&self, op: &op::Lookup<'_>) -> io::Result<ReplyEntry> {
+    async fn do_lookup(&self, op: &op::Lookup<'_>) -> io::Result<EntryOut> {
         let mut inodes = self.inodes.lock().await;
 
         let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
         let parent = parent.lock().await;
 
         let path = parent.path.join(op.name());
-        let metadata = self.get_attr(&path).await?;
 
-        let ino;
+        let mut out = EntryOut::default();
+        self.fill_attr(&path, out.attr()).await?;
+
         match inodes.get_path(&path) {
             Some(inode) => {
                 let mut inode = inode.lock().await;
-                ino = inode.ino;
+                out.ino(inode.ino);
                 inode.refcount += 1;
             }
             None => {
                 let entry = inodes.vacant_entry();
-                ino = entry.ino;
-                entry.insert(INode {
-                    ino,
+                out.ino(entry.ino);
+                let inode = INode {
+                    ino: entry.ino,
                     path,
                     refcount: 1,
-                })
+                };
+                entry.insert(inode);
             }
         }
 
-        self.make_entry_out(ino, metadata)
+        Ok(out)
     }
 
     async fn do_forget(&self, forgets: &[Forget]) {
@@ -205,18 +275,19 @@ impl PathThrough {
         }
     }
 
-    async fn do_getattr(&self, op: &op::Getattr<'_>) -> io::Result<ReplyAttr> {
+    async fn do_getattr(&self, op: &op::Getattr<'_>) -> io::Result<AttrOut> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        let attr = self.get_attr(&inode.path).await?;
+        let mut out = AttrOut::default();
+        self.fill_attr(&inode.path, out.attr()).await?;
 
-        Ok(ReplyAttr::new(attr))
+        Ok(out)
     }
 
-    async fn do_setattr(&self, op: &op::Setattr<'_>) -> io::Result<ReplyAttr> {
+    async fn do_setattr(&self, op: &op::Setattr<'_>) -> io::Result<AttrOut> {
         let file = match op.fh() {
             Some(fh) => {
                 let files = self.files.lock().await;
@@ -226,7 +297,7 @@ impl PathThrough {
         };
         let mut file = match file {
             Some(ref file) => {
-                let mut file = file.lock().await;
+                let file = file.lock().await;
                 file.file.sync_all().await?;
                 Some(file) // keep file lock
             }
@@ -275,36 +346,39 @@ impl PathThrough {
                 let path = path.clone();
                 let uid = uid.map(nix::unistd::Uid::from_raw);
                 let gid = gid.map(nix::unistd::Gid::from_raw);
-                tokio::task::spawn_blocking(move || nix::unistd::chown(&*path, uid, gid))
-                    .await?
+                async_std::task::spawn_blocking(move || nix::unistd::chown(&*path, uid, gid))
+                    .await
                     .map_err(nix_to_io_error)?;
             }
         }
 
         // TODO: utimes
 
-        let attr = self.get_attr(&inode.path).await?;
+        let mut out = AttrOut::default();
+        self.fill_attr(&inode.path, out.attr()).await?;
 
-        Ok(ReplyAttr::new(attr))
+        Ok(out)
     }
 
-    async fn do_readlink(&self, op: &op::Readlink<'_>) -> io::Result<PathBuf> {
+    async fn do_readlink(&self, op: &op::Readlink<'_>) -> io::Result<OsString> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        tokio::fs::read_link(self.source.join(&inode.path)).await
+        async_std::fs::read_link(self.source.join(&inode.path))
+            .await
+            .map(|path| path.into_os_string())
     }
 
-    async fn do_opendir(&self, op: &op::Opendir<'_>) -> io::Result<ReplyOpen> {
+    async fn do_opendir(&self, op: &op::Opendir<'_>) -> io::Result<OpenOut> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
         let dir = DirHandle {
-            read_dir: tokio::fs::read_dir(self.source.join(&inode.path)).await?,
+            read_dir: async_std::fs::read_dir(self.source.join(&inode.path)).await?,
             last_entry: None,
             offset: 1,
         };
@@ -312,52 +386,75 @@ impl PathThrough {
         let mut dirs = self.dirs.lock().await;
         let key = dirs.insert(Arc::new(Mutex::new(dir)));
 
-        Ok(ReplyOpen::new(key as u64))
+        let mut out = OpenOut::default();
+        out.fh(key as u64);
+
+        Ok(out)
     }
 
-    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<impl Reply> {
-        let dirs = self.dirs.lock().await;
-
-        let dir = dirs
-            .get(op.fh() as usize)
-            .cloned()
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
-        let mut dir = dir.lock().await;
-        let dir = &mut *dir;
-
-        let mut entries = vec![];
-        let mut total_len = 0;
-
-        if let Some(mut entry) = dir.last_entry.take() {
-            if total_len + entry.as_ref().len() > op.size() as usize {
-                return Err(io::Error::from_raw_os_error(libc::ERANGE));
-            }
-            entry.set_offset(dir.offset);
-            total_len += entry.as_ref().len();
-            dir.offset += 1;
-            entries.push(entry);
+    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<ReaddirOut> {
+        if op.mode() == op::ReaddirMode::Plus {
+            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
         }
 
-        while let Some(entry) = dir.read_dir.next_entry().await? {
+        let dir = {
+            let dirs = self.dirs.lock().await;
+            dirs.get(op.fh() as usize)
+                .cloned()
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?
+        };
+        let dir = &mut *dir.lock().await;
+
+        let mut out = ReaddirOut::new(op.size() as usize);
+        let mut at_least_one_entry = false;
+
+        if let Some(entry) = dir.last_entry.take() {
+            let full = out.entry(entry.name.as_ref(), entry.ino, entry.typ, dir.offset);
+            if full {
+                dir.last_entry.replace(entry);
+                return Err(io::Error::from_raw_os_error(libc::ERANGE));
+            }
+            at_least_one_entry = true;
+            dir.offset += 1;
+        }
+
+        while let Some(entry) = dir.read_dir.next().await {
+            let entry = entry?;
             match entry.file_name() {
                 name if name.as_bytes() == b"." || name.as_bytes() == b".." => continue,
                 _ => (),
             }
 
             let metadata = entry.metadata().await?;
-            let mut entry = DirEntry::new(entry.file_name(), metadata.ino(), 0);
-
-            if total_len + entry.as_ref().len() <= op.size() as usize {
-                entry.set_offset(dir.offset);
-                total_len += entry.as_ref().len();
-                dir.offset += 1;
-                entries.push(entry);
+            let file_type = metadata.file_type();
+            let typ = if file_type.is_file() {
+                libc::DT_REG as u32
+            } else if file_type.is_dir() {
+                libc::DT_DIR as u32
+            } else if file_type.is_symlink() {
+                libc::DT_LNK as u32
             } else {
-                dir.last_entry.replace(entry);
+                libc::DT_UNKNOWN as u32
+            };
+
+            let full = out.entry(&entry.file_name(), metadata.ino(), typ, dir.offset);
+            if full {
+                dir.last_entry.replace(DirEntry {
+                    name: entry.file_name(),
+                    ino: metadata.ino(),
+                    typ,
+                });
+                if !at_least_one_entry {
+                    return Err(io::Error::from_raw_os_error(libc::ERANGE));
+                }
+                break;
             }
+
+            at_least_one_entry = true;
+            dir.offset += 1;
         }
 
-        Ok(entries)
+        Ok(out)
     }
 
     async fn do_releasedir(&self, op: &op::Releasedir<'_>) -> io::Result<()> {
@@ -369,29 +466,26 @@ impl PathThrough {
         Ok(())
     }
 
-    async fn do_open(&self, op: &op::Open<'_>) -> io::Result<ReplyOpen> {
+    async fn do_open(&self, op: &op::Open<'_>) -> io::Result<OpenOut> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        let options = OpenOptions::from({
-            let mut options = std::fs::OpenOptions::new();
-            match op.flags() as i32 & libc::O_ACCMODE {
-                libc::O_RDONLY => {
-                    options.read(true);
-                }
-                libc::O_WRONLY => {
-                    options.write(true);
-                }
-                libc::O_RDWR => {
-                    options.read(true).write(true);
-                }
-                _ => (),
+        let mut options = OpenOptions::new();
+        match op.flags() as i32 & libc::O_ACCMODE {
+            libc::O_RDONLY => {
+                options.read(true);
             }
-            options.custom_flags(op.flags() as i32 & !libc::O_NOFOLLOW);
-            options
-        });
+            libc::O_WRONLY => {
+                options.write(true);
+            }
+            libc::O_RDWR => {
+                options.read(true).write(true);
+            }
+            _ => (),
+        }
+        options.custom_flags(op.flags() as i32 & !libc::O_NOFOLLOW);
 
         let file = FileHandle {
             file: options.open(self.source.join(&inode.path)).await?,
@@ -400,36 +494,33 @@ impl PathThrough {
         let mut files = self.files.lock().await;
         let key = files.insert(Arc::new(Mutex::new(file)));
 
-        Ok(ReplyOpen::new(key as u64))
+        let mut out = OpenOut::default();
+        out.fh(key as u64);
+
+        Ok(out)
     }
 
-    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl Reply> {
+    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<Vec<u8>> {
         let files = self.files.lock().await;
 
         let file = files
             .get(op.fh() as usize)
             .cloned()
             .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
-        let mut file = file.lock().await;
+        let file = &mut *file.lock().await;
         let file = &mut file.file;
 
         file.seek(io::SeekFrom::Start(op.offset())).await?;
 
         let mut buf = Vec::<u8>::with_capacity(op.size() as usize);
-
-        use tokio::io::AsyncReadExt;
-        tokio::io::copy(&mut file.take(op.size() as u64), &mut buf).await?;
+        file.take(op.size() as u64).read_to_end(&mut buf).await?;
 
         Ok(buf)
     }
 
-    async fn do_write<R: ?Sized>(
-        &self,
-        op: &op::Write<'_>,
-        reader: &mut R,
-    ) -> io::Result<ReplyWrite>
+    async fn do_write<T: ?Sized>(&self, op: &op::Write<'_>, data: &mut T) -> io::Result<WriteOut>
     where
-        R: Reader + Unpin,
+        T: AsyncBufRead + Unpin,
     {
         let files = self.files.lock().await;
 
@@ -437,30 +528,28 @@ impl PathThrough {
             .get(op.fh() as usize)
             .cloned()
             .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
-        let mut file = file.lock().await;
+        let file = &mut *file.lock().await;
         let file = &mut file.file;
 
         file.seek(io::SeekFrom::Start(op.offset())).await?;
 
-        // At here, the data is transferred via the temporary buffer due to
-        // the incompatibility between the I/O abstraction in `futures` and
-        // `tokio`.
-        //
-        // In order to efficiently transfer the large files, both of zero
-        // copying support in `polyfuse` and resolution of impedance mismatch
-        // between `futures::io` and `tokio::io` are required.
-        let mut buf = Vec::with_capacity(op.size() as usize);
-        {
-            use futures::io::AsyncReadExt;
-            reader.read_to_end(&mut buf).await?;
+        let mut written = 0;
+        let size = op.size() as usize;
+        loop {
+            let chunk = data.fill_buf().await?;
+            let chunk = &chunk[..std::cmp::min(chunk.len(), size - written)];
+            if chunk.is_empty() {
+                // EOF
+                break;
+            }
+
+            let n = file.write(chunk).await?;
+            written += n;
         }
 
-        use tokio::io::AsyncReadExt;
-        let mut buf = &buf[..];
-        let mut buf = (&mut buf).take(op.size() as u64);
-        let written = tokio::io::copy(&mut buf, &mut *file).await?;
-
-        Ok(ReplyWrite::new(written as u32))
+        let mut out = WriteOut::default();
+        out.size(written as u32);
+        Ok(out)
     }
 
     async fn do_flush(&self, op: &op::Flush<'_>) -> io::Result<()> {
@@ -470,9 +559,9 @@ impl PathThrough {
             .get(op.fh() as usize)
             .cloned()
             .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
-        let file = file.lock().await;
+        let file = &mut *file.lock().await;
 
-        file.file.try_clone().await?;
+        file.file.sync_all().await?;
 
         Ok(())
     }
@@ -503,52 +592,6 @@ impl PathThrough {
         drop(file);
 
         Ok(())
-    }
-}
-
-#[polyfuse::async_trait]
-impl Filesystem for PathThrough {
-    #[allow(clippy::cognitive_complexity)]
-    async fn call<'a, 'cx, T: ?Sized>(
-        &'a self,
-        cx: &'a mut Context<'cx, T>,
-        op: Operation<'cx>,
-    ) -> io::Result<()>
-    where
-        T: Reader + Writer + Send + Unpin,
-    {
-        macro_rules! try_reply {
-            ($e:expr) => {
-                match ($e).await {
-                    Ok(reply) => cx.reply(reply).await,
-                    Err(err) => cx.reply_err(err.raw_os_error().unwrap_or(libc::EIO)).await,
-                }
-            };
-        }
-
-        match op {
-            Operation::Lookup(op) => try_reply!(self.do_lookup(&op)),
-            Operation::Forget(forgets) => {
-                self.do_forget(forgets.as_ref()).await;
-                Ok(())
-            }
-            Operation::Getattr(op) => try_reply!(self.do_getattr(&op)),
-            Operation::Setattr(op) => try_reply!(self.do_setattr(&op)),
-            Operation::Readlink(op) => try_reply!(self.do_readlink(&op)),
-            Operation::Opendir(op) => try_reply!(self.do_opendir(&op)),
-            Operation::Readdir(op) => try_reply!(self.do_readdir(&op)),
-            Operation::Releasedir(op) => try_reply!(self.do_releasedir(&op)),
-            Operation::Open(op) => try_reply!(self.do_open(&op)),
-            Operation::Read(op) => try_reply!(self.do_read(&op)),
-            Operation::Write(op) => {
-                let res = self.do_write(&op, &mut cx.reader()).await;
-                try_reply!(async { res })
-            }
-            Operation::Flush(op) => try_reply!(self.do_flush(&op)),
-            Operation::Fsync(op) => try_reply!(self.do_fsync(&op)),
-            Operation::Release(op) => try_reply!(self.do_release(&op)),
-            _ => Ok(()),
-        }
     }
 }
 
