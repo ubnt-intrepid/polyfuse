@@ -653,12 +653,24 @@ where
     W: io::Write,
 {
     // FIXME: align the allocated buffer in `buf` with FUSE argument types.
-    let init_buf_size = BUFFER_HEADER_SIZE + pagesize() * MAX_MAX_PAGES;
-    let mut buf = vec![0u8; init_buf_size];
+    let mut header = fuse_in_header::default();
+    let mut arg = vec![0u8; pagesize() * MAX_MAX_PAGES];
 
     for _ in 0..10 {
-        reader.read(&mut buf[..]).await?;
-        match try_init(&config, &buf[..], &mut writer).await? {
+        let len = reader
+            .read_vectored(&mut [
+                io::IoSliceMut::new(header.as_bytes_mut()),
+                io::IoSliceMut::new(&mut arg[..]),
+            ])
+            .await?;
+        if len < mem::size_of::<fuse_in_header>() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request message is too short",
+            ));
+        }
+
+        match try_init(&config, &header, &arg[..], &mut writer).await? {
             Some(session) => return Ok(session),
             None => continue,
         }
@@ -671,14 +683,16 @@ where
 }
 
 #[allow(clippy::cognitive_complexity)]
-async fn try_init<W>(config: &Config, buf: &[u8], writer: W) -> io::Result<Option<Session>>
+async fn try_init<W>(
+    config: &Config,
+    header: &fuse_in_header,
+    arg: &[u8],
+    writer: W,
+) -> io::Result<Option<Session>>
 where
     W: io::Write,
 {
-    let mut decoder = Decoder::new(buf);
-    let header = decoder
-        .fetch::<fuse_in_header>() //
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to decode fuse_in_header"))?;
+    let mut decoder = Decoder::new(arg);
     let sender = ReplySender::new(writer, header.unique);
 
     match fuse_opcode::try_from(header.opcode) {
