@@ -1,26 +1,27 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
 
+use async_io::Async;
+use async_std::{prelude::*, sync::Mutex};
+use futures::io::AsyncBufRead;
 use polyfuse::{
-    io::{Reader, Writer},
     op,
-    reply::{Collector, Reply, ReplyAttr, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr},
-    Context, DirEntry, FileAttr, Filesystem, Forget, Operation,
+    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    Config, Connection, MountOptions, Operation, Session,
 };
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::{OsStr, OsString},
     fmt::Debug,
-    io,
+    io, mem,
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
-use tokio::sync::Mutex;
-use tracing_futures::Instrument;
+use tracing::Instrument as _;
 
-#[tokio::main]
+#[async_std::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -31,8 +32,73 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing mountpoint"))?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let memfs = MemFS::new();
-    polyfuse_tokio::mount(memfs, mountpoint, &[]).await?;
+    let conn = async_std::task::spawn_blocking(move || {
+        Connection::open(mountpoint, MountOptions::default())
+    })
+    .await?;
+    let conn = Async::new(conn)?;
+
+    let session = Session::start(&conn, conn.get_ref(), Config::default()).await?;
+
+    let fs = MemFS::new();
+
+    while let Some(req) = session.next_request(&conn).await? {
+        let span = tracing::debug_span!("MemFS::call", unique = req.unique());
+
+        let op = req.operation()?;
+        span.in_scope(|| tracing::debug!(?op));
+
+        macro_rules! try_reply {
+            ($e:expr) => {
+                match ($e).instrument(span.clone()).await {
+                    Ok(reply) => {
+                        span.in_scope(|| tracing::debug!(reply=?reply));
+                        req.reply(conn.get_ref(), reply)?;
+                    }
+                    Err(err) => {
+                        let errno = err.raw_os_error().unwrap_or(libc::EIO);
+                        span.in_scope(|| tracing::debug!(errno=errno));
+                        req.reply_error(conn.get_ref(), errno)?;
+                    }
+                }
+            };
+        }
+
+        match op {
+            Operation::Lookup(op) => try_reply!(fs.do_lookup(&op)),
+            Operation::Forget(forgets) => {
+                fs.do_forget(forgets.as_ref()).await;
+            }
+            Operation::Getattr(op) => try_reply!(fs.do_getattr(&op)),
+            Operation::Setattr(op) => try_reply!(fs.do_setattr(&op)),
+            Operation::Readlink(op) => try_reply!(fs.do_readlink(&op)),
+
+            Operation::Opendir(op) => try_reply!(fs.do_opendir(&op)),
+            Operation::Readdir(op) => try_reply!(fs.do_readdir(&op)),
+            Operation::Releasedir(op) => try_reply!(fs.do_releasedir(&op)),
+
+            Operation::Mknod(op) => try_reply!(fs.do_mknod(&op)),
+            Operation::Mkdir(op) => try_reply!(fs.do_mkdir(&op)),
+            Operation::Symlink(op) => try_reply!(fs.do_symlink(&op)),
+            Operation::Unlink(op) => try_reply!(fs.do_unlink(&op)),
+            Operation::Rmdir(op) => try_reply!(fs.do_rmdir(&op)),
+            Operation::Link(op) => try_reply!(fs.do_link(&op)),
+            Operation::Rename(op) => try_reply!(fs.do_rename(&op)),
+
+            Operation::Getxattr(op) => try_reply!(fs.do_getxattr(&op)),
+            Operation::Setxattr(op) => try_reply!(fs.do_setxattr(&op)),
+            Operation::Listxattr(op) => try_reply!(fs.do_listxattr(&op)),
+            Operation::Removexattr(op) => try_reply!(fs.do_removexattr(&op)),
+
+            Operation::Read(op) => try_reply!(fs.do_read(&op)),
+            Operation::Write(op, data) => try_reply!(fs.do_write(&op, data)),
+
+            _ => {
+                span.in_scope(|| tracing::debug!("NOSYS"));
+                req.reply_error(conn.get_ref(), libc::ENOSYS)?;
+            }
+        }
+    }
 
     Ok(())
 }
@@ -84,7 +150,7 @@ impl VacantEntry<'_> {
 }
 
 struct INode {
-    attr: FileAttr,
+    attr: libc::stat,
     xattrs: HashMap<OsString, Arc<Vec<u8>>>,
     refcount: u64,
     links: u64,
@@ -102,23 +168,41 @@ struct Directory {
     parent: Option<Ino>,
 }
 
+struct DirEntry {
+    name: OsString,
+    ino: u64,
+    typ: u32,
+    off: u64,
+}
+
 impl Directory {
-    fn collect_entries(&self, attr: &FileAttr) -> Vec<Arc<DirEntry>> {
+    fn collect_entries(&self, attr: &libc::stat) -> Vec<Arc<DirEntry>> {
         let mut entries = Vec::with_capacity(self.children.len() + 2);
         let mut offset: u64 = 1;
 
-        entries.push(Arc::new(DirEntry::dir(".", attr.ino(), offset)));
+        entries.push(Arc::new(DirEntry {
+            name: ".".into(),
+            ino: attr.st_ino,
+            typ: libc::DT_DIR as u32,
+            off: offset,
+        }));
         offset += 1;
 
-        entries.push(Arc::new(DirEntry::dir(
-            "..",
-            self.parent.unwrap_or_else(|| attr.ino()),
-            offset,
-        )));
+        entries.push(Arc::new(DirEntry {
+            name: "..".into(),
+            ino: self.parent.unwrap_or(attr.st_ino),
+            typ: libc::DT_DIR as u32,
+            off: offset,
+        }));
         offset += 1;
 
         for (name, &ino) in &self.children {
-            entries.push(Arc::new(DirEntry::new(name, ino, offset)));
+            entries.push(Arc::new(DirEntry {
+                name: name.into(),
+                ino,
+                typ: libc::DT_UNKNOWN as u32,
+                off: offset,
+            }));
             offset += 1;
         }
 
@@ -141,10 +225,10 @@ impl MemFS {
         let mut inodes = INodeTable::new();
         inodes.vacant_entry().insert(INode {
             attr: {
-                let mut attr = FileAttr::default();
-                attr.set_ino(1);
-                attr.set_nlink(2);
-                attr.set_mode(libc::S_IFDIR | 0o755);
+                let mut attr = unsafe { mem::zeroed::<libc::stat>() };
+                attr.st_ino = 1;
+                attr.st_nlink = 2;
+                attr.st_mode = libc::S_IFDIR | 0o755;
                 attr
             },
             xattrs: HashMap::new(),
@@ -162,15 +246,15 @@ impl MemFS {
         }
     }
 
-    fn make_entry_reply(&self, ino: Ino, attr: FileAttr) -> ReplyEntry {
-        let mut reply = ReplyEntry::default();
-        reply.ino(ino);
-        reply.attr(attr);
-        reply.ttl_entry(self.ttl);
-        reply
+    fn make_entry_out(&self, ino: Ino, st: &libc::stat) -> EntryOut {
+        let mut out = EntryOut::default();
+        out.ino(ino);
+        fill_attr(out.attr(), st);
+        out.ttl_entry(self.ttl);
+        out
     }
 
-    async fn lookup_inode(&self, parent: Ino, name: &OsStr) -> io::Result<ReplyEntry> {
+    async fn lookup_inode(&self, parent: Ino, name: &OsStr) -> io::Result<EntryOut> {
         let inodes = self.inodes.lock().await;
 
         let parent = inodes.get(parent).ok_or_else(no_entry)?;
@@ -186,10 +270,10 @@ impl MemFS {
         let mut child = child.lock().await;
         child.refcount += 1;
 
-        Ok(self.make_entry_reply(child_ino, child.attr))
+        Ok(self.make_entry_out(child_ino, &child.attr))
     }
 
-    async fn make_node<F>(&self, parent: Ino, name: &OsStr, f: F) -> io::Result<ReplyEntry>
+    async fn make_node<F>(&self, parent: Ino, name: &OsStr, f: F) -> io::Result<EntryOut>
     where
         F: FnOnce(&VacantEntry<'_>) -> INode,
     {
@@ -208,7 +292,7 @@ impl MemFS {
                 let inode_entry = inodes.vacant_entry();
                 let inode = f(&inode_entry);
 
-                let reply = self.make_entry_reply(inode_entry.ino(), inode.attr);
+                let reply = self.make_entry_out(inode_entry.ino(), &inode.attr);
                 map_entry.insert(inode_entry.ino());
                 inode_entry.insert(inode);
 
@@ -217,7 +301,7 @@ impl MemFS {
         }
     }
 
-    async fn link_node(&self, ino: u64, newparent: Ino, newname: &OsStr) -> io::Result<ReplyEntry> {
+    async fn link_node(&self, ino: u64, newparent: Ino, newname: &OsStr) -> io::Result<EntryOut> {
         {
             let inodes = self.inodes.lock().await;
 
@@ -237,7 +321,7 @@ impl MemFS {
                     let mut inode = inode.lock().await;
                     let inode = &mut *inode;
                     inode.links += 1;
-                    inode.attr.set_nlink(inode.attr.nlink() + 1);
+                    inode.attr.st_nlink += 1;
                 }
             }
         }
@@ -274,7 +358,7 @@ impl MemFS {
             .unwrap_or_else(|| unreachable!());
 
         inode.links = inode.links.saturating_sub(1);
-        inode.attr.set_nlink(inode.attr.nlink().saturating_sub(1));
+        inode.attr.st_nlink = inode.attr.st_nlink.saturating_sub(1);
 
         Ok(())
     }
@@ -339,11 +423,11 @@ impl MemFS {
         }
     }
 
-    async fn do_lookup(&self, op: &op::Lookup<'_>) -> io::Result<ReplyEntry> {
+    async fn do_lookup(&self, op: &op::Lookup<'_>) -> io::Result<EntryOut> {
         self.lookup_inode(op.parent(), op.name()).await
     }
 
-    async fn do_forget(&self, forgets: &[Forget]) {
+    async fn do_forget(&self, forgets: &[op::Forget]) {
         let mut inodes = self.inodes.lock().await;
 
         for forget in forgets {
@@ -357,50 +441,66 @@ impl MemFS {
         }
     }
 
-    async fn do_getattr(&self, op: &op::Getattr<'_>) -> io::Result<ReplyAttr> {
+    async fn do_getattr(&self, op: &op::Getattr<'_>) -> io::Result<AttrOut> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
 
-        let mut reply = ReplyAttr::new(inode.attr);
-        reply.ttl_attr(self.ttl);
+        let mut out = AttrOut::default();
+        fill_attr(out.attr(), &inode.attr);
+        out.ttl(self.ttl);
 
-        Ok(reply)
+        Ok(out)
     }
 
-    async fn do_setattr(&self, op: &op::Setattr<'_>) -> io::Result<ReplyAttr> {
+    async fn do_setattr(&self, op: &op::Setattr<'_>) -> io::Result<AttrOut> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let mut inode = inode.lock().await;
 
+        fn to_duration(t: op::SetAttrTime) -> Duration {
+            match t {
+                op::SetAttrTime::Timespec(ts) => ts,
+                _ => SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap(),
+            }
+        }
+
         if let Some(mode) = op.mode() {
-            inode.attr.set_mode(mode);
+            inode.attr.st_mode = mode;
         }
         if let Some(uid) = op.uid() {
-            inode.attr.set_uid(uid);
+            inode.attr.st_uid = uid;
         }
         if let Some(gid) = op.gid() {
-            inode.attr.set_gid(gid);
+            inode.attr.st_gid = gid;
         }
         if let Some(size) = op.size() {
-            inode.attr.set_size(size);
+            inode.attr.st_size = size as libc::off_t;
         }
         if let Some(atime) = op.atime() {
-            inode.attr.set_atime(atime);
+            let atime = to_duration(atime);
+            inode.attr.st_atime = atime.as_secs() as i64;
+            inode.attr.st_atime_nsec = atime.subsec_nanos() as u64 as i64;
         }
         if let Some(mtime) = op.mtime() {
-            inode.attr.set_mtime(mtime);
+            let mtime = to_duration(mtime);
+            inode.attr.st_mtime = mtime.as_secs() as i64;
+            inode.attr.st_mtime_nsec = mtime.subsec_nanos() as u64 as i64;
         }
         if let Some(ctime) = op.ctime() {
-            inode.attr.set_ctime(ctime);
+            inode.attr.st_ctime = ctime.as_secs() as i64;
+            inode.attr.st_ctime_nsec = ctime.subsec_nanos() as u64 as i64;
         }
 
-        let mut reply = ReplyAttr::new(inode.attr);
-        reply.ttl_attr(self.ttl);
+        let mut out = AttrOut::default();
+        fill_attr(out.attr(), &inode.attr);
+        out.ttl(self.ttl);
 
-        Ok(reply)
+        Ok(out)
     }
 
     async fn do_readlink(&self, op: &op::Readlink<'_>) -> io::Result<Arc<OsString>> {
@@ -415,13 +515,13 @@ impl MemFS {
         }
     }
 
-    async fn do_opendir(&self, op: &op::Opendir<'_>) -> io::Result<ReplyOpen> {
+    async fn do_opendir(&self, op: &op::Opendir<'_>) -> io::Result<OpenOut> {
         let inodes = self.inodes.lock().await;
         let mut dirs = self.dir_handles.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
-        if inode.attr.nlink() == 0 {
+        if inode.attr.st_nlink == 0 {
             return Err(no_entry());
         }
         let dir = match inode.kind {
@@ -433,10 +533,17 @@ impl MemFS {
             entries: dir.collect_entries(&inode.attr),
         })));
 
-        Ok(ReplyOpen::new(key as u64))
+        let mut out = OpenOut::default();
+        out.fh(key as u64);
+
+        Ok(out)
     }
 
-    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<impl Reply + Debug> {
+    async fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<ReaddirOut> {
+        if op.mode() == op::ReaddirMode::Plus {
+            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+        }
+
         let dirs = self.dir_handles.lock().await;
 
         let dir = dirs
@@ -445,20 +552,15 @@ impl MemFS {
             .ok_or_else(unknown_error)?;
         let dir = dir.lock().await;
 
-        let mut total_len = 0;
-        let entries: Vec<_> = dir
-            .entries
-            .iter()
-            .skip(op.offset() as usize)
-            .take_while(|entry| {
-                let entry: &DirEntry = &*entry;
-                total_len += entry.as_ref().len() as u32;
-                total_len < op.size()
-            })
-            .cloned()
-            .collect();
+        let mut out = ReaddirOut::new(op.size() as usize);
 
-        Ok(entries)
+        for entry in dir.entries.iter().skip(op.offset() as usize) {
+            if out.entry(&entry.name, entry.ino, entry.typ, entry.off) {
+                break;
+            }
+        }
+
+        Ok(out)
     }
 
     async fn do_releasedir(&self, op: &op::Releasedir<'_>) -> io::Result<()> {
@@ -470,7 +572,7 @@ impl MemFS {
         Ok(())
     }
 
-    async fn do_mknod(&self, op: &op::Mknod<'_>) -> io::Result<ReplyEntry> {
+    async fn do_mknod(&self, op: &op::Mknod<'_>) -> io::Result<EntryOut> {
         match op.mode() & libc::S_IFMT {
             libc::S_IFREG => (),
             _ => return Err(io::Error::from_raw_os_error(libc::ENOTSUP)),
@@ -478,10 +580,10 @@ impl MemFS {
 
         self.make_node(op.parent(), op.name(), |entry| INode {
             attr: {
-                let mut attr = FileAttr::default();
-                attr.set_ino(entry.ino());
-                attr.set_nlink(1);
-                attr.set_mode(op.mode());
+                let mut attr = unsafe { mem::zeroed::<libc::stat>() };
+                attr.st_ino = entry.ino();
+                attr.st_nlink = 1;
+                attr.st_mode = op.mode();
                 attr
             },
             xattrs: HashMap::new(),
@@ -492,13 +594,13 @@ impl MemFS {
         .await
     }
 
-    async fn do_mkdir(&self, op: &op::Mkdir<'_>) -> io::Result<ReplyEntry> {
+    async fn do_mkdir(&self, op: &op::Mkdir<'_>) -> io::Result<EntryOut> {
         self.make_node(op.parent(), op.name(), |entry| INode {
             attr: {
-                let mut attr = FileAttr::default();
-                attr.set_ino(entry.ino());
-                attr.set_nlink(2);
-                attr.set_mode(op.mode() | libc::S_IFDIR);
+                let mut attr = unsafe { mem::zeroed::<libc::stat>() };
+                attr.st_ino = entry.ino();
+                attr.st_nlink = 2;
+                attr.st_mode = op.mode() | libc::S_IFDIR;
                 attr
             },
             xattrs: HashMap::new(),
@@ -512,13 +614,13 @@ impl MemFS {
         .await
     }
 
-    async fn do_symlink(&self, op: &op::Symlink<'_>) -> io::Result<ReplyEntry> {
+    async fn do_symlink(&self, op: &op::Symlink<'_>) -> io::Result<EntryOut> {
         self.make_node(op.parent(), op.name(), |entry| INode {
             attr: {
-                let mut attr = FileAttr::default();
-                attr.set_ino(entry.ino());
-                attr.set_nlink(1);
-                attr.set_mode(libc::S_IFLNK | 0o777);
+                let mut attr = unsafe { mem::zeroed::<libc::stat>() };
+                attr.st_ino = entry.ino();
+                attr.st_nlink = 1;
+                attr.st_mode = libc::S_IFLNK | 0o777;
                 attr
             },
             xattrs: HashMap::new(),
@@ -529,7 +631,7 @@ impl MemFS {
         .await
     }
 
-    async fn do_link(&self, op: &op::Link<'_>) -> io::Result<ReplyEntry> {
+    async fn do_link(&self, op: &op::Link<'_>) -> io::Result<EntryOut> {
         self.link_node(op.ino(), op.newparent(), op.newname()).await
     }
 
@@ -558,7 +660,10 @@ impl MemFS {
         }
     }
 
-    async fn do_getxattr(&self, op: &op::Getxattr<'_>) -> io::Result<impl Reply + Debug> {
+    async fn do_getxattr(
+        &self,
+        op: &op::Getxattr<'_>,
+    ) -> io::Result<impl polyfuse::bytes::Bytes + Debug> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -569,7 +674,11 @@ impl MemFS {
             .ok_or_else(|| io::Error::from_raw_os_error(libc::ENODATA))?;
 
         match op.size() {
-            0 => Ok(Either::Left(ReplyXattr::new(value.len() as u32))),
+            0 => {
+                let mut out = XattrOut::default();
+                out.size(value.len() as u32);
+                Ok(Either::Left(out))
+            }
             size => {
                 if value.len() as u32 > size {
                     return Err(io::Error::from_raw_os_error(libc::ERANGE));
@@ -609,7 +718,10 @@ impl MemFS {
         }
     }
 
-    async fn do_listxattr(&self, op: &op::Listxattr<'_>) -> io::Result<impl Reply + Debug> {
+    async fn do_listxattr(
+        &self,
+        op: &op::Listxattr<'_>,
+    ) -> io::Result<impl polyfuse::bytes::Bytes + Debug> {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
         let inode = inode.lock().await;
@@ -617,7 +729,9 @@ impl MemFS {
         match op.size() {
             0 => {
                 let total_len = inode.xattrs.keys().map(|name| name.len() as u32 + 1).sum();
-                Ok(Either::Left(ReplyXattr::new(total_len)))
+                let mut out = XattrOut::default();
+                out.size(total_len);
+                Ok(Either::Left(out))
             }
             size => {
                 let mut total_len = 0;
@@ -651,7 +765,7 @@ impl MemFS {
         }
     }
 
-    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl Reply + Debug> {
+    async fn do_read(&self, op: &op::Read<'_>) -> io::Result<impl polyfuse::bytes::Bytes + Debug> {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
@@ -671,13 +785,9 @@ impl MemFS {
         Ok(content.to_vec())
     }
 
-    async fn do_write<R: ?Sized>(
-        &self,
-        op: &op::Write<'_>,
-        reader: &mut R,
-    ) -> io::Result<ReplyWrite>
+    async fn do_write<T>(&self, op: &op::Write<'_>, mut data: T) -> io::Result<WriteOut>
     where
-        R: Reader + Unpin,
+        T: AsyncBufRead + Unpin,
     {
         let inodes = self.inodes.lock().await;
 
@@ -695,89 +805,30 @@ impl MemFS {
 
         content.resize(std::cmp::max(content.len(), offset + size), 0);
 
-        use futures::io::AsyncReadExt;
-        reader
-            .read_exact(&mut content[offset..offset + size])
-            .await?;
+        data.read_exact(&mut content[offset..offset + size]).await?;
 
-        inode.attr.set_size(content.len() as u64);
+        inode.attr.st_size = content.len() as libc::off_t;
 
-        Ok(ReplyWrite::new(op.size()))
+        let mut out = WriteOut::default();
+        out.size(op.size());
+
+        Ok(out)
     }
 }
 
-#[polyfuse::async_trait]
-impl Filesystem for MemFS {
-    #[allow(clippy::cognitive_complexity)]
-    async fn call<'a, 'cx, T: ?Sized>(
-        &'a self,
-        cx: &'a mut Context<'cx, T>,
-        op: Operation<'cx>,
-    ) -> io::Result<()>
-    where
-        T: Reader + Writer + Send + Unpin,
-    {
-        let span = tracing::debug_span!("MemFS::call", unique = cx.unique());
-        span.in_scope(|| tracing::debug!(?op));
-
-        macro_rules! try_reply {
-            ($e:expr) => {
-                match ($e).instrument(span.clone()).await {
-                    Ok(reply) => {
-                        span.in_scope(|| tracing::debug!(reply=?reply));
-                        cx.reply(reply).await
-                    }
-                    Err(err) => {
-                        let errno = err.raw_os_error().unwrap_or(libc::EIO);
-                        span.in_scope(|| tracing::debug!(errno=errno));
-                        cx.reply_err(errno).await
-                    }
-                }
-            };
-        }
-
-        match op {
-            Operation::Lookup(op) => try_reply!(self.do_lookup(&op)),
-            Operation::Forget(forgets) => {
-                self.do_forget(forgets.as_ref()).await;
-                Ok(())
-            }
-            Operation::Getattr(op) => try_reply!(self.do_getattr(&op)),
-            Operation::Setattr(op) => try_reply!(self.do_setattr(&op)),
-            Operation::Readlink(op) => try_reply!(self.do_readlink(&op)),
-
-            Operation::Opendir(op) => try_reply!(self.do_opendir(&op)),
-            Operation::Readdir(op) => try_reply!(self.do_readdir(&op)),
-            Operation::Releasedir(op) => try_reply!(self.do_releasedir(&op)),
-
-            Operation::Mknod(op) => try_reply!(self.do_mknod(&op)),
-            Operation::Mkdir(op) => try_reply!(self.do_mkdir(&op)),
-            Operation::Symlink(op) => try_reply!(self.do_symlink(&op)),
-            Operation::Unlink(op) => try_reply!(self.do_unlink(&op)),
-            Operation::Rmdir(op) => try_reply!(self.do_rmdir(&op)),
-            Operation::Link(op) => try_reply!(self.do_link(&op)),
-            Operation::Rename(op) => try_reply!(self.do_rename(&op)),
-
-            Operation::Getxattr(op) => try_reply!(self.do_getxattr(&op)),
-            Operation::Setxattr(op) => try_reply!(self.do_setxattr(&op)),
-            Operation::Listxattr(op) => try_reply!(self.do_listxattr(&op)),
-            Operation::Removexattr(op) => try_reply!(self.do_removexattr(&op)),
-
-            Operation::Read(op) => try_reply!(self.do_read(&op)),
-            Operation::Write(op) => {
-                let res = self
-                    .do_write(&op, &mut cx.reader())
-                    .instrument(span.clone())
-                    .await;
-                try_reply!(async { res })
-            }
-
-            _ => {
-                span.in_scope(|| tracing::debug!("NOSYS"));
-                Ok(())
-            }
-        }
-    }
+fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
+    attr.ino(st.st_ino);
+    attr.size(st.st_size as u64);
+    attr.mode(st.st_mode);
+    attr.nlink(st.st_nlink as u32);
+    attr.uid(st.st_uid);
+    attr.gid(st.st_gid);
+    attr.rdev(st.st_rdev as u32);
+    attr.blksize(st.st_blksize as u32);
+    attr.blocks(st.st_blocks as u64);
+    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
+    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
+    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
 }
 
 fn no_entry() -> io::Error {
@@ -795,19 +846,19 @@ enum Either<L, R> {
     Right(R),
 }
 
-impl<L, R> Reply for Either<L, R>
+impl<L, R> polyfuse::bytes::Bytes for Either<L, R>
 where
-    L: Reply,
-    R: Reply,
+    L: polyfuse::bytes::Bytes,
+    R: polyfuse::bytes::Bytes,
 {
     #[inline]
-    fn collect_bytes<'a, C: ?Sized>(&'a self, collector: &mut C)
+    fn collect<'a, C: ?Sized>(&'a self, collector: &mut C)
     where
-        C: Collector<'a>,
+        C: polyfuse::bytes::Collector<'a>,
     {
         match self {
-            Either::Left(l) => l.collect_bytes(collector),
-            Either::Right(r) => r.collect_bytes(collector),
+            Either::Left(l) => l.collect(collector),
+            Either::Right(r) => r.collect(collector),
         }
     }
 }
