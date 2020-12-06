@@ -19,7 +19,7 @@ use polyfuse::{
 
 use anyhow::Context as _;
 use async_io::Async;
-use async_std::fs::{File, OpenOptions, ReadDir};
+use async_std::fs::{File, Metadata, OpenOptions, ReadDir};
 use futures::{io::AsyncBufRead, prelude::*};
 use slab::Slab;
 use std::{
@@ -151,22 +151,6 @@ impl VacantEntry<'_> {
     }
 }
 
-struct DirHandle {
-    read_dir: ReadDir,
-    last_entry: Option<DirEntry>,
-    offset: u64,
-}
-
-struct DirEntry {
-    name: OsString,
-    ino: Ino,
-    typ: u32,
-}
-
-struct FileHandle {
-    file: File,
-}
-
 struct PathThrough {
     source: PathBuf,
     inodes: INodeTable,
@@ -193,40 +177,14 @@ impl PathThrough {
         })
     }
 
-    async fn fill_attr(&self, path: impl AsRef<Path>, attr: &mut FileAttr) -> io::Result<()> {
-        let metadata = async_std::fs::symlink_metadata(self.source.join(path)).await?;
-
-        attr.ino(metadata.ino());
-        attr.size(metadata.size());
-        attr.mode(metadata.mode());
-        attr.nlink(metadata.nlink() as u32);
-        attr.uid(metadata.uid());
-        attr.gid(metadata.gid());
-        attr.rdev(metadata.rdev() as u32);
-        attr.blksize(metadata.blksize() as u32);
-        attr.blocks(metadata.blocks());
-        attr.atime(Duration::new(
-            metadata.atime() as u64,
-            metadata.atime_nsec() as u32,
-        ));
-        attr.mtime(Duration::new(
-            metadata.mtime() as u64,
-            metadata.mtime_nsec() as u32,
-        ));
-        attr.ctime(Duration::new(
-            metadata.ctime() as u64,
-            metadata.ctime_nsec() as u32,
-        ));
-
-        Ok(())
-    }
-
     async fn do_lookup(&mut self, op: &op::Lookup<'_>) -> io::Result<EntryOut> {
         let parent = self.inodes.get(op.parent()).ok_or_else(no_entry)?;
         let path = parent.path.join(op.name());
 
+        let metadata = async_std::fs::symlink_metadata(self.source.join(&path)).await?;
+
         let mut out = EntryOut::default();
-        self.fill_attr(&path, out.attr()).await?;
+        fill_attr(&metadata, out.attr());
 
         match self.inodes.get_by_path_mut(&path) {
             Some(inode) => {
@@ -267,9 +225,10 @@ impl PathThrough {
 
     async fn do_getattr(&mut self, op: &op::Getattr<'_>) -> io::Result<AttrOut> {
         let inode = self.inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let metadata = async_std::fs::symlink_metadata(self.source.join(&inode.path)).await?;
 
         let mut out = AttrOut::default();
-        self.fill_attr(&inode.path, out.attr()).await?;
+        fill_attr(&metadata, out.attr());
 
         Ok(out)
     }
@@ -312,8 +271,10 @@ impl PathThrough {
 
         // TODO: utimes
 
+        let metadata = async_std::fs::symlink_metadata(self.source.join(&inode.path)).await?;
+
         let mut out = AttrOut::default();
-        self.fill_attr(&inode.path, out.attr()).await?;
+        fill_attr(&metadata, out.attr());
 
         Ok(out)
     }
@@ -327,15 +288,14 @@ impl PathThrough {
     async fn do_opendir(&mut self, op: &op::Opendir<'_>) -> io::Result<OpenOut> {
         let inode = self.inodes.get(op.ino()).ok_or_else(no_entry)?;
 
-        let dir = DirHandle {
+        let fh = self.dirs.insert(DirHandle {
             read_dir: async_std::fs::read_dir(self.source.join(&inode.path)).await?,
             last_entry: None,
             offset: 1,
-        };
-        let key = self.dirs.insert(dir);
+        }) as u64;
 
         let mut out = OpenOut::default();
-        out.fh(key as u64);
+        out.fh(fh);
 
         Ok(out)
     }
@@ -345,8 +305,7 @@ impl PathThrough {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
         }
 
-        let dir = Slab::get_mut(&mut self.dirs, op.fh() as usize)
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+        let dir = Slab::get_mut(&mut self.dirs, op.fh() as usize).ok_or_else(invalid_handle)?;
 
         let mut out = ReaddirOut::new(op.size() as usize);
         let mut at_least_one_entry = false;
@@ -423,53 +382,28 @@ impl PathThrough {
         }
         options.custom_flags(op.flags() as i32 & !libc::O_NOFOLLOW);
 
-        let file = FileHandle {
+        let fh = self.files.insert(FileHandle {
             file: options.open(self.source.join(&inode.path)).await?,
-        };
-        let key = self.files.insert(file);
+        }) as u64;
 
         let mut out = OpenOut::default();
-        out.fh(key as u64);
+        out.fh(fh);
 
         Ok(out)
     }
 
     async fn do_read(&mut self, op: &op::Read<'_>) -> io::Result<Vec<u8>> {
-        let file = Slab::get_mut(&mut self.files, op.fh() as usize)
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let file = &mut file.file;
-
-        file.seek(io::SeekFrom::Start(op.offset())).await?;
-
-        let mut buf = Vec::<u8>::with_capacity(op.size() as usize);
-        file.take(op.size() as u64).read_to_end(&mut buf).await?;
-
+        let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
+        let buf = file.read(op.offset(), op.size() as usize).await?;
         Ok(buf)
     }
 
-    async fn do_write<T>(&mut self, op: &op::Write<'_>, mut data: T) -> io::Result<WriteOut>
+    async fn do_write<T>(&mut self, op: &op::Write<'_>, data: T) -> io::Result<WriteOut>
     where
         T: AsyncBufRead + Unpin,
     {
-        let file = Slab::get_mut(&mut self.files, op.fh() as usize)
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let file = &mut file.file;
-
-        file.seek(io::SeekFrom::Start(op.offset())).await?;
-
-        let mut written = 0;
-        let size = op.size() as usize;
-        loop {
-            let chunk = data.fill_buf().await?;
-            let chunk = &chunk[..std::cmp::min(chunk.len(), size - written)];
-            if chunk.is_empty() {
-                // EOF
-                break;
-            }
-
-            let n = file.write(chunk).await?;
-            written += n;
-        }
+        let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
+        let written = file.write(data.take(op.size() as u64), op.offset()).await?;
 
         let mut out = WriteOut::default();
         out.size(written as u32);
@@ -477,23 +411,14 @@ impl PathThrough {
     }
 
     async fn do_flush(&mut self, op: &op::Flush<'_>) -> io::Result<()> {
-        let file = Slab::get_mut(&mut self.files, op.fh() as usize)
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
-        file.file.sync_all().await?;
+        let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
+        file.fsync(false).await?;
         Ok(())
     }
 
     async fn do_fsync(&mut self, op: &op::Fsync<'_>) -> io::Result<()> {
-        let file = Slab::get_mut(&mut self.files, op.fh() as usize)
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let file = &mut file.file;
-
-        if op.datasync() {
-            file.sync_data().await?;
-        } else {
-            file.sync_all().await?;
-        }
-
+        let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
+        file.fsync(op.datasync()).await?;
         Ok(())
     }
 
@@ -503,11 +428,105 @@ impl PathThrough {
     }
 }
 
+// ==== Dir ====
+
+struct DirHandle {
+    read_dir: ReadDir,
+    last_entry: Option<DirEntry>,
+    offset: u64,
+}
+
+struct DirEntry {
+    name: OsString,
+    ino: Ino,
+    typ: u32,
+}
+
+// ==== file ====
+
+struct FileHandle {
+    file: File,
+}
+
+impl FileHandle {
+    async fn read(&mut self, offset: u64, size: usize) -> io::Result<Vec<u8>> {
+        self.file.seek(io::SeekFrom::Start(offset)).await?;
+
+        let mut buf = Vec::<u8>::with_capacity(size);
+        (&mut self.file)
+            .take(size as u64)
+            .read_to_end(&mut buf)
+            .await?;
+
+        Ok(buf)
+    }
+
+    async fn write<T>(&mut self, mut data: T, offset: u64) -> io::Result<usize>
+    where
+        T: AsyncBufRead + Unpin,
+    {
+        self.file.seek(io::SeekFrom::Start(offset)).await?;
+
+        let mut written = 0;
+        loop {
+            let chunk = data.fill_buf().await?;
+            if chunk.is_empty() {
+                break;
+            }
+            let n = self.file.write(chunk).await?;
+            written += n;
+        }
+
+        Ok(written)
+    }
+
+    async fn fsync(&mut self, datasync: bool) -> io::Result<()> {
+        if datasync {
+            self.file.sync_data().await?;
+        } else {
+            self.file.sync_all().await?;
+        }
+        Ok(())
+    }
+}
+
+fn fill_attr(metadata: &Metadata, attr: &mut FileAttr) {
+    attr.ino(metadata.ino());
+    attr.size(metadata.size());
+    attr.mode(metadata.mode());
+    attr.nlink(metadata.nlink() as u32);
+    attr.uid(metadata.uid());
+    attr.gid(metadata.gid());
+    attr.rdev(metadata.rdev() as u32);
+    attr.blksize(metadata.blksize() as u32);
+    attr.blocks(metadata.blocks());
+    attr.atime(Duration::new(
+        metadata.atime() as u64,
+        metadata.atime_nsec() as u32,
+    ));
+    attr.mtime(Duration::new(
+        metadata.mtime() as u64,
+        metadata.mtime_nsec() as u32,
+    ));
+    attr.ctime(Duration::new(
+        metadata.ctime() as u64,
+        metadata.ctime_nsec() as u32,
+    ));
+}
+
+// ==== utils ====
+
 #[inline]
 fn no_entry() -> io::Error {
     io::Error::from_raw_os_error(libc::ENOENT)
 }
 
+#[inline]
+fn invalid_handle() -> io::Error {
+    io::Error::from_raw_os_error(libc::EINVAL)
+}
+
+#[inline]
 fn nix_to_io_error(err: nix::Error) -> io::Error {
     let errno = err.as_errno().map_or(libc::EIO, |errno| errno as i32);
     io::Error::from_raw_os_error(errno)
