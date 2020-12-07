@@ -4,7 +4,7 @@ use polyfuse_kernel::{
     fuse_getxattr_out, fuse_kstatfs, fuse_lk_out, fuse_open_out, fuse_poll_out, fuse_statfs_out,
     fuse_write_out, FOPEN_CACHE_DIR, FOPEN_DIRECT_IO, FOPEN_KEEP_CACHE, FOPEN_NONSEEKABLE,
 };
-use std::{convert::TryInto as _, ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
+use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::AsBytes as _;
 
 /// Attributes about a file.
@@ -100,6 +100,13 @@ pub struct EntryOut {
     out: fuse_entry_out,
 }
 
+impl fmt::Debug for EntryOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("EntryOut").finish()
+    }
+}
+
 impl Bytes for EntryOut {
     fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
@@ -163,6 +170,13 @@ pub struct AttrOut {
     out: fuse_attr_out,
 }
 
+impl fmt::Debug for AttrOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("AttrOut").finish()
+    }
+}
+
 impl AttrOut {
     /// Return the object to fill attribute values.
     #[inline]
@@ -189,6 +203,13 @@ impl Bytes for AttrOut {
 #[derive(Default)]
 pub struct OpenOut {
     out: fuse_open_out,
+}
+
+impl fmt::Debug for OpenOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("OpenOut").finish()
+    }
 }
 
 impl Bytes for OpenOut {
@@ -244,6 +265,13 @@ pub struct WriteOut {
     out: fuse_write_out,
 }
 
+impl fmt::Debug for WriteOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("WriteOut").finish()
+    }
+}
+
 impl Bytes for WriteOut {
     fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
@@ -262,6 +290,13 @@ impl WriteOut {
 #[derive(Default)]
 pub struct StatfsOut {
     out: fuse_statfs_out,
+}
+
+impl fmt::Debug for StatfsOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("StatfsOut").finish()
+    }
 }
 
 impl Bytes for StatfsOut {
@@ -337,6 +372,13 @@ pub struct XattrOut {
     out: fuse_getxattr_out,
 }
 
+impl fmt::Debug for XattrOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("XattrOut").finish()
+    }
+}
+
 impl Bytes for XattrOut {
     fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
@@ -355,6 +397,13 @@ impl XattrOut {
 #[derive(Default)]
 pub struct LkOut {
     out: fuse_lk_out,
+}
+
+impl fmt::Debug for LkOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("LkOut").finish()
+    }
 }
 
 impl Bytes for LkOut {
@@ -409,6 +458,13 @@ pub struct BmapOut {
     out: fuse_bmap_out,
 }
 
+impl fmt::Debug for BmapOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("BmapOut").finish()
+    }
+}
+
 impl Bytes for BmapOut {
     fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
@@ -429,6 +485,13 @@ pub struct PollOut {
     out: fuse_poll_out,
 }
 
+impl fmt::Debug for PollOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("PollOut").finish()
+    }
+}
+
 impl Bytes for PollOut {
     fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
     where
@@ -446,6 +509,13 @@ impl PollOut {
 
 pub struct ReaddirOut {
     buf: Vec<u8>,
+}
+
+impl fmt::Debug for ReaddirOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("ReaddirOut").finish()
+    }
 }
 
 impl Bytes for ReaddirOut {

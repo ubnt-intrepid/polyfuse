@@ -69,6 +69,65 @@ pub enum Operation<'op, T> {
     Unknown,
 }
 
+impl<T> fmt::Debug for Operation<'_, T>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Operation::Lookup(op) => op.fmt(f),
+            Operation::Getattr(op) => op.fmt(f),
+            Operation::Setattr(op) => op.fmt(f),
+            Operation::Readlink(op) => op.fmt(f),
+            Operation::Symlink(op) => op.fmt(f),
+            Operation::Mknod(op) => op.fmt(f),
+            Operation::Mkdir(op) => op.fmt(f),
+            Operation::Unlink(op) => op.fmt(f),
+            Operation::Rmdir(op) => op.fmt(f),
+            Operation::Rename(op) => op.fmt(f),
+            Operation::Link(op) => op.fmt(f),
+            Operation::Open(op) => op.fmt(f),
+            Operation::Read(op) => op.fmt(f),
+            Operation::Release(op) => op.fmt(f),
+            Operation::Statfs(op) => op.fmt(f),
+            Operation::Fsync(op) => op.fmt(f),
+            Operation::Setxattr(op) => op.fmt(f),
+            Operation::Getxattr(op) => op.fmt(f),
+            Operation::Listxattr(op) => op.fmt(f),
+            Operation::Removexattr(op) => op.fmt(f),
+            Operation::Flush(op) => op.fmt(f),
+            Operation::Opendir(op) => op.fmt(f),
+            Operation::Readdir(op) => op.fmt(f),
+            Operation::Releasedir(op) => op.fmt(f),
+            Operation::Fsyncdir(op) => op.fmt(f),
+            Operation::Getlk(op) => op.fmt(f),
+            Operation::Setlk(op) => op.fmt(f),
+            Operation::Flock(op) => op.fmt(f),
+            Operation::Access(op) => op.fmt(f),
+            Operation::Create(op) => op.fmt(f),
+            Operation::Bmap(op) => op.fmt(f),
+            Operation::Fallocate(op) => op.fmt(f),
+            Operation::CopyFileRange(op) => op.fmt(f),
+            Operation::Poll(op) => op.fmt(f),
+            Operation::Forget(op) => op.fmt(f),
+            Operation::Interrupt(op) => op.fmt(f),
+
+            Operation::Write(op, data) => f
+                .debug_struct("Write")
+                .field("op", op)
+                .field("data", data)
+                .finish(),
+            Operation::NotifyReply(op, data) => f
+                .debug_struct("NotifyReply")
+                .field("op", op)
+                .field("data", data)
+                .finish(),
+
+            _ => f.debug_struct("Unknown").finish(),
+        }
+    }
+}
+
 impl<'op, T> Operation<'op, T> {
     #[inline]
     pub(crate) fn unknown() -> Self {
@@ -396,6 +455,12 @@ pub struct Forgets<'op> {
     inner: ForgetsInner<'op>,
 }
 
+impl fmt::Debug for Forgets<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.as_ref()).finish()
+    }
+}
+
 enum ForgetsInner<'op> {
     Single(fuse_forget_one),
     Batch(&'op [fuse_forget_one]),
@@ -423,6 +488,13 @@ pub struct Forget {
     forget: fuse_forget_one,
 }
 
+impl fmt::Debug for Forget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Forget").finish()
+    }
+}
+
 impl Forget {
     /// Return the inode number of the target inode.
     #[inline]
@@ -441,6 +513,13 @@ impl Forget {
 pub struct NotifyReply<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_notify_retrieve_in,
+}
+
+impl fmt::Debug for NotifyReply<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("NotifyReply").finish()
+    }
 }
 
 impl<'op> NotifyReply<'op> {
@@ -476,6 +555,13 @@ pub struct Interrupt<'op> {
     arg: &'op fuse_interrupt_in,
 }
 
+impl fmt::Debug for Interrupt<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Interrupt").finish()
+    }
+}
+
 impl<'op> Interrupt<'op> {
     /// Return the target unique ID to be interrupted.
     #[inline]
@@ -494,6 +580,13 @@ impl<'op> Interrupt<'op> {
 pub struct Lookup<'op> {
     header: &'op fuse_in_header,
     name: &'op OsStr,
+}
+
+impl fmt::Debug for Lookup<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Lookup").finish()
+    }
 }
 
 impl<'op> Lookup<'op> {
@@ -517,6 +610,13 @@ impl<'op> Lookup<'op> {
 pub struct Getattr<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_getattr_in,
+}
+
+impl fmt::Debug for Getattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Getattr").finish()
+    }
 }
 
 impl<'op> Getattr<'op> {
@@ -544,6 +644,13 @@ pub struct Setattr<'op> {
     arg: &'op fuse_setattr_in,
 }
 
+impl fmt::Debug for Setattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Setattr").finish()
+    }
+}
+
 impl<'op> Setattr<'op> {
     #[inline(always)]
     fn get<R>(&self, flag: u32, f: impl FnOnce(&fuse_setattr_in) -> R) -> Option<R> {
@@ -553,9 +660,7 @@ impl<'op> Setattr<'op> {
             None
         }
     }
-}
 
-impl<'op> Setattr<'op> {
     /// Return the inode number to be set the attribute values.
     pub fn ino(&self) -> u64 {
         self.header.nodeid
@@ -644,6 +749,13 @@ pub struct Readlink<'op> {
     header: &'op fuse_in_header,
 }
 
+impl fmt::Debug for Readlink<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Readlink").finish()
+    }
+}
+
 impl<'op> Readlink<'op> {
     /// Return the inode number to be read the link value.
     #[inline]
@@ -660,6 +772,13 @@ pub struct Symlink<'op> {
     header: &'op fuse_in_header,
     name: &'op OsStr,
     link: &'op OsStr,
+}
+
+impl fmt::Debug for Symlink<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Symlink").finish()
+    }
 }
 
 impl<'op> Symlink<'op> {
@@ -690,6 +809,13 @@ pub struct Mknod<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_mknod_in,
     name: &'op OsStr,
+}
+
+impl fmt::Debug for Mknod<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Mknod").finish()
+    }
 }
 
 impl<'op> Mknod<'op> {
@@ -736,6 +862,13 @@ pub struct Mkdir<'op> {
     name: &'op OsStr,
 }
 
+impl fmt::Debug for Mkdir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Mkdir").finish()
+    }
+}
+
 impl<'op> Mkdir<'op> {
     /// Return the inode number of the parent directory where the directory is created.
     #[inline]
@@ -769,6 +902,13 @@ pub struct Unlink<'op> {
     name: &'op OsStr,
 }
 
+impl fmt::Debug for Unlink<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Unlink").finish()
+    }
+}
+
 impl<'op> Unlink<'op> {
     /// Return the inode number of the parent directory.
     #[inline]
@@ -787,6 +927,13 @@ impl<'op> Unlink<'op> {
 pub struct Rmdir<'op> {
     header: &'op fuse_in_header,
     name: &'op OsStr,
+}
+
+impl fmt::Debug for Rmdir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Rmdir").finish()
+    }
 }
 
 impl<'op> Rmdir<'op> {
@@ -816,6 +963,13 @@ pub struct Rename<'op> {
 enum RenameArg<'op> {
     V1(&'op fuse_rename_in),
     V2(&'op fuse_rename2_in),
+}
+
+impl fmt::Debug for Rename<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Rename").finish()
+    }
 }
 
 impl<'op> Rename<'op> {
@@ -866,6 +1020,13 @@ pub struct Link<'op> {
     newname: &'op OsStr,
 }
 
+impl fmt::Debug for Link<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Link").finish()
+    }
+}
+
 impl<'op> Link<'op> {
     /// Return the *original* inode number which links to the created hard link.
     #[inline]
@@ -898,6 +1059,13 @@ impl<'op> Link<'op> {
 pub struct Open<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_open_in,
+}
+
+impl fmt::Debug for Open<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Open").finish()
+    }
 }
 
 impl<'op> Open<'op> {
@@ -939,6 +1107,13 @@ impl<'op> Open<'op> {
 pub struct Read<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_read_in,
+}
+
+impl fmt::Debug for Read<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Read").finish()
+    }
 }
 
 impl<'op> Read<'op> {
@@ -998,6 +1173,13 @@ pub struct Write<'op> {
     arg: &'op fuse_write_in,
 }
 
+impl fmt::Debug for Write<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Write").finish()
+    }
+}
+
 impl<'op> Write<'op> {
     /// Return the inode number to be written.
     #[inline]
@@ -1046,6 +1228,13 @@ pub struct Release<'op> {
     arg: &'op fuse_release_in,
 }
 
+impl fmt::Debug for Release<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Release").finish()
+    }
+}
+
 impl<'op> Release<'op> {
     /// Return the inode number of opened file.
     #[inline]
@@ -1091,6 +1280,13 @@ pub struct Statfs<'op> {
     header: &'op fuse_in_header,
 }
 
+impl fmt::Debug for Statfs<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Statfs").finish()
+    }
+}
+
 impl<'op> Statfs<'op> {
     /// Return the inode number or `0` which means "undefined".
     #[inline]
@@ -1103,6 +1299,13 @@ impl<'op> Statfs<'op> {
 pub struct Fsync<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_fsync_in,
+}
+
+impl fmt::Debug for Fsync<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Fsync").finish()
+    }
 }
 
 impl<'op> Fsync<'op> {
@@ -1133,6 +1336,13 @@ pub struct Setxattr<'op> {
     arg: &'op fuse_setxattr_in,
     name: &'op OsStr,
     value: &'op [u8],
+}
+
+impl fmt::Debug for Setxattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Setxattr").finish()
+    }
 }
 
 impl<'op> Setxattr<'op> {
@@ -1178,6 +1388,13 @@ pub struct Getxattr<'op> {
     name: &'op OsStr,
 }
 
+impl fmt::Debug for Getxattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Getxattr").finish()
+    }
+}
+
 impl<'op> Getxattr<'op> {
     /// Return the inode number to be get the extended attribute.
     #[inline]
@@ -1208,6 +1425,13 @@ pub struct Listxattr<'op> {
     arg: &'op fuse_getxattr_in,
 }
 
+impl fmt::Debug for Listxattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Listxattr").finish()
+    }
+}
+
 impl<'op> Listxattr<'op> {
     /// Return the inode number to be obtained the attribute names.
     #[inline]
@@ -1226,6 +1450,13 @@ impl<'op> Listxattr<'op> {
 pub struct Removexattr<'op> {
     header: &'op fuse_in_header,
     name: &'op OsStr,
+}
+
+impl fmt::Debug for Removexattr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Removexattr").finish()
+    }
 }
 
 impl<'op> Removexattr<'op> {
@@ -1257,6 +1488,13 @@ pub struct Flush<'op> {
     arg: &'op fuse_flush_in,
 }
 
+impl fmt::Debug for Flush<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Flush").finish()
+    }
+}
+
 impl<'op> Flush<'op> {
     /// Return the inode number of target file.
     #[inline]
@@ -1286,6 +1524,13 @@ pub struct Opendir<'op> {
     arg: &'op fuse_open_in,
 }
 
+impl fmt::Debug for Opendir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Opendir").finish()
+    }
+}
+
 impl<'op> Opendir<'op> {
     /// Return the inode number to be opened.
     #[inline]
@@ -1311,6 +1556,13 @@ pub struct Readdir<'op> {
 pub enum ReaddirMode {
     Normal,
     Plus,
+}
+
+impl fmt::Debug for Readdir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Readdir").finish()
+    }
 }
 
 impl<'op> Readdir<'op> {
@@ -1349,6 +1601,13 @@ pub struct Releasedir<'op> {
     arg: &'op fuse_release_in,
 }
 
+impl fmt::Debug for Releasedir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Releasedir").finish()
+    }
+}
+
 impl<'op> Releasedir<'op> {
     /// Return the inode number of opened directory.
     #[inline]
@@ -1373,6 +1632,13 @@ impl<'op> Releasedir<'op> {
 pub struct Fsyncdir<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_fsync_in,
+}
+
+impl fmt::Debug for Fsyncdir<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Fsyncdir").finish()
+    }
 }
 
 impl<'op> Fsyncdir<'op> {
@@ -1403,6 +1669,13 @@ impl<'op> Fsyncdir<'op> {
 pub struct Getlk<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_lk_in,
+}
+
+impl fmt::Debug for Getlk<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Getlk").finish()
+    }
 }
 
 impl<'op> Getlk<'op> {
@@ -1450,6 +1723,13 @@ pub struct Setlk<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_lk_in,
     sleep: bool,
+}
+
+impl fmt::Debug for Setlk<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Setlk").finish()
+    }
 }
 
 impl<'op> Setlk<'op> {
@@ -1505,6 +1785,13 @@ pub struct Flock<'op> {
     op: u32,
 }
 
+impl fmt::Debug for Flock<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Flock").finish()
+    }
+}
+
 impl<'op> Flock<'op> {
     /// Return the target inode number.
     #[inline]
@@ -1541,6 +1828,13 @@ pub struct Access<'op> {
     arg: &'op fuse_access_in,
 }
 
+impl fmt::Debug for Access<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Access").finish()
+    }
+}
+
 impl<'op> Access<'op> {
     /// Return the inode number subject to the access permission check.
     #[inline]
@@ -1566,6 +1860,13 @@ pub struct Create<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_create_in,
     name: &'op OsStr,
+}
+
+impl fmt::Debug for Create<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Create").finish()
+    }
 }
 
 impl<'op> Create<'op> {
@@ -1620,6 +1921,13 @@ pub struct Bmap<'op> {
     arg: &'op fuse_bmap_in,
 }
 
+impl fmt::Debug for Bmap<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Bmap").finish()
+    }
+}
+
 impl<'op> Bmap<'op> {
     /// Return the inode number of the file node to be mapped.
     #[inline]
@@ -1648,6 +1956,13 @@ impl<'op> Bmap<'op> {
 pub struct Fallocate<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_fallocate_in,
+}
+
+impl fmt::Debug for Fallocate<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("Fallocate").finish()
+    }
 }
 
 impl<'op> Fallocate<'op> {
@@ -1692,6 +2007,13 @@ impl<'op> Fallocate<'op> {
 pub struct CopyFileRange<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_copy_file_range_in,
+}
+
+impl fmt::Debug for CopyFileRange<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields
+        f.debug_struct("CopyFileRange").finish()
+    }
 }
 
 impl<'op> CopyFileRange<'op> {
@@ -1750,6 +2072,17 @@ impl<'op> CopyFileRange<'op> {
 pub struct Poll<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_poll_in,
+}
+
+impl fmt::Debug for Poll<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Poll")
+            .field("ino", &self.ino())
+            .field("fh", &self.fh())
+            .field("events", &self.events())
+            .field("kh", &self.kh())
+            .finish()
+    }
 }
 
 impl<'op> Poll<'op> {

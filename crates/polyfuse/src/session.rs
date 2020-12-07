@@ -615,6 +615,12 @@ pub struct Data<'op> {
     data: &'op [u8],
 }
 
+impl fmt::Debug for Data<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Data").finish()
+    }
+}
+
 impl<'op> AsyncRead for Data<'op> {
     #[inline]
     fn poll_read(
