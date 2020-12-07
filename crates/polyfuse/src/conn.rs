@@ -259,53 +259,68 @@ impl Fusermount {
 }
 
 fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<(RawFd, Option<Fusermount>)> {
-    match unsafe { fork_with_socket_pair()? } {
-        ForkResult::Child { output, .. } => {
-            let writer = output.into_raw_fd();
-            unsafe { libc::fcntl(writer, libc::F_SETFD, 0) };
+    let (input, output) = UnixStream::pair()?;
 
-            let opts = mountopts
-                .options
-                .iter()
-                .map(|opt| opt.as_str())
-                .chain(if mountopts.auto_unmount {
-                    Some("auto_unmount")
-                } else {
-                    None
-                })
-                .fold(String::new(), |mut opts, opt| {
-                    if !opts.is_empty() {
-                        opts.push(',');
-                    }
-                    opts.push_str(&opt);
-                    opts
-                });
+    let mut fusermount = Command::new(
+        mountopts
+            .fusermount_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new(FUSERMOUNT_PROG)),
+    );
 
-            let mut fusermount = Command::new(
-                mountopts
-                    .fusermount_path
-                    .as_deref()
-                    .unwrap_or_else(|| Path::new(FUSERMOUNT_PROG)),
-            );
-            fusermount.env(
-                mountopts
-                    .fuse_comm_fd
-                    .as_deref()
-                    .unwrap_or_else(|| OsStr::new(FUSE_COMMFD_ENV)),
-                writer.to_string(),
-            );
-            fusermount.arg("-o").arg(opts);
-            fusermount.arg("--").arg(mountpoint);
+    let opts = mountopts
+        .options
+        .iter()
+        .map(|opt| opt.as_str())
+        .chain(if mountopts.auto_unmount {
+            Some("auto_unmount")
+        } else {
+            None
+        })
+        .fold(String::new(), |mut opts, opt| {
+            if !opts.is_empty() {
+                opts.push(',');
+            }
+            opts.push_str(&opt);
+            opts
+        });
+    if !opts.is_empty() {
+        fusermount.arg("-o").arg(opts);
+    }
 
-            tracing::trace!("exec {:?}", fusermount);
+    fusermount.arg("--").arg(mountpoint);
+
+    fusermount.env(
+        mountopts
+            .fuse_comm_fd
+            .as_deref()
+            .unwrap_or_else(|| OsStr::new(FUSE_COMMFD_ENV)),
+        output.as_raw_fd().to_string(),
+    );
+
+    match unsafe { fork()? } {
+        ForkResult::Child => {
+            // Only async-signal-safe functions are allowed to call here.
+            // in a multi threaded situation.
+
+            let output = output.into_raw_fd();
+            unsafe { libc::fcntl(output, libc::F_SETFD, 0) };
+
+            // Assumes that the UnixStream destructor only calls close(2).
+            drop(input);
+
             let _err = fusermount.exec();
-            // exit immediately since the environment may be broken.
-            std::process::exit(libc::EXIT_FAILURE)
+
+            // Exit immediately since the process may be in a "broken state".
+            // https://doc.rust-lang.org/stable/std/os/unix/process/trait.CommandExt.html#notes
+            unsafe {
+                libc::_exit(1);
+            }
         }
 
-        ForkResult::Parent {
-            child_pid, input, ..
-        } => {
+        ForkResult::Parent { child_pid, .. } => {
+            drop(output);
+
             let fd = receive_fd(&input)?;
 
             let mut child = Some(Fusermount {
@@ -383,24 +398,15 @@ fn receive_fd(reader: &UnixStream) -> io::Result<RawFd> {
 // ==== util ====
 
 enum ForkResult {
-    Parent { child_pid: c_int, input: UnixStream },
-    Child { output: UnixStream },
+    Parent { child_pid: c_int },
+    Child,
 }
 
-unsafe fn fork_with_socket_pair() -> io::Result<ForkResult> {
-    let (input, output) = UnixStream::pair()?;
-
+unsafe fn fork() -> io::Result<ForkResult> {
     let pid = syscall! { fork() };
-    if pid == 0 {
-        drop(input);
-
-        Ok(ForkResult::Child { output })
-    } else {
-        drop(output);
-
-        Ok(ForkResult::Parent {
-            child_pid: pid,
-            input,
-        })
+    match pid {
+        -1 => Err(io::Error::last_os_error()),
+        0 => Ok(ForkResult::Child),
+        pid => Ok(ForkResult::Parent { child_pid: pid }),
     }
 }
