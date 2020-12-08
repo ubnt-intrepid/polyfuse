@@ -14,11 +14,11 @@
 use polyfuse::{
     op::{self, Forget},
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
-    Config, Connection, MountOptions, Operation, Session,
+    Config, MountOptions, Operation, Session,
 };
+use polyfuse_example_async_std_support::AsyncConnection;
 
 use anyhow::Context as _;
-use async_io::Async;
 use async_std::fs::{File, Metadata, OpenOptions, ReadDir};
 use futures::{io::AsyncBufRead, prelude::*};
 use slab::Slab;
@@ -46,13 +46,8 @@ async fn main() -> anyhow::Result<()> {
     let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let conn = async_std::task::spawn_blocking(move || {
-        Connection::open(mountpoint, MountOptions::default())
-    })
-    .await?;
-    let conn = Async::new(conn)?;
-
-    let session = Session::start(&conn, conn.get_ref(), Config::default()).await?;
+    let conn = AsyncConnection::open(mountpoint, MountOptions::default()).await?;
+    let session = Session::start(&conn, &conn, Config::default()).await?;
 
     let mut fs = PathThrough::new(source)?;
 
@@ -63,10 +58,8 @@ async fn main() -> anyhow::Result<()> {
         macro_rules! try_reply {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(reply) => req.reply(conn.get_ref(), reply)?,
-                    Err(err) => {
-                        req.reply_error(conn.get_ref(), err.raw_os_error().unwrap_or(libc::EIO))?
-                    }
+                    Ok(reply) => req.reply(&conn, reply)?,
+                    Err(err) => req.reply_error(&conn, err.raw_os_error().unwrap_or(libc::EIO))?,
                 }
             };
         }
@@ -92,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
             Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
             Operation::Release(op) => try_reply!(fs.do_release(&op)),
 
-            _ => req.reply_error(conn.get_ref(), libc::ENOSYS)?,
+            _ => req.reply_error(&conn, libc::ENOSYS)?,
         }
     }
 

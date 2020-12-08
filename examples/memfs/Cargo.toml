@@ -6,10 +6,10 @@ edition = "2018"
 
 [dependencies]
 polyfuse = { path = "../../crates/polyfuse" }
+polyfuse-example-async-std-support = { path = "../async-std-support" }
 
 anyhow = "1"
-async-io = "1.2"
-async-std = { version = ">=1.7.0", features = [ "attributes", "unstable" ] }
+async-std = { version = ">=1.7.0", features = [ "attributes" ] }
 futures = "0.3"
 libc = "0.2"
 pico-args = "0.3"

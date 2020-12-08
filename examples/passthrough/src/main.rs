@@ -3,9 +3,16 @@
 
 mod fs;
 
-use crate::fs::{FileDesc, ReadDir};
+use polyfuse::{
+    op,
+    reply::{
+        AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
+    },
+    CapabilityFlags, MountOptions, Operation, Session,
+};
+use polyfuse_example_async_std_support::AsyncConnection;
+
 use anyhow::Context as _;
-use async_io::Async;
 use async_std::{
     fs::{File, OpenOptions},
     prelude::*,
@@ -13,13 +20,6 @@ use async_std::{
 };
 use futures::io::AsyncBufRead;
 use pico_args::Arguments;
-use polyfuse::{
-    op,
-    reply::{
-        AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
-    },
-    CapabilityFlags, Connection, MountOptions, Operation, Session,
-};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -32,6 +32,8 @@ use std::{
     time::Duration,
 };
 use tracing::Instrument as _;
+
+use crate::fs::{FileDesc, ReadDir};
 
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,16 +55,13 @@ async fn main() -> anyhow::Result<()> {
     let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let conn = async_std::task::spawn_blocking(move || {
-        Connection::open(
-            mountpoint,
-            MountOptions::default()
-                .option("default_permissions")
-                .option("fsname=passthrough"),
-        )
-    })
+    let conn = AsyncConnection::open(
+        mountpoint,
+        MountOptions::default()
+            .option("default_permissions")
+            .option("fsname=passthrough"),
+    )
     .await?;
-    let conn = Async::new(conn)?;
 
     let mut config = polyfuse::Config::default();
     *config.flags() |= CapabilityFlags::EXPORT_SUPPORT;
@@ -71,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         *config.flags() |= CapabilityFlags::WRITEBACK_CACHE;
     }
     // TODO: splice read/write
-    let session = Session::start(&conn, conn.get_ref(), config).await?;
+    let session = Session::start(&conn, &conn, config).await?;
 
     let fs = Passthrough::new(source, timeout).await?;
 
@@ -86,12 +85,12 @@ async fn main() -> anyhow::Result<()> {
                 match ($e).instrument(span.clone()).await {
                     Ok(reply) => {
                         span.in_scope(|| tracing::debug!(reply = ?reply));
-                        req.reply(conn.get_ref(), reply)?;
+                        req.reply(&conn, reply)?;
                     },
                     Err(err) => {
                         let errno = io_to_errno(err);
                         span.in_scope(|| tracing::debug!(errno = errno));
-                        req.reply_error(conn.get_ref(), errno)?;
+                        req.reply_error(&conn, errno)?;
                     },
                 }
             };
@@ -152,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
 
             Operation::Statfs(op) => try_reply!(fs.do_statfs(&op)),
 
-            _ => req.reply_error(conn.get_ref(), libc::ENOSYS)?,
+            _ => req.reply_error(&conn, libc::ENOSYS)?,
         }
     }
 

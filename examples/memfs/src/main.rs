@@ -1,14 +1,15 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
 
-use async_io::Async;
-use async_std::{prelude::*, sync::Mutex};
-use futures::io::AsyncBufRead;
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
-    Config, Connection, MountOptions, Operation, Session,
+    Config, MountOptions, Operation, Session,
 };
+use polyfuse_example_async_std_support::AsyncConnection;
+
+use async_std::{prelude::*, sync::Mutex};
+use futures::io::AsyncBufRead;
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -32,13 +33,8 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing mountpoint"))?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let conn = async_std::task::spawn_blocking(move || {
-        Connection::open(mountpoint, MountOptions::default())
-    })
-    .await?;
-    let conn = Async::new(conn)?;
-
-    let session = Session::start(&conn, conn.get_ref(), Config::default()).await?;
+    let conn = AsyncConnection::open(mountpoint, MountOptions::default()).await?;
+    let session = Session::start(&conn, &conn, Config::default()).await?;
 
     let fs = MemFS::new();
 
@@ -53,12 +49,12 @@ async fn main() -> anyhow::Result<()> {
                 match ($e).instrument(span.clone()).await {
                     Ok(reply) => {
                         span.in_scope(|| tracing::debug!(reply=?reply));
-                        req.reply(conn.get_ref(), reply)?;
+                        req.reply(&conn, reply)?;
                     }
                     Err(err) => {
                         let errno = err.raw_os_error().unwrap_or(libc::EIO);
                         span.in_scope(|| tracing::debug!(errno=errno));
-                        req.reply_error(conn.get_ref(), errno)?;
+                        req.reply_error(&conn, errno)?;
                     }
                 }
             };
@@ -95,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
 
             _ => {
                 span.in_scope(|| tracing::debug!("NOSYS"));
-                req.reply_error(conn.get_ref(), libc::ENOSYS)?;
+                req.reply_error(&conn, libc::ENOSYS)?;
             }
         }
     }

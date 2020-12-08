@@ -9,26 +9,15 @@
 
 use polyfuse::{
     reply::{AttrOut, FileAttr, OpenOut},
-    Config, Connection, MountOptions, Operation, Session,
+    Config, MountOptions, Operation, Session,
 };
+use polyfuse_example_async_std_support::{AsyncConnection, Writer};
 
 use anyhow::{anyhow, ensure, Context as _, Result};
-use async_io::Async;
 use async_std::sync::Mutex;
 use chrono::Local;
-use futures::{
-    channel::oneshot,
-    io::{AsyncRead, AsyncReadExt as _},
-    task::{self, Poll},
-};
-use std::{
-    collections::HashMap,
-    io, mem,
-    path::PathBuf,
-    pin::Pin,
-    sync::{Arc, Weak},
-    time::Duration,
-};
+use futures::{channel::oneshot, prelude::*};
+use std::{collections::HashMap, io, mem, path::PathBuf, sync::Arc, time::Duration};
 
 const ROOT_INO: u64 = 1;
 
@@ -231,89 +220,4 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
     attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
     attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
-}
-
-// ==== connection ====
-
-struct AsyncConnection {
-    inner: Arc<Async<Connection>>,
-}
-
-impl AsyncConnection {
-    async fn open(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<Self> {
-        let conn = async_std::task::spawn_blocking(move || Connection::open(mountpoint, mountopts))
-            .await?;
-        let inner = Async::new(conn)?;
-        Ok(Self {
-            inner: Arc::new(inner),
-        })
-    }
-
-    fn writer(&self) -> Writer {
-        Writer {
-            conn: Arc::downgrade(&self.inner),
-        }
-    }
-}
-
-impl AsyncRead for &AsyncConnection {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut &*self.get_mut().inner).poll_read(cx, buf)
-    }
-
-    fn poll_read_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-        bufs: &mut [io::IoSliceMut<'_>],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut &*self.get_mut().inner).poll_read_vectored(cx, bufs)
-    }
-}
-
-impl io::Write for &AsyncConnection {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.get_ref().write(buf)
-    }
-
-    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        self.inner.get_ref().write_vectored(bufs)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.get_ref().flush()
-    }
-}
-
-struct Writer {
-    conn: Weak<Async<Connection>>,
-}
-
-impl io::Write for &Writer {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(conn) = self.conn.upgrade() {
-            conn.get_ref().write(buf)
-        } else {
-            Ok(0)
-        }
-    }
-
-    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        if let Some(conn) = self.conn.upgrade() {
-            conn.get_ref().write_vectored(bufs)
-        } else {
-            Ok(0)
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if let Some(conn) = self.conn.upgrade() {
-            conn.get_ref().flush()
-        } else {
-            Ok(())
-        }
-    }
 }

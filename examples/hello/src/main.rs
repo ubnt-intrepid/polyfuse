@@ -4,11 +4,11 @@
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Config, Connection, MountOptions, Operation, Request, Session,
+    Config, MountOptions, Operation, Request, Session,
 };
+use polyfuse_example_async_std_support::AsyncConnection;
 
 use anyhow::Context as _;
-use async_io::Async;
 use std::{io, os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -28,23 +28,18 @@ async fn main() -> anyhow::Result<()> {
         .context("missing mountpoint specified")?;
     anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
 
-    let conn = async_std::task::spawn_blocking(move || {
-        Connection::open(mountpoint, MountOptions::default())
-    })
-    .await?;
-    let conn = Async::new(conn)?;
-
-    let session = Session::start(&conn, conn.get_ref(), Config::default()).await?;
+    let conn = AsyncConnection::open(mountpoint, MountOptions::default()).await?;
+    let session = Session::start(&conn, &conn, Config::default()).await?;
 
     let fs = Hello::new();
 
     while let Some(req) = session.next_request(&conn).await? {
         match req.operation()? {
-            Operation::Lookup(op) => fs.lookup(&req, conn.get_ref(), op).await?,
-            Operation::Getattr(op) => fs.getattr(&req, conn.get_ref(), op).await?,
-            Operation::Read(op) => fs.read(&req, conn.get_ref(), op).await?,
-            Operation::Readdir(op) => fs.readdir(&req, conn.get_ref(), op).await?,
-            _ => req.reply_error(conn.get_ref(), libc::ENOSYS)?,
+            Operation::Lookup(op) => fs.lookup(&req, &conn, op)?,
+            Operation::Getattr(op) => fs.getattr(&req, &conn, op)?,
+            Operation::Read(op) => fs.read(&req, &conn, op)?,
+            Operation::Readdir(op) => fs.readdir(&req, &conn, op)?,
+            _ => req.reply_error(&conn, libc::ENOSYS)?,
         }
     }
 
@@ -106,12 +101,7 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    async fn lookup(
-        &self,
-        req: &Request,
-        conn: impl io::Write,
-        op: op::Lookup<'_>,
-    ) -> io::Result<()> {
+    fn lookup(&self, req: &Request, conn: impl io::Write, op: op::Lookup<'_>) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -125,12 +115,7 @@ impl Hello {
         }
     }
 
-    async fn getattr(
-        &self,
-        req: &Request,
-        conn: impl io::Write,
-        op: op::Getattr<'_>,
-    ) -> io::Result<()> {
+    fn getattr(&self, req: &Request, conn: impl io::Write, op: op::Getattr<'_>) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
@@ -144,7 +129,7 @@ impl Hello {
         req.reply(conn, out)
     }
 
-    async fn read(&self, req: &Request, conn: impl io::Write, op: op::Read<'_>) -> io::Result<()> {
+    fn read(&self, req: &Request, conn: impl io::Write, op: op::Read<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
             ROOT_INO => return req.reply_error(conn, libc::EISDIR),
@@ -170,12 +155,7 @@ impl Hello {
         })
     }
 
-    async fn readdir(
-        &self,
-        req: &Request,
-        conn: impl io::Write,
-        op: op::Readdir<'_>,
-    ) -> io::Result<()> {
+    fn readdir(&self, req: &Request, conn: impl io::Write, op: op::Readdir<'_>) -> io::Result<()> {
         if op.ino() != ROOT_INO {
             return req.reply_error(conn, libc::ENOTDIR);
         }
