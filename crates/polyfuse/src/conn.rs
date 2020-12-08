@@ -202,7 +202,7 @@ impl Default for MountOptions {
     fn default() -> Self {
         Self {
             options: vec![],
-            auto_unmount: false,
+            auto_unmount: true,
             fusermount_path: None,
             fuse_comm_fd: None,
         }
@@ -222,6 +222,12 @@ impl MountOptions {
         for option in option.split(',').map(|s| s.trim()) {
             self.recognzie_option(option);
         }
+        self
+    }
+
+    #[doc(hidden)] // TODO: dox
+    pub fn auto_unmount(mut self, enabled: bool) -> Self {
+        self.auto_unmount = enabled;
         self
     }
 
