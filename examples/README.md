@@ -9,8 +9,14 @@ To run the example:
 $ cargo run -p polyfuse-example-<name> -- [<args>..]
 ```
 
+### [`basic`](./basic)
+A read-only filesystem where the root entry is a regular file.
+
+This example provides a simple template for starting development of filesystem with `polyfuse`.
+
 ### [`hello`](./hello)
-A read-only filesystem with a single file in the root directory.
+Unlike `basic`, it provides the example that the root entry is a directory
+and contains a single file as a child.
 
 ### [`memfs`](./memfs)
 An in-memory filesystem that demonstrates a series of filesystem features, such as reading/writing regular files, creating, removing and renaming inodes, creating the hard/symbolic links, and acquiring/modifying the node attributes.
