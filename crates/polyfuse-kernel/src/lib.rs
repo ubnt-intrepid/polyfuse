@@ -1,6 +1,6 @@
 //! FUSE application binary interface for `polyfuse`.
 //!
-//! The bindings is compatible with ABI 7.29 (in libfuse 3.6.2).
+//! The binding is compatible with ABI 7.31 (in libfuse 3.10.1).
 
 #![allow(nonstandard_style, clippy::identity_op)]
 
@@ -14,7 +14,7 @@ use zerocopy::FromBytes;
 pub const FUSE_KERNEL_VERSION: u32 = 7;
 
 /// The minor version number of FUSE protocol.
-pub const FUSE_KERNEL_MINOR_VERSION: u32 = 29;
+pub const FUSE_KERNEL_MINOR_VERSION: u32 = 31;
 
 /// The minimum length of read buffer.
 pub const FUSE_MIN_READ_BUFFER: u32 = 8192;
@@ -40,6 +40,7 @@ pub const FOPEN_DIRECT_IO: u32 = 1 << 0;
 pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
 pub const FOPEN_NONSEEKABLE: u32 = 1 << 2;
 pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
+pub const FOPEN_STREAM: u32 = 1 << 4;
 
 // INIT request/reply flags.
 pub const FUSE_ASYNC_READ: u32 = 1;
@@ -67,6 +68,7 @@ pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
 pub const FUSE_MAX_PAGES: u32 = 1 << 22;
 pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
 pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
+pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25;
 
 // CUSE INIT request/reply flags.
 pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;
@@ -82,8 +84,9 @@ pub const FUSE_GETATTR_FH: u32 = 1;
 pub const FUSE_LK_FLOCK: u32 = 1 << 0;
 
 // WRITE flags.
-//pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
+pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
 pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
+pub const FUSE_WRITE_KILL_PRIV: u32 = 1 << 2;
 
 // Read flags.
 pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
@@ -94,6 +97,7 @@ pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
 pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
 pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
 pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
+pub const FUSE_IOCTL_COMPAT_X32: u32 = 1 << 5;
 
 // Poll flags.
 pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
