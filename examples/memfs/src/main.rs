@@ -803,7 +803,7 @@ impl MemFS {
 
         data.read_exact(&mut content[offset..offset + size]).await?;
 
-        inode.attr.st_size = content.len() as libc::off_t;
+        inode.attr.st_size = (offset + size) as libc::off_t;
 
         let mut out = WriteOut::default();
         out.size(op.size());
