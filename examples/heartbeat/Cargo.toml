@@ -1,5 +1,5 @@
 [package]
-name = "polyfuse-example-basic"
+name = "polyfuse-example-heartbeat"
 version = "0.0.0"
 publish = false
 edition = "2018"
@@ -10,6 +10,8 @@ polyfuse-example-async-std-support = { path = "../async-std-support" }
 
 anyhow = "1"
 async-std = { version = ">=1.7.0", features = [ "attributes" ] }
+chrono = "0.4"
+futures = "0.3"
 libc = "0.2"
 pico-args = "0.3"
 tracing = "0.1"

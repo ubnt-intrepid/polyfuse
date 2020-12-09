@@ -1,6 +1,5 @@
 //! Linux-specific filesystem operations.
 
-use polyfuse::DirEntry;
 use std::{
     ffi::{CStr, CString, OsStr, OsString},
     io, mem,
@@ -19,19 +18,12 @@ macro_rules! syscall {
     }
 }
 
-// copied from https://github.com/tokio-rs/tokio/blob/master/tokio/src/fs/mod.rs
 async fn asyncify<F, T>(f: F) -> io::Result<T>
 where
     F: FnOnce() -> io::Result<T> + Send + 'static,
     T: Send + 'static,
 {
-    match tokio::task::spawn_blocking(f).await {
-        Ok(res) => res,
-        Err(..) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            "background task failed",
-        )),
-    }
+    async_std::task::spawn_blocking(f).await
 }
 
 // ==== FileDesc ====
@@ -338,6 +330,13 @@ impl ReadDir {
     }
 }
 
+pub struct DirEntry {
+    pub name: OsString,
+    pub ino: u64,
+    pub typ: u32,
+    pub off: u64,
+}
+
 // TODO: switch to Stream
 impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
@@ -362,8 +361,12 @@ impl Iterator for ReadDir {
                     _ => (),
                 }
 
-                let mut entry = DirEntry::new(name, raw_entry.d_ino, raw_entry.d_off as u64);
-                entry.set_typ(raw_entry.d_type as u32);
+                let entry = DirEntry {
+                    name: name.to_owned(),
+                    ino: raw_entry.d_ino,
+                    typ: raw_entry.d_type as u32,
+                    off: raw_entry.d_off as u64,
+                };
 
                 return Some(Ok(entry));
             }

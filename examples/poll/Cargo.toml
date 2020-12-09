@@ -1,15 +1,23 @@
 [package]
-name = "polyfuse-example-basic"
+name = "polyfuse-example-poll"
 version = "0.0.0"
 publish = false
 edition = "2018"
+default-run = "polyfuse-example-poll"
+
+[[bin]]
+name = "polyfuse-example-poll-client"
+path = "src/poll_client.rs"
 
 [dependencies]
 polyfuse = { path = "../../crates/polyfuse" }
 polyfuse-example-async-std-support = { path = "../async-std-support" }
 
 anyhow = "1"
+async-io = "1.2"
 async-std = { version = ">=1.7.0", features = [ "attributes" ] }
+futures = "0.3"
+futures-intrusive = "0.2"
 libc = "0.2"
 pico-args = "0.3"
 tracing = "0.1"
