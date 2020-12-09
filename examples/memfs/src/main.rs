@@ -1,4 +1,4 @@
-#![allow(clippy::unnecessary_mut_passed)]
+#![allow(clippy::unnecessary_mut_passed, clippy::rc_buffer)]
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
