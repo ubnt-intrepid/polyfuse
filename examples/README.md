@@ -25,7 +25,7 @@ Some features such as file locking are omitted.
 ### [`passthrough`](./passthrough)
 A filesystem that mirrors an existing directory structure to the root. This is a port of libfuse's `passthrough_hp.cc`, which manages the inode entries referenced by the kernel using the file descriptor with `O_PATH` flag.
 
-### [`path_through`](./path_through)
+### [`path-through`](./path-through)
 Another version of `passthrough` that holds the relative path from the root directory instead of the file descriptor.
 
 ### [`poll`](./poll)
@@ -37,5 +37,5 @@ A filesystem that demonstrates the notifications to the kernel.
 In this example, the filesystem periodically updates the contents of the root file and then sends a notification message to the kernel to prompt for updating the page cache.
 There are two kinds of notification: the one is to notify only that the cache data has been invalidated (`invalidate`), and the other is to send the range of updated data explicitly (`store`). These can be specified with the `--nofity-kind` command line option.
 
-### [`heartbeat_entry`](./heartbeat-entry)
+### [`heartbeat-entry`](./heartbeat-entry)
 A filesystem that notifies to the kernel that an entry has been deleted.
