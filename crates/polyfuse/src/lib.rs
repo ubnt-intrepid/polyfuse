@@ -3,7 +3,6 @@
 mod conn;
 mod decoder;
 mod session;
-mod write;
 
 pub mod bytes;
 pub mod op;

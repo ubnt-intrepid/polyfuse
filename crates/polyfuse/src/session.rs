@@ -4,7 +4,7 @@ use crate::{
     bytes::Bytes,
     decoder::Decoder,
     op::{DecodeError, Operation},
-    write::ReplySender,
+    reply::ReplySender,
 };
 use bitflags::bitflags;
 use futures::{
