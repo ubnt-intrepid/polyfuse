@@ -3,8 +3,8 @@
 
 use polyfuse::{
     op,
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Config, Connection, MountOptions, Operation, Request, Session,
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, ReplyWriter},
+    Config, Connection, MountOptions, Operation, Session,
 };
 
 use anyhow::Context as _;
@@ -45,12 +45,13 @@ async fn main() -> anyhow::Result<()> {
     let fs = Hello::new();
 
     while let Some(req) = session.next_request(&conn).await? {
+        let reply = ReplyWriter::new(&conn, req.unique());
         match req.operation()? {
-            Operation::Lookup(op) => fs.lookup(&req, &conn, op).await?,
-            Operation::Getattr(op) => fs.getattr(&req, &conn, op).await?,
-            Operation::Read(op) => fs.read(&req, &conn, op).await?,
-            Operation::Readdir(op) => fs.readdir(&req, &conn, op).await?,
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            Operation::Lookup(op) => fs.lookup(op, reply).await?,
+            Operation::Getattr(op) => fs.getattr(op, reply).await?,
+            Operation::Read(op) => fs.read(op, reply).await?,
+            Operation::Readdir(op) => fs.readdir(op, reply).await?,
+            _ => reply.error(libc::ENOSYS)?,
         }
     }
 
@@ -112,12 +113,10 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    async fn lookup(
-        &self,
-        req: &Request,
-        conn: impl io::Write,
-        op: op::Lookup<'_>,
-    ) -> io::Result<()> {
+    async fn lookup<W>(&self, op: op::Lookup<'_>, reply: ReplyWriter<W>) -> io::Result<()>
+    where
+        W: io::Write,
+    {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -125,36 +124,37 @@ impl Hello {
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                req.reply(conn, out)
+                reply.reply(out)
             }
-            _ => req.reply_error(conn, libc::ENOENT),
+            _ => reply.error(libc::ENOENT),
         }
     }
 
-    async fn getattr(
-        &self,
-        req: &Request,
-        conn: impl io::Write,
-        op: op::Getattr<'_>,
-    ) -> io::Result<()> {
+    async fn getattr<W>(&self, op: op::Getattr<'_>, reply: ReplyWriter<W>) -> io::Result<()>
+    where
+        W: io::Write,
+    {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
-            _ => return req.reply_error(conn, libc::ENOENT),
+            _ => return reply.error(libc::ENOENT),
         };
 
         let mut out = AttrOut::default();
         fill_attr(self, out.attr());
         out.ttl(TTL);
 
-        req.reply(conn, out)
+        reply.reply(out)
     }
 
-    async fn read(&self, req: &Request, conn: impl io::Write, op: op::Read<'_>) -> io::Result<()> {
+    async fn read<W>(&self, op: op::Read<'_>, reply: ReplyWriter<W>) -> io::Result<()>
+    where
+        W: io::Write,
+    {
         match op.ino() {
             HELLO_INO => (),
-            ROOT_INO => return req.reply_error(conn, libc::EISDIR),
-            _ => return req.reply_error(conn, libc::ENOENT),
+            ROOT_INO => return reply.error(libc::EISDIR),
+            _ => return reply.error(libc::ENOENT),
         }
 
         let mut data: &[u8] = &[];
@@ -166,7 +166,7 @@ impl Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        req.reply(conn, data)
+        reply.reply(data)
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -176,14 +176,12 @@ impl Hello {
         })
     }
 
-    async fn readdir(
-        &self,
-        req: &Request,
-        conn: impl io::Write,
-        op: op::Readdir<'_>,
-    ) -> io::Result<()> {
+    async fn readdir<W>(&self, op: op::Readdir<'_>, reply: ReplyWriter<W>) -> io::Result<()>
+    where
+        W: io::Write,
+    {
         if op.ino() != ROOT_INO {
-            return req.reply_error(conn, libc::ENOTDIR);
+            return reply.error(libc::ENOTDIR);
         }
 
         let mut out = ReaddirOut::new(op.size() as usize);
@@ -200,7 +198,7 @@ impl Hello {
             }
         }
 
-        req.reply(conn, out)
+        reply.reply(out)
     }
 }
 

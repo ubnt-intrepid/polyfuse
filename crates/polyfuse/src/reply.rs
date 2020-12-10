@@ -562,17 +562,19 @@ const fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
 
-pub(crate) struct ReplySender<W> {
+// ==== Writer ====
+
+pub struct ReplyWriter<W> {
     writer: W,
     header: fuse_out_header,
 }
 
-impl<W> ReplySender<W>
+impl<W> ReplyWriter<W>
 where
     W: io::Write,
 {
     #[inline]
-    pub(crate) fn new(writer: W, unique: u64) -> Self {
+    pub fn new(writer: W, unique: u64) -> Self {
         Self {
             writer,
             header: fuse_out_header {
@@ -584,7 +586,7 @@ where
     }
 
     #[inline]
-    pub(crate) fn reply<T>(self, data: T) -> io::Result<()>
+    pub fn reply<T>(self, data: T) -> io::Result<()>
     where
         T: Bytes,
     {
@@ -592,13 +594,12 @@ where
     }
 
     #[inline]
-    pub(crate) fn error(self, code: i32) -> io::Result<()> {
+    pub fn error(self, code: i32) -> io::Result<()> {
         self.send_msg(-code, &[])
     }
 
-    #[allow(dead_code)]
     #[inline]
-    pub(crate) fn notify<T>(self, code: fuse_notify_code, data: T) -> io::Result<()>
+    pub fn notify<T>(self, code: fuse_notify_code, data: T) -> io::Result<()>
     where
         T: Bytes,
     {
@@ -667,7 +668,7 @@ mod tests {
     #[test]
     fn send_msg_empty() {
         let mut buf = vec![0u8; 0];
-        ReplySender::new(&mut buf, 42).send_msg(4, &[]).unwrap();
+        ReplyWriter::new(&mut buf, 42).send_msg(4, &[]).unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -680,7 +681,7 @@ mod tests {
     #[test]
     fn send_msg_single_data() {
         let mut buf = vec![0u8; 0];
-        ReplySender::new(&mut buf, 42).send_msg(0, "hello").unwrap();
+        ReplyWriter::new(&mut buf, 42).send_msg(0, "hello").unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -700,7 +701,7 @@ mod tests {
             "message.".as_ref(),
         ];
         let mut buf = vec![0u8; 0];
-        ReplySender::new(&mut buf, 26).send_msg(0, payload).unwrap();
+        ReplyWriter::new(&mut buf, 26).send_msg(0, payload).unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(

@@ -1,10 +1,9 @@
 //! Establish a FUSE session.
 
 use crate::{
-    bytes::Bytes,
     decoder::Decoder,
     op::{DecodeError, Operation},
-    reply::ReplySender,
+    reply::ReplyWriter,
 };
 use bitflags::bitflags;
 use futures::{
@@ -421,7 +420,7 @@ impl Session {
 
         let out = fuse_notify_inval_inode_out { ino, off, len };
 
-        ReplySender::new(writer, 0)
+        ReplyWriter::new(writer, 0)
             .notify(fuse_notify_code::FUSE_NOTIFY_INVAL_INODE, out.as_bytes())
     }
 
@@ -444,7 +443,7 @@ impl Session {
             namelen,
             ..Default::default()
         };
-        ReplySender::new(writer, 0).notify(
+        ReplyWriter::new(writer, 0).notify(
             fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
             &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
         )
@@ -477,7 +476,7 @@ impl Session {
             ..Default::default()
         };
 
-        ReplySender::new(writer, 0).notify(
+        ReplyWriter::new(writer, 0).notify(
             fuse_notify_code::FUSE_NOTIFY_DELETE,
             &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
         )
@@ -508,7 +507,7 @@ impl Session {
             .chain(data.iter().copied())
             .collect();
 
-        ReplySender::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_STORE, &*data)
+        ReplyWriter::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_STORE, &*data)
     }
 
     /// Retrieve data in an inode from the kernel cache.
@@ -527,7 +526,7 @@ impl Session {
             ..Default::default()
         };
 
-        ReplySender::new(writer, 0)
+        ReplyWriter::new(writer, 0)
             .notify(fuse_notify_code::FUSE_NOTIFY_RETRIEVE, out.as_bytes())?;
 
         Ok(unique)
@@ -542,7 +541,7 @@ impl Session {
 
         let out = fuse_notify_poll_wakeup_out { kh };
 
-        ReplySender::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_POLL, out.as_bytes())
+        ReplyWriter::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_POLL, out.as_bytes())
     }
 }
 
@@ -592,21 +591,6 @@ impl Request {
         };
 
         Operation::decode(&self.header, arg, Data { data })
-    }
-
-    pub fn reply<W, T>(&self, writer: W, data: T) -> io::Result<()>
-    where
-        W: io::Write,
-        T: Bytes,
-    {
-        ReplySender::new(writer, self.unique()).reply(data)
-    }
-
-    pub fn reply_error<W>(&self, writer: W, code: i32) -> io::Result<()>
-    where
-        W: io::Write,
-    {
-        ReplySender::new(writer, self.unique()).error(code)
     }
 }
 
@@ -699,7 +683,7 @@ where
     W: io::Write,
 {
     let mut decoder = Decoder::new(arg);
-    let sender = ReplySender::new(writer, header.unique);
+    let sender = ReplyWriter::new(writer, header.unique);
 
     match fuse_opcode::try_from(header.opcode) {
         Ok(fuse_opcode::FUSE_INIT) => {

@@ -3,7 +3,7 @@
 
 use polyfuse::{
     op,
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, ReplyWriter, WriteOut, XattrOut},
     Config, MountOptions, Operation, Session,
 };
 use polyfuse_example_async_std_support::AsyncConnection;
@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
 
     while let Some(req) = session.next_request(&conn).await? {
         let span = tracing::debug_span!("MemFS::call", unique = req.unique());
+        let reply = ReplyWriter::new(&conn, req.unique());
 
         let op = req.operation()?;
         span.in_scope(|| tracing::debug!(?op));
@@ -47,14 +48,14 @@ async fn main() -> anyhow::Result<()> {
         macro_rules! try_reply {
             ($e:expr) => {
                 match ($e).instrument(span.clone()).await {
-                    Ok(reply) => {
-                        span.in_scope(|| tracing::debug!(reply=?reply));
-                        req.reply(&conn, reply)?;
+                    Ok(data) => {
+                        span.in_scope(|| tracing::debug!(data=?data));
+                        reply.reply(data)?;
                     }
                     Err(err) => {
                         let errno = err.raw_os_error().unwrap_or(libc::EIO);
                         span.in_scope(|| tracing::debug!(errno=errno));
-                        req.reply_error(&conn, errno)?;
+                        reply.error(errno)?;
                     }
                 }
             };
@@ -91,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
 
             _ => {
                 span.in_scope(|| tracing::debug!("NOSYS"));
-                req.reply_error(&conn, libc::ENOSYS)?;
+                reply.error(libc::ENOSYS)?;
             }
         }
     }

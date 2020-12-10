@@ -1,4 +1,8 @@
-use polyfuse::{op, reply::AttrOut, Config, MountOptions, Operation, Request, Session};
+use polyfuse::{
+    op,
+    reply::{AttrOut, ReplyWriter},
+    Config, MountOptions, Operation, Session,
+};
 use polyfuse_example_async_std_support::AsyncConnection;
 
 use anyhow::{ensure, Context as _, Result};
@@ -25,25 +29,26 @@ async fn main() -> Result<()> {
     while let Some(req) = session.next_request(&conn).await? {
         // Process the request.
         let op = req.operation()?;
+        let reply = ReplyWriter::new(&conn, req.unique());
         match op {
             // Dispatch your callbacks to the supported operations...
             Operation::Getattr(op) => getattr(&req, op, &conn).await?,
             Operation::Read(op) => read(&req, op, &conn).await?,
 
             // Or annotate that the operation is not supported.
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            _ => reply.error(libc::ENOSYS)?,
         };
     }
 
     Ok(())
 }
 
-async fn getattr<W>(req: &Request, op: op::Getattr<'_>, writer: W) -> io::Result<()>
+async fn getattr<W>(op: op::Getattr<'_>, reply: ReplyWriter<W>) -> io::Result<()>
 where
     W: io::Write,
 {
     if op.ino() != 1 {
-        return req.reply_error(writer, libc::ENOENT);
+        return reply.error(libc::ENOENT);
     }
 
     let mut out = AttrOut::default();
@@ -55,15 +60,15 @@ where
     out.attr().gid(unsafe { libc::getgid() });
     out.ttl(Duration::from_secs(1));
 
-    req.reply(writer, out)
+    reply.reply(out)
 }
 
-async fn read<W>(req: &Request, op: op::Read<'_>, writer: W) -> io::Result<()>
+async fn read<W>(op: op::Read<'_>, reply: ReplyWriter<W>) -> io::Result<()>
 where
     W: io::Write,
 {
     if op.ino() != 1 {
-        return req.reply_error(writer, libc::ENOENT);
+        return reply.error(libc::ENOENT);
     }
 
     let mut data: &[u8] = &[];
@@ -75,5 +80,5 @@ where
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    req.reply(writer, data)
+    reply.reply(data)
 }

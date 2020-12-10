@@ -8,7 +8,7 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 
 use polyfuse::{
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, ReplyWriter},
     Config, MountOptions, Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::{AsyncConnection, Writer};
@@ -142,6 +142,8 @@ impl Heartbeat {
         let op = req.operation()?;
         span.in_scope(|| tracing::debug!(?op));
 
+        let reply = ReplyWriter::new(&writer, req.unique());
+
         match op {
             Operation::Lookup(op) => match op.parent() {
                 ROOT_INO => {
@@ -154,14 +156,14 @@ impl Heartbeat {
                         out.ttl_entry(self.timeout);
                         out.ttl_attr(self.timeout);
 
-                        req.reply(&writer, out)?;
+                        reply.reply(out)?;
 
                         current.nlookup += 1;
                     } else {
-                        req.reply_error(&writer, libc::ENOENT)?;
+                        reply.error(libc::ENOENT)?;
                     }
                 }
-                _ => req.reply_error(&writer, libc::ENOTDIR)?,
+                _ => reply.error(libc::ENOTDIR)?,
             },
 
             Operation::Forget(forgets) => {
@@ -177,20 +179,20 @@ impl Heartbeat {
                 let attr = match op.ino() {
                     ROOT_INO => &self.root_attr,
                     FILE_INO => &self.file_attr,
-                    _ => return req.reply_error(&writer, libc::ENOENT).map_err(Into::into),
+                    _ => return reply.error(libc::ENOENT).map_err(Into::into),
                 };
 
                 let mut out = AttrOut::default();
                 fill_attr(out.attr(), attr);
                 out.ttl(self.timeout);
 
-                req.reply(&writer, out)?;
+                reply.reply(out)?;
             }
 
             Operation::Read(op) => match op.ino() {
-                ROOT_INO => req.reply_error(&writer, libc::EISDIR)?,
-                FILE_INO => req.reply(&writer, &[])?,
-                _ => req.reply_error(&writer, libc::ENOENT)?,
+                ROOT_INO => reply.error(libc::EISDIR)?,
+                FILE_INO => reply.reply(&[])?,
+                _ => reply.error(libc::ENOENT)?,
             },
 
             Operation::Readdir(op) => match op.ino() {
@@ -200,15 +202,15 @@ impl Heartbeat {
 
                         let mut out = ReaddirOut::new(op.size() as usize);
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
-                        req.reply(&writer, out)?;
+                        reply.reply(out)?;
                     } else {
-                        req.reply(&writer, &[])?;
+                        reply.reply(&[])?;
                     }
                 }
-                _ => req.reply_error(&writer, libc::ENOTDIR)?,
+                _ => reply.error(libc::ENOTDIR)?,
             },
 
-            _ => req.reply_error(&writer, libc::ENOSYS)?,
+            _ => reply.error(libc::ENOSYS)?,
         }
 
         Ok(())

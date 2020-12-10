@@ -8,7 +8,7 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
-    reply::{AttrOut, FileAttr, OpenOut},
+    reply::{AttrOut, FileAttr, OpenOut, ReplyWriter},
     Config, MountOptions, Operation, Session,
 };
 use polyfuse_example_async_std_support::{AsyncConnection, Writer};
@@ -83,6 +83,7 @@ async fn main() -> Result<()> {
             let span = tracing::debug_span!("handle request", unique = req.unique());
 
             let op = req.operation()?;
+            let reply = ReplyWriter::new(&writer, req.unique());
             span.in_scope(|| tracing::debug!(?op));
 
             match op {
@@ -91,17 +92,17 @@ async fn main() -> Result<()> {
                         let inner = heartbeat.inner.lock().await;
                         let mut out = AttrOut::default();
                         fill_attr(out.attr(), &inner.attr);
-                        req.reply(&writer, out)?;
+                        reply.reply(out)?;
                     }
-                    _ => req.reply_error(&writer, libc::ENOENT)?,
+                    _ => reply.error(libc::ENOENT)?,
                 },
                 Operation::Open(op) => match op.ino() {
                     ROOT_INO => {
                         let mut out = OpenOut::default();
                         out.keep_cache(true);
-                        req.reply(&writer, out)?;
+                        reply.reply(out)?;
                     }
-                    _ => req.reply_error(&writer, libc::ENOENT)?,
+                    _ => reply.error(libc::ENOENT)?,
                 },
                 Operation::Read(op) => match op.ino() {
                     ROOT_INO => {
@@ -109,15 +110,15 @@ async fn main() -> Result<()> {
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
-                            req.reply(&writer, &[])?;
+                            reply.reply(&[])?;
                         } else {
                             let size = op.size() as usize;
                             let data = &inner.content.as_bytes()[offset..];
                             let data = &data[..std::cmp::min(data.len(), size)];
-                            req.reply(&writer, data)?;
+                            reply.reply(data)?;
                         }
                     }
-                    _ => req.reply_error(&writer, libc::ENOENT)?,
+                    _ => reply.error(libc::ENOENT)?,
                 },
                 Operation::NotifyReply(op, mut data) => {
                     if let Some(tx) = heartbeat.retrieves.lock().await.remove(&op.unique()) {
@@ -127,7 +128,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                _ => req.reply_error(&writer, libc::ENOSYS)?,
+                _ => reply.error(libc::ENOSYS)?,
             }
 
             Ok(())

@@ -13,7 +13,7 @@
 
 use polyfuse::{
     op::{self, Forget},
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
+    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, ReplyWriter, WriteOut},
     Config, MountOptions, Operation, Session,
 };
 use polyfuse_example_async_std_support::AsyncConnection;
@@ -52,14 +52,15 @@ async fn main() -> anyhow::Result<()> {
     let mut fs = PathThrough::new(source)?;
 
     while let Some(req) = session.next_request(&conn).await? {
+        let reply = ReplyWriter::new(&conn, req.unique());
         let op = req.operation()?;
         tracing::debug!("handle operation: {:#?}", op);
 
         macro_rules! try_reply {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(reply) => req.reply(&conn, reply)?,
-                    Err(err) => req.reply_error(&conn, err.raw_os_error().unwrap_or(libc::EIO))?,
+                    Ok(data) => reply.reply(data)?,
+                    Err(err) => reply.error(err.raw_os_error().unwrap_or(libc::EIO))?,
                 }
             };
         }
@@ -85,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
             Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
             Operation::Release(op) => try_reply!(fs.do_release(&op)),
 
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            _ => reply.error(libc::ENOSYS)?,
         }
     }
 

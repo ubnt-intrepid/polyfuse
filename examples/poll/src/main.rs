@@ -1,5 +1,5 @@
 use polyfuse::{
-    reply::{AttrOut, OpenOut, PollOut},
+    reply::{AttrOut, OpenOut, PollOut, ReplyWriter},
     Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::{AsyncConnection, Writer};
@@ -97,6 +97,8 @@ impl PollFS {
             let op = req.operation()?;
             tracing::debug!(?op);
 
+            let reply = ReplyWriter::new(conn, req.unique());
+
             match op {
                 Operation::Getattr(..) => {
                     let mut out = AttrOut::default();
@@ -107,12 +109,12 @@ impl PollFS {
                     out.attr().gid(unsafe { libc::getgid() });
                     out.ttl(Duration::from_secs(u64::max_value() / 2));
 
-                    req.reply(conn, out)?;
+                    reply.reply(out)?;
                 }
 
                 Operation::Open(op) => {
                     if op.flags() as i32 & libc::O_ACCMODE != libc::O_RDONLY {
-                        return req.reply_error(conn, libc::EACCES).map_err(Into::into);
+                        return reply.error(libc::EACCES).map_err(Into::into);
                     }
 
                     tracing::info!("start reading task");
@@ -122,7 +124,7 @@ impl PollFS {
                     {
                         let mut handle = self.handle.lock().await;
                         if handle.is_some() {
-                            return req.reply_error(conn, libc::EBUSY).map_err(Into::into);
+                            return reply.error(libc::EBUSY).map_err(Into::into);
                         }
                         *handle = Some(OpenHandle {
                             is_nonblock: op.flags() as i32 & libc::O_NONBLOCK != 0,
@@ -134,7 +136,7 @@ impl PollFS {
                     out.direct_io(true);
                     out.nonseekable(true);
 
-                    req.reply(conn, out)?;
+                    reply.reply(out)?;
                 }
 
                 Operation::Read(op) => {
@@ -146,7 +148,7 @@ impl PollFS {
                             let handle = handle.as_mut().expect("open handle is empty");
                             if handle.is_nonblock {
                                 tracing::info!("send EAGAIN immediately");
-                                return req.reply_error(conn, libc::EAGAIN).map_err(Into::into);
+                                return reply.error(libc::EAGAIN).map_err(Into::into);
                             }
                         }
 
@@ -157,7 +159,7 @@ impl PollFS {
                     let offset = op.offset() as usize;
                     let bufsize = op.size() as usize;
                     let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
-                    req.reply(conn, &content[..std::cmp::min(content.len(), bufsize)])?;
+                    reply.reply(&content[..std::cmp::min(content.len(), bufsize)])?;
                 }
 
                 Operation::Poll(op) => {
@@ -166,7 +168,7 @@ impl PollFS {
                     if self.is_ready.is_set() {
                         tracing::info!("the background task is completed and ready to read");
                         out.revents(op.events() & libc::POLLIN as u32);
-                        return req.reply(conn, out).map_err(Into::into);
+                        return reply.reply(out).map_err(Into::into);
                     }
 
                     if let Some(kh) = op.kh() {
@@ -176,16 +178,16 @@ impl PollFS {
                         handle.kh.replace(kh);
                     }
 
-                    req.reply(conn, out)?;
+                    reply.reply(out)?;
                 }
 
                 Operation::Release(_op) => {
                     let mut handle = self.handle.lock().await;
                     handle.take();
-                    req.reply(conn, &[])?;
+                    reply.reply(&[])?;
                 }
 
-                _ => req.reply_error(conn, libc::ENOSYS)?,
+                _ => reply.error(libc::ENOSYS)?,
             }
 
             Ok(())

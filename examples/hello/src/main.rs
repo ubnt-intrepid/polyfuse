@@ -3,7 +3,7 @@
 
 use polyfuse::{
     op,
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, ReplyWriter},
     Config, MountOptions, Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::AsyncConnection;
@@ -34,12 +34,13 @@ async fn main() -> anyhow::Result<()> {
     let fs = Hello::new();
 
     while let Some(req) = session.next_request(&conn).await? {
+        let reply = ReplyWriter::new(&conn, req.unique());
         match req.operation()? {
-            Operation::Lookup(op) => fs.lookup(&req, &conn, op)?,
-            Operation::Getattr(op) => fs.getattr(&req, &conn, op)?,
-            Operation::Read(op) => fs.read(&req, &conn, op)?,
-            Operation::Readdir(op) => fs.readdir(&req, &conn, op)?,
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            Operation::Lookup(op) => fs.lookup(op, reply)?,
+            Operation::Getattr(op) => fs.getattr(op, reply)?,
+            Operation::Read(op) => fs.read(op, reply)?,
+            Operation::Readdir(op) => fs.readdir(op, reply)?,
+            _ => reply.error(libc::ENOSYS)?,
         }
     }
 
@@ -101,7 +102,10 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    fn lookup(&self, req: &Request, conn: impl io::Write, op: op::Lookup<'_>) -> io::Result<()> {
+    fn lookup<W>(&self, op: op::Lookup<'_>, reply: ReplyWriter<W>) -> io::Result<()>
+    where
+        W: io::Write,
+    {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -109,9 +113,9 @@ impl Hello {
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                req.reply(conn, out)
+                reply.reply(out)
             }
-            _ => req.reply_error(conn, libc::ENOENT),
+            _ => reply.error(libc::ENOENT),
         }
     }
 
