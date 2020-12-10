@@ -8,7 +8,7 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 
 use polyfuse::{
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, ReplyWriter},
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, Reply},
     Config, MountOptions, Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::{AsyncConnection, Writer};
@@ -142,7 +142,7 @@ impl Heartbeat {
         let op = req.operation()?;
         span.in_scope(|| tracing::debug!(?op));
 
-        let reply = ReplyWriter::new(&writer, req.unique());
+        let reply = ReplyWriter { req: &req, writer };
 
         match op {
             Operation::Lookup(op) => match op.parent() {
@@ -156,7 +156,7 @@ impl Heartbeat {
                         out.ttl_entry(self.timeout);
                         out.ttl_attr(self.timeout);
 
-                        reply.reply(out)?;
+                        reply.ok(out)?;
 
                         current.nlookup += 1;
                     } else {
@@ -186,12 +186,12 @@ impl Heartbeat {
                 fill_attr(out.attr(), attr);
                 out.ttl(self.timeout);
 
-                reply.reply(out)?;
+                reply.ok(out)?;
             }
 
             Operation::Read(op) => match op.ino() {
                 ROOT_INO => reply.error(libc::EISDIR)?,
-                FILE_INO => reply.reply(&[])?,
+                FILE_INO => reply.ok(&[])?,
                 _ => reply.error(libc::ENOENT)?,
             },
 
@@ -202,9 +202,9 @@ impl Heartbeat {
 
                         let mut out = ReaddirOut::new(op.size() as usize);
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
-                        reply.reply(out)?;
+                        reply.ok(out)?;
                     } else {
-                        reply.reply(&[])?;
+                        reply.ok(&[])?;
                     }
                 }
                 _ => reply.error(libc::ENOTDIR)?,
@@ -230,4 +230,22 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
     attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
     attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
+}
+
+struct ReplyWriter<'req> {
+    req: &'req Request,
+    writer: Writer,
+}
+
+impl ReplyWriter<'_> {
+    fn ok<T>(self, arg: T) -> io::Result<()>
+    where
+        T: polyfuse::bytes::Bytes,
+    {
+        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), 0, arg))
+    }
+
+    fn error(self, code: i32) -> io::Result<()> {
+        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), code, ()))
+    }
 }

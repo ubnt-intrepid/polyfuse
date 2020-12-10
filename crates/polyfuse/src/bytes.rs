@@ -1,9 +1,16 @@
+use smallvec::SmallVec;
+use std::{
+    io::{self, IoSlice},
+    os::unix::prelude::*,
+};
+
 /// A trait that represents a collection of bytes.
 pub trait Bytes {
+    /// Return the total size of bytes.
+    fn size(&self) -> usize;
+
     /// Collect the *scattered* bytes in the `collector`.
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>;
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>);
 }
 
 /// Container for collecting the scattered bytes.
@@ -17,10 +24,12 @@ pub trait Collector<'a> {
 macro_rules! impl_reply_body_for_pointers {
     () => {
         #[inline]
-        fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-        where
-            T: Collector<'a>,
-        {
+        fn size(&self) -> usize {
+            (**self).size()
+        }
+
+        #[inline]
+        fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
             (**self).collect(collector)
         }
     };
@@ -65,36 +74,45 @@ where
 
 impl Bytes for () {
     #[inline]
-    fn collect<'a, T: ?Sized>(&'a self, _: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    fn size(&self) -> usize {
+        0
     }
+
+    #[inline]
+    fn collect<'a>(&'a self, _: &mut dyn Collector<'a>) {}
 }
 
 impl Bytes for [u8; 0] {
     #[inline]
-    fn collect<'a, T: ?Sized>(&'a self, _: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    fn size(&self) -> usize {
+        0
     }
+
+    #[inline]
+    fn collect<'a>(&'a self, _: &mut dyn Collector<'a>) {}
 }
 
 // ==== compound types ====
 
 macro_rules! impl_reply_for_tuple {
     ($($T:ident),+ $(,)?) => {
+        #[allow(nonstandard_style)]
         impl<$($T),+> Bytes for ($($T,)+)
         where
             $( $T: Bytes, )+
         {
-            #[allow(nonstandard_style)]
             #[inline]
-            fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-            where
-                T: Collector<'a>,
-            {
+            fn size(&self) -> usize {
+                let ($($T,)+) = self;
+                let mut size = 0;
+                $(
+                    size += $T.size();
+                )+
+                size
+            }
+
+            #[inline]
+            fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
                 let ($($T,)+) = self;
                 $(
                     $T.collect(collector);
@@ -115,10 +133,12 @@ where
     R: Bytes,
 {
     #[inline]
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    fn size(&self) -> usize {
+        self.iter().map(|chunk| chunk.size()).sum()
+    }
+
+    #[inline]
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         for t in self {
             t.collect(collector);
         }
@@ -130,10 +150,12 @@ where
     R: Bytes,
 {
     #[inline]
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    fn size(&self) -> usize {
+        self.iter().map(|chunk| chunk.size()).sum()
+    }
+
+    #[inline]
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         for t in self {
             t.collect(collector);
         }
@@ -147,10 +169,12 @@ where
     T: Bytes,
 {
     #[inline]
-    fn collect<'a, C: ?Sized>(&'a self, collector: &mut C)
-    where
-        C: Collector<'a>,
-    {
+    fn size(&self) -> usize {
+        self.as_ref().map_or(0, |b| b.size())
+    }
+
+    #[inline]
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         if let Some(ref reply) = self {
             reply.collect(collector);
         }
@@ -171,10 +195,12 @@ mod impl_scattered_bytes_for_cont {
         ($($t:ty),*$(,)?) => {$(
             impl Bytes for $t {
                 #[inline]
-                fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-                where
-                    T: Collector<'a>,
-                {
+                fn size(&self) -> usize {
+                    as_bytes(self).len()
+                }
+
+                #[inline]
+                fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
                     let this = as_bytes(self);
                     if !this.is_empty() {
                         collector.append(this);
@@ -195,21 +221,64 @@ mod impl_scattered_bytes_for_cont {
 
 impl Bytes for std::ffi::OsStr {
     #[inline]
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
-        use std::os::unix::prelude::*;
-        self.as_bytes().collect(collector)
+    fn size(&self) -> usize {
+        self.as_bytes().len()
+    }
+
+    #[inline]
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
+        Bytes::collect(self.as_bytes(), collector)
     }
 }
 
 impl Bytes for std::ffi::OsString {
     #[inline]
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    fn size(&self) -> usize {
+        self.as_bytes().len()
+    }
+
+    #[inline]
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         (**self).collect(collector)
+    }
+}
+
+pub fn write_bytes<W, T>(mut writer: W, bytes: T) -> io::Result<()>
+where
+    W: io::Write,
+    T: Bytes,
+{
+    let mut vec = SmallVec::new();
+    let mut collector = VecCollector {
+        vec: &mut vec,
+        total_len: 0,
+    };
+    bytes.collect(&mut collector);
+    assert_eq!(
+        collector.total_len,
+        bytes.size(),
+        "incorrect Bytes::size implementation"
+    );
+
+    let count = writer.write_vectored(&*vec)?;
+    if count < bytes.size() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "written data is too short",
+        ));
+    }
+
+    Ok(())
+}
+
+struct VecCollector<'a, 'v> {
+    vec: &'v mut SmallVec<[IoSlice<'a>; 4]>,
+    total_len: usize,
+}
+
+impl<'a> Collector<'a> for VecCollector<'a, '_> {
+    fn append(&mut self, chunk: &'a [u8]) {
+        self.vec.push(IoSlice::new(chunk));
+        self.total_len += chunk.len();
     }
 }

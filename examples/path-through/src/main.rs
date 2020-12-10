@@ -12,9 +12,10 @@
 // the path based filesystems such as libfuse's highlevel API.
 
 use polyfuse::{
+    bytes::write_bytes,
     op::{self, Forget},
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, ReplyWriter, WriteOut},
-    Config, MountOptions, Operation, Session,
+    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Reply, WriteOut},
+    Config, MountOptions, Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::AsyncConnection;
 
@@ -52,14 +53,18 @@ async fn main() -> anyhow::Result<()> {
     let mut fs = PathThrough::new(source)?;
 
     while let Some(req) = session.next_request(&conn).await? {
-        let reply = ReplyWriter::new(&conn, req.unique());
         let op = req.operation()?;
         tracing::debug!("handle operation: {:#?}", op);
+
+        let reply = ReplyWriter {
+            req: &req,
+            conn: &conn,
+        };
 
         macro_rules! try_reply {
             ($e:expr) => {
                 match ($e).await {
-                    Ok(data) => reply.reply(data)?,
+                    Ok(data) => reply.ok(data)?,
                     Err(err) => reply.error(err.raw_os_error().unwrap_or(libc::EIO))?,
                 }
             };
@@ -506,6 +511,24 @@ fn fill_attr(metadata: &Metadata, attr: &mut FileAttr) {
         metadata.ctime() as u64,
         metadata.ctime_nsec() as u32,
     ));
+}
+
+struct ReplyWriter<'req> {
+    req: &'req Request,
+    conn: &'req AsyncConnection,
+}
+
+impl ReplyWriter<'_> {
+    fn ok<T>(self, arg: T) -> io::Result<()>
+    where
+        T: polyfuse::bytes::Bytes,
+    {
+        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+    }
+
+    fn error(self, code: i32) -> io::Result<()> {
+        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
+    }
 }
 
 // ==== utils ====

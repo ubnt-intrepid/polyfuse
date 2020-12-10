@@ -2,9 +2,10 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 
 use polyfuse::{
+    bytes::{write_bytes, Bytes},
     op,
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, ReplyWriter},
-    Config, Connection, MountOptions, Operation, Session,
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, Reply},
+    Config, Connection, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::Context as _;
@@ -45,7 +46,11 @@ async fn main() -> anyhow::Result<()> {
     let fs = Hello::new();
 
     while let Some(req) = session.next_request(&conn).await? {
-        let reply = ReplyWriter::new(&conn, req.unique());
+        let reply = ReplyWriter {
+            req: &req,
+            conn: &conn,
+        };
+
         match req.operation()? {
             Operation::Lookup(op) => fs.lookup(op, reply).await?,
             Operation::Getattr(op) => fs.getattr(op, reply).await?,
@@ -113,10 +118,7 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    async fn lookup<W>(&self, op: op::Lookup<'_>, reply: ReplyWriter<W>) -> io::Result<()>
-    where
-        W: io::Write,
-    {
+    async fn lookup(&self, op: op::Lookup<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -124,16 +126,13 @@ impl Hello {
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                reply.reply(out)
+                reply.ok(out)
             }
             _ => reply.error(libc::ENOENT),
         }
     }
 
-    async fn getattr<W>(&self, op: op::Getattr<'_>, reply: ReplyWriter<W>) -> io::Result<()>
-    where
-        W: io::Write,
-    {
+    async fn getattr(&self, op: op::Getattr<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
@@ -144,13 +143,10 @@ impl Hello {
         fill_attr(self, out.attr());
         out.ttl(TTL);
 
-        reply.reply(out)
+        reply.ok(out)
     }
 
-    async fn read<W>(&self, op: op::Read<'_>, reply: ReplyWriter<W>) -> io::Result<()>
-    where
-        W: io::Write,
-    {
+    async fn read(&self, op: op::Read<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
             ROOT_INO => return reply.error(libc::EISDIR),
@@ -166,7 +162,7 @@ impl Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        reply.reply(data)
+        reply.ok(data)
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -176,10 +172,7 @@ impl Hello {
         })
     }
 
-    async fn readdir<W>(&self, op: op::Readdir<'_>, reply: ReplyWriter<W>) -> io::Result<()>
-    where
-        W: io::Write,
-    {
+    async fn readdir(&self, op: op::Readdir<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
         if op.ino() != ROOT_INO {
             return reply.error(libc::ENOTDIR);
         }
@@ -198,7 +191,25 @@ impl Hello {
             }
         }
 
-        reply.reply(out)
+        reply.ok(out)
+    }
+}
+
+struct ReplyWriter<'req> {
+    req: &'req Request,
+    conn: &'req AsyncConnection,
+}
+
+impl ReplyWriter<'_> {
+    fn ok<T>(self, arg: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+    }
+
+    fn error(self, code: i32) -> io::Result<()> {
+        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
     }
 }
 

@@ -8,8 +8,8 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
-    reply::{AttrOut, FileAttr, OpenOut, ReplyWriter},
-    Config, MountOptions, Operation, Session,
+    reply::{AttrOut, FileAttr, OpenOut, Reply},
+    Config, MountOptions, Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::{AsyncConnection, Writer};
 
@@ -83,8 +83,9 @@ async fn main() -> Result<()> {
             let span = tracing::debug_span!("handle request", unique = req.unique());
 
             let op = req.operation()?;
-            let reply = ReplyWriter::new(&writer, req.unique());
             span.in_scope(|| tracing::debug!(?op));
+
+            let reply = ReplyWriter { req: &req, writer };
 
             match op {
                 Operation::Getattr(op) => match op.ino() {
@@ -92,7 +93,7 @@ async fn main() -> Result<()> {
                         let inner = heartbeat.inner.lock().await;
                         let mut out = AttrOut::default();
                         fill_attr(out.attr(), &inner.attr);
-                        reply.reply(out)?;
+                        reply.ok(out)?;
                     }
                     _ => reply.error(libc::ENOENT)?,
                 },
@@ -100,7 +101,7 @@ async fn main() -> Result<()> {
                     ROOT_INO => {
                         let mut out = OpenOut::default();
                         out.keep_cache(true);
-                        reply.reply(out)?;
+                        reply.ok(out)?;
                     }
                     _ => reply.error(libc::ENOENT)?,
                 },
@@ -110,12 +111,12 @@ async fn main() -> Result<()> {
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
-                            reply.reply(&[])?;
+                            reply.ok(&[])?;
                         } else {
                             let size = op.size() as usize;
                             let data = &inner.content.as_bytes()[offset..];
                             let data = &data[..std::cmp::min(data.len(), size)];
-                            reply.reply(data)?;
+                            reply.ok(data)?;
                         }
                     }
                     _ => reply.error(libc::ENOENT)?,
@@ -221,4 +222,22 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
     attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
     attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
+}
+
+struct ReplyWriter<'req> {
+    req: &'req Request,
+    writer: Writer,
+}
+
+impl ReplyWriter<'_> {
+    fn ok<T>(self, arg: T) -> io::Result<()>
+    where
+        T: polyfuse::bytes::Bytes,
+    {
+        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), 0, arg))
+    }
+
+    fn error(self, code: i32) -> io::Result<()> {
+        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), code, ()))
+    }
 }

@@ -1,5 +1,6 @@
 use polyfuse::{
-    reply::{AttrOut, OpenOut, PollOut, ReplyWriter},
+    bytes::{write_bytes, Bytes},
+    reply::{AttrOut, OpenOut, PollOut, Reply},
     Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::{AsyncConnection, Writer};
@@ -7,7 +8,7 @@ use polyfuse_example_async_std_support::{AsyncConnection, Writer};
 use anyhow::{ensure, Context as _, Result};
 use async_std::sync::Mutex;
 use futures_intrusive::sync::ManualResetEvent;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{io, path::PathBuf, sync::Arc, time::Duration};
 use tracing::Instrument as _;
 
 const CONTENT: &str = "Hello, world!\n";
@@ -97,7 +98,7 @@ impl PollFS {
             let op = req.operation()?;
             tracing::debug!(?op);
 
-            let reply = ReplyWriter::new(conn, req.unique());
+            let reply = ReplyWriter { req, conn };
 
             match op {
                 Operation::Getattr(..) => {
@@ -109,7 +110,7 @@ impl PollFS {
                     out.attr().gid(unsafe { libc::getgid() });
                     out.ttl(Duration::from_secs(u64::max_value() / 2));
 
-                    reply.reply(out)?;
+                    reply.ok(out)?;
                 }
 
                 Operation::Open(op) => {
@@ -136,7 +137,7 @@ impl PollFS {
                     out.direct_io(true);
                     out.nonseekable(true);
 
-                    reply.reply(out)?;
+                    reply.ok(out)?;
                 }
 
                 Operation::Read(op) => {
@@ -159,7 +160,7 @@ impl PollFS {
                     let offset = op.offset() as usize;
                     let bufsize = op.size() as usize;
                     let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
-                    reply.reply(&content[..std::cmp::min(content.len(), bufsize)])?;
+                    reply.ok(&content[..std::cmp::min(content.len(), bufsize)])?;
                 }
 
                 Operation::Poll(op) => {
@@ -168,7 +169,7 @@ impl PollFS {
                     if self.is_ready.is_set() {
                         tracing::info!("the background task is completed and ready to read");
                         out.revents(op.events() & libc::POLLIN as u32);
-                        return reply.reply(out).map_err(Into::into);
+                        return reply.ok(out).map_err(Into::into);
                     }
 
                     if let Some(kh) = op.kh() {
@@ -178,13 +179,13 @@ impl PollFS {
                         handle.kh.replace(kh);
                     }
 
-                    reply.reply(out)?;
+                    reply.ok(out)?;
                 }
 
                 Operation::Release(_op) => {
                     let mut handle = self.handle.lock().await;
                     handle.take();
-                    reply.reply(&[])?;
+                    reply.ok(&[])?;
                 }
 
                 _ => reply.error(libc::ENOSYS)?,
@@ -205,4 +206,22 @@ struct OpenHandle {
 struct Notifier {
     session: Arc<Session>,
     writer: Writer,
+}
+
+struct ReplyWriter<'req> {
+    req: &'req Request,
+    conn: &'req AsyncConnection,
+}
+
+impl ReplyWriter<'_> {
+    fn ok<T>(self, arg: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+    }
+
+    fn error(self, code: i32) -> io::Result<()> {
+        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
+    }
 }

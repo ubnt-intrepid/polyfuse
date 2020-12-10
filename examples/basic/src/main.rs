@@ -1,7 +1,8 @@
 use polyfuse::{
+    bytes::{write_bytes, Bytes},
     op,
-    reply::{AttrOut, ReplyWriter},
-    Config, MountOptions, Operation, Session,
+    reply::{AttrOut, Reply},
+    Config, MountOptions, Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::AsyncConnection;
 
@@ -27,13 +28,15 @@ async fn main() -> Result<()> {
 
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request(&conn).await? {
-        // Process the request.
-        let op = req.operation()?;
-        let reply = ReplyWriter::new(&conn, req.unique());
-        match op {
+        let reply = ReplyWriter {
+            req: &req,
+            conn: &conn,
+        };
+
+        match req.operation()? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&req, op, &conn).await?,
-            Operation::Read(op) => read(&req, op, &conn).await?,
+            Operation::Getattr(op) => getattr(op, reply)?,
+            Operation::Read(op) => read(op, reply)?,
 
             // Or annotate that the operation is not supported.
             _ => reply.error(libc::ENOSYS)?,
@@ -43,10 +46,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn getattr<W>(op: op::Getattr<'_>, reply: ReplyWriter<W>) -> io::Result<()>
-where
-    W: io::Write,
-{
+fn getattr(op: op::Getattr<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
     if op.ino() != 1 {
         return reply.error(libc::ENOENT);
     }
@@ -60,13 +60,10 @@ where
     out.attr().gid(unsafe { libc::getgid() });
     out.ttl(Duration::from_secs(1));
 
-    reply.reply(out)
+    reply.ok(out)
 }
 
-async fn read<W>(op: op::Read<'_>, reply: ReplyWriter<W>) -> io::Result<()>
-where
-    W: io::Write,
-{
+fn read(op: op::Read<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
     if op.ino() != 1 {
         return reply.error(libc::ENOENT);
     }
@@ -80,5 +77,23 @@ where
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    reply.reply(data)
+    reply.ok(data)
+}
+
+struct ReplyWriter<'req> {
+    req: &'req Request,
+    conn: &'req AsyncConnection,
+}
+
+impl ReplyWriter<'_> {
+    fn ok<T>(self, arg: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+    }
+
+    fn error(self, code: i32) -> io::Result<()> {
+        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
+    }
 }

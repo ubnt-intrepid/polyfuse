@@ -1,7 +1,6 @@
 use crate::bytes::{Bytes, Collector};
 use polyfuse_kernel::*;
-use smallvec::SmallVec;
-use std::{convert::TryInto as _, ffi::OsStr, fmt, io, mem, os::unix::prelude::*, time::Duration};
+use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::AsBytes as _;
 
 /// Attributes about a file.
@@ -105,10 +104,12 @@ impl fmt::Debug for EntryOut {
 }
 
 impl Bytes for EntryOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -189,10 +190,12 @@ impl AttrOut {
 }
 
 impl Bytes for AttrOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -210,10 +213,12 @@ impl fmt::Debug for OpenOut {
 }
 
 impl Bytes for OpenOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -270,10 +275,12 @@ impl fmt::Debug for WriteOut {
 }
 
 impl Bytes for WriteOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -297,10 +304,12 @@ impl fmt::Debug for StatfsOut {
 }
 
 impl Bytes for StatfsOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -377,10 +386,12 @@ impl fmt::Debug for XattrOut {
 }
 
 impl Bytes for XattrOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -404,10 +415,12 @@ impl fmt::Debug for LkOut {
 }
 
 impl Bytes for LkOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -463,10 +476,12 @@ impl fmt::Debug for BmapOut {
 }
 
 impl Bytes for BmapOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -490,10 +505,12 @@ impl fmt::Debug for PollOut {
 }
 
 impl Bytes for PollOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(self.out.as_bytes());
     }
 }
@@ -516,10 +533,12 @@ impl fmt::Debug for ReaddirOut {
 }
 
 impl Bytes for ReaddirOut {
-    fn collect<'a, T: ?Sized>(&'a self, collector: &mut T)
-    where
-        T: Collector<'a>,
-    {
+    #[inline]
+    fn size(&self) -> usize {
+        self.buf.len()
+    }
+
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
         collector.append(&self.buf[..]);
     }
 }
@@ -562,113 +581,81 @@ const fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
 
-// ==== Writer ====
+// ==== Reply ====
 
-pub struct ReplyWriter<W> {
-    writer: W,
+pub struct Reply<T> {
     header: fuse_out_header,
+    arg: T,
 }
 
-impl<W> ReplyWriter<W>
+impl<T> Reply<T>
 where
-    W: io::Write,
+    T: Bytes,
 {
     #[inline]
-    pub fn new(writer: W, unique: u64) -> Self {
+    pub fn new(unique: u64, error: i32, arg: T) -> Self {
+        let len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .expect("Argument size is too large");
         Self {
-            writer,
             header: fuse_out_header {
-                len: 0,
-                error: 0,
+                len,
+                error: -error,
                 unique,
             },
+            arg,
         }
     }
 
     #[inline]
-    pub fn reply<T>(self, data: T) -> io::Result<()>
-    where
-        T: Bytes,
-    {
-        self.send_msg(0, data)
-    }
-
-    #[inline]
-    pub fn error(self, code: i32) -> io::Result<()> {
-        self.send_msg(-code, &[])
-    }
-
-    #[inline]
-    pub fn notify<T>(self, code: fuse_notify_code, data: T) -> io::Result<()>
-    where
-        T: Bytes,
-    {
-        self.send_msg(code as i32, data)
-    }
-
-    fn send_msg<T>(mut self, error: i32, data: T) -> io::Result<()>
-    where
-        T: Bytes,
-    {
-        self.header.error = error;
-
-        let mut vec = SmallVec::new();
-        vec.push(io::IoSlice::new(&[])); // dummy
-
-        {
-            let mut collector = VecCollector {
-                vec: &mut vec,
-                total_len: 0,
-            };
-            data.collect(&mut collector);
-
-            self.header.len = (mem::size_of::<fuse_out_header>() + collector.total_len)
-                .try_into()
-                .expect("too large data");
+    pub(crate) fn notify(code: fuse_notify_code, arg: T) -> Self {
+        let len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .expect("Argument size is too large");
+        Self {
+            header: fuse_out_header {
+                len,
+                error: code as i32,
+                unique: 0,
+            },
+            arg,
         }
-
-        vec[0] = io::IoSlice::new(self.header.as_bytes());
-
-        let count = self.writer.write_vectored(&*vec)?;
-        if count < self.header.len as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "written data is too short",
-            ));
-        }
-
-        Ok(())
     }
 }
 
-struct VecCollector<'a, 'v> {
-    vec: &'v mut SmallVec<[io::IoSlice<'a>; 4]>,
-    total_len: usize,
-}
+impl<T> Bytes for Reply<T>
+where
+    T: Bytes,
+{
+    #[inline]
+    fn size(&self) -> usize {
+        self.header.as_bytes().len() + self.arg.size()
+    }
 
-impl<'a> Collector<'a> for VecCollector<'a, '_> {
-    fn append(&mut self, bytes: &'a [u8]) {
-        self.vec.push(io::IoSlice::new(bytes));
-        self.total_len += bytes.len();
+    #[inline]
+    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
+        collector.append(self.header.as_bytes());
+        self.arg.collect(collector);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytes::write_bytes;
 
     #[inline]
     fn bytes(bytes: &[u8]) -> &[u8] {
         bytes
     }
     macro_rules! b {
-        ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
-    }
+    ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
+}
 
     #[test]
     fn send_msg_empty() {
         let mut buf = vec![0u8; 0];
-        ReplyWriter::new(&mut buf, 42).send_msg(4, &[]).unwrap();
+        write_bytes(&mut buf, Reply::new(42, 4, &[])).unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -681,7 +668,7 @@ mod tests {
     #[test]
     fn send_msg_single_data() {
         let mut buf = vec![0u8; 0];
-        ReplyWriter::new(&mut buf, 42).send_msg(0, "hello").unwrap();
+        write_bytes(&mut buf, Reply::new(42, 0, "hello")).unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -701,7 +688,7 @@ mod tests {
             "message.".as_ref(),
         ];
         let mut buf = vec![0u8; 0];
-        ReplyWriter::new(&mut buf, 26).send_msg(0, payload).unwrap();
+        write_bytes(&mut buf, Reply::new(26, 0, payload)).unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(

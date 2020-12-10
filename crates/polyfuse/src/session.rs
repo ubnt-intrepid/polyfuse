@@ -1,9 +1,10 @@
 //! Establish a FUSE session.
 
 use crate::{
+    bytes::write_bytes,
     decoder::Decoder,
     op::{DecodeError, Operation},
-    reply::ReplyWriter,
+    reply::Reply,
 };
 use bitflags::bitflags;
 use futures::{
@@ -420,8 +421,10 @@ impl Session {
 
         let out = fuse_notify_inval_inode_out { ino, off, len };
 
-        ReplyWriter::new(writer, 0)
-            .notify(fuse_notify_code::FUSE_NOTIFY_INVAL_INODE, out.as_bytes())
+        write_bytes(
+            writer,
+            Reply::notify(fuse_notify_code::FUSE_NOTIFY_INVAL_INODE, out.as_bytes()),
+        )
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
@@ -443,9 +446,13 @@ impl Session {
             namelen,
             ..Default::default()
         };
-        ReplyWriter::new(writer, 0).notify(
-            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
-            &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
+
+        write_bytes(
+            writer,
+            Reply::notify(
+                fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+                &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
+            ),
         )
     }
 
@@ -476,9 +483,12 @@ impl Session {
             ..Default::default()
         };
 
-        ReplyWriter::new(writer, 0).notify(
-            fuse_notify_code::FUSE_NOTIFY_DELETE,
-            &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
+        write_bytes(
+            writer,
+            Reply::notify(
+                fuse_notify_code::FUSE_NOTIFY_DELETE,
+                &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
+            ),
         )
     }
 
@@ -507,7 +517,10 @@ impl Session {
             .chain(data.iter().copied())
             .collect();
 
-        ReplyWriter::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_STORE, &*data)
+        write_bytes(
+            writer,
+            Reply::notify(fuse_notify_code::FUSE_NOTIFY_STORE, &*data),
+        )
     }
 
     /// Retrieve data in an inode from the kernel cache.
@@ -526,8 +539,10 @@ impl Session {
             ..Default::default()
         };
 
-        ReplyWriter::new(writer, 0)
-            .notify(fuse_notify_code::FUSE_NOTIFY_RETRIEVE, out.as_bytes())?;
+        write_bytes(
+            writer,
+            Reply::notify(fuse_notify_code::FUSE_NOTIFY_RETRIEVE, out.as_bytes()),
+        )?;
 
         Ok(unique)
     }
@@ -541,7 +556,10 @@ impl Session {
 
         let out = fuse_notify_poll_wakeup_out { kh };
 
-        ReplyWriter::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_POLL, out.as_bytes())
+        write_bytes(
+            writer,
+            Reply::notify(fuse_notify_code::FUSE_NOTIFY_POLL, out.as_bytes()),
+        )
     }
 }
 
@@ -683,7 +701,6 @@ where
     W: io::Write,
 {
     let mut decoder = Decoder::new(arg);
-    let sender = ReplyWriter::new(writer, header.unique);
 
     match fuse_opcode::try_from(header.opcode) {
         Ok(fuse_opcode::FUSE_INIT) => {
@@ -715,7 +732,7 @@ where
 
             if init_in.major > 7 {
                 tracing::debug!("wait for a second INIT request with an older version.");
-                sender.reply(init_out.as_bytes())?;
+                write_bytes(writer, Reply::new(header.unique, 0, init_out.as_bytes()))?;
                 return Ok(None);
             }
 
@@ -726,7 +743,7 @@ where
                     init_in.major,
                     init_in.minor
                 );
-                sender.error(libc::EPROTO)?;
+                write_bytes(writer, Reply::new(header.unique, libc::EPROTO, ()))?;
                 return Ok(None);
             }
 
@@ -767,7 +784,7 @@ where
                 init_out.congestion_threshold
             );
             tracing::debug!("  time_gran = {}", init_out.time_gran);
-            sender.reply(init_out.as_bytes())?;
+            write_bytes(writer, Reply::new(header.unique, 0, init_out.as_bytes()))?;
 
             init_out.flags |= readonly_flags;
 
@@ -787,7 +804,7 @@ where
                 "ignoring an operation before init (opcode={:?})",
                 header.opcode
             );
-            sender.error(libc::EIO)?;
+            write_bytes(writer, Reply::new(header.unique, libc::EIO, ()))?;
             Ok(None)
         }
     }

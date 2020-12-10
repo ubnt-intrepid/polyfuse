@@ -6,7 +6,7 @@ mod fs;
 use polyfuse::{
     op,
     reply::{
-        AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, ReplyWriter, Statfs, StatfsOut, WriteOut,
+        AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Reply, Statfs, StatfsOut, WriteOut,
         XattrOut,
     },
     CapabilityFlags, MountOptions, Operation, Session,
@@ -77,7 +77,6 @@ async fn main() -> anyhow::Result<()> {
 
     while let Some(req) = session.next_request(&conn).await? {
         let span = tracing::debug_span!("Passthrough::call", unique = req.unique());
-        let reply = ReplyWriter::new(&conn, req.unique());
 
         let op = req.operation()?;
         span.in_scope(|| tracing::debug!(?op));
@@ -87,12 +86,12 @@ async fn main() -> anyhow::Result<()> {
                 match ($e).instrument(span.clone()).await {
                     Ok(data) => {
                         span.in_scope(|| tracing::debug!(?data));
-                        reply.reply(data)?;
+                        polyfuse::bytes::write_bytes(&conn, Reply::new(req.unique(), 0, data))?;
                     }
                     Err(err) => {
                         let errno = io_to_errno(err);
                         span.in_scope(|| tracing::debug!(errno = errno));
-                        reply.error(errno)?;
+                        polyfuse::bytes::write_bytes(&conn, Reply::new(req.unique(), errno, ()))?;
                     }
                 }
             };
@@ -153,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
 
             Operation::Statfs(op) => try_reply!(fs.do_statfs(&op)),
 
-            _ => reply.error(libc::ENOSYS)?,
+            _ => polyfuse::bytes::write_bytes(&conn, Reply::new(req.unique(), libc::ENOSYS, ()))?,
         }
     }
 
@@ -173,10 +172,15 @@ where
     R: polyfuse::bytes::Bytes,
 {
     #[inline]
-    fn collect<'a, C: ?Sized>(&'a self, collector: &mut C)
-    where
-        C: polyfuse::bytes::Collector<'a>,
-    {
+    fn size(&self) -> usize {
+        match self {
+            Either::Left(l) => l.size(),
+            Either::Right(r) => r.size(),
+        }
+    }
+
+    #[inline]
+    fn collect<'a>(&'a self, collector: &mut dyn polyfuse::bytes::Collector<'a>) {
         match self {
             Either::Left(l) => l.collect(collector),
             Either::Right(r) => r.collect(collector),
