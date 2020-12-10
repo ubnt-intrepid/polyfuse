@@ -1,5 +1,6 @@
 use polyfuse::{
     bytes::{write_bytes, Bytes},
+    notify::PollWakeup,
     reply::{AttrOut, OpenOut, PollOut, Reply},
     Operation, Request, Session,
 };
@@ -31,13 +32,7 @@ async fn main() -> Result<()> {
     let conn = AsyncConnection::open(mountpoint, Default::default()).await?;
     let session = Session::start(&conn, &conn, Default::default()).await?;
 
-    let fs = PollFS::new(
-        Notifier {
-            session: session.clone(),
-            writer: conn.writer(),
-        },
-        wakeup_interval,
-    );
+    let fs = PollFS::new(conn.writer(), wakeup_interval);
 
     while let Some(req) = session.next_request(&conn).await? {
         fs.handle_request(&req, &conn).await?;
@@ -49,16 +44,16 @@ async fn main() -> Result<()> {
 struct PollFS {
     handle: Arc<Mutex<Option<OpenHandle>>>,
     is_ready: Arc<ManualResetEvent>,
-    notifier: Arc<Notifier>,
+    writer: Writer,
     wakeup_interval: Duration,
 }
 
 impl PollFS {
-    fn new(notifier: Notifier, wakeup_interval: Duration) -> Self {
+    fn new(writer: Writer, wakeup_interval: Duration) -> Self {
         Self {
             handle: Arc::new(Mutex::new(None)),
             is_ready: Arc::new(ManualResetEvent::new(false)),
-            notifier: Arc::new(notifier),
+            writer,
             wakeup_interval,
         }
     }
@@ -66,7 +61,7 @@ impl PollFS {
     fn start_reading(&self) {
         let handle = self.handle.clone();
         let is_ready = self.is_ready.clone();
-        let notifier = self.notifier.clone();
+        let writer = self.writer.clone();
         let wakeup_interval = self.wakeup_interval;
 
         let span = tracing::debug_span!("wakeup");
@@ -81,7 +76,7 @@ impl PollFS {
                 if let Some(handle) = handle.as_mut() {
                     if let Some(kh) = handle.kh.take() {
                         tracing::info!("sending wakeup notification to kh={}", kh);
-                        if let Err(err) = notifier.session.notify_poll_wakeup(&notifier.writer, kh)
+                        if let Err(err) = polyfuse::bytes::write_bytes(&writer, PollWakeup::new(kh))
                         {
                             tracing::error!("failed to send poll notification: {}", err);
                         }
@@ -201,11 +196,6 @@ impl PollFS {
 struct OpenHandle {
     is_nonblock: bool,
     kh: Option<u64>,
-}
-
-struct Notifier {
-    session: Arc<Session>,
-    writer: Writer,
 }
 
 struct ReplyWriter<'req> {

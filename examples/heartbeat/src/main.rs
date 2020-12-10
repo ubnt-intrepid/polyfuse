@@ -8,6 +8,7 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
+    notify::{InvalInode, Retrieve, Store},
     reply::{AttrOut, FileAttr, OpenOut, Reply},
     Config, MountOptions, Operation, Request, Session,
 };
@@ -17,7 +18,16 @@ use anyhow::{anyhow, ensure, Context as _, Result};
 use async_std::sync::Mutex;
 use chrono::Local;
 use futures::{channel::oneshot, prelude::*};
-use std::{collections::HashMap, io, mem, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    io, mem,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 const ROOT_INO: u64 = 1;
 
@@ -148,6 +158,7 @@ enum NotifyKind {
 struct Heartbeat {
     inner: Mutex<Inner>,
     retrieves: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
+    retrieve_unique: AtomicU64,
 }
 
 struct Inner {
@@ -167,6 +178,7 @@ impl Heartbeat {
         Self {
             inner: Mutex::new(Inner { content, attr }),
             retrieves: Mutex::default(),
+            retrieve_unique: AtomicU64::default(),
         }
     }
 
@@ -182,13 +194,15 @@ impl Heartbeat {
         let content = &inner.content;
 
         tracing::info!("send notify_store(data={:?})", content);
-        session.notify_store(writer, ROOT_INO, 0, &[content.as_bytes()])?;
+        polyfuse::bytes::write_bytes(writer, Store::new(ROOT_INO, 0, content))?;
 
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
         let data = {
-            let unique = session.notify_retrieve(writer, ROOT_INO, 0, 1024)?;
+            // FIXME: choose appropriate atomic ordering.
+            let unique = self.retrieve_unique.fetch_add(1, Ordering::SeqCst);
+            polyfuse::bytes::write_bytes(writer, Retrieve::new(unique, ROOT_INO, 0, 1024))?;
             let (tx, rx) = oneshot::channel();
             self.retrieves.lock().await.insert(unique, tx);
             rx.await.unwrap()
@@ -202,9 +216,9 @@ impl Heartbeat {
         Ok(())
     }
 
-    async fn notify_inval_inode(&self, session: &Session, writer: &Writer) -> io::Result<()> {
+    async fn notify_inval_inode(&self, writer: &Writer) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
-        session.notify_inval_inode(writer, ROOT_INO, 0, 0)?;
+        polyfuse::bytes::write_bytes(writer, InvalInode::new(ROOT_INO, 0, 0))?;
         Ok(())
     }
 }

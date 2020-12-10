@@ -606,21 +606,6 @@ where
             arg,
         }
     }
-
-    #[inline]
-    pub(crate) fn notify(code: fuse_notify_code, arg: T) -> Self {
-        let len = (mem::size_of::<fuse_out_header>() + arg.size())
-            .try_into()
-            .expect("Argument size is too large");
-        Self {
-            header: fuse_out_header {
-                len,
-                error: code as i32,
-                unique: 0,
-            },
-            arg,
-        }
-    }
 }
 
 impl<T> Bytes for Reply<T>

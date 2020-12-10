@@ -8,6 +8,7 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 
 use polyfuse::{
+    notify::InvalEntry,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, Reply},
     Config, MountOptions, Operation, Request, Session,
 };
@@ -65,14 +66,11 @@ async fn main() -> Result<()> {
     // Spawn a task that beats the heart.
     task::spawn({
         let heartbeat = fs.clone();
-        let mut notifier = None;
-        if !no_notify {
-            notifier = Some(Notifier {
-                session: Arc::clone(&session),
-                writer: conn.writer(),
-            });
-        }
-        heartbeat.heartbeat(notifier)
+        heartbeat.heartbeat(if !no_notify {
+            Some(conn.writer())
+        } else {
+            None
+        })
     });
 
     while let Some(req) = session.next_request(&conn).await? {
@@ -86,11 +84,6 @@ async fn main() -> Result<()> {
 
 fn generate_filename() -> String {
     Local::now().format("Time_is_%Hh_%Mm_%Ss").to_string()
-}
-
-struct Notifier {
-    session: Arc<Session>,
-    writer: Writer,
 }
 
 struct Heartbeat {
@@ -108,8 +101,8 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    async fn heartbeat(self: Arc<Self>, notifier: Option<Notifier>) -> io::Result<()> {
-        let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
+    async fn heartbeat(self: Arc<Self>, writer: Option<Writer>) -> io::Result<()> {
+        let span = tracing::debug_span!("heartbeat", notify = writer.is_some());
         loop {
             let new_filename = generate_filename();
             let mut current = self.current.lock().await;
@@ -119,13 +112,10 @@ impl Heartbeat {
             });
             let old_filename = mem::replace(&mut current.filename, new_filename);
 
-            match notifier {
-                Some(Notifier {
-                    ref session,
-                    ref writer,
-                }) if current.nlookup > 0 => {
+            match writer {
+                Some(ref writer) if current.nlookup > 0 => {
                     span.in_scope(|| tracing::debug!("send notify_inval_entry"));
-                    session.notify_inval_entry(writer, ROOT_INO, old_filename)?;
+                    polyfuse::bytes::write_bytes(writer, InvalEntry::new(ROOT_INO, old_filename))?;
                 }
                 _ => (),
             }
