@@ -58,24 +58,21 @@ async fn main() -> Result<()> {
     // Spawn a task that beats the heart.
     let _: async_std::task::JoinHandle<io::Result<()>> = async_std::task::spawn({
         let heartbeat = heartbeat.clone();
-        let session = if !no_notify {
-            Some(Arc::clone(&session))
+        let writer = if !no_notify {
+            Some(conn.writer())
         } else {
             None
         };
-        let writer = conn.writer();
         async move {
             loop {
                 tracing::info!("heartbeat");
 
                 heartbeat.update_content().await;
 
-                if let Some(ref session) = session {
+                if let Some(ref writer) = writer {
                     match notify_kind {
-                        NotifyKind::Store => heartbeat.notify_store(session, &writer).await?,
-                        NotifyKind::Invalidate => {
-                            heartbeat.notify_inval_inode(session, &writer).await?
-                        }
+                        NotifyKind::Store => heartbeat.notify_store(&writer).await?,
+                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(&writer).await?,
                     }
                 }
 
@@ -189,7 +186,7 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    async fn notify_store(&self, session: &Session, writer: &Writer) -> io::Result<()> {
+    async fn notify_store(&self, writer: &Writer) -> io::Result<()> {
         let inner = self.inner.lock().await;
         let content = &inner.content;
 

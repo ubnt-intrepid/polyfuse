@@ -614,7 +614,7 @@ where
 {
     #[inline]
     fn size(&self) -> usize {
-        self.header.as_bytes().len() + self.arg.size()
+        self.header.len as usize
     }
 
     #[inline]
@@ -634,13 +634,13 @@ mod tests {
         bytes
     }
     macro_rules! b {
-    ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
-}
+        ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
+    }
 
     #[test]
     fn send_msg_empty() {
         let mut buf = vec![0u8; 0];
-        write_bytes(&mut buf, Reply::new(42, 4, &[])).unwrap();
+        write_bytes(&mut buf, Reply::new(42, -4, &[])).unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
