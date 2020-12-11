@@ -9,6 +9,7 @@ use polyfuse::{
 use polyfuse_example_async_std_support::AsyncConnection;
 
 use async_std::{prelude::*, sync::Mutex};
+use either::Either;
 use futures::io::AsyncBufRead;
 use slab::Slab;
 use std::{
@@ -839,33 +840,4 @@ fn no_entry() -> io::Error {
 
 fn unknown_error() -> io::Error {
     io::Error::from_raw_os_error(libc::EIO)
-}
-
-// FIXME: use either crate.
-#[derive(Debug)]
-enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
-impl<L, R> polyfuse::bytes::Bytes for Either<L, R>
-where
-    L: polyfuse::bytes::Bytes,
-    R: polyfuse::bytes::Bytes,
-{
-    #[inline]
-    fn size(&self) -> usize {
-        match self {
-            Either::Left(l) => l.size(),
-            Either::Right(r) => r.size(),
-        }
-    }
-
-    #[inline]
-    fn collect<'a>(&'a self, collector: &mut dyn polyfuse::bytes::Collector<'a>) {
-        match self {
-            Either::Left(l) => l.collect(collector),
-            Either::Right(r) => r.collect(collector),
-        }
-    }
 }

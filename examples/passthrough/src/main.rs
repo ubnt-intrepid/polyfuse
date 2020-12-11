@@ -19,6 +19,7 @@ use async_std::{
     prelude::*,
     sync::Mutex,
 };
+use either::Either;
 use futures::io::AsyncBufRead;
 use pico_args::Arguments;
 use slab::Slab;
@@ -157,35 +158,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-// FIXME: use either crate.
-#[derive(Debug)]
-enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
-impl<L, R> polyfuse::bytes::Bytes for Either<L, R>
-where
-    L: polyfuse::bytes::Bytes,
-    R: polyfuse::bytes::Bytes,
-{
-    #[inline]
-    fn size(&self) -> usize {
-        match self {
-            Either::Left(l) => l.size(),
-            Either::Right(r) => r.size(),
-        }
-    }
-
-    #[inline]
-    fn collect<'a>(&'a self, collector: &mut dyn polyfuse::bytes::Collector<'a>) {
-        match self {
-            Either::Left(l) => l.collect(collector),
-            Either::Right(r) => r.collect(collector),
-        }
-    }
 }
 
 type Ino = u64;

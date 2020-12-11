@@ -10,6 +10,7 @@ polyfuse-example-async-std-support = { path = "../async-std-support" }
 
 anyhow = "1"
 async-std = { version = ">=1.7.0", features = [ "attributes" ] }
+either = "1"
 futures = "0.3"
 libc = "0.2"
 pico-args = "0.3"
