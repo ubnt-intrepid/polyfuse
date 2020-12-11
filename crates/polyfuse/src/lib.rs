@@ -3,9 +3,9 @@
 mod conn;
 mod decoder;
 mod session;
-mod write;
 
 pub mod bytes;
+pub mod notify;
 pub mod op;
 pub mod reply;
 

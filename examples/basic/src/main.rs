@@ -1,4 +1,9 @@
-use polyfuse::{op, reply::AttrOut, Config, MountOptions, Operation, Request, Session};
+use polyfuse::{
+    bytes::{write_bytes, Bytes},
+    op,
+    reply::{AttrOut, Reply},
+    Config, MountOptions, Operation, Request, Session,
+};
 use polyfuse_example_async_std_support::AsyncConnection;
 
 use anyhow::{ensure, Context as _, Result};
@@ -23,27 +28,27 @@ async fn main() -> Result<()> {
 
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request(&conn).await? {
-        // Process the request.
-        let op = req.operation()?;
-        match op {
+        let reply = ReplyWriter {
+            req: &req,
+            conn: &conn,
+        };
+
+        match req.operation()? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&req, op, &conn).await?,
-            Operation::Read(op) => read(&req, op, &conn).await?,
+            Operation::Getattr(op) => getattr(op, reply)?,
+            Operation::Read(op) => read(op, reply)?,
 
             // Or annotate that the operation is not supported.
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            _ => reply.error(libc::ENOSYS)?,
         };
     }
 
     Ok(())
 }
 
-async fn getattr<W>(req: &Request, op: op::Getattr<'_>, writer: W) -> io::Result<()>
-where
-    W: io::Write,
-{
+fn getattr(op: op::Getattr<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
     if op.ino() != 1 {
-        return req.reply_error(writer, libc::ENOENT);
+        return reply.error(libc::ENOENT);
     }
 
     let mut out = AttrOut::default();
@@ -55,15 +60,12 @@ where
     out.attr().gid(unsafe { libc::getgid() });
     out.ttl(Duration::from_secs(1));
 
-    req.reply(writer, out)
+    reply.ok(out)
 }
 
-async fn read<W>(req: &Request, op: op::Read<'_>, writer: W) -> io::Result<()>
-where
-    W: io::Write,
-{
+fn read(op: op::Read<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
     if op.ino() != 1 {
-        return req.reply_error(writer, libc::ENOENT);
+        return reply.error(libc::ENOENT);
     }
 
     let mut data: &[u8] = &[];
@@ -75,5 +77,23 @@ where
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    req.reply(writer, data)
+    reply.ok(data)
+}
+
+struct ReplyWriter<'req> {
+    req: &'req Request,
+    conn: &'req AsyncConnection,
+}
+
+impl ReplyWriter<'_> {
+    fn ok<T>(self, arg: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+    }
+
+    fn error(self, code: i32) -> io::Result<()> {
+        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
+    }
 }

@@ -8,7 +8,8 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 
 use polyfuse::{
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
+    notify::InvalEntry,
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, Reply},
     Config, MountOptions, Operation, Request, Session,
 };
 use polyfuse_example_async_std_support::{AsyncConnection, Writer};
@@ -65,14 +66,11 @@ async fn main() -> Result<()> {
     // Spawn a task that beats the heart.
     task::spawn({
         let heartbeat = fs.clone();
-        let mut notifier = None;
-        if !no_notify {
-            notifier = Some(Notifier {
-                session: Arc::clone(&session),
-                writer: conn.writer(),
-            });
-        }
-        heartbeat.heartbeat(notifier)
+        heartbeat.heartbeat(if !no_notify {
+            Some(conn.writer())
+        } else {
+            None
+        })
     });
 
     while let Some(req) = session.next_request(&conn).await? {
@@ -86,11 +84,6 @@ async fn main() -> Result<()> {
 
 fn generate_filename() -> String {
     Local::now().format("Time_is_%Hh_%Mm_%Ss").to_string()
-}
-
-struct Notifier {
-    session: Arc<Session>,
-    writer: Writer,
 }
 
 struct Heartbeat {
@@ -108,8 +101,8 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    async fn heartbeat(self: Arc<Self>, notifier: Option<Notifier>) -> io::Result<()> {
-        let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
+    async fn heartbeat(self: Arc<Self>, writer: Option<Writer>) -> io::Result<()> {
+        let span = tracing::debug_span!("heartbeat", notify = writer.is_some());
         loop {
             let new_filename = generate_filename();
             let mut current = self.current.lock().await;
@@ -119,13 +112,10 @@ impl Heartbeat {
             });
             let old_filename = mem::replace(&mut current.filename, new_filename);
 
-            match notifier {
-                Some(Notifier {
-                    ref session,
-                    ref writer,
-                }) if current.nlookup > 0 => {
+            match writer {
+                Some(ref writer) if current.nlookup > 0 => {
                     span.in_scope(|| tracing::debug!("send notify_inval_entry"));
-                    session.notify_inval_entry(writer, ROOT_INO, old_filename)?;
+                    polyfuse::bytes::write_bytes(writer, InvalEntry::new(ROOT_INO, old_filename))?;
                 }
                 _ => (),
             }
@@ -142,6 +132,8 @@ impl Heartbeat {
         let op = req.operation()?;
         span.in_scope(|| tracing::debug!(?op));
 
+        let reply = ReplyWriter { req: &req, writer };
+
         match op {
             Operation::Lookup(op) => match op.parent() {
                 ROOT_INO => {
@@ -154,14 +146,14 @@ impl Heartbeat {
                         out.ttl_entry(self.timeout);
                         out.ttl_attr(self.timeout);
 
-                        req.reply(&writer, out)?;
+                        reply.ok(out)?;
 
                         current.nlookup += 1;
                     } else {
-                        req.reply_error(&writer, libc::ENOENT)?;
+                        reply.error(libc::ENOENT)?;
                     }
                 }
-                _ => req.reply_error(&writer, libc::ENOTDIR)?,
+                _ => reply.error(libc::ENOTDIR)?,
             },
 
             Operation::Forget(forgets) => {
@@ -177,20 +169,20 @@ impl Heartbeat {
                 let attr = match op.ino() {
                     ROOT_INO => &self.root_attr,
                     FILE_INO => &self.file_attr,
-                    _ => return req.reply_error(&writer, libc::ENOENT).map_err(Into::into),
+                    _ => return reply.error(libc::ENOENT).map_err(Into::into),
                 };
 
                 let mut out = AttrOut::default();
                 fill_attr(out.attr(), attr);
                 out.ttl(self.timeout);
 
-                req.reply(&writer, out)?;
+                reply.ok(out)?;
             }
 
             Operation::Read(op) => match op.ino() {
-                ROOT_INO => req.reply_error(&writer, libc::EISDIR)?,
-                FILE_INO => req.reply(&writer, &[])?,
-                _ => req.reply_error(&writer, libc::ENOENT)?,
+                ROOT_INO => reply.error(libc::EISDIR)?,
+                FILE_INO => reply.ok(&[])?,
+                _ => reply.error(libc::ENOENT)?,
             },
 
             Operation::Readdir(op) => match op.ino() {
@@ -200,15 +192,15 @@ impl Heartbeat {
 
                         let mut out = ReaddirOut::new(op.size() as usize);
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
-                        req.reply(&writer, out)?;
+                        reply.ok(out)?;
                     } else {
-                        req.reply(&writer, &[])?;
+                        reply.ok(&[])?;
                     }
                 }
-                _ => req.reply_error(&writer, libc::ENOTDIR)?,
+                _ => reply.error(libc::ENOTDIR)?,
             },
 
-            _ => req.reply_error(&writer, libc::ENOSYS)?,
+            _ => reply.error(libc::ENOSYS)?,
         }
 
         Ok(())
@@ -228,4 +220,22 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
     attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
     attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
+}
+
+struct ReplyWriter<'req> {
+    req: &'req Request,
+    writer: Writer,
+}
+
+impl ReplyWriter<'_> {
+    fn ok<T>(self, arg: T) -> io::Result<()>
+    where
+        T: polyfuse::bytes::Bytes,
+    {
+        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), 0, arg))
+    }
+
+    fn error(self, code: i32) -> io::Result<()> {
+        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), code, ()))
+    }
 }

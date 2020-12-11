@@ -1,10 +1,10 @@
 //! Establish a FUSE session.
 
 use crate::{
-    bytes::Bytes,
+    bytes::write_bytes,
     decoder::Decoder,
     op::{DecodeError, Operation},
-    write::ReplySender,
+    reply::Reply,
 };
 use bitflags::bitflags;
 use futures::{
@@ -14,14 +14,12 @@ use futures::{
 use polyfuse_kernel::*;
 use std::{
     convert::TryFrom,
-    ffi::OsStr,
     fmt,
     io::{self, IoSliceMut},
     mem,
-    os::unix::prelude::*,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
@@ -310,7 +308,6 @@ pub struct Session {
     conn: ConnectionInfo,
     bufsize: usize,
     exited: AtomicBool,
-    notify_unique: AtomicU64,
 }
 
 impl Drop for Session {
@@ -400,150 +397,6 @@ impl Session {
             arg,
         }))
     }
-
-    fn ensure_session_is_alived(&self) -> io::Result<()> {
-        if !self.exited() {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "session is closed",
-            ))
-        }
-    }
-
-    /// Notify the cache invalidation about an inode to the kernel.
-    pub fn notify_inval_inode<W>(&self, writer: W, ino: u64, off: i64, len: i64) -> io::Result<()>
-    where
-        W: io::Write,
-    {
-        self.ensure_session_is_alived()?;
-
-        let out = fuse_notify_inval_inode_out { ino, off, len };
-
-        ReplySender::new(writer, 0)
-            .notify(fuse_notify_code::FUSE_NOTIFY_INVAL_INODE, out.as_bytes())
-    }
-
-    /// Notify the invalidation about a directory entry to the kernel.
-    pub fn notify_inval_entry<W>(
-        &self,
-        writer: W,
-        parent: u64,
-        name: impl AsRef<OsStr>,
-    ) -> io::Result<()>
-    where
-        W: io::Write,
-    {
-        self.ensure_session_is_alived()?;
-
-        let name = name.as_ref();
-        let namelen = u32::try_from(name.len()).unwrap();
-        let out = fuse_notify_inval_entry_out {
-            parent,
-            namelen,
-            ..Default::default()
-        };
-        ReplySender::new(writer, 0).notify(
-            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
-            &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
-        )
-    }
-
-    /// Notify the invalidation about a directory entry to the kernel.
-    ///
-    /// The role of this notification is similar to `notify_inval_entry`.
-    /// Additionally, when the provided `child` inode matches the inode
-    /// in the dentry cache, the inotify will inform the deletion to
-    /// watchers if exists.
-    pub fn notify_delete<W>(
-        &self,
-        writer: W,
-        parent: u64,
-        child: u64,
-        name: impl AsRef<OsStr>,
-    ) -> io::Result<()>
-    where
-        W: io::Write,
-    {
-        self.ensure_session_is_alived()?;
-
-        let name = name.as_ref();
-        let namelen = u32::try_from(name.len()).unwrap();
-        let out = fuse_notify_delete_out {
-            parent,
-            child,
-            namelen,
-            ..Default::default()
-        };
-
-        ReplySender::new(writer, 0).notify(
-            fuse_notify_code::FUSE_NOTIFY_DELETE,
-            &[out.as_bytes(), name.as_bytes(), &[0]] as &[_],
-        )
-    }
-
-    /// Push the data in an inode for updating the kernel cache.
-    pub fn notify_store<W>(
-        &self,
-        writer: W,
-        ino: u64,
-        offset: u64,
-        data: &[&[u8]],
-    ) -> io::Result<()>
-    where
-        W: io::Write,
-    {
-        self.ensure_session_is_alived()?;
-
-        let size = u32::try_from(data.iter().map(|t| t.len()).sum::<usize>()).unwrap();
-        let out = fuse_notify_store_out {
-            nodeid: ino,
-            offset,
-            size,
-            ..Default::default()
-        };
-        let data: smallvec::SmallVec<[_; 4]> = Some(out.as_bytes())
-            .into_iter()
-            .chain(data.iter().copied())
-            .collect();
-
-        ReplySender::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_STORE, &*data)
-    }
-
-    /// Retrieve data in an inode from the kernel cache.
-    pub fn notify_retrieve<W>(&self, writer: W, ino: u64, offset: u64, size: u32) -> io::Result<u64>
-    where
-        W: io::Write,
-    {
-        self.ensure_session_is_alived()?;
-
-        let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
-        let out = fuse_notify_retrieve_out {
-            notify_unique: unique,
-            nodeid: ino,
-            offset,
-            size,
-            ..Default::default()
-        };
-
-        ReplySender::new(writer, 0)
-            .notify(fuse_notify_code::FUSE_NOTIFY_RETRIEVE, out.as_bytes())?;
-
-        Ok(unique)
-    }
-
-    /// Send I/O readiness to the kernel.
-    pub fn notify_poll_wakeup<W>(&self, writer: W, kh: u64) -> io::Result<()>
-    where
-        W: io::Write,
-    {
-        self.ensure_session_is_alived()?;
-
-        let out = fuse_notify_poll_wakeup_out { kh };
-
-        ReplySender::new(writer, 0).notify(fuse_notify_code::FUSE_NOTIFY_POLL, out.as_bytes())
-    }
 }
 
 /// Context about an incoming FUSE request.
@@ -592,21 +445,6 @@ impl Request {
         };
 
         Operation::decode(&self.header, arg, Data { data })
-    }
-
-    pub fn reply<W, T>(&self, writer: W, data: T) -> io::Result<()>
-    where
-        W: io::Write,
-        T: Bytes,
-    {
-        ReplySender::new(writer, self.unique()).reply(data)
-    }
-
-    pub fn reply_error<W>(&self, writer: W, code: i32) -> io::Result<()>
-    where
-        W: io::Write,
-    {
-        ReplySender::new(writer, self.unique()).error(code)
     }
 }
 
@@ -699,7 +537,6 @@ where
     W: io::Write,
 {
     let mut decoder = Decoder::new(arg);
-    let sender = ReplySender::new(writer, header.unique);
 
     match fuse_opcode::try_from(header.opcode) {
         Ok(fuse_opcode::FUSE_INIT) => {
@@ -731,7 +568,7 @@ where
 
             if init_in.major > 7 {
                 tracing::debug!("wait for a second INIT request with an older version.");
-                sender.reply(init_out.as_bytes())?;
+                write_bytes(writer, Reply::new(header.unique, 0, init_out.as_bytes()))?;
                 return Ok(None);
             }
 
@@ -742,7 +579,7 @@ where
                     init_in.major,
                     init_in.minor
                 );
-                sender.error(libc::EPROTO)?;
+                write_bytes(writer, Reply::new(header.unique, libc::EPROTO, ()))?;
                 return Ok(None);
             }
 
@@ -783,7 +620,7 @@ where
                 init_out.congestion_threshold
             );
             tracing::debug!("  time_gran = {}", init_out.time_gran);
-            sender.reply(init_out.as_bytes())?;
+            write_bytes(writer, Reply::new(header.unique, 0, init_out.as_bytes()))?;
 
             init_out.flags |= readonly_flags;
 
@@ -794,7 +631,6 @@ where
                 conn,
                 bufsize,
                 exited: AtomicBool::new(false),
-                notify_unique: AtomicU64::new(0),
             }))
         }
 
@@ -803,7 +639,7 @@ where
                 "ignoring an operation before init (opcode={:?})",
                 header.opcode
             );
-            sender.error(libc::EIO)?;
+            write_bytes(writer, Reply::new(header.unique, libc::EIO, ()))?;
             Ok(None)
         }
     }

@@ -65,6 +65,7 @@ impl io::Write for &AsyncConnection {
     }
 }
 
+#[derive(Clone)]
 pub struct Writer {
     conn: Weak<Async<Connection>>,
 }
