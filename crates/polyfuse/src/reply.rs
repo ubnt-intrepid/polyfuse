@@ -1,4 +1,4 @@
-use crate::bytes::{Bytes, Collector};
+use crate::bytes::{Bytes, FillBytes};
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::AsBytes as _;
@@ -109,8 +109,14 @@ impl Bytes for EntryOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -195,8 +201,14 @@ impl Bytes for AttrOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -218,8 +230,14 @@ impl Bytes for OpenOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -280,8 +298,14 @@ impl Bytes for WriteOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -309,8 +333,14 @@ impl Bytes for StatfsOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -391,8 +421,14 @@ impl Bytes for XattrOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -420,8 +456,14 @@ impl Bytes for LkOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -481,8 +523,14 @@ impl Bytes for BmapOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -510,8 +558,14 @@ impl Bytes for PollOut {
         self.out.as_bytes().len()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.out.as_bytes());
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
     }
 }
 
@@ -535,11 +589,16 @@ impl fmt::Debug for ReaddirOut {
 impl Bytes for ReaddirOut {
     #[inline]
     fn size(&self) -> usize {
-        self.buf.len()
+        self.buf.size()
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(&self.buf[..]);
+    #[inline]
+    fn count(&self) -> usize {
+        self.buf.count()
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        self.buf.fill_bytes(dst)
     }
 }
 
@@ -618,9 +677,13 @@ where
     }
 
     #[inline]
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.header.as_bytes());
-        self.arg.collect(collector);
+    fn count(&self) -> usize {
+        self.arg.count() + 1
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        self.arg.fill_bytes(dst);
     }
 }
 

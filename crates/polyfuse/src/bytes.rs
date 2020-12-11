@@ -1,22 +1,41 @@
-use smallvec::SmallVec;
+use either::Either;
 use std::{
     io::{self, IoSlice},
+    mem::MaybeUninit,
     os::unix::prelude::*,
 };
 
 /// A trait that represents a collection of bytes.
+///
+/// The role of this trait is similar to [`Buf`] provided by [`bytes`] crate,
+/// but it focuses on the situation where all byte chunks are written in a *single*
+/// operation.
+/// This difference is due to the requirement of FUSE kernel driver that all data in
+/// a reply message must be passed in a single `write(2)` syscall.
+///
+/// [`bytes`]: https://docs.rs/bytes/0.6/bytes
+/// [`Buf`]: https://docs.rs/bytes/0.6/bytes/trait.Buf.html
 pub trait Bytes {
-    /// Return the total size of bytes.
+    /// Return the total amount of bytes contained in this data.
     fn size(&self) -> usize;
 
-    /// Collect the *scattered* bytes in the `collector`.
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>);
+    /// Return the number of byte chunks.
+    fn count(&self) -> usize;
+
+    /// Fill with potentially multiple slices in this data.
+    ///
+    /// This method corresonds to [`Buf::bytes_vectored`][bytes_vectored], except that
+    /// the number of byte chunks is acquired from `Bytes::count` and the implementation
+    /// needs to add all chunks in `dst`.
+    ///
+    /// [bytes_vectored]: https://docs.rs/bytes/0.6/bytes/trait.Buf.html#method.bytes_vectored
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>);
 }
 
-/// Container for collecting the scattered bytes.
-pub trait Collector<'a> {
-    /// Append a chunk of bytes into itself.
-    fn append(&mut self, buf: &'a [u8]);
+/// The container of scattered bytes.
+pub trait FillBytes<'a> {
+    /// Put a chunk of bytes into this container.
+    fn put(&mut self, chunk: &'a [u8]);
 }
 
 // ==== pointer types ====
@@ -29,8 +48,13 @@ macro_rules! impl_reply_body_for_pointers {
         }
 
         #[inline]
-        fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-            (**self).collect(collector)
+        fn count(&self) -> usize {
+            (**self).count()
+        }
+
+        #[inline]
+        fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+            (**self).fill_bytes(dst)
         }
     };
 }
@@ -79,7 +103,12 @@ impl Bytes for () {
     }
 
     #[inline]
-    fn collect<'a>(&'a self, _: &mut dyn Collector<'a>) {}
+    fn count(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, _: &mut dyn FillBytes<'a>) {}
 }
 
 impl Bytes for [u8; 0] {
@@ -89,7 +118,12 @@ impl Bytes for [u8; 0] {
     }
 
     #[inline]
-    fn collect<'a>(&'a self, _: &mut dyn Collector<'a>) {}
+    fn count(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, _: &mut dyn FillBytes<'a>) {}
 }
 
 // ==== compound types ====
@@ -112,10 +146,20 @@ macro_rules! impl_reply_for_tuple {
             }
 
             #[inline]
-            fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
+            fn count(&self) -> usize {
+                let ($($T,)+) = self;
+                let mut count = 0;
+                $(
+                    count += $T.count();
+                )+
+                count
+            }
+
+            #[inline]
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
                 let ($($T,)+) = self;
                 $(
-                    $T.collect(collector);
+                    Bytes::fill_bytes($T, dst);
                 )+
             }
         }
@@ -138,9 +182,14 @@ where
     }
 
     #[inline]
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
+    fn count(&self) -> usize {
+        self.iter().map(|chunk| chunk.count()).sum()
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
         for t in self {
-            t.collect(collector);
+            Bytes::fill_bytes(t, dst);
         }
     }
 }
@@ -155,9 +204,14 @@ where
     }
 
     #[inline]
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
+    fn count(&self) -> usize {
+        self.iter().map(|chunk| chunk.count()).sum()
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
         for t in self {
-            t.collect(collector);
+            Bytes::fill_bytes(t, dst);
         }
     }
 }
@@ -174,9 +228,46 @@ where
     }
 
     #[inline]
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        if let Some(ref reply) = self {
-            reply.collect(collector);
+    fn count(&self) -> usize {
+        self.as_ref().map_or(0, |b| b.count())
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        if let Some(t) = self {
+            Bytes::fill_bytes(t, dst)
+        }
+    }
+}
+
+// ==== Either<L, R> ====
+
+impl<L, R> Bytes for Either<L, R>
+where
+    L: Bytes,
+    R: Bytes,
+{
+    #[inline]
+    fn size(&self) -> usize {
+        match self {
+            Either::Left(l) => l.size(),
+            Either::Right(r) => r.size(),
+        }
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        match self {
+            Either::Left(l) => l.count(),
+            Either::Right(r) => r.count(),
+        }
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        match self {
+            Either::Left(l) => Bytes::fill_bytes(l, dst),
+            Either::Right(r) => Bytes::fill_bytes(r, dst),
         }
     }
 }
@@ -200,10 +291,19 @@ mod impl_scattered_bytes_for_cont {
                 }
 
                 #[inline]
-                fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
+                fn count(&self) -> usize {
+                    if as_bytes(self).is_empty() {
+                        0
+                    } else {
+                        1
+                    }
+                }
+
+                #[inline]
+                fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
                     let this = as_bytes(self);
                     if !this.is_empty() {
-                        collector.append(this);
+                        dst.put(this);
                     }
                 }
             }
@@ -222,46 +322,92 @@ mod impl_scattered_bytes_for_cont {
 impl Bytes for std::ffi::OsStr {
     #[inline]
     fn size(&self) -> usize {
-        self.as_bytes().len()
+        Bytes::size(self.as_bytes())
     }
 
     #[inline]
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        Bytes::collect(self.as_bytes(), collector)
+    fn count(&self) -> usize {
+        Bytes::count(self.as_bytes())
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        Bytes::fill_bytes(self.as_bytes(), dst)
     }
 }
 
 impl Bytes for std::ffi::OsString {
     #[inline]
     fn size(&self) -> usize {
-        self.as_bytes().len()
+        Bytes::size(self.as_bytes())
     }
 
     #[inline]
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        (**self).collect(collector)
+    fn count(&self) -> usize {
+        Bytes::count(self.as_bytes())
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        Bytes::fill_bytes(self.as_bytes(), dst)
     }
 }
 
+/// Write a `Bytes` into the provided writer.
+#[inline]
 pub fn write_bytes<W, T>(mut writer: W, bytes: T) -> io::Result<()>
 where
     W: io::Write,
     T: Bytes,
 {
-    let mut vec = SmallVec::new();
-    let mut collector = VecCollector {
-        vec: &mut vec,
-        total_len: 0,
-    };
-    bytes.collect(&mut collector);
-    assert_eq!(
-        collector.total_len,
-        bytes.size(),
-        "incorrect Bytes::size implementation"
-    );
+    let size = bytes.size();
+    let count = bytes.count();
 
-    let count = writer.write_vectored(&*vec)?;
-    if count < bytes.size() {
+    let written;
+
+    macro_rules! small_write {
+        ($n:expr) => {{
+            let mut vec: [MaybeUninit<IoSlice<'_>>; $n] =
+                unsafe { MaybeUninit::uninit().assume_init() };
+            bytes.fill_bytes(&mut FillWriteBytes {
+                vec: &mut vec[..],
+                offset: 0,
+            });
+            let vec = unsafe { slice_assume_init_ref(&vec[..]) };
+
+            written = writer.write_vectored(vec)?;
+        }};
+    }
+
+    match count {
+        // Skip writing.
+        0 => return Ok(()),
+
+        // Avoid heap allocation if count is small.
+        1 => small_write!(1),
+        2 => small_write!(2),
+        3 => small_write!(3),
+        4 => small_write!(4),
+
+        count => {
+            let mut vec: Vec<IoSlice<'_>> = Vec::with_capacity(count);
+            unsafe {
+                let dst = std::slice::from_raw_parts_mut(
+                    vec.as_mut_ptr().cast(), //
+                    count,
+                );
+                bytes.fill_bytes(&mut FillWriteBytes {
+                    vec: dst,
+                    offset: 0,
+                });
+                vec.set_len(count);
+            }
+
+            written = writer.write_vectored(&*vec)?;
+        }
+    }
+
+    if written < size {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             "written data is too short",
@@ -271,14 +417,23 @@ where
     Ok(())
 }
 
-struct VecCollector<'a, 'v> {
-    vec: &'v mut SmallVec<[IoSlice<'a>; 4]>,
-    total_len: usize,
+struct FillWriteBytes<'a, 'vec> {
+    vec: &'vec mut [MaybeUninit<IoSlice<'a>>],
+    offset: usize,
 }
 
-impl<'a> Collector<'a> for VecCollector<'a, '_> {
-    fn append(&mut self, chunk: &'a [u8]) {
-        self.vec.push(IoSlice::new(chunk));
-        self.total_len += chunk.len();
+impl<'a, 'vec> FillBytes<'a> for FillWriteBytes<'a, 'vec> {
+    fn put(&mut self, chunk: &'a [u8]) {
+        self.vec[self.offset] = MaybeUninit::new(IoSlice::new(chunk));
+        self.offset += 1;
+    }
+}
+
+// FIXME: replace with stabilized MaybeUninit::slice_assume_init_ref.
+#[inline(always)]
+unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
+    #[allow(unused_unsafe)]
+    unsafe {
+        &*(slice as *const [MaybeUninit<T>] as *const [T])
     }
 }

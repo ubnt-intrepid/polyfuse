@@ -1,4 +1,6 @@
-use crate::bytes::{Bytes, Collector};
+#![deny(unsafe_code)]
+
+use crate::bytes::{Bytes, FillBytes};
 use polyfuse_kernel::*;
 use std::{convert::TryFrom as _, ffi::OsStr, mem, os::unix::prelude::*};
 use zerocopy::AsBytes as _;
@@ -29,12 +31,16 @@ impl InvalInode {
 
 impl Bytes for InvalInode {
     fn size(&self) -> usize {
-        mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_inval_inode_out>()
+        self.header.len as usize
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.header.as_bytes());
-        collector.append(self.arg.as_bytes());
+    fn count(&self) -> usize {
+        2
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        dst.put(self.arg.as_bytes());
     }
 }
 
@@ -87,11 +93,15 @@ where
         self.header.len as usize
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.header.as_bytes());
-        collector.append(self.arg.as_bytes());
-        collector.append(self.name.as_ref().as_bytes());
-        collector.append(&[0]); // null terminator
+    fn count(&self) -> usize {
+        4
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        dst.put(self.arg.as_bytes());
+        dst.put(self.name.as_ref().as_bytes());
+        dst.put(b"\0"); // null terminator
     }
 }
 
@@ -150,11 +160,15 @@ where
         self.header.len as usize
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.header.as_bytes());
-        collector.append(self.arg.as_bytes());
-        collector.append(self.name.as_ref().as_bytes());
-        collector.append(&[0]); // null terminator
+    fn count(&self) -> usize {
+        4
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        dst.put(self.arg.as_bytes());
+        dst.put(self.name.as_ref().as_bytes());
+        dst.put(b"\0"); // null terminator
     }
 }
 
@@ -206,10 +220,14 @@ where
         self.header.len as usize
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.header.as_bytes());
-        collector.append(self.arg.as_bytes());
-        self.data.collect(collector);
+    fn count(&self) -> usize {
+        2 + self.data.count()
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        dst.put(self.arg.as_bytes());
+        self.data.fill_bytes(dst);
     }
 }
 
@@ -248,9 +266,13 @@ impl Bytes for Retrieve {
         self.header.len as usize
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.header.as_bytes());
-        collector.append(self.arg.as_bytes());
+    fn count(&self) -> usize {
+        2
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        dst.put(self.arg.as_bytes());
     }
 }
 
@@ -283,22 +305,12 @@ impl Bytes for PollWakeup {
         self.header.len as usize
     }
 
-    fn collect<'a>(&'a self, collector: &mut dyn Collector<'a>) {
-        collector.append(self.header.as_bytes());
-        collector.append(self.arg.as_bytes());
+    fn count(&self) -> usize {
+        2
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        dst.put(self.arg.as_bytes());
     }
 }
-
-// pub fn notify_poll_wakeup<W>(&self, writer: W, kh: u64) -> io::Result<()>
-// where
-//     W: io::Write,
-// {
-//     self.ensure_session_is_alived()?;
-
-//     let out = fuse_notify_poll_wakeup_out { kh };
-
-//     write_bytes(
-//         writer,
-//         Reply::notify(fuse_notify_code::FUSE_NOTIFY_POLL, out.as_bytes()),
-//     )
-// }
