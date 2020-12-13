@@ -7,17 +7,12 @@ use crate::{
     reply::Reply,
 };
 use bitflags::bitflags;
-use futures::{
-    io::{AsyncBufRead, AsyncRead, AsyncReadExt as _},
-    task::{self, Poll},
-};
 use polyfuse_kernel::*;
 use std::{
     convert::TryFrom,
     fmt,
-    io::{self, IoSliceMut},
+    io::{self, prelude::*, IoSliceMut},
     mem,
-    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -336,18 +331,18 @@ impl Session {
     }
 
     /// Start a FUSE daemon mount on the specified path.
-    pub async fn start<R, W>(reader: R, writer: W, config: Config) -> io::Result<Arc<Self>>
+    pub fn start<R, W>(reader: R, writer: W, config: Config) -> io::Result<Arc<Self>>
     where
-        R: AsyncRead + Unpin,
+        R: io::Read,
         W: io::Write,
     {
-        init(reader, writer, config).await.map(Arc::new)
+        init(reader, writer, config).map(Arc::new)
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub async fn next_request<T>(self: &Arc<Self>, conn: T) -> io::Result<Option<Request>>
+    pub fn next_request<R>(self: &Arc<Self>, conn: R) -> io::Result<Option<Request>>
     where
-        T: AsyncRead + Unpin,
+        R: io::Read,
     {
         let mut conn = conn;
 
@@ -356,13 +351,10 @@ impl Session {
         let mut arg = vec![0u8; self.bufsize - mem::size_of::<fuse_in_header>()];
 
         loop {
-            match conn
-                .read_vectored(&mut [
-                    io::IoSliceMut::new(header.as_bytes_mut()),
-                    io::IoSliceMut::new(&mut arg[..]),
-                ])
-                .await
-            {
+            match conn.read_vectored(&mut [
+                io::IoSliceMut::new(header.as_bytes_mut()),
+                io::IoSliceMut::new(&mut arg[..]),
+            ]) {
                 Ok(len) => {
                     if len < mem::size_of::<fuse_in_header>() {
                         return Err(io::Error::new(
@@ -459,41 +451,33 @@ impl fmt::Debug for Data<'_> {
     }
 }
 
-impl<'op> AsyncRead for Data<'op> {
+impl<'op> io::Read for Data<'op> {
     #[inline]
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _: &mut task::Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(io::Read::read(&mut self.get_mut().data, buf))
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        io::Read::read(&mut self.data, buf)
     }
 
     #[inline]
-    fn poll_read_vectored(
-        self: Pin<&mut Self>,
-        _: &mut task::Context<'_>,
-        bufs: &mut [IoSliceMut<'_>],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(io::Read::read_vectored(&mut self.get_mut().data, bufs))
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        io::Read::read_vectored(&mut self.data, bufs)
     }
 }
 
-impl<'op> AsyncBufRead for Data<'op> {
+impl<'op> BufRead for Data<'op> {
     #[inline]
-    fn poll_fill_buf(self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<io::Result<&[u8]>> {
-        Poll::Ready(io::BufRead::fill_buf(&mut self.get_mut().data))
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        io::BufRead::fill_buf(&mut self.data)
     }
 
     #[inline]
-    fn consume(self: Pin<&mut Self>, amt: usize) {
-        io::BufRead::consume(&mut self.get_mut().data, amt)
+    fn consume(&mut self, amt: usize) {
+        io::BufRead::consume(&mut self.data, amt)
     }
 }
 
-async fn init<R, W>(mut reader: R, mut writer: W, config: Config) -> io::Result<Session>
+fn init<R, W>(mut reader: R, mut writer: W, config: Config) -> io::Result<Session>
 where
-    R: AsyncRead + Unpin,
+    R: io::Read,
     W: io::Write,
 {
     // FIXME: align the allocated buffer in `buf` with FUSE argument types.
@@ -501,12 +485,10 @@ where
     let mut arg = vec![0u8; pagesize() * MAX_MAX_PAGES];
 
     for _ in 0..10 {
-        let len = reader
-            .read_vectored(&mut [
-                io::IoSliceMut::new(header.as_bytes_mut()),
-                io::IoSliceMut::new(&mut arg[..]),
-            ])
-            .await?;
+        let len = reader.read_vectored(&mut [
+            io::IoSliceMut::new(header.as_bytes_mut()),
+            io::IoSliceMut::new(&mut arg[..]),
+        ])?;
         if len < mem::size_of::<fuse_in_header>() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -514,7 +496,7 @@ where
             ));
         }
 
-        match try_init(&config, &header, &arg[..], &mut writer).await? {
+        match try_init(&config, &header, &arg[..], &mut writer)? {
             Some(session) => return Ok(session),
             None => continue,
         }
@@ -527,7 +509,7 @@ where
 }
 
 #[allow(clippy::cognitive_complexity)]
-async fn try_init<W>(
+fn try_init<W>(
     config: &Config,
     header: &fuse_in_header,
     arg: &[u8],
@@ -648,8 +630,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use futures::executor::block_on;
     use std::mem;
 
     #[test]
@@ -682,7 +662,7 @@ mod tests {
 
         let mut output = Vec::<u8>::new();
 
-        let session = block_on(Session::start(&input[..], &mut output, Config::default()))
+        let session = Session::start(&input[..], &mut output, Config::default())
             .expect("initialization failed");
 
         let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
