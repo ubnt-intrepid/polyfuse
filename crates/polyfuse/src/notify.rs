@@ -65,7 +65,8 @@ where
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>()
                 + mem::size_of::<fuse_notify_inval_entry_out>()
-                + name.as_ref().len(),
+                + name.as_ref().len()
+                + 1,
         )
         .unwrap();
 
@@ -77,7 +78,7 @@ where
             },
             arg: fuse_notify_inval_entry_out {
                 parent,
-                namelen: namelen + 1,
+                namelen,
                 padding: 0,
             },
             name,
@@ -131,7 +132,8 @@ where
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>()
                 + mem::size_of::<fuse_notify_delete_out>()
-                + name.as_ref().len(),
+                + name.as_ref().len()
+                + 1,
         )
         .expect("payload is too long");
 
@@ -144,7 +146,7 @@ where
             arg: fuse_notify_delete_out {
                 parent,
                 child,
-                namelen: namelen + 1,
+                namelen,
                 padding: 0,
             },
             name,
@@ -191,7 +193,9 @@ where
         let size = u32::try_from(data.size()).expect("provided data is too large");
 
         let total_len = u32::try_from(
-            mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_store_out>(),
+            mem::size_of::<fuse_out_header>()
+                + mem::size_of::<fuse_notify_store_out>()
+                + data.size(),
         )
         .expect("payload is too long");
 
