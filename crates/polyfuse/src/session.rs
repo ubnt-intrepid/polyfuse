@@ -2,6 +2,7 @@
 
 use crate::{
     bytes::write_bytes,
+    conn::{Connection, MountOptions},
     decoder::Decoder,
     op::{DecodeError, Operation},
     reply::Reply,
@@ -11,8 +12,10 @@ use polyfuse_kernel::*;
 use std::{
     convert::TryFrom,
     fmt,
-    io::{self, prelude::*, IoSliceMut},
+    io::{self, prelude::*, IoSlice, IoSliceMut},
     mem,
+    os::unix::prelude::*,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -304,58 +307,70 @@ impl Config {
 /// The object containing the contextrual information about a FUSE session.
 #[derive(Debug)]
 pub struct Session {
+    inner: Arc<SessionInner>,
+}
+
+#[derive(Debug)]
+struct SessionInner {
+    conn: Connection,
     conn_info: ConnectionInfo,
     exited: AtomicBool,
 }
 
-impl Drop for Session {
-    fn drop(&mut self) {
-        self.exit();
-    }
-}
-
-impl Session {
-    /// Start a FUSE daemon mount on the specified path.
-    pub fn start<R, W>(reader: R, writer: W, config: Config) -> io::Result<Arc<Self>>
-    where
-        R: io::Read,
-        W: io::Write,
-    {
-        let conn_info = init_session(reader, writer, config)?;
-        Ok(Arc::new(Self {
-            conn_info,
-            exited: AtomicBool::new(false),
-        }))
-    }
-
-    /// Returns the information about the FUSE connection.
+impl SessionInner {
     #[inline]
-    pub fn connection_info(&self) -> &ConnectionInfo {
-        &self.conn_info
-    }
-
-    #[inline]
-    pub(crate) fn exited(&self) -> bool {
+    fn exited(&self) -> bool {
         // FIXME: choose appropriate atomic ordering.
         self.exited.load(Ordering::SeqCst)
     }
 
     #[inline]
-    pub(crate) fn exit(&self) {
+    fn exit(&self) {
         // FIXME: choose appropriate atomic ordering.
         self.exited.store(true, Ordering::SeqCst)
     }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.inner.exit();
+    }
+}
+
+impl AsRawFd for Session {
+    fn as_raw_fd(&self) -> RawFd {
+        self.inner.conn.as_raw_fd()
+    }
+}
+
+impl Session {
+    /// Start a FUSE daemon mount on the specified path.
+    pub fn mount(mountpoint: PathBuf, mountopts: MountOptions, config: Config) -> io::Result<Self> {
+        let conn = Connection::open(mountpoint, mountopts)?;
+        let conn_info = init_session(&conn, &conn, config)?;
+
+        Ok(Self {
+            inner: Arc::new(SessionInner {
+                conn,
+                conn_info,
+                exited: AtomicBool::new(false),
+            }),
+        })
+    }
+
+    /// Returns the information about the FUSE connection.
+    #[inline]
+    pub fn connection_info(&self) -> &ConnectionInfo {
+        &self.inner.conn_info
+    }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub fn next_request<R>(self: &Arc<Self>, conn: R) -> io::Result<Option<Request>>
-    where
-        R: io::Read,
-    {
-        let mut conn = conn;
+    pub fn next_request(&self) -> io::Result<Option<Request>> {
+        let mut conn = &self.inner.conn;
 
         // FIXME: Align the allocated region in `arg` with the FUSE argument types.
         let mut header = fuse_in_header::default();
-        let mut arg = vec![0u8; self.conn_info.bufsize - mem::size_of::<fuse_in_header>()];
+        let mut arg = vec![0u8; self.inner.conn_info.bufsize - mem::size_of::<fuse_in_header>()];
 
         loop {
             match conn.read_vectored(&mut [
@@ -391,7 +406,7 @@ impl Session {
         }
 
         Ok(Some(Request {
-            session: self.clone(),
+            session: self.inner.clone(),
             header,
             arg,
         }))
@@ -400,7 +415,7 @@ impl Session {
 
 /// Context about an incoming FUSE request.
 pub struct Request {
-    session: Arc<Session>,
+    session: Arc<SessionInner>,
     header: fuse_in_header,
     arg: Vec<u8>,
 }
@@ -444,6 +459,40 @@ impl Request {
         };
 
         Operation::decode(&self.header, arg, Data { data })
+    }
+}
+
+impl io::Write for Request {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        (&*self).write(buf)
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        (&*self).write_vectored(bufs)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&*self).flush()
+    }
+}
+
+impl io::Write for &Request {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.session.exited() {
+            return Ok(0);
+        }
+        (&self.session.conn).write(buf)
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        if self.session.exited() {
+            return Ok(0);
+        }
+        (&self.session.conn).write_vectored(bufs)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
