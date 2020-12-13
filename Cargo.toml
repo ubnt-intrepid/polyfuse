@@ -4,15 +4,3 @@ members = [
   "examples/*",
   "xtask",
 ]
-exclude = [
-  "examples/async-std-support",
-  "examples/basic",
-  "examples/heartbeat",
-  "examples/heartbeat-entry",
-  "examples/hello",
-  "examples/memfs",
-  "examples/passthrough",
-  "examples/path-through",
-  "examples/poll",
-  "examples/with-tokio",
-]

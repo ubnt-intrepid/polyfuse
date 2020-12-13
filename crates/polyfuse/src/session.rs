@@ -411,6 +411,12 @@ impl Session {
             arg,
         }))
     }
+
+    pub fn notifier(&self) -> Notifier {
+        Notifier {
+            session: self.inner.clone(),
+        }
+    }
 }
 
 /// Context about an incoming FUSE request.
@@ -528,6 +534,45 @@ impl<'op> BufRead for Data<'op> {
     #[inline]
     fn consume(&mut self, amt: usize) {
         io::BufRead::consume(&mut self.data, amt)
+    }
+}
+
+#[derive(Clone)]
+pub struct Notifier {
+    session: Arc<SessionInner>,
+}
+
+impl io::Write for Notifier {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        (&*self).write(buf)
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        (&*self).write_vectored(bufs)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&*self).flush()
+    }
+}
+
+impl io::Write for &Notifier {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.session.exited() {
+            return Ok(0);
+        }
+        (&self.session.conn).write(buf)
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        if self.session.exited() {
+            return Ok(0);
+        }
+        (&self.session.conn).write_vectored(bufs)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

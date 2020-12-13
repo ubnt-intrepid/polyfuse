@@ -10,29 +10,26 @@
 use polyfuse::{
     notify::{InvalInode, Retrieve, Store},
     reply::{AttrOut, FileAttr, OpenOut, Reply},
-    Config, MountOptions, Operation, Request, Session,
+    Config, MountOptions, Notifier, Operation, Request, Session,
 };
-use polyfuse_example_async_std_support::{AsyncConnection, Writer};
 
 use anyhow::{anyhow, ensure, Context as _, Result};
-use async_std::sync::Mutex;
 use chrono::Local;
-use futures::{channel::oneshot, prelude::*};
 use std::{
     collections::HashMap,
-    io, mem,
+    io::{self, prelude::*},
+    mem,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        mpsc, Arc, Mutex,
     },
     time::Duration,
 };
 
 const ROOT_INO: u64 = 1;
 
-#[async_std::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -50,54 +47,53 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let conn = AsyncConnection::open(mountpoint, MountOptions::default()).await?;
-    let session = Session::start(&conn, &conn, Config::default()).await?;
+    let session = Session::mount(mountpoint, MountOptions::default(), Config::default())?;
 
     let heartbeat = Arc::new(Heartbeat::now());
 
     // Spawn a task that beats the heart.
-    let _: async_std::task::JoinHandle<io::Result<()>> = async_std::task::spawn({
+    std::thread::spawn({
         let heartbeat = heartbeat.clone();
-        let writer = if !no_notify {
-            Some(conn.writer())
+        let notifier = if !no_notify {
+            Some(session.notifier())
         } else {
             None
         };
-        async move {
+        move || -> Result<()> {
             loop {
                 tracing::info!("heartbeat");
 
-                heartbeat.update_content().await;
+                heartbeat.update_content();
 
-                if let Some(ref writer) = writer {
+                if let Some(ref notifier) = notifier {
                     match notify_kind {
-                        NotifyKind::Store => heartbeat.notify_store(&writer).await?,
-                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(&writer).await?,
+                        NotifyKind::Store => heartbeat.notify_store(notifier)?,
+                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(notifier)?,
                     }
                 }
 
-                async_std::task::sleep(Duration::from_secs(update_interval)).await;
+                std::thread::sleep(Duration::from_secs(update_interval));
             }
         }
     });
 
     // Run the filesystem daemon on the foreground.
-    while let Some(req) = session.next_request(&conn).await? {
+    while let Some(req) = session.next_request()? {
         let heartbeat = heartbeat.clone();
-        let writer = conn.writer();
 
-        let _: async_std::task::JoinHandle<Result<()>> = async_std::task::spawn(async move {
+        std::thread::spawn(move || -> Result<()> {
             let span = tracing::debug_span!("handle request", unique = req.unique());
+            let _enter = span.enter();
 
             let op = req.operation()?;
-            span.in_scope(|| tracing::debug!(?op));
+            tracing::debug!(?op);
 
-            let reply = ReplyWriter { req: &req, writer };
+            let reply = ReplyWriter { req: &req };
 
             match op {
                 Operation::Getattr(op) => match op.ino() {
                     ROOT_INO => {
-                        let inner = heartbeat.inner.lock().await;
+                        let inner = heartbeat.inner.lock().unwrap();
                         let mut out = AttrOut::default();
                         fill_attr(out.attr(), &inner.attr);
                         reply.ok(out)?;
@@ -114,7 +110,7 @@ async fn main() -> Result<()> {
                 },
                 Operation::Read(op) => match op.ino() {
                     ROOT_INO => {
-                        let inner = heartbeat.inner.lock().await;
+                        let inner = heartbeat.inner.lock().unwrap();
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
@@ -129,10 +125,11 @@ async fn main() -> Result<()> {
                     _ => reply.error(libc::ENOENT)?,
                 },
                 Operation::NotifyReply(op, mut data) => {
-                    if let Some(tx) = heartbeat.retrieves.lock().await.remove(&op.unique()) {
+                    let mut retrieves = heartbeat.retrieves.lock().unwrap();
+                    if let Some(tx) = retrieves.remove(&op.unique()) {
                         let mut buf = vec![0u8; op.size() as usize];
-                        data.read_exact(&mut buf).await?;
-                        let _ = tx.send(buf);
+                        data.read_exact(&mut buf)?;
+                        tx.send(buf).unwrap();
                     }
                 }
 
@@ -154,7 +151,7 @@ enum NotifyKind {
 
 struct Heartbeat {
     inner: Mutex<Inner>,
-    retrieves: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
+    retrieves: Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>,
     retrieve_unique: AtomicU64,
 }
 
@@ -179,19 +176,19 @@ impl Heartbeat {
         }
     }
 
-    async fn update_content(&self) {
-        let mut inner = self.inner.lock().await;
+    fn update_content(&self) {
+        let mut inner = self.inner.lock().unwrap();
         let content = Local::now().to_rfc3339();
         inner.attr.st_size = content.len() as libc::off_t;
         inner.content = content;
     }
 
-    async fn notify_store(&self, writer: &Writer) -> io::Result<()> {
-        let inner = self.inner.lock().await;
+    fn notify_store(&self, notifier: &Notifier) -> io::Result<()> {
+        let inner = self.inner.lock().unwrap();
         let content = &inner.content;
 
         tracing::info!("send notify_store(data={:?})", content);
-        polyfuse::bytes::write_bytes(writer, Store::new(ROOT_INO, 0, content))?;
+        polyfuse::bytes::write_bytes(notifier, Store::new(ROOT_INO, 0, content))?;
 
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
@@ -199,10 +196,10 @@ impl Heartbeat {
         let data = {
             // FIXME: choose appropriate atomic ordering.
             let unique = self.retrieve_unique.fetch_add(1, Ordering::SeqCst);
-            polyfuse::bytes::write_bytes(writer, Retrieve::new(unique, ROOT_INO, 0, 1024))?;
-            let (tx, rx) = oneshot::channel();
-            self.retrieves.lock().await.insert(unique, tx);
-            rx.await.unwrap()
+            polyfuse::bytes::write_bytes(notifier, Retrieve::new(unique, ROOT_INO, 0, 1024))?;
+            let (tx, rx) = mpsc::channel();
+            self.retrieves.lock().unwrap().insert(unique, tx);
+            rx.recv().unwrap()
         };
         tracing::info!("--> content={:?}", data);
 
@@ -213,9 +210,9 @@ impl Heartbeat {
         Ok(())
     }
 
-    async fn notify_inval_inode(&self, writer: &Writer) -> io::Result<()> {
+    fn notify_inval_inode(&self, notifier: &Notifier) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
-        polyfuse::bytes::write_bytes(writer, InvalInode::new(ROOT_INO, 0, 0))?;
+        polyfuse::bytes::write_bytes(notifier, InvalInode::new(ROOT_INO, 0, 0))?;
         Ok(())
     }
 }
@@ -237,7 +234,6 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
 
 struct ReplyWriter<'req> {
     req: &'req Request,
-    writer: Writer,
 }
 
 impl ReplyWriter<'_> {
@@ -245,10 +241,10 @@ impl ReplyWriter<'_> {
     where
         T: polyfuse::bytes::Bytes,
     {
-        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), 0, arg))
+        polyfuse::bytes::write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
     }
 
     fn error(self, code: i32) -> io::Result<()> {
-        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), code, ()))
+        polyfuse::bytes::write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
     }
 }
