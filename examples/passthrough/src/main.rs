@@ -8,7 +8,7 @@ use polyfuse::{
     reply::{
         AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
-    CapabilityFlags, MountOptions, Operation, Session,
+    KernelConfig, Operation, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -49,21 +49,15 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     // TODO: splice read/write
-    let session = Session::mount(
-        mountpoint,
-        MountOptions::default()
-            .option("default_permissions")
-            .option("fsname=passthrough"),
-        {
-            let mut config = polyfuse::Config::default();
-            *config.flags() |= CapabilityFlags::EXPORT_SUPPORT;
-            *config.flags() |= CapabilityFlags::FLOCK_LOCKS;
-            if timeout.is_some() {
-                *config.flags() |= CapabilityFlags::WRITEBACK_CACHE;
-            }
-            config
-        },
-    )?;
+    let session = Session::mount(mountpoint, {
+        let mut config = KernelConfig::default();
+        config.mount_option("default_permissions");
+        config.mount_option("fsname=passthrough");
+        config.export_support(true);
+        config.flock_locks(true);
+        config.writeback_cache(timeout.is_some());
+        config
+    })?;
 
     let fs = Arc::new(Passthrough::new(source, timeout)?);
 

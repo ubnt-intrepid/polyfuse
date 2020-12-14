@@ -41,7 +41,7 @@ impl Drop for Connection {
 
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
-    pub fn open(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<Self> {
+    pub(crate) fn open(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<Self> {
         let (fd, child) = mount(&mountpoint, &mountopts)?;
         Ok(Self {
             fd,
@@ -49,22 +49,6 @@ impl Connection {
             mountpoint,
             mountopts,
         })
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn mountpoint(&self) -> &Path {
-        &self.mountpoint
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn mount_options(&self) -> &MountOptions {
-        &self.mountopts
-    }
-
-    pub fn set_nonblocking(&self) -> io::Result<()> {
-        let flags = syscall! { fcntl(self.as_raw_fd(), libc::F_GETFL, 0) };
-        syscall! { fcntl(self.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
-        Ok(())
     }
 
     fn read(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -191,11 +175,11 @@ impl io::Write for &Connection {
 // ==== mount ====
 
 #[derive(Debug)]
-pub struct MountOptions {
-    options: Vec<String>,
-    auto_unmount: bool,
-    fusermount_path: Option<PathBuf>,
-    fuse_comm_fd: Option<OsString>,
+pub(crate) struct MountOptions {
+    pub(crate) options: Vec<String>,
+    pub(crate) auto_unmount: bool,
+    pub(crate) fusermount_path: Option<PathBuf>,
+    pub(crate) fuse_comm_fd: Option<OsString>,
 }
 
 impl Default for MountOptions {
@@ -206,46 +190,6 @@ impl Default for MountOptions {
             fusermount_path: None,
             fuse_comm_fd: None,
         }
-    }
-}
-
-impl MountOptions {
-    fn recognzie_option(&mut self, option: &str) {
-        match option {
-            "auto_unmount" => self.auto_unmount = true,
-            option => self.options.push(option.to_owned()),
-        }
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn option(mut self, option: &str) -> Self {
-        for option in option.split(',').map(|s| s.trim()) {
-            self.recognzie_option(option);
-        }
-        self
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn auto_unmount(mut self, enabled: bool) -> Self {
-        self.auto_unmount = enabled;
-        self
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn fusermount_path(mut self, program: impl AsRef<OsStr>) -> Self {
-        let program = Path::new(program.as_ref());
-        assert!(
-            program.is_absolute(),
-            "the fusermount binary path must be absolute."
-        );
-        self.fusermount_path = Some(program.to_owned());
-        self
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn fuse_comm_fd(mut self, name: impl AsRef<OsStr>) -> Self {
-        self.fuse_comm_fd = Some(name.as_ref().to_owned());
-        self
     }
 }
 

@@ -4,7 +4,7 @@
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Config, MountOptions, Operation, Request, Session,
+    KernelConfig, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "tmountpoint must be a directory");
 
-    let session = Session::mount(mountpoint, MountOptions::default(), Config::default())?;
+    let session = Session::mount(mountpoint, KernelConfig::default())?;
 
     let fs = Hello::new();
 
