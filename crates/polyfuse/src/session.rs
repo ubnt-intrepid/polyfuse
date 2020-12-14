@@ -1,23 +1,23 @@
 //! Establish a FUSE session.
 
 use crate::{
-    bytes::write_bytes,
+    bytes::{Bytes, FillBytes},
     conn::{Connection, MountOptions},
     decoder::Decoder,
     op::{DecodeError, Operation},
-    reply::Reply,
 };
 use bitflags::bitflags;
 use polyfuse_kernel::*;
 use std::{
-    convert::TryFrom,
+    convert::{TryFrom, TryInto as _},
+    ffi::OsStr,
     fmt,
     io::{self, prelude::*, IoSlice, IoSliceMut},
-    mem,
+    mem::{self, MaybeUninit},
     os::unix::prelude::*,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -315,6 +315,7 @@ struct SessionInner {
     conn: Connection,
     conn_info: ConnectionInfo,
     exited: AtomicBool,
+    notify_unique: AtomicU64,
 }
 
 impl SessionInner {
@@ -354,6 +355,7 @@ impl Session {
                 conn,
                 conn_info,
                 exited: AtomicBool::new(false),
+                notify_unique: AtomicU64::new(0),
             }),
         })
     }
@@ -466,39 +468,16 @@ impl Request {
 
         Operation::decode(&self.header, arg, Data { data })
     }
-}
 
-impl io::Write for Request {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (&*self).write(buf)
+    pub fn reply<T>(&self, arg: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        write_bytes(&self.session.conn, Reply::new(self.unique(), 0, arg))
     }
 
-    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        (&*self).write_vectored(bufs)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        (&*self).flush()
-    }
-}
-
-impl io::Write for &Request {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.session.exited() {
-            return Ok(0);
-        }
-        (&self.session.conn).write(buf)
-    }
-
-    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        if self.session.exited() {
-            return Ok(0);
-        }
-        (&self.session.conn).write_vectored(bufs)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    pub fn reply_error(&self, code: i32) -> io::Result<()> {
+        write_bytes(&self.session.conn, Reply::new(self.unique(), code, ()))
     }
 }
 
@@ -542,37 +521,321 @@ pub struct Notifier {
     session: Arc<SessionInner>,
 }
 
-impl io::Write for Notifier {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (&*self).write(buf)
-    }
+impl Notifier {
+    /// Notify the cache invalidation about an inode to the kernel.
+    pub fn inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+        let total_len = u32::try_from(
+            mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_inval_inode_out>(),
+        )
+        .unwrap();
 
-    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        (&*self).write_vectored(bufs)
-    }
+        return write_bytes(
+            &self.session.conn,
+            InvalInode {
+                header: fuse_out_header {
+                    len: total_len,
+                    error: fuse_notify_code::FUSE_NOTIFY_INVAL_INODE as i32,
+                    unique: 0,
+                },
+                arg: fuse_notify_inval_inode_out { ino, off, len },
+            },
+        );
 
-    fn flush(&mut self) -> io::Result<()> {
-        (&*self).flush()
-    }
-}
-
-impl io::Write for &Notifier {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.session.exited() {
-            return Ok(0);
+        struct InvalInode {
+            header: fuse_out_header,
+            arg: fuse_notify_inval_inode_out,
         }
-        (&self.session.conn).write(buf)
-    }
+        impl Bytes for InvalInode {
+            fn size(&self) -> usize {
+                self.header.len as usize
+            }
 
-    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        if self.session.exited() {
-            return Ok(0);
+            fn count(&self) -> usize {
+                2
+            }
+
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+                dst.put(self.header.as_bytes());
+                dst.put(self.arg.as_bytes());
+            }
         }
-        (&self.session.conn).write_vectored(bufs)
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    /// Notify the invalidation about a directory entry to the kernel.
+    pub fn inval_entry<T>(&self, parent: u64, name: T) -> io::Result<()>
+    where
+        T: AsRef<OsStr>,
+    {
+        let namelen = u32::try_from(name.as_ref().len()).expect("provided name is too long");
+
+        let total_len = u32::try_from(
+            mem::size_of::<fuse_out_header>()
+                + mem::size_of::<fuse_notify_inval_entry_out>()
+                + name.as_ref().len()
+                + 1,
+        )
+        .unwrap();
+
+        return write_bytes(
+            &self.session.conn,
+            InvalEntry {
+                header: fuse_out_header {
+                    len: total_len,
+                    error: fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY as i32,
+                    unique: 0,
+                },
+                arg: fuse_notify_inval_entry_out {
+                    parent,
+                    namelen,
+                    padding: 0,
+                },
+                name,
+            },
+        );
+
+        struct InvalEntry<T>
+        where
+            T: AsRef<OsStr>,
+        {
+            header: fuse_out_header,
+            arg: fuse_notify_inval_entry_out,
+            name: T,
+        }
+        impl<T> Bytes for InvalEntry<T>
+        where
+            T: AsRef<OsStr>,
+        {
+            fn size(&self) -> usize {
+                self.header.len as usize
+            }
+
+            fn count(&self) -> usize {
+                4
+            }
+
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+                dst.put(self.header.as_bytes());
+                dst.put(self.arg.as_bytes());
+                dst.put(self.name.as_ref().as_bytes());
+                dst.put(b"\0"); // null terminator
+            }
+        }
+    }
+
+    /// Notify the invalidation about a directory entry to the kernel.
+    ///
+    /// The role of this notification is similar to `notify_inval_entry`.
+    /// Additionally, when the provided `child` inode matches the inode
+    /// in the dentry cache, the inotify will inform the deletion to
+    /// watchers if exists.
+    pub fn delete<T>(&self, parent: u64, child: u64, name: T) -> io::Result<()>
+    where
+        T: AsRef<OsStr>,
+    {
+        let namelen = u32::try_from(name.as_ref().len()).expect("provided name is too long");
+
+        let total_len = u32::try_from(
+            mem::size_of::<fuse_out_header>()
+                + mem::size_of::<fuse_notify_delete_out>()
+                + name.as_ref().len()
+                + 1,
+        )
+        .expect("payload is too long");
+
+        return write_bytes(
+            &self.session.conn,
+            Delete {
+                header: fuse_out_header {
+                    len: total_len,
+                    error: fuse_notify_code::FUSE_NOTIFY_DELETE as i32,
+                    unique: 0,
+                },
+                arg: fuse_notify_delete_out {
+                    parent,
+                    child,
+                    namelen,
+                    padding: 0,
+                },
+                name,
+            },
+        );
+
+        struct Delete<T>
+        where
+            T: AsRef<OsStr>,
+        {
+            header: fuse_out_header,
+            arg: fuse_notify_delete_out,
+            name: T,
+        }
+        impl<T> Bytes for Delete<T>
+        where
+            T: AsRef<OsStr>,
+        {
+            fn size(&self) -> usize {
+                self.header.len as usize
+            }
+
+            fn count(&self) -> usize {
+                4
+            }
+
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+                dst.put(self.header.as_bytes());
+                dst.put(self.arg.as_bytes());
+                dst.put(self.name.as_ref().as_bytes());
+                dst.put(b"\0"); // null terminator
+            }
+        }
+    }
+
+    /// Push the data in an inode for updating the kernel cache.
+    pub fn store<T>(&self, ino: u64, offset: u64, data: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        let size = u32::try_from(data.size()).expect("provided data is too large");
+
+        let total_len = u32::try_from(
+            mem::size_of::<fuse_out_header>()
+                + mem::size_of::<fuse_notify_store_out>()
+                + data.size(),
+        )
+        .expect("payload is too long");
+
+        return write_bytes(
+            &self.session.conn,
+            Store {
+                header: fuse_out_header {
+                    len: total_len,
+                    error: fuse_notify_code::FUSE_NOTIFY_STORE as i32,
+                    unique: 0,
+                },
+                arg: fuse_notify_store_out {
+                    nodeid: ino,
+                    offset,
+                    size,
+                    padding: 0,
+                },
+                data,
+            },
+        );
+
+        struct Store<T>
+        where
+            T: Bytes,
+        {
+            header: fuse_out_header,
+            arg: fuse_notify_store_out,
+            data: T,
+        }
+        impl<T> Bytes for Store<T>
+        where
+            T: Bytes,
+        {
+            fn size(&self) -> usize {
+                self.header.len as usize
+            }
+
+            fn count(&self) -> usize {
+                2 + self.data.count()
+            }
+
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+                dst.put(self.header.as_bytes());
+                dst.put(self.arg.as_bytes());
+                self.data.fill_bytes(dst);
+            }
+        }
+    }
+
+    /// Retrieve data in an inode from the kernel cache.
+    pub fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
+        let total_len = u32::try_from(
+            mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_retrieve_out>(),
+        )
+        .unwrap();
+
+        // FIXME: choose appropriate memory ordering.
+        let notify_unique = self.session.notify_unique.fetch_add(1, Ordering::SeqCst);
+
+        write_bytes(
+            &self.session.conn,
+            Retrieve {
+                header: fuse_out_header {
+                    len: total_len,
+                    error: fuse_notify_code::FUSE_NOTIFY_RETRIEVE as i32,
+                    unique: 0,
+                },
+                arg: fuse_notify_retrieve_out {
+                    nodeid: ino,
+                    offset,
+                    size,
+                    notify_unique,
+                    padding: 0,
+                },
+            },
+        )?;
+
+        return Ok(notify_unique);
+
+        struct Retrieve {
+            header: fuse_out_header,
+            arg: fuse_notify_retrieve_out,
+        }
+        impl Bytes for Retrieve {
+            fn size(&self) -> usize {
+                self.header.len as usize
+            }
+
+            fn count(&self) -> usize {
+                2
+            }
+
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+                dst.put(self.header.as_bytes());
+                dst.put(self.arg.as_bytes());
+            }
+        }
+    }
+
+    /// Send I/O readiness to the kernel.
+    pub fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
+        let total_len = u32::try_from(
+            mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_poll_wakeup_out>(),
+        )
+        .unwrap();
+
+        return write_bytes(
+            &self.session.conn,
+            PollWakeup {
+                header: fuse_out_header {
+                    len: total_len,
+                    error: fuse_notify_code::FUSE_NOTIFY_POLL as i32,
+                    unique: 0,
+                },
+                arg: fuse_notify_poll_wakeup_out { kh },
+            },
+        );
+
+        struct PollWakeup {
+            header: fuse_out_header,
+            arg: fuse_notify_poll_wakeup_out,
+        }
+        impl Bytes for PollWakeup {
+            fn size(&self) -> usize {
+                self.header.len as usize
+            }
+
+            fn count(&self) -> usize {
+                2
+            }
+
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+                dst.put(self.header.as_bytes());
+                dst.put(self.arg.as_bytes());
+            }
+        }
     }
 }
 
@@ -713,6 +976,133 @@ where
     ))
 }
 
+struct Reply<T> {
+    header: fuse_out_header,
+    arg: T,
+}
+impl<T> Reply<T>
+where
+    T: Bytes,
+{
+    #[inline]
+    fn new(unique: u64, error: i32, arg: T) -> Self {
+        let len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .expect("Argument size is too large");
+        Self {
+            header: fuse_out_header {
+                len,
+                error: -error,
+                unique,
+            },
+            arg,
+        }
+    }
+}
+impl<T> Bytes for Reply<T>
+where
+    T: Bytes,
+{
+    #[inline]
+    fn size(&self) -> usize {
+        self.header.len as usize
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        self.arg.count() + 1
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        self.arg.fill_bytes(dst);
+    }
+}
+
+#[inline]
+fn write_bytes<W, T>(mut writer: W, bytes: T) -> io::Result<()>
+where
+    W: io::Write,
+    T: Bytes,
+{
+    let size = bytes.size();
+    let count = bytes.count();
+
+    let written;
+
+    macro_rules! small_write {
+        ($n:expr) => {{
+            let mut vec: [MaybeUninit<IoSlice<'_>>; $n] =
+                unsafe { MaybeUninit::uninit().assume_init() };
+            bytes.fill_bytes(&mut FillWriteBytes {
+                vec: &mut vec[..],
+                offset: 0,
+            });
+            let vec = unsafe { slice_assume_init_ref(&vec[..]) };
+
+            written = writer.write_vectored(vec)?;
+        }};
+    }
+
+    match count {
+        // Skip writing.
+        0 => return Ok(()),
+
+        // Avoid heap allocation if count is small.
+        1 => small_write!(1),
+        2 => small_write!(2),
+        3 => small_write!(3),
+        4 => small_write!(4),
+
+        count => {
+            let mut vec: Vec<IoSlice<'_>> = Vec::with_capacity(count);
+            unsafe {
+                let dst = std::slice::from_raw_parts_mut(
+                    vec.as_mut_ptr().cast(), //
+                    count,
+                );
+                bytes.fill_bytes(&mut FillWriteBytes {
+                    vec: dst,
+                    offset: 0,
+                });
+                vec.set_len(count);
+            }
+
+            written = writer.write_vectored(&*vec)?;
+        }
+    }
+
+    if written < size {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "written data is too short",
+        ));
+    }
+
+    Ok(())
+}
+
+struct FillWriteBytes<'a, 'vec> {
+    vec: &'vec mut [MaybeUninit<IoSlice<'a>>],
+    offset: usize,
+}
+
+impl<'a, 'vec> FillBytes<'a> for FillWriteBytes<'a, 'vec> {
+    fn put(&mut self, chunk: &'a [u8]) {
+        self.vec[self.offset] = MaybeUninit::new(IoSlice::new(chunk));
+        self.offset += 1;
+    }
+}
+
+// FIXME: replace with stabilized MaybeUninit::slice_assume_init_ref.
+#[inline(always)]
+unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
+    #[allow(unused_unsafe)]
+    unsafe {
+        &*(slice as *const [MaybeUninit<T>] as *const [T])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,5 +1201,60 @@ mod tests {
             output[30..30 + 2 + 4 * 8].iter().all(|&b| b == 0x00),
             "init_out.paddings"
         );
+    }
+
+    #[inline]
+    fn bytes(bytes: &[u8]) -> &[u8] {
+        bytes
+    }
+    macro_rules! b {
+        ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
+    }
+
+    #[test]
+    fn send_msg_empty() {
+        let mut buf = vec![0u8; 0];
+        write_bytes(&mut buf, Reply::new(42, -4, &[])).unwrap();
+        assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
+        assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
+        assert_eq!(
+            buf[8..16],
+            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "header.unique"
+        );
+    }
+
+    #[test]
+    fn send_msg_single_data() {
+        let mut buf = vec![0u8; 0];
+        write_bytes(&mut buf, Reply::new(42, 0, "hello")).unwrap();
+        assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
+        assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
+        assert_eq!(
+            buf[8..16],
+            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "header.unique"
+        );
+        assert_eq!(buf[16..], b![0x68, 0x65, 0x6c, 0x6c, 0x6f], "payload");
+    }
+
+    #[test]
+    fn send_msg_chunked_data() {
+        let payload: &[&[u8]] = &[
+            "hello, ".as_ref(), //
+            "this ".as_ref(),
+            "is a ".as_ref(),
+            "message.".as_ref(),
+        ];
+        let mut buf = vec![0u8; 0];
+        write_bytes(&mut buf, Reply::new(26, 0, payload)).unwrap();
+        assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
+        assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
+        assert_eq!(
+            buf[8..16],
+            b![0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "header.unique"
+        );
+        assert_eq!(buf[16..], *b"hello, this is a message.", "payload");
     }
 }

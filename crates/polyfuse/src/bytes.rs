@@ -1,9 +1,5 @@
 use either::Either;
-use std::{
-    io::{self, IoSlice},
-    mem::MaybeUninit,
-    os::unix::prelude::*,
-};
+use std::os::unix::prelude::*;
 
 /// A trait that represents a collection of bytes.
 ///
@@ -350,90 +346,5 @@ impl Bytes for std::ffi::OsString {
     #[inline]
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
         Bytes::fill_bytes(self.as_bytes(), dst)
-    }
-}
-
-/// Write a `Bytes` into the provided writer.
-#[inline]
-pub fn write_bytes<W, T>(mut writer: W, bytes: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    let size = bytes.size();
-    let count = bytes.count();
-
-    let written;
-
-    macro_rules! small_write {
-        ($n:expr) => {{
-            let mut vec: [MaybeUninit<IoSlice<'_>>; $n] =
-                unsafe { MaybeUninit::uninit().assume_init() };
-            bytes.fill_bytes(&mut FillWriteBytes {
-                vec: &mut vec[..],
-                offset: 0,
-            });
-            let vec = unsafe { slice_assume_init_ref(&vec[..]) };
-
-            written = writer.write_vectored(vec)?;
-        }};
-    }
-
-    match count {
-        // Skip writing.
-        0 => return Ok(()),
-
-        // Avoid heap allocation if count is small.
-        1 => small_write!(1),
-        2 => small_write!(2),
-        3 => small_write!(3),
-        4 => small_write!(4),
-
-        count => {
-            let mut vec: Vec<IoSlice<'_>> = Vec::with_capacity(count);
-            unsafe {
-                let dst = std::slice::from_raw_parts_mut(
-                    vec.as_mut_ptr().cast(), //
-                    count,
-                );
-                bytes.fill_bytes(&mut FillWriteBytes {
-                    vec: dst,
-                    offset: 0,
-                });
-                vec.set_len(count);
-            }
-
-            written = writer.write_vectored(&*vec)?;
-        }
-    }
-
-    if written < size {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "written data is too short",
-        ));
-    }
-
-    Ok(())
-}
-
-struct FillWriteBytes<'a, 'vec> {
-    vec: &'vec mut [MaybeUninit<IoSlice<'a>>],
-    offset: usize,
-}
-
-impl<'a, 'vec> FillBytes<'a> for FillWriteBytes<'a, 'vec> {
-    fn put(&mut self, chunk: &'a [u8]) {
-        self.vec[self.offset] = MaybeUninit::new(IoSlice::new(chunk));
-        self.offset += 1;
-    }
-}
-
-// FIXME: replace with stabilized MaybeUninit::slice_assume_init_ref.
-#[inline(always)]
-unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
-    #[allow(unused_unsafe)]
-    unsafe {
-        &*(slice as *const [MaybeUninit<T>] as *const [T])
     }
 }

@@ -2,9 +2,8 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
-    bytes::{write_bytes, Bytes},
     op,
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, Reply},
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
     Config, MountOptions, Operation, Request, Session,
 };
 
@@ -30,14 +29,12 @@ fn main() -> Result<()> {
     let fs = Hello::new();
 
     while let Some(req) = session.next_request()? {
-        let reply = ReplyWriter { req: &req };
-
         match req.operation()? {
-            Operation::Lookup(op) => fs.lookup(op, reply)?,
-            Operation::Getattr(op) => fs.getattr(op, reply)?,
-            Operation::Read(op) => fs.read(op, reply)?,
-            Operation::Readdir(op) => fs.readdir(op, reply)?,
-            _ => reply.error(libc::ENOSYS)?,
+            Operation::Lookup(op) => fs.lookup(&req, op)?,
+            Operation::Getattr(op) => fs.getattr(&req, op)?,
+            Operation::Read(op) => fs.read(&req, op)?,
+            Operation::Readdir(op) => fs.readdir(&req, op)?,
+            _ => req.reply_error(libc::ENOSYS)?,
         }
     }
 
@@ -99,7 +96,7 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    fn lookup(&self, op: op::Lookup<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
+    fn lookup(&self, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -107,31 +104,31 @@ impl Hello {
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                reply.ok(out)
+                req.reply(out)
             }
-            _ => reply.error(libc::ENOENT),
+            _ => req.reply_error(libc::ENOENT),
         }
     }
 
-    fn getattr(&self, op: op::Getattr<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
+    fn getattr(&self, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
-            _ => return reply.error(libc::ENOENT),
+            _ => return req.reply_error(libc::ENOENT),
         };
 
         let mut out = AttrOut::default();
         fill_attr(self, out.attr());
         out.ttl(TTL);
 
-        reply.ok(out)
+        req.reply(out)
     }
 
-    fn read(&self, op: op::Read<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
+    fn read(&self, req: &Request, op: op::Read<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
-            ROOT_INO => return reply.error(libc::EISDIR),
-            _ => return reply.error(libc::ENOENT),
+            ROOT_INO => return req.reply_error(libc::EISDIR),
+            _ => return req.reply_error(libc::ENOENT),
         }
 
         let mut data: &[u8] = &[];
@@ -143,7 +140,7 @@ impl Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        reply.ok(data)
+        req.reply(data)
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -153,9 +150,9 @@ impl Hello {
         })
     }
 
-    fn readdir(&self, op: op::Readdir<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
+    fn readdir(&self, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
         if op.ino() != ROOT_INO {
-            return reply.error(libc::ENOTDIR);
+            return req.reply_error(libc::ENOTDIR);
         }
 
         let mut out = ReaddirOut::new(op.size() as usize);
@@ -172,23 +169,6 @@ impl Hello {
             }
         }
 
-        reply.ok(out)
-    }
-}
-
-struct ReplyWriter<'req> {
-    req: &'req Request,
-}
-
-impl ReplyWriter<'_> {
-    fn ok<T>(self, arg: T) -> io::Result<()>
-    where
-        T: Bytes,
-    {
-        write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
-    }
-
-    fn error(self, code: i32) -> io::Result<()> {
-        write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
+        req.reply(out)
     }
 }

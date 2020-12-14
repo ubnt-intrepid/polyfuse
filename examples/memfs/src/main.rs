@@ -3,7 +3,7 @@
 
 use polyfuse::{
     op,
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Reply, WriteOut, XattrOut},
+    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
     Config, MountOptions, Operation, Session,
 };
 
@@ -48,18 +48,12 @@ fn main() -> Result<()> {
                     match $e {
                         Ok(data) => {
                             tracing::debug!(data=?data);
-                            polyfuse::bytes::write_bytes(
-                                &req,
-                                Reply::new(req.unique(), 0, data)
-                            )?;
+                            req.reply(data)?;
                         }
                         Err(err) => {
                             let errno = err.raw_os_error().unwrap_or(libc::EIO);
                             tracing::debug!(errno=errno);
-                            polyfuse::bytes::write_bytes(
-                                &req,
-                                Reply::new(req.unique(), errno, ())
-                            )?;
+                            req.reply_error(errno)?;
                         }
                     }
                 };
@@ -96,7 +90,7 @@ fn main() -> Result<()> {
 
                 _ => {
                     tracing::debug!("NOSYS");
-                    polyfuse::bytes::write_bytes(&req, Reply::new(req.unique(), libc::ENOSYS, ()))?;
+                    req.reply_error(libc::ENOSYS)?;
                 }
             }
 
