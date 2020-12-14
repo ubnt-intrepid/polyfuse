@@ -10,7 +10,6 @@ use polyfuse::{
 
 use anyhow::Context as _;
 use std::{io, os::unix::prelude::*, path::PathBuf, time::Duration};
-use tokio::io::{unix::AsyncFd, Interest};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const ROOT_INO: u64 = 1;
@@ -18,7 +17,7 @@ const HELLO_INO: u64 = 2;
 const HELLO_FILENAME: &str = "hello.txt";
 const HELLO_CONTENT: &[u8] = b"Hello, world!\n";
 
-#[tokio::main]
+#[async_std::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -199,7 +198,7 @@ impl ReplyWriter<'_> {
 // ==== AsyncSession ====
 
 struct AsyncSession {
-    inner: AsyncFd<Session>,
+    inner: async_io::Async<Session>,
 }
 
 impl AsyncSession {
@@ -208,30 +207,25 @@ impl AsyncSession {
         mountopts: MountOptions,
         config: Config,
     ) -> io::Result<Self> {
-        tokio::task::spawn_blocking(move || {
+        async_std::task::spawn_blocking(move || {
             let session = Session::mount(mountpoint, mountopts, config)?;
             Ok(Self {
-                inner: AsyncFd::with_interest(session, Interest::READABLE)?,
+                inner: async_io::Async::new(session)?,
             })
         })
         .await
-        .expect("join error")
     }
 
     async fn next_request(&self) -> io::Result<Option<Request>> {
         use futures::{future::poll_fn, ready, task::Poll};
 
-        poll_fn(|cx| {
-            let mut guard = ready!(self.inner.poll_read_ready(cx))?;
+        poll_fn(|cx| loop {
             match self.inner.get_ref().next_request() {
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                    guard.clear_ready();
-                    Poll::Pending
+                    ready!(self.inner.poll_readable(cx))?;
+                    continue;
                 }
-                res => {
-                    guard.retain_ready();
-                    Poll::Ready(res)
-                }
+                res => return Poll::Ready(res),
             }
         })
         .await

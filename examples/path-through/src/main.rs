@@ -17,24 +17,20 @@ use polyfuse::{
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Reply, WriteOut},
     Config, MountOptions, Operation, Request, Session,
 };
-use polyfuse_example_async_std_support::AsyncConnection;
 
-use anyhow::Context as _;
-use async_std::fs::{File, Metadata, OpenOptions, ReadDir};
-use futures::{io::AsyncBufRead, prelude::*};
+use anyhow::{ensure, Context as _, Result};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::OsString,
-    io,
+    fs::{self, File, Metadata, OpenOptions, ReadDir},
+    io::{self, prelude::*, BufRead},
     os::unix::prelude::*,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 
-#[async_std::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -42,28 +38,24 @@ async fn main() -> anyhow::Result<()> {
     let source: PathBuf = args
         .opt_value_from_str(["-s", "--source"])?
         .unwrap_or_else(|| std::env::current_dir().unwrap());
-    anyhow::ensure!(source.is_dir(), "the source path must be a directory");
+    ensure!(source.is_dir(), "the source path must be a directory");
 
     let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
-    anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
+    ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let conn = AsyncConnection::open(mountpoint, MountOptions::default()).await?;
-    let session = Session::start(&conn, &conn, Config::default()).await?;
+    let session = Session::mount(mountpoint, MountOptions::default(), Config::default())?;
 
     let mut fs = PathThrough::new(source)?;
 
-    while let Some(req) = session.next_request(&conn).await? {
+    while let Some(req) = session.next_request()? {
         let op = req.operation()?;
         tracing::debug!("handle operation: {:#?}", op);
 
-        let reply = ReplyWriter {
-            req: &req,
-            conn: &conn,
-        };
+        let reply = ReplyWriter { req: &req };
 
         macro_rules! try_reply {
             ($e:expr) => {
-                match ($e).await {
+                match $e {
                     Ok(data) => reply.ok(data)?,
                     Err(err) => reply.error(err.raw_os_error().unwrap_or(libc::EIO))?,
                 }
@@ -73,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         match op {
             Operation::Lookup(op) => try_reply!(fs.do_lookup(&op)),
             Operation::Forget(forgets) => {
-                fs.do_forget(forgets.as_ref()).await;
+                fs.do_forget(forgets.as_ref());
             }
             Operation::Getattr(op) => try_reply!(fs.do_getattr(&op)),
             Operation::Setattr(op) => try_reply!(fs.do_setattr(&op)),
@@ -83,10 +75,7 @@ async fn main() -> anyhow::Result<()> {
             Operation::Releasedir(op) => try_reply!(fs.do_releasedir(&op)),
             Operation::Open(op) => try_reply!(fs.do_open(&op)),
             Operation::Read(op) => try_reply!(fs.do_read(&op)),
-            Operation::Write(op, mut data) => {
-                let res = fs.do_write(&op, &mut data).await;
-                try_reply!(async { res })
-            }
+            Operation::Write(op, data) => try_reply!(fs.do_write(&op, data)),
             Operation::Flush(op) => try_reply!(fs.do_flush(&op)),
             Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
             Operation::Release(op) => try_reply!(fs.do_release(&op)),
@@ -176,11 +165,11 @@ impl PathThrough {
         })
     }
 
-    async fn do_lookup(&mut self, op: &op::Lookup<'_>) -> io::Result<EntryOut> {
+    fn do_lookup(&mut self, op: &op::Lookup<'_>) -> io::Result<EntryOut> {
         let parent = self.inodes.get(op.parent()).ok_or_else(no_entry)?;
         let path = parent.path.join(op.name());
 
-        let metadata = async_std::fs::symlink_metadata(self.source.join(&path)).await?;
+        let metadata = fs::symlink_metadata(self.source.join(&path))?;
 
         let mut out = EntryOut::default();
         fill_attr(&metadata, out.attr());
@@ -205,7 +194,7 @@ impl PathThrough {
         Ok(out)
     }
 
-    async fn do_forget(&mut self, forgets: &[Forget]) {
+    fn do_forget(&mut self, forgets: &[Forget]) {
         for forget in forgets {
             if let Entry::Occupied(mut entry) = self.inodes.map.entry(forget.ino()) {
                 let refcount = {
@@ -222,9 +211,9 @@ impl PathThrough {
         }
     }
 
-    async fn do_getattr(&mut self, op: &op::Getattr<'_>) -> io::Result<AttrOut> {
+    fn do_getattr(&mut self, op: &op::Getattr<'_>) -> io::Result<AttrOut> {
         let inode = self.inodes.get(op.ino()).ok_or_else(no_entry)?;
-        let metadata = async_std::fs::symlink_metadata(self.source.join(&inode.path)).await?;
+        let metadata = fs::symlink_metadata(self.source.join(&inode.path))?;
 
         let mut out = AttrOut::default();
         fill_attr(&metadata, out.attr());
@@ -232,45 +221,42 @@ impl PathThrough {
         Ok(out)
     }
 
-    async fn do_setattr(&mut self, op: &op::Setattr<'_>) -> io::Result<AttrOut> {
+    fn do_setattr(&mut self, op: &op::Setattr<'_>) -> io::Result<AttrOut> {
         let fh = op.fh().ok_or_else(no_entry)?;
         let file = self
             .files
             .get(fh as usize)
             .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
 
-        file.file.sync_all().await?;
+        file.file.sync_all()?;
 
         let inode = self.inodes.get(op.ino()).ok_or_else(no_entry)?;
-        let path = Arc::new(self.source.join(&inode.path));
+        let path = self.source.join(&inode.path);
 
         // chmod
         if let Some(mode) = op.mode() {
             let perm = std::fs::Permissions::from_mode(mode);
-            file.file.set_permissions(perm).await?;
+            file.file.set_permissions(perm)?;
         }
 
         // truncate
         if let Some(size) = op.size() {
-            file.file.set_len(size).await?;
+            file.file.set_len(size)?;
         }
 
         // chown
         match (op.uid(), op.gid()) {
             (None, None) => (),
             (uid, gid) => {
-                let path = path.clone();
                 let uid = uid.map(nix::unistd::Uid::from_raw);
                 let gid = gid.map(nix::unistd::Gid::from_raw);
-                async_std::task::spawn_blocking(move || nix::unistd::chown(&*path, uid, gid))
-                    .await
-                    .map_err(nix_to_io_error)?;
+                nix::unistd::chown(&*path, uid, gid).map_err(nix_to_io_error)?;
             }
         }
 
         // TODO: utimes
 
-        let metadata = async_std::fs::symlink_metadata(self.source.join(&inode.path)).await?;
+        let metadata = fs::symlink_metadata(self.source.join(&inode.path))?;
 
         let mut out = AttrOut::default();
         fill_attr(&metadata, out.attr());
@@ -278,17 +264,17 @@ impl PathThrough {
         Ok(out)
     }
 
-    async fn do_readlink(&mut self, op: &op::Readlink<'_>) -> io::Result<OsString> {
+    fn do_readlink(&mut self, op: &op::Readlink<'_>) -> io::Result<OsString> {
         let inode = self.inodes.get(op.ino()).ok_or_else(no_entry)?;
-        let path = async_std::fs::read_link(self.source.join(&inode.path)).await?;
+        let path = fs::read_link(self.source.join(&inode.path))?;
         Ok(path.into_os_string())
     }
 
-    async fn do_opendir(&mut self, op: &op::Opendir<'_>) -> io::Result<OpenOut> {
+    fn do_opendir(&mut self, op: &op::Opendir<'_>) -> io::Result<OpenOut> {
         let inode = self.inodes.get(op.ino()).ok_or_else(no_entry)?;
 
         let fh = self.dirs.insert(DirHandle {
-            read_dir: async_std::fs::read_dir(self.source.join(&inode.path)).await?,
+            read_dir: fs::read_dir(self.source.join(&inode.path))?,
             last_entry: None,
             offset: 1,
         }) as u64;
@@ -299,7 +285,7 @@ impl PathThrough {
         Ok(out)
     }
 
-    async fn do_readdir(&mut self, op: &op::Readdir<'_>) -> io::Result<ReaddirOut> {
+    fn do_readdir(&mut self, op: &op::Readdir<'_>) -> io::Result<ReaddirOut> {
         if op.mode() == op::ReaddirMode::Plus {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
         }
@@ -319,14 +305,14 @@ impl PathThrough {
             dir.offset += 1;
         }
 
-        while let Some(entry) = dir.read_dir.next().await {
+        while let Some(entry) = dir.read_dir.next() {
             let entry = entry?;
             match entry.file_name() {
                 name if name.as_bytes() == b"." || name.as_bytes() == b".." => continue,
                 _ => (),
             }
 
-            let metadata = entry.metadata().await?;
+            let metadata = entry.metadata()?;
             let file_type = metadata.file_type();
             let typ = if file_type.is_file() {
                 libc::DT_REG as u32
@@ -358,12 +344,12 @@ impl PathThrough {
         Ok(out)
     }
 
-    async fn do_releasedir(&mut self, op: &op::Releasedir<'_>) -> io::Result<()> {
+    fn do_releasedir(&mut self, op: &op::Releasedir<'_>) -> io::Result<()> {
         let _dir = self.dirs.remove(op.fh() as usize);
         Ok(())
     }
 
-    async fn do_open(&mut self, op: &op::Open<'_>) -> io::Result<OpenOut> {
+    fn do_open(&mut self, op: &op::Open<'_>) -> io::Result<OpenOut> {
         let inode = self.inodes.get(op.ino()).ok_or_else(no_entry)?;
 
         let mut options = OpenOptions::new();
@@ -382,7 +368,7 @@ impl PathThrough {
         options.custom_flags(op.flags() as i32 & !libc::O_NOFOLLOW);
 
         let fh = self.files.insert(FileHandle {
-            file: options.open(self.source.join(&inode.path)).await?,
+            file: options.open(self.source.join(&inode.path))?,
         }) as u64;
 
         let mut out = OpenOut::default();
@@ -391,37 +377,37 @@ impl PathThrough {
         Ok(out)
     }
 
-    async fn do_read(&mut self, op: &op::Read<'_>) -> io::Result<Vec<u8>> {
+    fn do_read(&mut self, op: &op::Read<'_>) -> io::Result<Vec<u8>> {
         let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
-        let buf = file.read(op.offset(), op.size() as usize).await?;
+        let buf = file.read(op.offset(), op.size() as usize)?;
         Ok(buf)
     }
 
-    async fn do_write<T>(&mut self, op: &op::Write<'_>, data: T) -> io::Result<WriteOut>
+    fn do_write<T>(&mut self, op: &op::Write<'_>, data: T) -> io::Result<WriteOut>
     where
-        T: AsyncBufRead + Unpin,
+        T: BufRead + Unpin,
     {
         let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
-        let written = file.write(data.take(op.size() as u64), op.offset()).await?;
+        let written = file.write(data.take(op.size() as u64), op.offset())?;
 
         let mut out = WriteOut::default();
         out.size(written as u32);
         Ok(out)
     }
 
-    async fn do_flush(&mut self, op: &op::Flush<'_>) -> io::Result<()> {
+    fn do_flush(&mut self, op: &op::Flush<'_>) -> io::Result<()> {
         let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
-        file.fsync(false).await?;
+        file.fsync(false)?;
         Ok(())
     }
 
-    async fn do_fsync(&mut self, op: &op::Fsync<'_>) -> io::Result<()> {
+    fn do_fsync(&mut self, op: &op::Fsync<'_>) -> io::Result<()> {
         let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
-        file.fsync(op.datasync()).await?;
+        file.fsync(op.datasync())?;
         Ok(())
     }
 
-    async fn do_release(&mut self, op: &op::Release<'_>) -> io::Result<()> {
+    fn do_release(&mut self, op: &op::Release<'_>) -> io::Result<()> {
         let _file = self.files.remove(op.fh() as usize);
         Ok(())
     }
@@ -448,42 +434,39 @@ struct FileHandle {
 }
 
 impl FileHandle {
-    async fn read(&mut self, offset: u64, size: usize) -> io::Result<Vec<u8>> {
-        self.file.seek(io::SeekFrom::Start(offset)).await?;
+    fn read(&mut self, offset: u64, size: usize) -> io::Result<Vec<u8>> {
+        self.file.seek(io::SeekFrom::Start(offset))?;
 
         let mut buf = Vec::<u8>::with_capacity(size);
-        (&mut self.file)
-            .take(size as u64)
-            .read_to_end(&mut buf)
-            .await?;
+        (&mut self.file).take(size as u64).read_to_end(&mut buf)?;
 
         Ok(buf)
     }
 
-    async fn write<T>(&mut self, mut data: T, offset: u64) -> io::Result<usize>
+    fn write<T>(&mut self, mut data: T, offset: u64) -> io::Result<usize>
     where
-        T: AsyncBufRead + Unpin,
+        T: BufRead + Unpin,
     {
-        self.file.seek(io::SeekFrom::Start(offset)).await?;
+        self.file.seek(io::SeekFrom::Start(offset))?;
 
         let mut written = 0;
         loop {
-            let chunk = data.fill_buf().await?;
+            let chunk = data.fill_buf()?;
             if chunk.is_empty() {
                 break;
             }
-            let n = self.file.write(chunk).await?;
+            let n = self.file.write(chunk)?;
             written += n;
         }
 
         Ok(written)
     }
 
-    async fn fsync(&mut self, datasync: bool) -> io::Result<()> {
+    fn fsync(&mut self, datasync: bool) -> io::Result<()> {
         if datasync {
-            self.file.sync_data().await?;
+            self.file.sync_data()?;
         } else {
-            self.file.sync_all().await?;
+            self.file.sync_all()?;
         }
         Ok(())
     }
@@ -515,7 +498,6 @@ fn fill_attr(metadata: &Metadata, attr: &mut FileAttr) {
 
 struct ReplyWriter<'req> {
     req: &'req Request,
-    conn: &'req AsyncConnection,
 }
 
 impl ReplyWriter<'_> {
@@ -523,11 +505,11 @@ impl ReplyWriter<'_> {
     where
         T: polyfuse::bytes::Bytes,
     {
-        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+        write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
     }
 
     fn error(self, code: i32) -> io::Result<()> {
-        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
+        write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
     }
 }
 

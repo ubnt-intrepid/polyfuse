@@ -10,7 +10,7 @@ pub mod op;
 pub mod reply;
 
 pub use crate::{
-    conn::{Connection, MountOptions},
+    conn::MountOptions,
     op::Operation,
-    session::{CapabilityFlags, Config, ConnectionInfo, Data, Request, Session},
+    session::{CapabilityFlags, Config, ConnectionInfo, Data, Notifier, Request, Session},
 };

@@ -10,35 +10,46 @@
 use polyfuse::{
     notify::InvalEntry,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, Reply},
-    Config, MountOptions, Operation, Request, Session,
+    Config, MountOptions, Notifier, Operation, Request, Session,
 };
-use polyfuse_example_async_std_support::{AsyncConnection, Writer};
 
 use anyhow::{ensure, Context as _, Result};
-use async_std::{sync::Mutex, task};
 use chrono::Local;
-use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    io, mem,
+    os::unix::prelude::*,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 const ROOT_INO: u64 = 1;
 const FILE_INO: u64 = 2;
 
-#[async_std::main]
-async fn main() -> Result<()> {
+const DEFAULT_TTL: Duration = Duration::from_secs(0);
+const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
+
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
 
     let no_notify = args.contains("--no-notify");
-    let timeout = args.value_from_str("--timeout").map(Duration::from_secs)?;
+
+    let ttl = args
+        .opt_value_from_str("--ttl")?
+        .map_or(DEFAULT_TTL, Duration::from_secs);
+    tracing::info!(?ttl);
+
     let update_interval = args
-        .value_from_str("--update-interval")
-        .map(Duration::from_secs)?;
+        .opt_value_from_str("--update-interval")?
+        .map_or(DEFAULT_INTERVAL, Duration::from_secs);
+    tracing::info!(?update_interval);
 
     let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let conn = AsyncConnection::open(mountpoint, MountOptions::default()).await?;
-    let session = Session::start(&conn, &conn, Config::default()).await?;
+    let session = Session::mount(mountpoint, MountOptions::default(), Config::default())?;
 
     let fs = {
         let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
@@ -54,7 +65,7 @@ async fn main() -> Result<()> {
         Arc::new(Heartbeat {
             root_attr,
             file_attr,
-            timeout,
+            ttl,
             update_interval,
             current: Mutex::new(CurrentFile {
                 filename: generate_filename(),
@@ -64,19 +75,25 @@ async fn main() -> Result<()> {
     };
 
     // Spawn a task that beats the heart.
-    task::spawn({
-        let heartbeat = fs.clone();
-        heartbeat.heartbeat(if !no_notify {
-            Some(conn.writer())
+    std::thread::spawn({
+        let fs = fs.clone();
+        let notifier = if !no_notify {
+            Some(session.notifier())
         } else {
             None
-        })
+        };
+        move || -> Result<()> {
+            fs.heartbeat(notifier)?;
+            Ok(())
+        }
     });
 
-    while let Some(req) = session.next_request(&conn).await? {
+    while let Some(req) = session.next_request()? {
         let fs = fs.clone();
-        let writer = conn.writer();
-        let _ = task::spawn(fs.handle_request(req, writer));
+        std::thread::spawn(move || -> Result<()> {
+            fs.handle_request(&req)?;
+            Ok(())
+        });
     }
 
     Ok(())
@@ -89,7 +106,7 @@ fn generate_filename() -> String {
 struct Heartbeat {
     root_attr: libc::stat,
     file_attr: libc::stat,
-    timeout: Duration,
+    ttl: Duration,
     update_interval: Duration,
     current: Mutex<CurrentFile>,
 }
@@ -101,50 +118,56 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    async fn heartbeat(self: Arc<Self>, writer: Option<Writer>) -> io::Result<()> {
-        let span = tracing::debug_span!("heartbeat", notify = writer.is_some());
+    fn heartbeat(&self, notifier: Option<Notifier>) -> Result<()> {
+        let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
+        let _enter = span.enter();
+
         loop {
+            tracing::info!("heartbeat");
+
             let new_filename = generate_filename();
-            let mut current = self.current.lock().await;
-            span.in_scope(|| {
-                tracing::debug!(filename = ?current.filename, nlookup = ?current.nlookup);
-                tracing::debug!(?new_filename);
-            });
+            let mut current = self.current.lock().unwrap();
+            tracing::debug!(filename = ?current.filename, nlookup = ?current.nlookup);
+            tracing::debug!(?new_filename);
             let old_filename = mem::replace(&mut current.filename, new_filename);
 
-            match writer {
-                Some(ref writer) if current.nlookup > 0 => {
-                    span.in_scope(|| tracing::debug!("send notify_inval_entry"));
-                    polyfuse::bytes::write_bytes(writer, InvalEntry::new(ROOT_INO, old_filename))?;
+            match notifier {
+                Some(ref notifier) if current.nlookup > 0 => {
+                    tracing::info!("send notify_inval_entry");
+                    polyfuse::bytes::write_bytes(
+                        notifier,
+                        InvalEntry::new(ROOT_INO, old_filename),
+                    )?;
                 }
                 _ => (),
             }
 
             drop(current);
 
-            task::sleep(self.update_interval).await;
+            std::thread::sleep(self.update_interval);
         }
     }
 
-    async fn handle_request(self: Arc<Self>, req: Request, writer: Writer) -> anyhow::Result<()> {
+    fn handle_request(&self, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
+        let _enter = span.enter();
 
         let op = req.operation()?;
-        span.in_scope(|| tracing::debug!(?op));
+        tracing::debug!(?op);
 
-        let reply = ReplyWriter { req: &req, writer };
+        let reply = ReplyWriter { req: &req };
 
         match op {
             Operation::Lookup(op) => match op.parent() {
                 ROOT_INO => {
-                    let mut current = self.current.lock().await;
+                    let mut current = self.current.lock().unwrap();
 
                     if op.name().as_bytes() == current.filename.as_bytes() {
                         let mut out = EntryOut::default();
                         out.ino(self.file_attr.st_ino);
                         fill_attr(out.attr(), &self.file_attr);
-                        out.ttl_entry(self.timeout);
-                        out.ttl_attr(self.timeout);
+                        out.ttl_entry(self.ttl);
+                        out.ttl_attr(self.ttl);
 
                         reply.ok(out)?;
 
@@ -157,7 +180,7 @@ impl Heartbeat {
             },
 
             Operation::Forget(forgets) => {
-                let mut current = self.current.lock().await;
+                let mut current = self.current.lock().unwrap();
                 for forget in forgets.as_ref() {
                     if forget.ino() == FILE_INO {
                         current.nlookup -= forget.nlookup();
@@ -174,7 +197,7 @@ impl Heartbeat {
 
                 let mut out = AttrOut::default();
                 fill_attr(out.attr(), attr);
-                out.ttl(self.timeout);
+                out.ttl(self.ttl);
 
                 reply.ok(out)?;
             }
@@ -188,7 +211,7 @@ impl Heartbeat {
             Operation::Readdir(op) => match op.ino() {
                 ROOT_INO => {
                     if op.offset() == 0 {
-                        let current = self.current.lock().await;
+                        let current = self.current.lock().unwrap();
 
                         let mut out = ReaddirOut::new(op.size() as usize);
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
@@ -224,7 +247,6 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
 
 struct ReplyWriter<'req> {
     req: &'req Request,
-    writer: Writer,
 }
 
 impl ReplyWriter<'_> {
@@ -232,10 +254,10 @@ impl ReplyWriter<'_> {
     where
         T: polyfuse::bytes::Bytes,
     {
-        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), 0, arg))
+        polyfuse::bytes::write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
     }
 
     fn error(self, code: i32) -> io::Result<()> {
-        polyfuse::bytes::write_bytes(&self.writer, Reply::new(self.req.unique(), code, ()))
+        polyfuse::bytes::write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
     }
 }

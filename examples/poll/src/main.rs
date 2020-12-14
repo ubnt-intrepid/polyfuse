@@ -2,20 +2,24 @@ use polyfuse::{
     bytes::{write_bytes, Bytes},
     notify::PollWakeup,
     reply::{AttrOut, OpenOut, PollOut, Reply},
-    Operation, Request, Session,
+    Notifier, Operation, Request, Session,
 };
-use polyfuse_example_async_std_support::{AsyncConnection, Writer};
 
 use anyhow::{ensure, Context as _, Result};
-use async_std::sync::Mutex;
-use futures_intrusive::sync::ManualResetEvent;
-use std::{io, path::PathBuf, sync::Arc, time::Duration};
-use tracing::Instrument as _;
+use dashmap::DashMap;
+use std::{
+    io,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Condvar, Mutex,
+    },
+    time::Duration,
+};
 
 const CONTENT: &str = "Hello, world!\n";
 
-#[async_std::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -29,178 +33,193 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let conn = AsyncConnection::open(mountpoint, Default::default()).await?;
-    let session = Session::start(&conn, &conn, Default::default()).await?;
+    let session = Session::mount(mountpoint, Default::default(), Default::default())?;
 
-    let fs = PollFS::new(conn.writer(), wakeup_interval);
+    let fs = Arc::new(PollFS::new(session.notifier(), wakeup_interval));
 
-    while let Some(req) = session.next_request(&conn).await? {
-        fs.handle_request(&req, &conn).await?;
+    while let Some(req) = session.next_request()? {
+        let fs = fs.clone();
+        std::thread::spawn(move || -> Result<()> {
+            fs.handle_request(&req)?;
+            Ok(())
+        });
     }
 
     Ok(())
 }
 
 struct PollFS {
-    handle: Arc<Mutex<Option<OpenHandle>>>,
-    is_ready: Arc<ManualResetEvent>,
-    writer: Writer,
+    handles: DashMap<u64, Arc<FileHandle>>,
+    next_fh: AtomicU64,
+
+    notifier: Notifier,
     wakeup_interval: Duration,
 }
 
 impl PollFS {
-    fn new(writer: Writer, wakeup_interval: Duration) -> Self {
+    fn new(notifier: Notifier, wakeup_interval: Duration) -> Self {
         Self {
-            handle: Arc::new(Mutex::new(None)),
-            is_ready: Arc::new(ManualResetEvent::new(false)),
-            writer,
+            handles: DashMap::new(),
+            next_fh: AtomicU64::new(0),
+            notifier,
             wakeup_interval,
         }
     }
 
-    fn start_reading(&self) {
-        let handle = self.handle.clone();
-        let is_ready = self.is_ready.clone();
-        let writer = self.writer.clone();
-        let wakeup_interval = self.wakeup_interval;
-
-        let span = tracing::debug_span!("wakeup");
-        async_std::task::spawn(
-            (async move {
-                async_std::task::sleep(wakeup_interval).await;
-
-                tracing::info!("background task is completed");
-                is_ready.set();
-
-                let mut handle = handle.lock().await;
-                if let Some(handle) = handle.as_mut() {
-                    if let Some(kh) = handle.kh.take() {
-                        tracing::info!("sending wakeup notification to kh={}", kh);
-                        if let Err(err) = polyfuse::bytes::write_bytes(&writer, PollWakeup::new(kh))
-                        {
-                            tracing::error!("failed to send poll notification: {}", err);
-                        }
-                    }
-                }
-            })
-            .instrument(span),
-        );
-    }
-
-    async fn handle_request(&self, req: &Request, conn: &AsyncConnection) -> anyhow::Result<()> {
+    fn handle_request(&self, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
-        (async {
-            let op = req.operation()?;
-            tracing::debug!(?op);
+        let _enter = span.enter();
 
-            let reply = ReplyWriter { req, conn };
+        let op = req.operation()?;
+        tracing::debug!(?op);
 
-            match op {
-                Operation::Getattr(..) => {
-                    let mut out = AttrOut::default();
-                    out.attr().ino(1);
-                    out.attr().nlink(1);
-                    out.attr().mode(libc::S_IFREG | 0o444);
-                    out.attr().uid(unsafe { libc::getuid() });
-                    out.attr().gid(unsafe { libc::getgid() });
-                    out.ttl(Duration::from_secs(u64::max_value() / 2));
+        let reply = ReplyWriter { req };
 
-                    reply.ok(out)?;
-                }
+        match op {
+            Operation::Getattr(..) => {
+                let mut out = AttrOut::default();
+                out.attr().ino(1);
+                out.attr().nlink(1);
+                out.attr().mode(libc::S_IFREG | 0o444);
+                out.attr().uid(unsafe { libc::getuid() });
+                out.attr().gid(unsafe { libc::getgid() });
+                out.ttl(Duration::from_secs(u64::max_value() / 2));
 
-                Operation::Open(op) => {
-                    if op.flags() as i32 & libc::O_ACCMODE != libc::O_RDONLY {
-                        return reply.error(libc::EACCES).map_err(Into::into);
-                    }
-
-                    tracing::info!("start reading task");
-                    self.is_ready.reset();
-                    self.start_reading();
-
-                    {
-                        let mut handle = self.handle.lock().await;
-                        if handle.is_some() {
-                            return reply.error(libc::EBUSY).map_err(Into::into);
-                        }
-                        *handle = Some(OpenHandle {
-                            is_nonblock: op.flags() as i32 & libc::O_NONBLOCK != 0,
-                            kh: None,
-                        });
-                    }
-
-                    let mut out = OpenOut::default();
-                    out.direct_io(true);
-                    out.nonseekable(true);
-
-                    reply.ok(out)?;
-                }
-
-                Operation::Read(op) => {
-                    if !self.is_ready.is_set() {
-                        tracing::info!("the background task has not finished yet.");
-
-                        {
-                            let mut handle = self.handle.lock().await;
-                            let handle = handle.as_mut().expect("open handle is empty");
-                            if handle.is_nonblock {
-                                tracing::info!("send EAGAIN immediately");
-                                return reply.error(libc::EAGAIN).map_err(Into::into);
-                            }
-                        }
-
-                        tracing::info!("wait for the completion of background task");
-                        self.is_ready.wait().await;
-                    }
-
-                    let offset = op.offset() as usize;
-                    let bufsize = op.size() as usize;
-                    let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
-                    reply.ok(&content[..std::cmp::min(content.len(), bufsize)])?;
-                }
-
-                Operation::Poll(op) => {
-                    let mut out = PollOut::default();
-
-                    if self.is_ready.is_set() {
-                        tracing::info!("the background task is completed and ready to read");
-                        out.revents(op.events() & libc::POLLIN as u32);
-                        return reply.ok(out).map_err(Into::into);
-                    }
-
-                    if let Some(kh) = op.kh() {
-                        tracing::info!("register the poll handle for notification: kh={}", kh);
-                        let mut handle = self.handle.lock().await;
-                        let handle = handle.as_mut().expect("open handle is empty");
-                        handle.kh.replace(kh);
-                    }
-
-                    reply.ok(out)?;
-                }
-
-                Operation::Release(_op) => {
-                    let mut handle = self.handle.lock().await;
-                    handle.take();
-                    reply.ok(&[])?;
-                }
-
-                _ => reply.error(libc::ENOSYS)?,
+                reply.ok(out)?;
             }
 
-            Ok(())
-        })
-        .instrument(span)
-        .await
+            Operation::Open(op) => {
+                if op.flags() as i32 & libc::O_ACCMODE != libc::O_RDONLY {
+                    return reply.error(libc::EACCES).map_err(Into::into);
+                }
+
+                let is_nonblock = op.flags() as i32 & libc::O_NONBLOCK != 0;
+
+                let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
+                let handle = Arc::new(FileHandle {
+                    is_nonblock,
+                    state: Mutex::default(),
+                    condvar: Condvar::new(),
+                });
+
+                tracing::info!("spawn reading task");
+                std::thread::spawn({
+                    let handle = Arc::downgrade(&handle);
+                    let notifier = self.notifier.clone();
+                    let wakeup_interval = self.wakeup_interval;
+
+                    move || -> Result<()> {
+                        let span = tracing::debug_span!("reading_task", fh=?fh);
+                        let _enter = span.enter();
+
+                        tracing::info!("start reading");
+                        std::thread::sleep(wakeup_interval);
+
+                        tracing::info!("reading completed");
+
+                        // Do nothing when the handle is already closed.
+                        if let Some(handle) = handle.upgrade() {
+                            let state = &mut *handle.state.lock().unwrap();
+
+                            if let Some(kh) = state.kh {
+                                tracing::info!("send wakeup notification, kh={}", kh);
+                                polyfuse::bytes::write_bytes(&notifier, PollWakeup::new(kh))?;
+                            }
+
+                            state.is_ready = true;
+                            handle.condvar.notify_one();
+                        }
+
+                        Ok(())
+                    }
+                });
+
+                self.handles.insert(fh, handle);
+
+                let mut out = OpenOut::default();
+                out.fh(fh);
+                out.direct_io(true);
+                out.nonseekable(true);
+
+                reply.ok(out)?;
+            }
+
+            Operation::Read(op) => {
+                let handle = match self.handles.get(&op.fh()) {
+                    Some(h) => h,
+                    None => return reply.error(libc::EINVAL).map_err(Into::into),
+                };
+
+                let mut state = handle.state.lock().unwrap();
+                if handle.is_nonblock {
+                    if !state.is_ready {
+                        tracing::info!("send EAGAIN immediately");
+                        return reply.error(libc::EAGAIN).map_err(Into::into);
+                    }
+                } else {
+                    tracing::info!("wait for the completion of background task");
+                    state = handle
+                        .condvar
+                        .wait_while(state, |state| !state.is_ready)
+                        .unwrap();
+                }
+
+                debug_assert!(state.is_ready);
+
+                tracing::info!("complete reading");
+
+                let offset = op.offset() as usize;
+                let bufsize = op.size() as usize;
+                let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
+                reply.ok(&content[..std::cmp::min(content.len(), bufsize)])?;
+            }
+
+            Operation::Poll(op) => {
+                let handle = match self.handles.get(&op.fh()) {
+                    Some(h) => h,
+                    None => return reply.error(libc::EINVAL).map_err(Into::into),
+                };
+                let state = &mut *handle.state.lock().unwrap();
+
+                let mut out = PollOut::default();
+
+                if state.is_ready {
+                    tracing::info!("file is ready to read");
+                    out.revents(op.events() & libc::POLLIN as u32);
+                } else if let Some(kh) = op.kh() {
+                    tracing::info!("register the poll handle for notification: kh={}", kh);
+                    state.kh = Some(kh);
+                }
+
+                reply.ok(out)?;
+            }
+
+            Operation::Release(op) => {
+                drop(self.handles.remove(&op.fh()));
+                reply.ok(&[])?;
+            }
+
+            _ => reply.error(libc::ENOSYS)?,
+        }
+
+        Ok(())
     }
 }
 
-struct OpenHandle {
+struct FileHandle {
     is_nonblock: bool,
+    state: Mutex<FileHandleState>,
+    condvar: Condvar,
+}
+
+#[derive(Default)]
+struct FileHandleState {
+    is_ready: bool,
     kh: Option<u64>,
 }
 
 struct ReplyWriter<'req> {
     req: &'req Request,
-    conn: &'req AsyncConnection,
 }
 
 impl ReplyWriter<'_> {
@@ -208,10 +227,10 @@ impl ReplyWriter<'_> {
     where
         T: Bytes,
     {
-        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+        write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
     }
 
     fn error(self, code: i32) -> io::Result<()> {
-        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
+        write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
     }
 }

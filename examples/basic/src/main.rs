@@ -4,15 +4,13 @@ use polyfuse::{
     reply::{AttrOut, Reply},
     Config, MountOptions, Operation, Request, Session,
 };
-use polyfuse_example_async_std_support::AsyncConnection;
 
 use anyhow::{ensure, Context as _, Result};
 use std::{io, path::PathBuf, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
 
-#[async_std::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -21,17 +19,11 @@ async fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let conn = AsyncConnection::open(mountpoint, MountOptions::default()).await?;
-
-    // Start FUSE session.
-    let session = Session::start(&conn, &conn, Config::default()).await?;
+    let session = Session::mount(mountpoint, MountOptions::default(), Config::default())?;
 
     // Receive an incoming FUSE request from the kernel.
-    while let Some(req) = session.next_request(&conn).await? {
-        let reply = ReplyWriter {
-            req: &req,
-            conn: &conn,
-        };
+    while let Some(req) = session.next_request()? {
+        let reply = ReplyWriter { req: &req };
 
         match req.operation()? {
             // Dispatch your callbacks to the supported operations...
@@ -82,7 +74,6 @@ fn read(op: op::Read<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
 
 struct ReplyWriter<'req> {
     req: &'req Request,
-    conn: &'req AsyncConnection,
 }
 
 impl ReplyWriter<'_> {
@@ -90,10 +81,10 @@ impl ReplyWriter<'_> {
     where
         T: Bytes,
     {
-        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+        write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
     }
 
     fn error(self, code: i32) -> io::Result<()> {
-        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
+        write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
     }
 }

@@ -7,9 +7,8 @@ use polyfuse::{
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, Reply},
     Config, MountOptions, Operation, Request, Session,
 };
-use polyfuse_example_async_std_support::AsyncConnection;
 
-use anyhow::Context as _;
+use anyhow::{ensure, Context as _, Result};
 use std::{io, os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -18,27 +17,20 @@ const HELLO_INO: u64 = 2;
 const HELLO_FILENAME: &str = "hello.txt";
 const HELLO_CONTENT: &[u8] = b"Hello, world!\n";
 
-#[async_std::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
 
-    let mountpoint: PathBuf = args
-        .free_from_str()?
-        .context("missing mountpoint specified")?;
-    anyhow::ensure!(mountpoint.is_dir(), "the mountpoint must be a directory");
+    let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
+    ensure!(mountpoint.is_dir(), "tmountpoint must be a directory");
 
-    let conn = AsyncConnection::open(mountpoint, MountOptions::default()).await?;
-    let session = Session::start(&conn, &conn, Config::default()).await?;
+    let session = Session::mount(mountpoint, MountOptions::default(), Config::default())?;
 
     let fs = Hello::new();
 
-    while let Some(req) = session.next_request(&conn).await? {
-        let reply = ReplyWriter {
-            req: &req,
-            conn: &conn,
-        };
+    while let Some(req) = session.next_request()? {
+        let reply = ReplyWriter { req: &req };
 
         match req.operation()? {
             Operation::Lookup(op) => fs.lookup(op, reply)?,
@@ -186,7 +178,6 @@ impl Hello {
 
 struct ReplyWriter<'req> {
     req: &'req Request,
-    conn: &'req AsyncConnection,
 }
 
 impl ReplyWriter<'_> {
@@ -194,10 +185,10 @@ impl ReplyWriter<'_> {
     where
         T: Bytes,
     {
-        write_bytes(self.conn, Reply::new(self.req.unique(), 0, arg))
+        write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
     }
 
     fn error(self, code: i32) -> io::Result<()> {
-        write_bytes(self.conn, Reply::new(self.req.unique(), code, ()))
+        write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
     }
 }
