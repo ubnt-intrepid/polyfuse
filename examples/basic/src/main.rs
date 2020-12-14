@@ -1,9 +1,4 @@
-use polyfuse::{
-    bytes::{write_bytes, Bytes},
-    op,
-    reply::{AttrOut, Reply},
-    Config, MountOptions, Operation, Request, Session,
-};
+use polyfuse::{op, reply::AttrOut, Config, MountOptions, Operation, Request, Session};
 
 use anyhow::{ensure, Context as _, Result};
 use std::{io, path::PathBuf, time::Duration};
@@ -23,24 +18,22 @@ fn main() -> Result<()> {
 
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request()? {
-        let reply = ReplyWriter { req: &req };
-
         match req.operation()? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(op, reply)?,
-            Operation::Read(op) => read(op, reply)?,
+            Operation::Getattr(op) => getattr(&req, op)?,
+            Operation::Read(op) => read(&req, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => reply.error(libc::ENOSYS)?,
+            _ => req.reply_error(libc::ENOSYS)?,
         };
     }
 
     Ok(())
 }
 
-fn getattr(op: op::Getattr<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
+fn getattr(req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
     if op.ino() != 1 {
-        return reply.error(libc::ENOENT);
+        return req.reply_error(libc::ENOENT);
     }
 
     let mut out = AttrOut::default();
@@ -52,12 +45,12 @@ fn getattr(op: op::Getattr<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
     out.attr().gid(unsafe { libc::getgid() });
     out.ttl(Duration::from_secs(1));
 
-    reply.ok(out)
+    req.reply(out)
 }
 
-fn read(op: op::Read<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
+fn read(req: &Request, op: op::Read<'_>) -> io::Result<()> {
     if op.ino() != 1 {
-        return reply.error(libc::ENOENT);
+        return req.reply_error(libc::ENOENT);
     }
 
     let mut data: &[u8] = &[];
@@ -69,22 +62,5 @@ fn read(op: op::Read<'_>, reply: ReplyWriter<'_>) -> io::Result<()> {
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    reply.ok(data)
-}
-
-struct ReplyWriter<'req> {
-    req: &'req Request,
-}
-
-impl ReplyWriter<'_> {
-    fn ok<T>(self, arg: T) -> io::Result<()>
-    where
-        T: Bytes,
-    {
-        write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
-    }
-
-    fn error(self, code: i32) -> io::Result<()> {
-        write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
-    }
+    req.reply(data)
 }

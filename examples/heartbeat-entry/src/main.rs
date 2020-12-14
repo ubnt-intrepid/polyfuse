@@ -8,15 +8,14 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 
 use polyfuse::{
-    notify::InvalEntry,
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut, Reply},
+    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
     Config, MountOptions, Notifier, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
 use std::{
-    io, mem,
+    mem,
     os::unix::prelude::*,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -134,10 +133,7 @@ impl Heartbeat {
             match notifier {
                 Some(ref notifier) if current.nlookup > 0 => {
                     tracing::info!("send notify_inval_entry");
-                    polyfuse::bytes::write_bytes(
-                        notifier,
-                        InvalEntry::new(ROOT_INO, old_filename),
-                    )?;
+                    notifier.inval_entry(ROOT_INO, old_filename)?;
                 }
                 _ => (),
             }
@@ -155,8 +151,6 @@ impl Heartbeat {
         let op = req.operation()?;
         tracing::debug!(?op);
 
-        let reply = ReplyWriter { req: &req };
-
         match op {
             Operation::Lookup(op) => match op.parent() {
                 ROOT_INO => {
@@ -169,14 +163,14 @@ impl Heartbeat {
                         out.ttl_entry(self.ttl);
                         out.ttl_attr(self.ttl);
 
-                        reply.ok(out)?;
+                        req.reply(out)?;
 
                         current.nlookup += 1;
                     } else {
-                        reply.error(libc::ENOENT)?;
+                        req.reply_error(libc::ENOENT)?;
                     }
                 }
-                _ => reply.error(libc::ENOTDIR)?,
+                _ => req.reply_error(libc::ENOTDIR)?,
             },
 
             Operation::Forget(forgets) => {
@@ -192,20 +186,20 @@ impl Heartbeat {
                 let attr = match op.ino() {
                     ROOT_INO => &self.root_attr,
                     FILE_INO => &self.file_attr,
-                    _ => return reply.error(libc::ENOENT).map_err(Into::into),
+                    _ => return req.reply_error(libc::ENOENT).map_err(Into::into),
                 };
 
                 let mut out = AttrOut::default();
                 fill_attr(out.attr(), attr);
                 out.ttl(self.ttl);
 
-                reply.ok(out)?;
+                req.reply(out)?;
             }
 
             Operation::Read(op) => match op.ino() {
-                ROOT_INO => reply.error(libc::EISDIR)?,
-                FILE_INO => reply.ok(&[])?,
-                _ => reply.error(libc::ENOENT)?,
+                ROOT_INO => req.reply_error(libc::EISDIR)?,
+                FILE_INO => req.reply(&[])?,
+                _ => req.reply_error(libc::ENOENT)?,
             },
 
             Operation::Readdir(op) => match op.ino() {
@@ -215,15 +209,15 @@ impl Heartbeat {
 
                         let mut out = ReaddirOut::new(op.size() as usize);
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
-                        reply.ok(out)?;
+                        req.reply(out)?;
                     } else {
-                        reply.ok(&[])?;
+                        req.reply(&[])?;
                     }
                 }
-                _ => reply.error(libc::ENOTDIR)?,
+                _ => req.reply_error(libc::ENOTDIR)?,
             },
 
-            _ => reply.error(libc::ENOSYS)?,
+            _ => req.reply_error(libc::ENOSYS)?,
         }
 
         Ok(())
@@ -243,21 +237,4 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
     attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
     attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
-}
-
-struct ReplyWriter<'req> {
-    req: &'req Request,
-}
-
-impl ReplyWriter<'_> {
-    fn ok<T>(self, arg: T) -> io::Result<()>
-    where
-        T: polyfuse::bytes::Bytes,
-    {
-        polyfuse::bytes::write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
-    }
-
-    fn error(self, code: i32) -> io::Result<()> {
-        polyfuse::bytes::write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
-    }
 }

@@ -1,14 +1,11 @@
 use polyfuse::{
-    bytes::{write_bytes, Bytes},
-    notify::PollWakeup,
-    reply::{AttrOut, OpenOut, PollOut, Reply},
+    reply::{AttrOut, OpenOut, PollOut},
     Notifier, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
 use std::{
-    io,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -73,8 +70,6 @@ impl PollFS {
         let op = req.operation()?;
         tracing::debug!(?op);
 
-        let reply = ReplyWriter { req };
-
         match op {
             Operation::Getattr(..) => {
                 let mut out = AttrOut::default();
@@ -85,12 +80,12 @@ impl PollFS {
                 out.attr().gid(unsafe { libc::getgid() });
                 out.ttl(Duration::from_secs(u64::max_value() / 2));
 
-                reply.ok(out)?;
+                req.reply(out)?;
             }
 
             Operation::Open(op) => {
                 if op.flags() as i32 & libc::O_ACCMODE != libc::O_RDONLY {
-                    return reply.error(libc::EACCES).map_err(Into::into);
+                    return req.reply_error(libc::EACCES).map_err(Into::into);
                 }
 
                 let is_nonblock = op.flags() as i32 & libc::O_NONBLOCK != 0;
@@ -123,7 +118,7 @@ impl PollFS {
 
                             if let Some(kh) = state.kh {
                                 tracing::info!("send wakeup notification, kh={}", kh);
-                                polyfuse::bytes::write_bytes(&notifier, PollWakeup::new(kh))?;
+                                notifier.poll_wakeup(kh)?;
                             }
 
                             state.is_ready = true;
@@ -141,20 +136,20 @@ impl PollFS {
                 out.direct_io(true);
                 out.nonseekable(true);
 
-                reply.ok(out)?;
+                req.reply(out)?;
             }
 
             Operation::Read(op) => {
                 let handle = match self.handles.get(&op.fh()) {
                     Some(h) => h,
-                    None => return reply.error(libc::EINVAL).map_err(Into::into),
+                    None => return req.reply_error(libc::EINVAL).map_err(Into::into),
                 };
 
                 let mut state = handle.state.lock().unwrap();
                 if handle.is_nonblock {
                     if !state.is_ready {
                         tracing::info!("send EAGAIN immediately");
-                        return reply.error(libc::EAGAIN).map_err(Into::into);
+                        return req.reply_error(libc::EAGAIN).map_err(Into::into);
                     }
                 } else {
                     tracing::info!("wait for the completion of background task");
@@ -171,13 +166,14 @@ impl PollFS {
                 let offset = op.offset() as usize;
                 let bufsize = op.size() as usize;
                 let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
-                reply.ok(&content[..std::cmp::min(content.len(), bufsize)])?;
+
+                req.reply(&content[..std::cmp::min(content.len(), bufsize)])?;
             }
 
             Operation::Poll(op) => {
                 let handle = match self.handles.get(&op.fh()) {
                     Some(h) => h,
-                    None => return reply.error(libc::EINVAL).map_err(Into::into),
+                    None => return req.reply_error(libc::EINVAL).map_err(Into::into),
                 };
                 let state = &mut *handle.state.lock().unwrap();
 
@@ -191,15 +187,15 @@ impl PollFS {
                     state.kh = Some(kh);
                 }
 
-                reply.ok(out)?;
+                req.reply(out)?;
             }
 
             Operation::Release(op) => {
                 drop(self.handles.remove(&op.fh()));
-                reply.ok(&[])?;
+                req.reply(&[])?;
             }
 
-            _ => reply.error(libc::ENOSYS)?,
+            _ => req.reply_error(libc::ENOSYS)?,
         }
 
         Ok(())
@@ -216,21 +212,4 @@ struct FileHandle {
 struct FileHandleState {
     is_ready: bool,
     kh: Option<u64>,
-}
-
-struct ReplyWriter<'req> {
-    req: &'req Request,
-}
-
-impl ReplyWriter<'_> {
-    fn ok<T>(self, arg: T) -> io::Result<()>
-    where
-        T: Bytes,
-    {
-        write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
-    }
-
-    fn error(self, code: i32) -> io::Result<()> {
-        write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
-    }
 }

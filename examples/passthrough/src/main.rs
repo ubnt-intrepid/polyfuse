@@ -6,8 +6,7 @@ mod fs;
 use polyfuse::{
     op,
     reply::{
-        AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Reply, Statfs, StatfsOut, WriteOut,
-        XattrOut,
+        AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
     CapabilityFlags, MountOptions, Operation, Session,
 };
@@ -83,15 +82,12 @@ fn main() -> Result<()> {
                     match $e {
                         Ok(data) => {
                             tracing::debug!(?data);
-                            polyfuse::bytes::write_bytes(&req, Reply::new(req.unique(), 0, data))?;
+                            req.reply(data)?;
                         }
                         Err(err) => {
                             let errno = io_to_errno(err);
-                            span.in_scope(|| tracing::debug!(errno = errno));
-                            polyfuse::bytes::write_bytes(
-                                &req,
-                                Reply::new(req.unique(), errno, ()),
-                            )?;
+                            tracing::debug!(errno = errno);
+                            req.reply_error(errno)?;
                         }
                     }
                 };
@@ -158,12 +154,7 @@ fn main() -> Result<()> {
 
                 Operation::Statfs(op) => try_reply!(fs.do_statfs(&op)),
 
-                _ => {
-                    polyfuse::bytes::write_bytes(
-                        &req, //
-                        Reply::new(req.unique(), libc::ENOSYS, ()),
-                    )?
-                }
+                _ => req.reply_error(libc::ENOSYS)?,
             }
 
             Ok(())

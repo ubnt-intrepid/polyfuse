@@ -8,9 +8,8 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
-    notify::{InvalInode, Retrieve, Store},
-    reply::{AttrOut, FileAttr, OpenOut, Reply},
-    Config, MountOptions, Notifier, Operation, Request, Session,
+    reply::{AttrOut, FileAttr, OpenOut},
+    Config, MountOptions, Notifier, Operation, Session,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
@@ -20,10 +19,7 @@ use std::{
     io::{self, prelude::*},
     mem,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc, Arc, Mutex,
-    },
+    sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
 
@@ -88,25 +84,23 @@ fn main() -> Result<()> {
             let op = req.operation()?;
             tracing::debug!(?op);
 
-            let reply = ReplyWriter { req: &req };
-
             match op {
                 Operation::Getattr(op) => match op.ino() {
                     ROOT_INO => {
                         let inner = heartbeat.inner.lock().unwrap();
                         let mut out = AttrOut::default();
                         fill_attr(out.attr(), &inner.attr);
-                        reply.ok(out)?;
+                        req.reply(out)?;
                     }
-                    _ => reply.error(libc::ENOENT)?,
+                    _ => req.reply_error(libc::ENOENT)?,
                 },
                 Operation::Open(op) => match op.ino() {
                     ROOT_INO => {
                         let mut out = OpenOut::default();
                         out.keep_cache(true);
-                        reply.ok(out)?;
+                        req.reply(out)?;
                     }
-                    _ => reply.error(libc::ENOENT)?,
+                    _ => req.reply_error(libc::ENOENT)?,
                 },
                 Operation::Read(op) => match op.ino() {
                     ROOT_INO => {
@@ -114,15 +108,15 @@ fn main() -> Result<()> {
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
-                            reply.ok(&[])?;
+                            req.reply(&[])?;
                         } else {
                             let size = op.size() as usize;
                             let data = &inner.content.as_bytes()[offset..];
                             let data = &data[..std::cmp::min(data.len(), size)];
-                            reply.ok(data)?;
+                            req.reply(data)?;
                         }
                     }
-                    _ => reply.error(libc::ENOENT)?,
+                    _ => req.reply_error(libc::ENOENT)?,
                 },
                 Operation::NotifyReply(op, mut data) => {
                     let mut retrieves = heartbeat.retrieves.lock().unwrap();
@@ -133,7 +127,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                _ => reply.error(libc::ENOSYS)?,
+                _ => req.reply_error(libc::ENOSYS)?,
             }
 
             Ok(())
@@ -152,7 +146,6 @@ enum NotifyKind {
 struct Heartbeat {
     inner: Mutex<Inner>,
     retrieves: Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>,
-    retrieve_unique: AtomicU64,
 }
 
 struct Inner {
@@ -172,7 +165,6 @@ impl Heartbeat {
         Self {
             inner: Mutex::new(Inner { content, attr }),
             retrieves: Mutex::default(),
-            retrieve_unique: AtomicU64::default(),
         }
     }
 
@@ -188,15 +180,14 @@ impl Heartbeat {
         let content = &inner.content;
 
         tracing::info!("send notify_store(data={:?})", content);
-        polyfuse::bytes::write_bytes(notifier, Store::new(ROOT_INO, 0, content))?;
+        notifier.store(ROOT_INO, 0, content)?;
 
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
         let data = {
             // FIXME: choose appropriate atomic ordering.
-            let unique = self.retrieve_unique.fetch_add(1, Ordering::SeqCst);
-            polyfuse::bytes::write_bytes(notifier, Retrieve::new(unique, ROOT_INO, 0, 1024))?;
+            let unique = notifier.retrieve(ROOT_INO, 0, 1024)?;
             let (tx, rx) = mpsc::channel();
             self.retrieves.lock().unwrap().insert(unique, tx);
             rx.recv().unwrap()
@@ -212,7 +203,7 @@ impl Heartbeat {
 
     fn notify_inval_inode(&self, notifier: &Notifier) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
-        polyfuse::bytes::write_bytes(notifier, InvalInode::new(ROOT_INO, 0, 0))?;
+        notifier.inval_inode(ROOT_INO, 0, 0)?;
         Ok(())
     }
 }
@@ -230,21 +221,4 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
     attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
     attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
-}
-
-struct ReplyWriter<'req> {
-    req: &'req Request,
-}
-
-impl ReplyWriter<'_> {
-    fn ok<T>(self, arg: T) -> io::Result<()>
-    where
-        T: polyfuse::bytes::Bytes,
-    {
-        polyfuse::bytes::write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
-    }
-
-    fn error(self, code: i32) -> io::Result<()> {
-        polyfuse::bytes::write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
-    }
 }

@@ -5,7 +5,6 @@ mod decoder;
 mod session;
 
 pub mod bytes;
-pub mod notify;
 pub mod op;
 pub mod reply;
 

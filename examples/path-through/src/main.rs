@@ -12,10 +12,9 @@
 // the path based filesystems such as libfuse's highlevel API.
 
 use polyfuse::{
-    bytes::write_bytes,
     op::{self, Forget},
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Reply, WriteOut},
-    Config, MountOptions, Operation, Request, Session,
+    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
+    Config, MountOptions, Operation, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -51,13 +50,11 @@ fn main() -> Result<()> {
         let op = req.operation()?;
         tracing::debug!("handle operation: {:#?}", op);
 
-        let reply = ReplyWriter { req: &req };
-
         macro_rules! try_reply {
             ($e:expr) => {
                 match $e {
-                    Ok(data) => reply.ok(data)?,
-                    Err(err) => reply.error(err.raw_os_error().unwrap_or(libc::EIO))?,
+                    Ok(data) => req.reply(data)?,
+                    Err(err) => req.reply_error(err.raw_os_error().unwrap_or(libc::EIO))?,
                 }
             };
         }
@@ -80,7 +77,7 @@ fn main() -> Result<()> {
             Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
             Operation::Release(op) => try_reply!(fs.do_release(&op)),
 
-            _ => reply.error(libc::ENOSYS)?,
+            _ => req.reply_error(libc::ENOSYS)?,
         }
     }
 
@@ -494,23 +491,6 @@ fn fill_attr(metadata: &Metadata, attr: &mut FileAttr) {
         metadata.ctime() as u64,
         metadata.ctime_nsec() as u32,
     ));
-}
-
-struct ReplyWriter<'req> {
-    req: &'req Request,
-}
-
-impl ReplyWriter<'_> {
-    fn ok<T>(self, arg: T) -> io::Result<()>
-    where
-        T: polyfuse::bytes::Bytes,
-    {
-        write_bytes(self.req, Reply::new(self.req.unique(), 0, arg))
-    }
-
-    fn error(self, code: i32) -> io::Result<()> {
-        write_bytes(self.req, Reply::new(self.req.unique(), code, ()))
-    }
 }
 
 // ==== utils ====
