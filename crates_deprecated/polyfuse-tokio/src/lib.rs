@@ -1,6 +1,8 @@
-#![doc(html_root_url = "https://docs.rs/polyfuse-tokio/0.2.2")]
+#![doc(html_root_url = "https://docs.rs/polyfuse-tokio/0.2.3")]
 
 //! Tokio integration for `polyfuse`.
+
+#![deprecated(since = "0.2.3", note = "This crate has no longer been in maintenance.")]
 
 #![warn(clippy::checked_conversions)]
 #![deny(
