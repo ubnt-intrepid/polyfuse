@@ -4,7 +4,7 @@
 
 <div align="center">
   <strong>
-    Tokio integration for <code>polyfuse</code>.
+    A FUSE (Filesystem in Userspace) library for Rust.
   </strong>
 </div>
 

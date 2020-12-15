@@ -1,8 +1,9 @@
 [package]
 name = "polyfuse-kernel"
-version = "0.1.0-dev"
-publish = false
-authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+version = "0.1.0"
+description = "FUSE application binary interface for `polyfuse`."
+authors = [ "Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>" ]
+license = "MIT OR Apache-2.0"
 edition = "2018"
 
 [dependencies]
