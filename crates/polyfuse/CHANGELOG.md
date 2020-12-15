@@ -5,6 +5,14 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.4.0] (2020-12-15)
+
+This release is essentially a new crate compared to v0.3.x.
+The concept and ultimate goal of this project remains the same, but the API has been
+revamped to support for more use cases.
+
+The minimum supported Rust version is 1.48.0.
+
 ## [0.3.3] (2020-01-10)
 
 ### Added
@@ -100,7 +108,8 @@ See the commit log for a detailed change history.
 
 <!-- links -->
 
-[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.0...v0.3.1
