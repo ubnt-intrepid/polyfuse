@@ -19,8 +19,8 @@ impl Env {
             .unwrap_or_else(|| project_root.join("target"));
 
         Ok(Self {
-            project_root,
-            target_dir,
+            project_root: project_root.canonicalize()?,
+            target_dir: target_dir.canonicalize()?,
         })
     }
 }
