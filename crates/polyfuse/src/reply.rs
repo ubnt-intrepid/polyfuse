@@ -627,9 +627,10 @@ impl ReaddirOut {
             typ,
             name: [],
         };
+        let lenbefore = self.buf.len();
         self.buf.extend_from_slice(dirent.as_bytes());
         self.buf.extend_from_slice(name);
-        self.buf.resize(self.buf.len() + aligned_entry_size, 0);
+        self.buf.resize(lenbefore + aligned_entry_size, 0);
 
         false
     }
