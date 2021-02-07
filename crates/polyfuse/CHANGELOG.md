@@ -5,6 +5,12 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.4.1] (2021-02-07)
+
+### Fixed
+
+* fix overflowing the reply buffer for readdir ([#145](https://github.com/ubnt-intrepid/polyfuse/pull/145), thanks to [@sum12](https://github.com/sum12))
+
 ## [0.4.0] (2020-12-15)
 
 This release is essentially a new crate compared to v0.3.x.
@@ -108,7 +114,8 @@ See the commit log for a detailed change history.
 
 <!-- links -->
 
-[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.3.1...v0.3.2
