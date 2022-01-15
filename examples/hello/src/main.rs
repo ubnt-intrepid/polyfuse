@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
+    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     let mut args = pico_args::Arguments::from_env();
 
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
-    ensure!(mountpoint.is_dir(), "tmountpoint must be a directory");
+    ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
     let mut conn = Connection::from(conn);
@@ -37,7 +37,11 @@ fn main() -> Result<()> {
             Operation::Getattr(op) => fs.getattr(&mut conn, &req, op)?,
             Operation::Read(op) => fs.read(&mut conn, &req, op)?,
             Operation::Readdir(op) => fs.readdir(&mut conn, &req, op)?,
-            _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
+            Operation::Opendir(op) => fs.opendir(&mut conn, &req, op)?,
+            unhandled_op => {
+                tracing::warn!("Missing handler mapping for {:?} operation", unhandled_op);
+                session.reply_error(&mut conn, &req, libc::ENOSYS)?
+            }
         }
     }
 
@@ -176,6 +180,12 @@ impl Hello {
             }
         }
 
+        self.session.reply(conn, req, out)
+    }
+
+    fn opendir(&self, conn: &mut Connection, req: &Request, op: op::Opendir<'_>) -> io::Result<()> {
+        let mut out = OpenOut::default();
+        out.fh(op.ino());
         self.session.reply(conn, req, out)
     }
 }
