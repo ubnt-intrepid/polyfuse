@@ -1,6 +1,7 @@
 use libc::{c_int, c_void, iovec};
 use std::{
     cmp,
+    convert::TryInto,
     ffi::{OsStr, OsString},
     io,
     mem::{self, MaybeUninit},
@@ -312,19 +313,21 @@ fn receive_fd(reader: &UnixStream) -> io::Result<RawFd> {
     }
     let mut cmsg = MaybeUninit::<Cmsg>::uninit();
 
-    let mut msg = libc::msghdr {
-        msg_name: ptr::null_mut(),
-        msg_namelen: 0,
-        msg_iov: &mut iov,
-        msg_iovlen: 1,
-        msg_control: cmsg.as_mut_ptr() as *mut c_void,
-        msg_controllen: mem::size_of_val(&cmsg),
-        msg_flags: 0,
-    };
+    const MSG_SIZE: usize = mem::size_of::<libc::msghdr>();
+    let msg: [u8; MSG_SIZE] = [0; MSG_SIZE];
+    let mut msg = unsafe { mem::transmute::<[u8; MSG_SIZE], libc::msghdr>(msg) };
+
+    msg.msg_name = ptr::null_mut();
+    msg.msg_namelen = 0;
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cmsg.as_mut_ptr() as *mut c_void;
+    msg.msg_controllen = mem::size_of_val(&cmsg).try_into().unwrap();
+    msg.msg_flags = 0;
 
     syscall! { recvmsg(reader.as_raw_fd(), &mut msg, 0) };
 
-    if msg.msg_controllen < mem::size_of_val(&cmsg) {
+    if msg.msg_controllen < mem::size_of_val(&cmsg).try_into().unwrap() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "too short control message length",
