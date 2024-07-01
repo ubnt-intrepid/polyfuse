@@ -7,7 +7,6 @@ edition = "2021"
 [dependencies]
 polyfuse = { path = "../../crates/polyfuse" }
 
-anyhow = "1"
 libc = "0.2"
 pico-args = "0.5"
 tracing = "0.1"
