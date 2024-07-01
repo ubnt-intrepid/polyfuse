@@ -10,7 +10,6 @@ use polyfuse::{
     KernelConfig, Operation, Session,
 };
 
-use anyhow::{ensure, Context as _, Result};
 use either::Either;
 use pico_args::Arguments;
 use slab::Slab;
@@ -28,15 +27,19 @@ use std::{
 
 use crate::fs::{FileDesc, ReadDir};
 
-fn main() -> Result<()> {
+fn main() -> Result<(), String> {
     tracing_subscriber::fmt::init();
 
     let mut args = Arguments::from_env();
 
     let source: PathBuf = args
-        .opt_value_from_str(["-s", "--source"])?
+        .opt_value_from_str(["-s", "--source"])
+        .map_err(|e| e.to_string())?
         .unwrap_or_else(|| std::env::current_dir().unwrap());
-    ensure!(source.is_dir(), "the source path must be a directory");
+
+    if !source.is_dir() {
+        return Err("the source path must be a directory".into());
+    }
 
     let timeout = if args.contains("--no-cache") {
         None
@@ -44,30 +47,55 @@ fn main() -> Result<()> {
         Some(Duration::from_secs(60 * 60 * 24)) // one day
     };
 
-    let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
-    ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
+    let mountpoint: PathBuf = args
+        .free_from_str::<PathBuf>()
+        .map_err(|e| format!("missing mountpoint: {}", e))?;
+
+    if !mountpoint.is_dir() {
+        return Err("mountpoint must be a directory".into());
+    }
 
     // TODO: splice read/write
     let session = Session::mount(mountpoint, {
         let mut config = KernelConfig::default();
+
         config.mount_option("default_permissions");
         config.mount_option("fsname=passthrough");
         config.export_support(true);
         config.flock_locks(true);
         config.writeback_cache(timeout.is_some());
+
         config
-    })?;
+    })
+    .map_err(|e| format!("failed to mount: {}", e))?;
 
-    let fs = Arc::new(Passthrough::new(source, timeout)?);
+    let fs = match Passthrough::new(source, timeout) {
+        Ok(pt) => Arc::new(pt),
+        Err(err) => {
+            // does not exist, don't think its necessary
+            //session.unmount()?;
 
-    while let Some(req) = session.next_request()? {
+            return Err(format!(
+                "failed to create a passthrough filesystem: {}",
+                err
+            ));
+        }
+    };
+
+    loop {
+        let req = match session.next_request() {
+            Ok(Some(r)) => r,
+            Ok(None) => break,
+            Err(err) => return Err(err.to_string()),
+        };
+
         let fs = fs.clone();
 
-        std::thread::spawn(move || -> Result<()> {
+        std::thread::spawn(move || -> Result<(), String> {
             let span = tracing::debug_span!("handle_request", unique = req.unique());
             let _enter = span.enter();
 
-            let op = req.operation()?;
+            let op = req.operation().map_err(|e| e.to_string())?;
             tracing::debug!(?op);
 
             macro_rules! try_reply {
@@ -75,12 +103,12 @@ fn main() -> Result<()> {
                     match $e {
                         Ok(data) => {
                             tracing::debug!(?data);
-                            req.reply(data)?;
+                            req.reply(data).map_err(|e| e.to_string())?;
                         }
                         Err(err) => {
                             let errno = io_to_errno(err);
                             tracing::debug!(errno = errno);
-                            req.reply_error(errno)?;
+                            req.reply_error(errno).map_err(|e| e.to_string())?;
                         }
                     }
                 };
@@ -147,7 +175,7 @@ fn main() -> Result<()> {
 
                 Operation::Statfs(op) => try_reply!(fs.do_statfs(&op)),
 
-                _ => req.reply_error(libc::ENOSYS)?,
+                _ => req.reply_error(libc::ENOSYS).map_err(|e| e.to_string())?,
             }
 
             Ok(())

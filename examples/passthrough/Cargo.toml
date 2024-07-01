@@ -2,7 +2,7 @@
 name = "polyfuse-example-passthrough"
 version = "0.0.0"
 publish = false
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 polyfuse = { path = "../../crates/polyfuse" }
@@ -10,8 +10,8 @@ polyfuse = { path = "../../crates/polyfuse" }
 anyhow = "1"
 either = "1"
 libc = "0.2"
-nix = "0.16"
-pico-args = "0.3"
+nix = "0.29"
+pico-args = "0.5"
 slab = "0.4"
 tracing = "0.1"
-tracing-subscriber = "0.1"
+tracing-subscriber = "0.3"
