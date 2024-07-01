@@ -13,7 +13,6 @@ fn generate_abi_tests() {
 
     cfg.field_name(|_s, field| field.replace("typ", "type"));
     cfg.skip_field(|s, field| s == "fuse_dirent" && field == "name");
-    cfg.skip_roundtrip(|s| s == "fuse_dirent");
 
     cfg.skip_struct(|s| s == "UnknownOpcode" || s == "InvalidFileLock");
 
