@@ -1,17 +1,30 @@
-use polyfuse::{op, reply::AttrOut, KernelConfig, Operation, Request, Session};
+use polyfuse::reply::AttrOut;
+use polyfuse::{op, KernelConfig, Operation, Request, Session};
 
-use anyhow::{ensure, Context as _, Result};
-use std::{io, path::PathBuf, time::Duration};
+use std::io;
+use std::path::PathBuf;
+use std::time::Duration;
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
 
-fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
 
     let mut args = pico_args::Arguments::from_env();
+    let mountpoint: PathBuf = match args.free_from_str() {
+        Ok(mp) => mp,
+        Err(_) => {
+            tracing::error!("missing mountpoint");
+            std::process::exit(1);
+        }
+    };
 
-    let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
-    ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
+    if !mountpoint.is_file() {
+        tracing::error!("mountpoint must be a regular file");
+        std::process::exit(1);
+    }
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
     let session = Session::mount(mountpoint, KernelConfig::default())?;

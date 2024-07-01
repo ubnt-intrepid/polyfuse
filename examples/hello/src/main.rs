@@ -19,7 +19,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let mut args = pico_args::Arguments::from_env();
-
     let mountpoint: PathBuf = match args.free_from_str() {
         Ok(mp) => mp,
         Err(_) => {
