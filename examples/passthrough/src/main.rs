@@ -320,11 +320,7 @@ impl Passthrough {
         } else {
             None
         };
-        let mut file = if let Some(ref mut file) = file {
-            Some(file.lock().unwrap())
-        } else {
-            None
-        };
+        let mut file = file.as_mut().map(|file| file.lock().unwrap());
 
         // chmod
         if let Some(mode) = op.mode() {

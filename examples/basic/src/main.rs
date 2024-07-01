@@ -38,7 +38,7 @@ fn getattr(req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
 
     let mut out = AttrOut::default();
     out.attr().ino(1);
-    out.attr().mode(libc::S_IFREG as u32 | 0o444);
+    out.attr().mode(libc::S_IFREG | 0o444);
     out.attr().size(CONTENT.len() as u64);
     out.attr().nlink(1);
     out.attr().uid(unsafe { libc::getuid() });

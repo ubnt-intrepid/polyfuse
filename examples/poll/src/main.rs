@@ -78,7 +78,7 @@ impl PollFS {
                 out.attr().mode(libc::S_IFREG | 0o444);
                 out.attr().uid(unsafe { libc::getuid() });
                 out.attr().gid(unsafe { libc::getgid() });
-                out.ttl(Duration::from_secs(u64::max_value() / 2));
+                out.ttl(Duration::from_secs(u64::MAX / 2));
 
                 req.reply(out)?;
             }
@@ -192,7 +192,7 @@ impl PollFS {
 
             Operation::Release(op) => {
                 drop(self.handles.remove(&op.fh()));
-                req.reply(&[])?;
+                req.reply([])?;
             }
 
             _ => req.reply_error(libc::ENOSYS)?,

@@ -151,7 +151,7 @@ impl PathThrough {
         inodes.vacant_entry().insert(INode {
             ino: 1,
             path: PathBuf::new(),
-            refcount: u64::max_value() / 2,
+            refcount: u64::MAX / 2,
         });
 
         Ok(Self {
@@ -302,8 +302,13 @@ impl PathThrough {
             dir.offset += 1;
         }
 
-        while let Some(entry) = dir.read_dir.next() {
-            let entry = entry?;
+        loop {
+            let entry = match dir.read_dir.next() {
+                Some(Ok(e)) => e,
+                Some(Err(err)) => return Err(err),
+                None => break,
+            };
+
             match entry.file_name() {
                 name if name.as_bytes() == b"." || name.as_bytes() == b".." => continue,
                 _ => (),

@@ -198,7 +198,7 @@ impl Heartbeat {
 
             Operation::Read(op) => match op.ino() {
                 ROOT_INO => req.reply_error(libc::EISDIR)?,
-                FILE_INO => req.reply(&[])?,
+                FILE_INO => req.reply([])?,
                 _ => req.reply_error(libc::ENOENT)?,
             },
 
@@ -211,7 +211,7 @@ impl Heartbeat {
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
                         req.reply(out)?;
                     } else {
-                        req.reply(&[])?;
+                        req.reply([])?;
                     }
                 }
                 _ => req.reply_error(libc::ENOTDIR)?,

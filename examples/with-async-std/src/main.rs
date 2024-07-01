@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     while let Some(req) = session.next_request().await? {
         let fs = fs.clone();
 
-        let _: JoinHandle<Result<()>> = task::spawn(async move {
+        let _jh: JoinHandle<Result<()>> = task::spawn(async move {
             match req.operation()? {
                 Operation::Lookup(op) => fs.lookup(&req, op).await?,
                 Operation::Getattr(op) => fs.getattr(&req, op).await?,
