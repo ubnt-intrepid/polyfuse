@@ -1,5 +1,6 @@
-use either::Either;
 use std::os::unix::prelude::*;
+
+use either::Either;
 
 /// A trait that represents a collection of bytes.
 ///
@@ -12,9 +13,6 @@ use std::os::unix::prelude::*;
 /// [`bytes`]: https://docs.rs/bytes/0.6/bytes
 /// [`Buf`]: https://docs.rs/bytes/0.6/bytes/trait.Buf.html
 pub trait Bytes {
-    /// Return the total amount of bytes contained in this data.
-    fn size(&self) -> usize;
-
     /// Return the number of byte chunks.
     fn count(&self) -> usize;
 
@@ -26,6 +24,9 @@ pub trait Bytes {
     ///
     /// [bytes_vectored]: https://docs.rs/bytes/0.6/bytes/trait.Buf.html#method.bytes_vectored
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>);
+
+    /// Return the total amount of bytes contained in this data.
+    fn size(&self) -> usize;
 }
 
 /// The container of scattered bytes.
@@ -173,11 +174,6 @@ where
     R: Bytes,
 {
     #[inline]
-    fn size(&self) -> usize {
-        self.iter().map(|chunk| chunk.size()).sum()
-    }
-
-    #[inline]
     fn count(&self) -> usize {
         self.iter().map(|chunk| chunk.count()).sum()
     }
@@ -187,6 +183,11 @@ where
         for t in self {
             Bytes::fill_bytes(t, dst);
         }
+    }
+
+    #[inline]
+    fn size(&self) -> usize {
+        self.iter().map(|chunk| chunk.size()).sum()
     }
 }
 
@@ -195,11 +196,6 @@ where
     R: Bytes,
 {
     #[inline]
-    fn size(&self) -> usize {
-        self.iter().map(|chunk| chunk.size()).sum()
-    }
-
-    #[inline]
     fn count(&self) -> usize {
         self.iter().map(|chunk| chunk.count()).sum()
     }
@@ -209,6 +205,11 @@ where
         for t in self {
             Bytes::fill_bytes(t, dst);
         }
+    }
+
+    #[inline]
+    fn size(&self) -> usize {
+        self.iter().map(|chunk| chunk.size()).sum()
     }
 }
 
@@ -218,11 +219,6 @@ impl<T> Bytes for Option<T>
 where
     T: Bytes,
 {
-    #[inline]
-    fn size(&self) -> usize {
-        self.as_ref().map_or(0, |b| b.size())
-    }
-
     #[inline]
     fn count(&self) -> usize {
         self.as_ref().map_or(0, |b| b.count())
@@ -234,6 +230,11 @@ where
             Bytes::fill_bytes(t, dst)
         }
     }
+
+    #[inline]
+    fn size(&self) -> usize {
+        self.as_ref().map_or(0, |b| b.size())
+    }
 }
 
 // ==== Either<L, R> ====
@@ -243,14 +244,6 @@ where
     L: Bytes,
     R: Bytes,
 {
-    #[inline]
-    fn size(&self) -> usize {
-        match self {
-            Either::Left(l) => l.size(),
-            Either::Right(r) => r.size(),
-        }
-    }
-
     #[inline]
     fn count(&self) -> usize {
         match self {
@@ -264,6 +257,14 @@ where
         match self {
             Either::Left(l) => Bytes::fill_bytes(l, dst),
             Either::Right(r) => Bytes::fill_bytes(r, dst),
+        }
+    }
+
+    #[inline]
+    fn size(&self) -> usize {
+        match self {
+            Either::Left(l) => l.size(),
+            Either::Right(r) => r.size(),
         }
     }
 }
@@ -282,11 +283,6 @@ mod impl_scattered_bytes_for_cont {
         ($($t:ty),*$(,)?) => {$(
             impl Bytes for $t {
                 #[inline]
-                fn size(&self) -> usize {
-                    as_bytes(self).len()
-                }
-
-                #[inline]
                 fn count(&self) -> usize {
                     if as_bytes(self).is_empty() {
                         0
@@ -301,6 +297,11 @@ mod impl_scattered_bytes_for_cont {
                     if !this.is_empty() {
                         dst.put(this);
                     }
+                }
+
+                #[inline]
+                fn size(&self) -> usize {
+                    as_bytes(self).len()
                 }
             }
         )*};
@@ -317,11 +318,6 @@ mod impl_scattered_bytes_for_cont {
 
 impl Bytes for std::ffi::OsStr {
     #[inline]
-    fn size(&self) -> usize {
-        Bytes::size(self.as_bytes())
-    }
-
-    #[inline]
     fn count(&self) -> usize {
         Bytes::count(self.as_bytes())
     }
@@ -329,16 +325,16 @@ impl Bytes for std::ffi::OsStr {
     #[inline]
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
         Bytes::fill_bytes(self.as_bytes(), dst)
+    }
+
+    #[inline]
+    fn size(&self) -> usize {
+        Bytes::size(self.as_bytes())
     }
 }
 
 impl Bytes for std::ffi::OsString {
     #[inline]
-    fn size(&self) -> usize {
-        Bytes::size(self.as_bytes())
-    }
-
-    #[inline]
     fn count(&self) -> usize {
         Bytes::count(self.as_bytes())
     }
@@ -346,5 +342,10 @@ impl Bytes for std::ffi::OsString {
     #[inline]
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
         Bytes::fill_bytes(self.as_bytes(), dst)
+    }
+
+    #[inline]
+    fn size(&self) -> usize {
+        Bytes::size(self.as_bytes())
     }
 }
