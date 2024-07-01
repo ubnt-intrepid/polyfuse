@@ -1,6 +1,3 @@
-#![allow(clippy::unnecessary_mut_passed)]
-#![deny(clippy::unimplemented, clippy::todo)]
-
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
@@ -36,7 +33,7 @@ async fn main() -> Result<()> {
     while let Some(req) = session.next_request().await? {
         let fs = fs.clone();
 
-        let _: JoinHandle<Result<()>> = task::spawn(async move {
+        let _jh: JoinHandle<Result<()>> = task::spawn(async move {
             match req.operation()? {
                 Operation::Lookup(op) => fs.lookup(&req, op).await?,
                 Operation::Getattr(op) => fs.getattr(&req, op).await?,
@@ -92,7 +89,7 @@ impl Hello {
 
     fn fill_root_attr(&self, attr: &mut FileAttr) {
         attr.ino(ROOT_INO);
-        attr.mode(libc::S_IFDIR as u32 | 0o555);
+        attr.mode(libc::S_IFDIR | 0o555);
         attr.nlink(2);
         attr.uid(self.uid);
         attr.gid(self.gid);
@@ -101,7 +98,7 @@ impl Hello {
     fn fill_hello_attr(&self, attr: &mut FileAttr) {
         attr.ino(HELLO_INO);
         attr.size(HELLO_CONTENT.len() as u64);
-        attr.mode(libc::S_IFREG as u32 | 0o444);
+        attr.mode(libc::S_IFREG | 0o444);
         attr.nlink(1);
         attr.uid(self.uid);
         attr.gid(self.gid);

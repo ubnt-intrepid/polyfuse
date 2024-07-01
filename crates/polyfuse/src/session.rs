@@ -504,7 +504,7 @@ where
                     init_out.flags |= FUSE_MAX_PAGES;
                     init_out.max_pages = cmp::min(
                         (init_out.max_write - 1) / (pagesize() as u32) + 1,
-                        u16::max_value() as u32,
+                        u16::MAX as u32,
                     ) as u16;
                 }
 
@@ -1062,7 +1062,7 @@ where
                 vec.set_len(count);
             }
 
-            written = writer.write_vectored(&*vec)?;
+            written = writer.write_vectored(&vec)?;
         }
     }
 

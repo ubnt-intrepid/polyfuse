@@ -1,9 +1,10 @@
 use crate::decoder::Decoder;
 use polyfuse_kernel::*;
-use std::{convert::TryFrom, ffi::OsStr, fmt, time::Duration, u32, u64};
+use std::{convert::TryFrom, ffi::OsStr, fmt, time::Duration};
 
 #[derive(Debug)]
 pub struct DecodeError {
+    #[allow(dead_code)]
     inner: crate::decoder::DecodeError,
 }
 
@@ -655,7 +656,7 @@ impl<'op> Setattr<'op> {
     #[inline(always)]
     fn get<R>(&self, flag: u32, f: impl FnOnce(&fuse_setattr_in) -> R) -> Option<R> {
         if self.arg.valid & flag != 0 {
-            Some(f(&self.arg))
+            Some(f(self.arg))
         } else {
             None
         }

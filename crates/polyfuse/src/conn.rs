@@ -30,6 +30,7 @@ pub struct Connection {
     fd: RawFd,
     child: Option<Fusermount>,
     mountpoint: PathBuf,
+    #[allow(dead_code)]
     mountopts: MountOptions,
 }
 
@@ -67,7 +68,7 @@ impl Connection {
             readv(
                 self.fd, //
                 dst.as_mut_ptr() as *mut iovec,
-                cmp::min(dst.len(), c_int::max_value() as usize) as c_int,
+                cmp::min(dst.len(), c_int::MAX as usize) as c_int,
             )
         };
         Ok(len as usize)
@@ -89,7 +90,7 @@ impl Connection {
             writev(
                 self.fd, //
                 src.as_ptr() as *const iovec,
-                cmp::min(src.len(), c_int::max_value() as usize) as c_int,
+                cmp::min(src.len(), c_int::MAX as usize) as c_int,
             )
         };
         Ok(res as usize)
@@ -231,7 +232,7 @@ fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<(RawFd, Opti
             if !opts.is_empty() {
                 opts.push(',');
             }
-            opts.push_str(&opt);
+            opts.push_str(opt);
             opts
         });
     if !opts.is_empty() {
@@ -293,8 +294,8 @@ fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<(RawFd, Opti
 
 fn unmount(mountpoint: &Path) {
     let _ = Command::new(FUSERMOUNT_PROG)
-        .args(&["-u", "-q", "-z", "--"])
-        .arg(&mountpoint)
+        .args(["-u", "-q", "-z", "--"])
+        .arg(mountpoint)
         .status();
 }
 

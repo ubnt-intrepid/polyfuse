@@ -1,5 +1,4 @@
-#![allow(clippy::unnecessary_mut_passed)]
-#![warn(clippy::unimplemented, clippy::todo)]
+#![feature(slice_take)]
 
 mod fs;
 
@@ -181,7 +180,7 @@ impl Passthrough {
         entry.insert(INode {
             ino: 1,
             fd,
-            refcount: u64::max_value() / 2, // the root node's cache is never removed.
+            refcount: u64::MAX / 2, // the root node's cache is never removed.
             src_id: (stat.st_ino, stat.st_dev),
             is_symlink: false,
         });
@@ -565,7 +564,7 @@ impl Passthrough {
         }
         options.custom_flags(op.flags() as i32 & !libc::O_NOFOLLOW);
 
-        let file = options.open(&inode.fd.procname())?;
+        let file = options.open(inode.fd.procname())?;
         let fh = self.opened_files.insert(Mutex::new(file));
 
         let mut out = OpenOut::default();
@@ -592,8 +591,7 @@ impl Passthrough {
         T: BufRead + Unpin,
     {
         let file = self.opened_files.get(op.fh()).ok_or_else(no_entry)?;
-        let mut file = file.lock().unwrap();
-        let file = &mut *file;
+        let file = &mut *file.lock().unwrap();
 
         file.seek(io::SeekFrom::Start(op.offset()))?;
 
@@ -604,15 +602,14 @@ impl Passthrough {
         // In order to efficiently transfer the large files, both of zero
         // copying support in `polyfuse` and resolution of impedance mismatch
         // between `futures::io` and `tokio::io` are required.
-        let mut buf = Vec::with_capacity(op.size() as usize);
-        data.read_to_end(&mut buf)?;
+        let expected_size = op.size() as usize;
 
-        let mut buf = &buf[..];
-        let mut buf = (&mut buf).take(op.size() as u64);
-        let written = std::io::copy(&mut buf, &mut *file)?;
+        let mut buf = Vec::with_capacity(expected_size);
+        data.read_exact(&mut buf)?;
+        file.write_all(&buf)?;
 
         let mut out = WriteOut::default();
-        out.size(written as u32);
+        out.size(expected_size as u32);
 
         Ok(out)
     }
