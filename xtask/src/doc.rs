@@ -1,9 +1,8 @@
-use crate::{
-    env::Env,
-    process::{cargo, CommandExt as _},
-};
-use anyhow::Result;
 use std::{fs, time::Duration};
+
+use crate::env::Env;
+use crate::process::{cargo, CommandExt as _};
+use crate::TaskResult;
 
 // TODOs:
 // * restrict network access during building docs.
@@ -22,7 +21,7 @@ pub struct DocBuilder<'env> {
 }
 
 impl DocBuilder<'_> {
-    pub fn build_docs(&self) -> Result<()> {
+    pub fn build_docs(&self) -> TaskResult<()> {
         let doc_dir = self.env.target_dir.join("doc");
         if doc_dir.exists() {
             fs::remove_dir_all(&doc_dir)?;
@@ -46,7 +45,7 @@ impl DocBuilder<'_> {
         Ok(())
     }
 
-    fn build_doc(&self, package: &str) -> Result<()> {
+    fn build_doc(&self, package: &str) -> TaskResult<()> {
         cargo(self.env)
             .arg("doc")
             .arg("--no-deps")
@@ -56,6 +55,7 @@ impl DocBuilder<'_> {
                 cmd
             })
             .run_timeout(CARGO_DOC_TIMEOUT)?;
+
         Ok(())
     }
 }

@@ -1,13 +1,12 @@
 [package]
 name = "polyfuse-xtask"
-version = "0.0.0" # never publish
+version = "0.0.0"       # never publish
 publish = false
 edition = "2018"
 
 [dependencies]
-anyhow = "1"
 json = "0.12"
 once_cell = "1"
-pico-args = "0.3"
+pico-args = "0.5"
 regex = "1.4"
 wait-timeout = "0.2"

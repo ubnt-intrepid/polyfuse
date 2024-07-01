@@ -1,5 +1,6 @@
 use crate::env::Env;
-use anyhow::{Context as _, Result};
+use crate::TaskResult;
+
 use std::{
     env,
     ffi::OsStr,
@@ -36,8 +37,9 @@ pub trait CommandExt {
 
     fn silent(&mut self) -> &mut Self;
 
-    fn run(&mut self) -> Result<()>;
-    fn run_timeout(&mut self, timeout: Duration) -> Result<()>;
+    fn run(&mut self) -> TaskResult<()>;
+
+    fn run_timeout(&mut self, timeout: Duration) -> TaskResult<()>;
 }
 
 impl CommandExt for Command {
@@ -54,17 +56,22 @@ impl CommandExt for Command {
         f(self)
     }
 
-    fn run(&mut self) -> Result<()> {
+    fn run(&mut self) -> TaskResult<()> {
         run_impl(self, None)
     }
 
-    fn run_timeout(&mut self, timeout: Duration) -> Result<()> {
+    fn run_timeout(&mut self, timeout: Duration) -> TaskResult<()> {
         run_impl(self, Some(timeout))
     }
 }
 
-fn run_impl(cmd: &mut Command, timeout: Option<Duration>) -> Result<()> {
-    let mut child = cmd.spawn().context("failed to spawn the subprocess")?;
+fn run_impl(cmd: &mut Command, timeout: Option<Duration>) -> TaskResult<()> {
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(err) => {
+            return Err(format!("failed to spawn the subprocess: {}", err).into());
+        }
+    };
 
     let st = match timeout {
         Some(timeout) => match child.wait_timeout(timeout)? {
@@ -73,7 +80,7 @@ fn run_impl(cmd: &mut Command, timeout: Option<Duration>) -> Result<()> {
                 if let Err(err) = child.kill() {
                     match err.kind() {
                         io::ErrorKind::InvalidInput => (),
-                        _ => anyhow::bail!(err),
+                        _ => return Err(err.into()),
                     }
                 }
                 child.wait()?
@@ -82,7 +89,9 @@ fn run_impl(cmd: &mut Command, timeout: Option<Duration>) -> Result<()> {
         None => child.wait()?,
     };
 
-    anyhow::ensure!(st.success(), "Subprocess failed: {}", st);
+    if !st.success() {
+        return Err(format!("Subprocess failed: {}", st).into());
+    }
 
     Ok(())
 }

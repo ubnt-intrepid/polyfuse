@@ -1,21 +1,18 @@
 // Ref: https://doc.rust-lang.org/nightly/unstable-book/compiler-flags/source-based-code-coverage.html
-
-use crate::{
-    env::Env,
-    process::{cargo, command, CommandExt as _},
-};
-use anyhow::{Context as _, Result};
 use json::JsonValue;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use std::{
-    fs,
-    io::{BufRead as _, BufReader},
-    path::{Path, PathBuf},
-    process::Stdio,
-};
 
-pub fn do_coverage(env: &Env) -> Result<()> {
+use std::fs;
+use std::io::{BufRead as _, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+
+use crate::env::Env;
+use crate::process::{cargo, command, CommandExt as _};
+use crate::TaskResult;
+
+pub fn do_coverage(env: &Env) -> TaskResult<()> {
     let cov_dir = env.target_dir.join("cov");
     assert!(cov_dir.is_absolute());
 
@@ -35,7 +32,10 @@ pub fn do_coverage(env: &Env) -> Result<()> {
     let tests = build_instrumented_tests(env)?;
 
     for test in &tests {
-        let test_name = extract_test_name(&test).context("failed to extract test name")?;
+        let test_name = match extract_test_name(test) {
+            Some(test_name) => test_name,
+            None => return Err("failed to extract test name".into()),
+        };
 
         let profraw_path = cov_dir.join(format!("{}.profraw", test_name));
         let profdata_path = cov_dir.join(format!("{}.profdata", test_name));
@@ -86,7 +86,7 @@ pub fn do_coverage(env: &Env) -> Result<()> {
     Ok(())
 }
 
-fn build_instrumented_tests(env: &Env) -> Result<Vec<PathBuf>> {
+fn build_instrumented_tests(env: &Env) -> TaskResult<Vec<PathBuf>> {
     let mut child = cargo(env)
         .arg("test")
         .arg("--workspace")
@@ -105,12 +105,16 @@ fn build_instrumented_tests(env: &Env) -> Result<Vec<PathBuf>> {
         .spawn()?;
 
     // Ref: https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages
-    let stdout = child.stdout.as_mut().context("missing stdout pipe")?;
+    let stdout = match child.stdout.as_mut() {
+        Some(stdout) => stdout,
+        None => return Err("missing stdout pipe".into()),
+    };
+
     let stdout = BufReader::new(stdout);
 
     let mut executables = vec![];
 
-    for line in stdout.lines().filter_map(|line| line.ok()) {
+    for line in stdout.lines().map_while(Result::ok) {
         let msg = match json::parse(line.trim()) {
             Ok(JsonValue::Object(msg)) => msg,
             _ => continue,
