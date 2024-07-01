@@ -43,8 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Operation::Read(op) => fs.read(&req, op)?,
             Operation::Readdir(op) => fs.readdir(&req, op)?,
             Operation::Opendir(op) => fs.opendir(&req, op)?,
-            unk_op => {
-                tracing::warn!(?unk_op, "unimplemented operation");
+            operation => {
+                tracing::warn!(?operation, "unimplemented operation");
                 req.reply_error(libc::ENOSYS)?;
             }
         }
