@@ -1,5 +1,5 @@
 use std::{ffi::OsStr, mem, os::unix::prelude::*};
-use zerocopy::{FromBytes, LayoutVerified};
+use zerocopy::{FromBytes, Ref};
 
 #[derive(Debug)]
 pub(crate) enum DecodeError {
@@ -36,7 +36,7 @@ impl<'a> Decoder<'a> {
         T: FromBytes,
     {
         let bytes = self.fetch_bytes(mem::size_of::<T>())?;
-        let verified = LayoutVerified::<_, T>::new(bytes).ok_or(DecodeError::Unaligned)?;
+        let verified = Ref::<_, T>::new(bytes).ok_or(DecodeError::Unaligned)?;
         Ok(verified.into_ref())
     }
 
@@ -47,7 +47,7 @@ impl<'a> Decoder<'a> {
         T: FromBytes,
     {
         let bytes = self.fetch_bytes(mem::size_of::<T>() * count)?;
-        let verified = LayoutVerified::<_, [T]>::new_slice(bytes) //
+        let verified = Ref::<_, [T]>::new_slice(bytes) //
             .ok_or(DecodeError::Unaligned)?;
         Ok(verified.into_slice())
     }

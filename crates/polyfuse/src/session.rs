@@ -1,10 +1,3 @@
-use crate::{
-    bytes::{Bytes, FillBytes},
-    conn::{Connection, MountOptions},
-    decoder::Decoder,
-    op::{DecodeError, Operation},
-};
-use polyfuse_kernel::*;
 use std::{
     cmp,
     convert::{TryFrom, TryInto as _},
@@ -19,7 +12,17 @@ use std::{
         Arc,
     },
 };
-use zerocopy::AsBytes as _;
+
+use zerocopy::AsBytes;
+
+use crate::{
+    bytes::{Bytes, FillBytes},
+    conn::{Connection, MountOptions},
+    decoder::Decoder,
+    op::{DecodeError, Operation},
+};
+
+use polyfuse_kernel::*;
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
