@@ -128,7 +128,7 @@ struct VacantEntry<'a> {
 }
 
 impl VacantEntry<'_> {
-    fn insert(mut self, inode: INode) {
+    fn insert(self, inode: INode) {
         let path = inode.path.clone();
         self.table.map.insert(self.ino, inode);
         self.table.path_to_ino.insert(path, self.ino);
@@ -195,7 +195,7 @@ impl PathThrough {
         for forget in forgets {
             if let Entry::Occupied(mut entry) = self.inodes.map.entry(forget.ino()) {
                 let refcount = {
-                    let mut inode = entry.get_mut();
+                    let inode = entry.get_mut();
                     inode.refcount = inode.refcount.saturating_sub(forget.nlookup());
                     inode.refcount
                 };

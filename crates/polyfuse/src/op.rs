@@ -4,6 +4,7 @@ use std::{convert::TryFrom, ffi::OsStr, fmt, time::Duration, u32, u64};
 
 #[derive(Debug)]
 pub struct DecodeError {
+    #[allow(dead_code)]
     inner: crate::decoder::DecodeError,
 }
 

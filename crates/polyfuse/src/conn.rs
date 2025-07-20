@@ -30,6 +30,7 @@ pub struct Connection {
     fd: RawFd,
     child: Option<Fusermount>,
     mountpoint: PathBuf,
+    #[allow(dead_code)]
     mountopts: MountOptions,
 }
 
