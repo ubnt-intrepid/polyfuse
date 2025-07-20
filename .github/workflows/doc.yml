@@ -1,11 +1,15 @@
 name: CI
 
 on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+    branches:
+      - master
   push:
     branches:
       - master
-      - staging
-      - trying
 
 env:
   CARGO_HUSKY_DONT_INSTALL_HOOKS: true
