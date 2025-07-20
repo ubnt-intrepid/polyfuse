@@ -247,7 +247,7 @@ impl PathThrough {
             (uid, gid) => {
                 let uid = uid.map(nix::unistd::Uid::from_raw);
                 let gid = gid.map(nix::unistd::Gid::from_raw);
-                nix::unistd::chown(&*path, uid, gid).map_err(nix_to_io_error)?;
+                nix::unistd::chown(&*path, uid, gid)?;
             }
         }
 
@@ -503,10 +503,4 @@ fn no_entry() -> io::Error {
 #[inline]
 fn invalid_handle() -> io::Error {
     io::Error::from_raw_os_error(libc::EINVAL)
-}
-
-#[inline]
-fn nix_to_io_error(err: nix::Error) -> io::Error {
-    let errno = err.as_errno().map_or(libc::EIO, |errno| errno as i32);
-    io::Error::from_raw_os_error(errno)
 }

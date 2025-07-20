@@ -10,7 +10,7 @@ polyfuse = { path = "../../crates/polyfuse" }
 anyhow = "1"
 either = "1"
 libc = "0.2"
-nix = "0.16"
+nix = { version = "0.30", features = [ "user", "fs" ] }
 pico-args = "0.3"
 slab = "0.4"
 tracing = "0.1"
