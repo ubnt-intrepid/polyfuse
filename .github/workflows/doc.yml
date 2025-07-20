@@ -13,7 +13,7 @@ env:
 
 jobs:
   Doc:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-24.04
     container:
       image: rustops/crates-build-env:latest
       options: --memory 3221225472
