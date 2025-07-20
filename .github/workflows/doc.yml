@@ -37,13 +37,13 @@ jobs:
       run: cargo generate-lockfile
 
     - name: Cache cargo registry
-      uses: actions/cache@v1
+      uses: actions/cache@v4
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo index
-      uses: actions/cache@v1
+      uses: actions/cache@v4
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
@@ -55,7 +55,7 @@ jobs:
       run: cargo xtask doc
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v1
+      uses: actions/upload-artifact@v4
       with:
         name: published-docs
         path: target/doc
