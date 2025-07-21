@@ -2,7 +2,6 @@
 name = "polyfuse-kernel-systest"
 version = "0.0.0" # never publish
 publish = false
-authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 edition = "2018"
 build = "build.rs"
 
