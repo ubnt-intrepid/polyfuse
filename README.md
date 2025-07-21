@@ -25,11 +25,6 @@
     <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
          alt="docs.rs" />
   </a>
-  <a href="https://discord.gg/qHHdweYFVp">
-    <img src="https://img.shields.io/discord/778686351352135701.svg?style=flat-square&label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2"
-         alt="Discord channel"
-    />
-  </a>
 </div>
 
 <br />
