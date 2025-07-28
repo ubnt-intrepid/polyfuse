@@ -1,13 +1,19 @@
-use async_io::Async;
-use futures::prelude::*;
 use std::{
-    ffi::{CString, OsStr},
-    io::{self, IoSliceMut, Read},
+    ffi::{CString, OsStr}, //
+    io,
     os::unix::prelude::*,
     path::PathBuf,
+    pin::Pin,
+    task::{self, ready, Poll},
+};
+use tokio::io::{
+    unix::AsyncFd, //
+    AsyncRead,
+    AsyncReadExt as _,
+    ReadBuf,
 };
 
-#[async_std::main]
+#[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -18,17 +24,13 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing path"))?;
 
     let content = if is_nonblocking {
-        let fd = async_std::task::spawn_blocking(move || {
-            FileDesc::open(&path, libc::O_RDONLY | libc::O_NONBLOCK)
-        })
-        .await?;
-        let mut fd = Async::new(fd)?;
+        let mut fd = FileDesc::open(&path, libc::O_RDONLY | libc::O_NONBLOCK).await?;
 
         let mut buf = String::new();
         fd.read_to_string(&mut buf).await?;
         buf
     } else {
-        async_std::fs::read_to_string(&path).await?
+        tokio::fs::read_to_string(&path).await?
     };
 
     println!("read: {:?}", content);
@@ -46,46 +48,60 @@ macro_rules! syscall {
     }
 }
 
-struct FileDesc(RawFd);
+struct FileDesc {
+    inner: AsyncFd<RawFd>,
+}
 
 impl Drop for FileDesc {
     fn drop(&mut self) {
         unsafe {
-            libc::close(self.0);
+            libc::close(self.inner.as_raw_fd());
         }
     }
 }
 
-impl AsRawFd for FileDesc {
-    fn as_raw_fd(&self) -> RawFd {
-        self.0
-    }
-}
-
 impl FileDesc {
-    fn open(path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
+    async fn open(path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
         let path = path.as_ref();
         if path.is_empty() {
             flags |= libc::AT_EMPTY_PATH;
         }
         let c_path = CString::new(path.as_bytes())?;
-        let fd = syscall!(open(c_path.as_ptr(), flags))?;
-        Ok(Self(fd))
+
+        let fd =
+            tokio::task::spawn_blocking(move || syscall!(open(c_path.as_ptr(), flags))).await??;
+
+        Ok(Self {
+            inner: AsyncFd::new(fd)?,
+        })
     }
 }
 
-impl Read for FileDesc {
-    fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
-        let len = syscall!(read(self.0, dst.as_mut_ptr().cast(), dst.len()))?;
-        Ok(len as usize)
-    }
+impl AsyncRead for FileDesc {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        loop {
+            let mut guard = ready!(self.inner.poll_read_ready(cx))?;
 
-    fn read_vectored(&mut self, dst: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        let len = syscall!(readv(
-            self.0,
-            dst.as_mut_ptr().cast(),
-            dst.len() as libc::c_int
-        ))?;
-        Ok(len as usize)
+            let unfilled = buf.initialize_unfilled();
+            match guard.try_io(|inner| {
+                let len = syscall!(read(
+                    inner.as_raw_fd(),
+                    unfilled.as_mut_ptr().cast(),
+                    unfilled.len()
+                ))?;
+                Ok(len as usize)
+            }) {
+                Ok(Ok(len)) => {
+                    buf.advance(len);
+                    return Poll::Ready(Ok(()));
+                }
+                Ok(Err(err)) => return Poll::Ready(Err(err)),
+                Err(_would_blodk) => continue,
+            }
+        }
     }
 }
