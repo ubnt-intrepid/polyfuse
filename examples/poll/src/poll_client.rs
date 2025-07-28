@@ -1,3 +1,4 @@
+use anyhow::Context as _;
 use std::{
     ffi::{CString, OsStr}, //
     io,
@@ -19,9 +20,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut args = pico_args::Arguments::from_env();
     let is_nonblocking = args.contains("--nonblock");
-    let path: PathBuf = args
-        .free_from_str()?
-        .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+    let path: PathBuf = args.opt_free_from_str()?.context("missing path")?;
 
     let content = if is_nonblocking {
         let mut fd = FileDesc::open(&path, libc::O_RDONLY | libc::O_NONBLOCK).await?;

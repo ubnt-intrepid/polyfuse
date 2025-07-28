@@ -7,3 +7,6 @@ members = [
 exclude = [
   "examples_disabled/*",
 ]
+
+[workspace.dependencies]
+pico-args = "0.5"

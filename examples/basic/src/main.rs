@@ -10,7 +10,7 @@ fn main() -> Result<()> {
 
     let mut args = pico_args::Arguments::from_env();
 
-    let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
+    let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
