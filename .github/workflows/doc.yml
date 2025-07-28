@@ -6,10 +6,10 @@ on:
       - opened
       - synchronize
     branches:
-      - master
+      - main
   push:
     branches:
-      - master
+      - main
 
 env:
   CARGO_HUSKY_DONT_INSTALL_HOOKS: true
@@ -61,7 +61,7 @@ jobs:
         path: target/doc
 
     - name: Deply to GitHub Pages
-      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: peaceiris/actions-gh-pages@v3
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
