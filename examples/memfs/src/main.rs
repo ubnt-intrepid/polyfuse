@@ -89,7 +89,7 @@ impl INodeTable {
 }
 
 struct INodeRef<'a> {
-    ref_: dashmap::mapref::one::Ref<'a, Ino, INode, RandomState>,
+    ref_: dashmap::mapref::one::Ref<'a, Ino, INode>,
 }
 impl std::ops::Deref for INodeRef<'_> {
     type Target = INode;
@@ -101,7 +101,7 @@ impl std::ops::Deref for INodeRef<'_> {
 }
 
 struct INodeRefMut<'a> {
-    ref_mut: dashmap::mapref::one::RefMut<'a, Ino, INode, RandomState>,
+    ref_mut: dashmap::mapref::one::RefMut<'a, Ino, INode>,
 }
 impl std::ops::Deref for INodeRefMut<'_> {
     type Target = INode;
@@ -119,7 +119,7 @@ impl std::ops::DerefMut for INodeRefMut<'_> {
 }
 
 struct OccupiedEntry<'a> {
-    entry: dashmap::mapref::entry::OccupiedEntry<'a, Ino, INode, RandomState>,
+    entry: dashmap::mapref::entry::OccupiedEntry<'a, Ino, INode>,
 }
 impl<'a> OccupiedEntry<'a> {
     fn get(&self) -> &INode {
@@ -136,7 +136,7 @@ impl<'a> OccupiedEntry<'a> {
 }
 
 struct VacantEntry<'a> {
-    entry: dashmap::mapref::entry::VacantEntry<'a, Ino, INode, RandomState>,
+    entry: dashmap::mapref::entry::VacantEntry<'a, Ino, INode>,
 }
 impl<'a> VacantEntry<'a> {
     fn ino(&self) -> Ino {

@@ -8,7 +8,7 @@ edition = "2018"
 polyfuse = { path = "../../crates/polyfuse" }
 
 anyhow = "1"
-dashmap = "3"
+dashmap = { workspace = true }
 libc = "0.2"
 pico-args = { workspace = true }
 slab = "0.4"

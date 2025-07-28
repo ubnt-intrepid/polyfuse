@@ -13,7 +13,7 @@ path = "src/poll_client.rs"
 polyfuse = { path = "../../crates/polyfuse" }
 
 anyhow = "1"
-dashmap = "3"
+dashmap = { workspace = true }
 libc = "0.2"
 pico-args = { workspace = true }
 tracing = "0.1"
