@@ -17,7 +17,7 @@ dashmap = "3"
 libc = "0.2"
 pico-args = { workspace = true }
 tracing = "0.1"
-tracing-subscriber = "0.1"
+tracing-subscriber = { workspace = true }
 
 # for client
 tokio = { version = ">=1.8.4", features = [ "macros", "fs", "io-util", "net", "rt-multi-thread" ] }

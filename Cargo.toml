@@ -10,3 +10,4 @@ exclude = [
 
 [workspace.dependencies]
 pico-args = "0.5"
+tracing-subscriber = "0.3"
