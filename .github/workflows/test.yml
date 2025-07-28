@@ -1,4 +1,4 @@
-name: CI
+name: Test
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ jobs:
   Test:
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v1 # FIXME: upgrade to v2
+    - uses: actions/checkout@v4
       with:
         submodules: true
 
@@ -34,23 +34,15 @@ jobs:
         rustup install stable beta nightly
         rustup component add rustfmt clippy --toolchain stable
 
-    - name: Generate Cargo.lock
-      run: cargo generate-lockfile
-
-    - name: Cache cargo registry
-      uses: actions/cache@v4
+    - uses: actions/cache@v4
       with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Fetch cargo dependencies
-      run: cargo fetch
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Run lints
       run: cargo +stable xtask lint

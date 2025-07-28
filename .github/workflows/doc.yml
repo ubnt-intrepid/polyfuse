@@ -1,4 +1,4 @@
-name: CI
+name: Doc
 
 on:
   pull_request:
@@ -18,38 +18,20 @@ env:
 jobs:
   Doc:
     runs-on: ubuntu-24.04
-    container:
-      image: rustops/crates-build-env:latest
-      options: --memory 3221225472
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v4
       with:
         submodules: true
 
-    - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
+    - uses: actions/cache@v4
       with:
-        profile: minimal
-        toolchain: nightly
-        override: true
-
-    - name: Generate Cargo.lock
-      run: cargo generate-lockfile
-
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Fetch cargo dependencies
-      run: cargo fetch
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Build API docs
       run: cargo xtask doc
@@ -61,8 +43,8 @@ jobs:
         path: target/doc
 
     - name: Deply to GitHub Pages
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      uses: peaceiris/actions-gh-pages@v3
+      if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_branch: gh-pages
