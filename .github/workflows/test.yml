@@ -44,6 +44,9 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+    - name: Fetch cargo dependencies
+      run: cargo fetch
+
     - name: Run lints
       run: cargo +stable xtask lint
 
