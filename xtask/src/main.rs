@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     let subcommand = args.subcommand()?;
     match subcommand.as_deref() {
         Some("lint") => {
-            args.finish()?;
+            args.finish();
 
             let linter = Linter { env: &env };
             linter.run_rustfmt()?;
@@ -52,25 +52,25 @@ fn main() -> Result<()> {
         }
 
         Some("doc") => {
-            args.finish()?;
+            args.finish();
 
             let doc_builder = DocBuilder { env: &env };
             doc_builder.build_docs()?;
         }
 
         Some("coverage") => {
-            args.finish()?;
+            args.finish();
             coverage::do_coverage(&env)?;
         }
 
         Some("install-hooks") => {
             let force = args.contains(["-f", "--force"]);
-            args.finish()?;
+            args.finish();
             hook::install(&env, force)?;
         }
 
         Some("pre-commit") => {
-            args.finish()?;
+            args.finish();
             hook::pre_commit(&env)?;
         }
 

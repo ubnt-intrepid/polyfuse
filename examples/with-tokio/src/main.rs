@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
 
     let mut args = pico_args::Arguments::from_env();
 
-    let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
+    let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     let session = AsyncSession::mount(mountpoint, KernelConfig::default()).await?;

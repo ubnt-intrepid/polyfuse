@@ -15,3 +15,7 @@ libc = "0.2"
 pico-args = "0.3"
 tracing = "0.1"
 tracing-subscriber = "0.1"
+
+# TODOs:
+# * switch the runtime to smol=2
+# * rename the package name to `polyfuse-example-with-smol`

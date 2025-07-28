@@ -45,7 +45,7 @@ fn main() -> Result<()> {
         Some(Duration::from_secs(60 * 60 * 24)) // one day
     };
 
-    let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
+    let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     // TODO: splice read/write

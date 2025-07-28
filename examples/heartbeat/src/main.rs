@@ -40,7 +40,7 @@ fn main() -> Result<()> {
         .unwrap_or(NotifyKind::Store);
     let update_interval: u64 = args.value_from_str("--update-interval")?;
 
-    let mountpoint: PathBuf = args.free_from_str()?.context("missing mountpoint")?;
+    let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     let session = Session::mount(mountpoint, KernelConfig::default())?;

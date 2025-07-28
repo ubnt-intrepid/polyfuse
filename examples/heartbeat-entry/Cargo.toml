@@ -10,6 +10,6 @@ polyfuse = { path = "../../crates/polyfuse" }
 anyhow = "1"
 chrono = "0.4"
 libc = "0.2"
-pico-args = "0.3"
+pico-args = { workspace = true }
 tracing = "0.1"
-tracing-subscriber = "0.1"
+tracing-subscriber = { workspace = true }
