@@ -5,6 +5,9 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+### Changed
+* bump the dependency of `zerocopy` to 0.8.x ([#162](https://github.com/ubnt-intrepid/polyfuse/pull/162))
+
 ## [0.4.2] (2025-07-28)
 
 ### Added
