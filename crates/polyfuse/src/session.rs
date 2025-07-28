@@ -19,7 +19,7 @@ use std::{
         Arc,
     },
 };
-use zerocopy::AsBytes as _;
+use zerocopy::IntoBytes as _;
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -380,7 +380,7 @@ impl Session {
 
         loop {
             match conn.read_vectored(&mut [
-                io::IoSliceMut::new(header.as_bytes_mut()),
+                io::IoSliceMut::new(header.as_mut_bytes()),
                 io::IoSliceMut::new(&mut arg[..]),
             ]) {
                 Ok(len) => {
@@ -437,7 +437,7 @@ where
 
     for _ in 0..10 {
         let len = reader.read_vectored(&mut [
-            io::IoSliceMut::new(header.as_bytes_mut()),
+            io::IoSliceMut::new(header.as_mut_bytes()),
             io::IoSliceMut::new(&mut arg[..]),
         ])?;
         if len < mem::size_of::<fuse_in_header>() {

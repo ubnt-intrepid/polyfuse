@@ -1,6 +1,7 @@
 [package]
 name = "polyfuse"
-version = "0.4.2"
+version = "0.5.0-dev"
+publish = false
 description = "A FUSE (Filesystem in Userspace) library for Rust."
 repository = "https://github.com/ubnt-intrepid/polyfuse.git"
 license = "MIT OR Apache-2.0"
@@ -10,12 +11,12 @@ categories = [ "filesystem" ]
 keywords = [ "fuse", "filesystem", "async", "futures" ]
 
 [dependencies]
-polyfuse-kernel = { version = "0.1.0", path = "../polyfuse-kernel" }
+polyfuse-kernel = { version = "0.2.0-dev", path = "../polyfuse-kernel" }
 
 either = "1"
 libc = "0.2"
 tracing = "0.1"
-zerocopy = "0.3"
+zerocopy = "0.8.26"
 
 [dev-dependencies]
 pin-project-lite = "0.2"

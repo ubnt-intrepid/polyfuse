@@ -1,9 +1,10 @@
 [package]
 name = "polyfuse-kernel"
-version = "0.1.0"
+version = "0.2.0-dev"
+publish = false
 description = "FUSE application binary interface for `polyfuse`."
 license = "MIT OR Apache-2.0"
 edition = "2018"
 
 [dependencies]
-zerocopy = "0.3.0"
+zerocopy = { version = "0.8.26", features = [ "derive" ] }

@@ -1,7 +1,7 @@
 use crate::bytes::{Bytes, FillBytes};
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
-use zerocopy::AsBytes as _;
+use zerocopy::IntoBytes as _;
 
 /// Attributes about a file.
 #[repr(transparent)]
