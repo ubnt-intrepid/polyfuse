@@ -5,6 +5,11 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.4.2] (2025-07-28)
+
+### Added
+* Add `KernelConfig::max_pages` ([#155](https://github.com/ubnt-intrepid/polyfuse/pull/155), thanks to [@acsmyth](https://github.com/acsmyth))
+
 ## [0.4.1] (2021-02-07)
 
 ### Fixed
