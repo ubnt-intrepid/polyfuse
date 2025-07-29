@@ -1,5 +1,5 @@
 use std::{ffi::OsStr, mem, os::unix::prelude::*};
-use zerocopy::{FromBytes, LayoutVerified};
+use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 #[derive(Debug)]
 pub(crate) enum DecodeError {
@@ -33,23 +33,20 @@ impl<'a> Decoder<'a> {
     /// Fetch a value of Plain-Old-Data (POD) type by reference.
     pub(crate) fn fetch<T>(&mut self) -> Result<&'a T, DecodeError>
     where
-        T: FromBytes,
+        T: FromBytes + KnownLayout + Immutable,
     {
         let bytes = self.fetch_bytes(mem::size_of::<T>())?;
-        let verified = LayoutVerified::<_, T>::new(bytes).ok_or(DecodeError::Unaligned)?;
-        Ok(verified.into_ref())
+        FromBytes::ref_from_bytes(bytes).map_err(|_err| DecodeError::Unaligned)
     }
 
     /// Fetch an array of Plain-Old Data (POD) type by reference.
     #[allow(dead_code)]
     pub(crate) fn fetch_array<T>(&mut self, count: usize) -> Result<&'a [T], DecodeError>
     where
-        T: FromBytes,
+        T: FromBytes + KnownLayout + Immutable,
     {
         let bytes = self.fetch_bytes(mem::size_of::<T>() * count)?;
-        let verified = LayoutVerified::<_, [T]>::new_slice(bytes) //
-            .ok_or(DecodeError::Unaligned)?;
-        Ok(verified.into_slice())
+        FromBytes::ref_from_bytes(bytes).map_err(|_err| DecodeError::Unaligned)
     }
 
     /// Fetch a zero-terminated OS string by reference.
