@@ -25,6 +25,8 @@
     <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
          alt="docs.rs" />
   </a>
+  <img src="https://img.shields.io/crates/msrv/polyfuse"
+       alt="Crates.io MSRV" />
 </div>
 
 <br />
