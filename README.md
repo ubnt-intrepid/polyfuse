@@ -12,21 +12,16 @@
 
 <div align="center">
   <a href="https://crates.io/crates/polyfuse">
-    <img src="https://img.shields.io/crates/v/polyfuse.svg?style=flat-square"
+    <img src="https://img.shields.io/crates/v/polyfuse?style=flat-square"
          alt="crates.io"
     />
   </a>
-  <a href="https://blog.rust-lang.org/2020/11/19/Rust-1.48.html">
-    <img src="https://img.shields.io/badge/minimum%20rustc-1.48.0-yellowgreen?style=flat-square"
-         alt="rust toolchain"
-    />
-  </a>
+  <img src="https://img.shields.io/crates/msrv/polyfuse?style=flat-square"
+       alt="Crates.io MSRV" />
   <a href="https://docs.rs/polyfuse">
-    <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
+    <img src="https://img.shields.io/docsrs/polyfuse?style=flat-square"
          alt="docs.rs" />
   </a>
-  <img src="https://img.shields.io/crates/msrv/polyfuse"
-       alt="Crates.io MSRV" />
 </div>
 
 <br />
