@@ -2,7 +2,7 @@
 name = "polyfuse-example-poll"
 version = "0.0.0"
 publish = false
-edition = "2018"
+edition = "2021"
 default-run = "polyfuse-example-poll"
 
 [[bin]]

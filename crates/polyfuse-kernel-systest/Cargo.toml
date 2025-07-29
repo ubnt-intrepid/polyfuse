@@ -2,7 +2,7 @@
 name = "polyfuse-kernel-systest"
 version = "0.0.0" # never publish
 publish = false
-edition = "2018"
+edition = "2021"
 build = "build.rs"
 
 [dependencies]
