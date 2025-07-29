@@ -28,12 +28,6 @@ jobs:
         sudo apt-get update -yqq
         sudo apt-get install -yqq --no-install-recommends fuse
 
-    - name: Install Rust toolchains
-      run: |
-        rustup set profile minimal
-        rustup install stable beta nightly
-        rustup component add rustfmt clippy --toolchain stable
-
     - uses: actions/cache@v4
       with:
         path: |
@@ -45,17 +39,29 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Fetch cargo dependencies
-      run: cargo fetch
+      run: cargo +stable fetch
 
-    - name: Run lints
-      run: cargo +stable xtask lint
+    - name: Run tests (MSRV)
+      run: |
+        set +x
+        cargo --version
+        cargo fmt -- --check
+        cargo test --all
+        cargo xtask lint
 
     - name: Run tests (stable)
-      run: cargo +stable test
+      run: |
+        set +x
+        cargo +stable test
+        cargo +stable xtask lint
 
     - name: Run tests (beta)
-      run: cargo +beta test
+      run: |
+        set +x
+        cargo +beta test
 
     - name: Run tests (nightly)
-      run: cargo +nightly test
+      run: |
+        set +x
+        cargo +nightly test
       continue-on-error: true

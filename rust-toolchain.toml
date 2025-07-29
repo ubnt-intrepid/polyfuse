@@ -1,0 +1,7 @@
+[toolchain]
+# MSRV requirements:
+#   * stabilized `async fn` and return-position `impl Trait` in traits (since 1.75.0)
+#   * stabilized lockfile v4 (since 1.78.0)
+channel = "1.78.0"
+profile = "minimal"
+components = [ "rustfmt" ]

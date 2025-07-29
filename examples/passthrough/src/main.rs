@@ -608,7 +608,7 @@ impl Passthrough {
         data.read_to_end(&mut buf)?;
 
         let mut buf = &buf[..];
-        let mut buf = (&mut buf).take(op.size() as u64);
+        let mut buf = Read::take(&mut buf, op.size() as u64);
         let written = std::io::copy(&mut buf, &mut *file)?;
 
         let mut out = WriteOut::default();
