@@ -9,7 +9,7 @@
 
 use polyfuse::{
     reply::{AttrOut, FileAttr, OpenOut},
-    KernelConfig, MountOptions, Notifier, Operation, Session,
+    Connection, KernelConfig, MountOptions, Notifier, Operation, Session,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
@@ -43,14 +43,15 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(conn, KernelConfig::default())?;
+    let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
+    let session = Session::init(&conn, KernelConfig::default())?;
 
     let heartbeat = Arc::new(Heartbeat::now());
 
     // Spawn a task that beats the heart.
     std::thread::spawn({
         let heartbeat = heartbeat.clone();
+        let conn = conn.clone();
         let notifier = if !no_notify {
             Some(session.notifier())
         } else {
@@ -64,8 +65,8 @@ fn main() -> Result<()> {
 
                 if let Some(ref notifier) = notifier {
                     match notify_kind {
-                        NotifyKind::Store => heartbeat.notify_store(notifier)?,
-                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(notifier)?,
+                        NotifyKind::Store => heartbeat.notify_store(&conn, notifier)?,
+                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(&conn, notifier)?,
                     }
                 }
 
@@ -75,8 +76,9 @@ fn main() -> Result<()> {
     });
 
     // Run the filesystem daemon on the foreground.
-    while let Some(req) = session.next_request()? {
+    while let Some(req) = session.next_request(&conn)? {
         let heartbeat = heartbeat.clone();
+        let conn = conn.clone();
 
         std::thread::spawn(move || -> Result<()> {
             let span = tracing::debug_span!("handle request", unique = req.unique());
@@ -91,17 +93,17 @@ fn main() -> Result<()> {
                         let inner = heartbeat.inner.lock().unwrap();
                         let mut out = AttrOut::default();
                         fill_attr(out.attr(), &inner.attr);
-                        req.reply(out)?;
+                        req.reply(&conn, out)?;
                     }
-                    _ => req.reply_error(libc::ENOENT)?,
+                    _ => req.reply_error(&conn, libc::ENOENT)?,
                 },
                 Operation::Open(op) => match op.ino() {
                     ROOT_INO => {
                         let mut out = OpenOut::default();
                         out.keep_cache(true);
-                        req.reply(out)?;
+                        req.reply(&conn, out)?;
                     }
-                    _ => req.reply_error(libc::ENOENT)?,
+                    _ => req.reply_error(&conn, libc::ENOENT)?,
                 },
                 Operation::Read(op) => match op.ino() {
                     ROOT_INO => {
@@ -109,15 +111,15 @@ fn main() -> Result<()> {
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
-                            req.reply(&[])?;
+                            req.reply(&conn, &[])?;
                         } else {
                             let size = op.size() as usize;
                             let data = &inner.content.as_bytes()[offset..];
                             let data = &data[..std::cmp::min(data.len(), size)];
-                            req.reply(data)?;
+                            req.reply(&conn, data)?;
                         }
                     }
-                    _ => req.reply_error(libc::ENOENT)?,
+                    _ => req.reply_error(&conn, libc::ENOENT)?,
                 },
                 Operation::NotifyReply(op, mut data) => {
                     let mut retrieves = heartbeat.retrieves.lock().unwrap();
@@ -128,7 +130,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                _ => req.reply_error(libc::ENOSYS)?,
+                _ => req.reply_error(&conn, libc::ENOSYS)?,
             }
 
             Ok(())
@@ -176,19 +178,19 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    fn notify_store(&self, notifier: &Notifier) -> io::Result<()> {
+    fn notify_store(&self, conn: &Connection, notifier: &Notifier) -> io::Result<()> {
         let inner = self.inner.lock().unwrap();
         let content = &inner.content;
 
         tracing::info!("send notify_store(data={:?})", content);
-        notifier.store(ROOT_INO, 0, content)?;
+        notifier.store(conn, ROOT_INO, 0, content)?;
 
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
         let data = {
             // FIXME: choose appropriate atomic ordering.
-            let unique = notifier.retrieve(ROOT_INO, 0, 1024)?;
+            let unique = notifier.retrieve(conn, ROOT_INO, 0, 1024)?;
             let (tx, rx) = mpsc::channel();
             self.retrieves.lock().unwrap().insert(unique, tx);
             rx.recv().unwrap()
@@ -202,9 +204,9 @@ impl Heartbeat {
         Ok(())
     }
 
-    fn notify_inval_inode(&self, notifier: &Notifier) -> io::Result<()> {
+    fn notify_inval_inode(&self, conn: &Connection, notifier: &Notifier) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
-        notifier.inval_inode(ROOT_INO, 0, 0)?;
+        notifier.inval_inode(conn, ROOT_INO, 0, 0)?;
         Ok(())
     }
 }

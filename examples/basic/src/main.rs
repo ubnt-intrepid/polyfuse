@@ -1,4 +1,6 @@
-use polyfuse::{op, reply::AttrOut, KernelConfig, MountOptions, Operation, Request, Session};
+use polyfuse::{
+    op, reply::AttrOut, Connection, KernelConfig, MountOptions, Operation, Request, Session,
+};
 
 use anyhow::{ensure, Context as _, Result};
 use std::{io, path::PathBuf, time::Duration};
@@ -17,26 +19,26 @@ fn main() -> Result<()> {
     let conn = MountOptions::default().mount(mountpoint)?;
 
     // Initialize the FUSE session.
-    let session = Session::init(conn, KernelConfig::default())?;
+    let session = Session::init(&conn, KernelConfig::default())?;
 
     // Receive an incoming FUSE request from the kernel.
-    while let Some(req) = session.next_request()? {
+    while let Some(req) = session.next_request(&conn)? {
         match req.operation()? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&req, op)?,
-            Operation::Read(op) => read(&req, op)?,
+            Operation::Getattr(op) => getattr(&conn, &req, op)?,
+            Operation::Read(op) => read(&conn, &req, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => req.reply_error(libc::ENOSYS)?,
+            _ => req.reply_error(&conn, libc::ENOSYS)?,
         };
     }
 
     Ok(())
 }
 
-fn getattr(req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
+fn getattr(conn: &Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
     if op.ino() != 1 {
-        return req.reply_error(libc::ENOENT);
+        return req.reply_error(conn, libc::ENOENT);
     }
 
     let mut out = AttrOut::default();
@@ -48,12 +50,12 @@ fn getattr(req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
     out.attr().gid(unsafe { libc::getgid() });
     out.ttl(Duration::from_secs(1));
 
-    req.reply(out)
+    req.reply(conn, out)
 }
 
-fn read(req: &Request, op: op::Read<'_>) -> io::Result<()> {
+fn read(conn: &Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
     if op.ino() != 1 {
-        return req.reply_error(libc::ENOENT);
+        return req.reply_error(conn, libc::ENOENT);
     }
 
     let mut data: &[u8] = &[];
@@ -65,5 +67,5 @@ fn read(req: &Request, op: op::Read<'_>) -> io::Result<()> {
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    req.reply(data)
+    req.reply(conn, data)
 }
