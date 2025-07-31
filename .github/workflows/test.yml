@@ -43,7 +43,7 @@ jobs:
 
     - name: Run tests (MSRV)
       run: |
-        set +x
+        set -xe
         cargo --version
         cargo fmt -- --check
         cargo test --all
@@ -51,17 +51,13 @@ jobs:
 
     - name: Run tests (stable)
       run: |
-        set +x
+        set -xe
         cargo +stable test
         cargo +stable xtask lint
 
     - name: Run tests (beta)
-      run: |
-        set +x
-        cargo +beta test
+      run: cargo +beta test
 
     - name: Run tests (nightly)
-      run: |
-        set +x
-        cargo +nightly test
+      run: cargo +nightly test
       continue-on-error: true
