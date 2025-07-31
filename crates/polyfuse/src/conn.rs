@@ -29,8 +29,8 @@ macro_rules! syscall {
 pub struct Connection {
     fd: RawFd,
     child: Option<Fusermount>,
-    #[allow(dead_code)]
-    mountopts: MountOptions,
+    mountpoint: PathBuf,
+    _mountopts: MountOptions,
 }
 
 impl Drop for Connection {
@@ -41,14 +41,6 @@ impl Drop for Connection {
 
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
-    pub(crate) fn open(mountopts: MountOptions) -> io::Result<Self> {
-        let (fd, child) = mount(&mountopts)?;
-        Ok(Self {
-            fd,
-            child,
-            mountopts,
-        })
-    }
 
     fn read(&self, dst: &mut [u8]) -> io::Result<usize> {
         let len = syscall! {
@@ -103,7 +95,7 @@ impl Connection {
             let _ = child.wait();
         }
 
-        unmount(&self.mountopts.mountpoint);
+        unmount(&self.mountpoint);
     }
 }
 
@@ -173,26 +165,26 @@ impl io::Write for &Connection {
 
 // ==== mount ====
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MountOptions {
-    pub(crate) mountpoint: PathBuf,
     options: Vec<String>,
     auto_unmount: bool,
     fusermount_path: Option<PathBuf>,
     fuse_comm_fd: Option<OsString>,
 }
 
-impl MountOptions {
-    pub fn new(mountpoint: impl Into<PathBuf>) -> Self {
+impl Default for MountOptions {
+    fn default() -> Self {
         Self {
-            mountpoint: mountpoint.into(),
             options: vec![],
             auto_unmount: true,
             fusermount_path: None,
             fuse_comm_fd: None,
         }
     }
+}
 
+impl MountOptions {
     pub fn auto_unmount(&mut self, enabled: bool) -> &mut Self {
         self.auto_unmount = enabled;
         self
@@ -224,6 +216,17 @@ impl MountOptions {
         self.fuse_comm_fd = Some(name.as_ref().to_owned());
         self
     }
+
+    pub fn mount(&self, mountpoint: impl Into<PathBuf>) -> io::Result<Connection> {
+        let mountpoint = mountpoint.into();
+        let (fd, child) = fusermount(&mountpoint, self)?;
+        Ok(Connection {
+            fd,
+            child,
+            mountpoint,
+            _mountopts: self.clone(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -241,7 +244,10 @@ impl Fusermount {
     }
 }
 
-fn mount(mountopts: &MountOptions) -> io::Result<(RawFd, Option<Fusermount>)> {
+fn fusermount(
+    mountpoint: &Path,
+    mountopts: &MountOptions,
+) -> io::Result<(RawFd, Option<Fusermount>)> {
     let (input, output) = UnixStream::pair()?;
 
     let mut fusermount = Command::new(
@@ -271,7 +277,7 @@ fn mount(mountopts: &MountOptions) -> io::Result<(RawFd, Option<Fusermount>)> {
         fusermount.arg("-o").arg(opts);
     }
 
-    fusermount.arg("--").arg(&mountopts.mountpoint);
+    fusermount.arg("--").arg(mountpoint);
 
     fusermount.env(
         mountopts

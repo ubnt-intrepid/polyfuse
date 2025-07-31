@@ -42,7 +42,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let session = Session::mount(MountOptions::new(mountpoint), KernelConfig::default())?;
+    let conn = MountOptions::default().mount(mountpoint)?;
+    let session = Session::init(conn, KernelConfig::default())?;
 
     let mut fs = PathThrough::new(source)?;
 

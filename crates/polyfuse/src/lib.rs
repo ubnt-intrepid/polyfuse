@@ -12,7 +12,7 @@ pub mod op;
 pub mod reply;
 
 pub use crate::{
-    conn::MountOptions,
+    conn::{Connection, MountOptions},
     op::Operation,
     session::{Data, KernelConfig, Notifier, Request, Session},
 };
