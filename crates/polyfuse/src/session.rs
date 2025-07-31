@@ -13,7 +13,7 @@ use std::{
     io::{self, prelude::*, IoSlice, IoSliceMut},
     mem::{self, MaybeUninit},
     os::unix::prelude::*,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -60,56 +60,18 @@ const INIT_FLAGS_MASK: u32 = FUSE_ASYNC_READ
 /// Parameters for setting up the connection with FUSE driver
 /// and the kernel side behavior.
 pub struct KernelConfig {
-    mountopts: MountOptions,
     init_out: fuse_init_out,
 }
 
 impl Default for KernelConfig {
     fn default() -> Self {
         Self {
-            mountopts: MountOptions::default(),
             init_out: default_init_out(),
         }
     }
 }
 
 impl KernelConfig {
-    #[doc(hidden)] // TODO: dox
-    pub fn auto_unmount(&mut self, enabled: bool) -> &mut Self {
-        self.mountopts.auto_unmount = enabled;
-        self
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn mount_option(&mut self, option: &str) -> &mut Self {
-        for option in option.split(',').map(|s| s.trim()) {
-            match option {
-                "auto_unmount" => {
-                    self.auto_unmount(true);
-                }
-                option => self.mountopts.options.push(option.to_owned()),
-            }
-        }
-        self
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn fusermount_path(&mut self, program: impl AsRef<OsStr>) -> &mut Self {
-        let program = Path::new(program.as_ref());
-        assert!(
-            program.is_absolute(),
-            "the binary path to `fusermount` must be absolute."
-        );
-        self.mountopts.fusermount_path = Some(program.to_owned());
-        self
-    }
-
-    #[doc(hidden)] // TODO: dox
-    pub fn fuse_comm_fd(&mut self, name: impl AsRef<OsStr>) -> &mut Self {
-        self.mountopts.fuse_comm_fd = Some(name.as_ref().to_owned());
-        self
-    }
-
     #[inline]
     fn set_init_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
@@ -331,11 +293,12 @@ impl AsRawFd for Session {
 
 impl Session {
     /// Start a FUSE daemon mount on the specified path.
-    pub fn mount(mountpoint: PathBuf, config: KernelConfig) -> io::Result<Self> {
-        let KernelConfig {
-            mountopts,
-            mut init_out,
-        } = config;
+    pub fn mount(
+        mountpoint: PathBuf,
+        mountopts: MountOptions,
+        config: KernelConfig,
+    ) -> io::Result<Self> {
+        let KernelConfig { mut init_out } = config;
 
         let conn = Connection::open(mountpoint, mountopts)?;
 
