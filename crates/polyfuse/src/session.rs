@@ -363,13 +363,6 @@ impl Session {
             arg,
         }))
     }
-
-    /// Create an instance of `Notifier` corresponding to this session.
-    pub fn notifier(&self) -> Notifier {
-        Notifier {
-            session: self.inner.clone(),
-        }
-    }
 }
 
 fn init_session<R, W>(init_out: &mut fuse_init_out, mut reader: R, mut writer: W) -> io::Result<()>
@@ -597,14 +590,7 @@ impl<'op> BufRead for Data<'op> {
     }
 }
 
-// ==== Notifier ====
-
-#[derive(Clone)]
-pub struct Notifier {
-    session: Arc<SessionInner>,
-}
-
-impl Notifier {
+impl Session {
     /// Notify the cache invalidation about an inode to the kernel.
     pub fn inval_inode(&self, conn: &Connection, ino: u64, off: i64, len: i64) -> io::Result<()> {
         let total_len = u32::try_from(
@@ -840,7 +826,7 @@ impl Notifier {
         .unwrap();
 
         // FIXME: choose appropriate memory ordering.
-        let notify_unique = self.session.notify_unique.fetch_add(1, Ordering::SeqCst);
+        let notify_unique = self.inner.notify_unique.fetch_add(1, Ordering::SeqCst);
 
         write_bytes(
             conn,

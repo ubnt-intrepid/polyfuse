@@ -1,6 +1,6 @@
 use polyfuse::{
     reply::{AttrOut, OpenOut, PollOut},
-    Connection, MountOptions, Notifier, Operation, Request, Session,
+    Connection, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -31,9 +31,9 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
-    let session = Session::init(&conn, Default::default())?;
+    let session = Session::init(&conn, Default::default()).map(Arc::new)?;
 
-    let fs = Arc::new(PollFS::new(session.notifier(), wakeup_interval));
+    let fs = Arc::new(PollFS::new(session.clone(), wakeup_interval));
 
     while let Some(req) = session.next_request(&conn)? {
         let fs = fs.clone();
@@ -51,12 +51,12 @@ struct PollFS {
     handles: DashMap<u64, Arc<FileHandle>>,
     next_fh: AtomicU64,
 
-    notifier: Notifier,
+    notifier: Arc<Session>,
     wakeup_interval: Duration,
 }
 
 impl PollFS {
-    fn new(notifier: Notifier, wakeup_interval: Duration) -> Self {
+    fn new(notifier: Arc<Session>, wakeup_interval: Duration) -> Self {
         Self {
             handles: DashMap::new(),
             next_fh: AtomicU64::new(0),

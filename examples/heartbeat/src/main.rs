@@ -9,7 +9,7 @@
 
 use polyfuse::{
     reply::{AttrOut, FileAttr, OpenOut},
-    Connection, KernelConfig, MountOptions, Notifier, Operation, Session,
+    Connection, KernelConfig, MountOptions, Operation, Session,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
-    let session = Session::init(&conn, KernelConfig::default())?;
+    let session = Session::init(&conn, KernelConfig::default()).map(Arc::new)?;
 
     let heartbeat = Arc::new(Heartbeat::now());
 
@@ -53,7 +53,7 @@ fn main() -> Result<()> {
         let heartbeat = heartbeat.clone();
         let conn = conn.clone();
         let notifier = if !no_notify {
-            Some(session.notifier())
+            Some(session.clone())
         } else {
             None
         };
@@ -178,7 +178,7 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    fn notify_store(&self, conn: &Connection, notifier: &Notifier) -> io::Result<()> {
+    fn notify_store(&self, conn: &Connection, notifier: &Session) -> io::Result<()> {
         let inner = self.inner.lock().unwrap();
         let content = &inner.content;
 
@@ -204,7 +204,7 @@ impl Heartbeat {
         Ok(())
     }
 
-    fn notify_inval_inode(&self, conn: &Connection, notifier: &Notifier) -> io::Result<()> {
+    fn notify_inval_inode(&self, conn: &Connection, notifier: &Session) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
         notifier.inval_inode(conn, ROOT_INO, 0, 0)?;
         Ok(())

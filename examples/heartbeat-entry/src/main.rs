@@ -9,7 +9,7 @@
 
 use polyfuse::{
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Connection, KernelConfig, MountOptions, Notifier, Operation, Request, Session,
+    Connection, KernelConfig, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
-    let session = Session::init(&conn, KernelConfig::default())?;
+    let session = Session::init(&conn, KernelConfig::default()).map(Arc::new)?;
 
     let fs = {
         let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
         let fs = fs.clone();
         let conn = conn.clone();
         let notifier = if !no_notify {
-            Some(session.notifier())
+            Some(session.clone())
         } else {
             None
         };
@@ -120,7 +120,7 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    fn heartbeat(&self, conn: &Connection, notifier: Option<Notifier>) -> Result<()> {
+    fn heartbeat(&self, conn: &Connection, notifier: Option<Arc<Session>>) -> Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
         let _enter = span.enter();
 
