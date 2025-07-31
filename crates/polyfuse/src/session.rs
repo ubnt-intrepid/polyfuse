@@ -374,14 +374,14 @@ impl Session {
     pub fn next_request(&self) -> io::Result<Option<Request>> {
         let mut conn = &self.inner.conn;
 
-        // FIXME: Align the allocated region in `arg` with the FUSE argument types.
         let mut header = fuse_in_header::default();
-        let mut arg = vec![0u8; self.inner.bufsize - mem::size_of::<fuse_in_header>()];
+        let bufsize = self.inner.bufsize - mem::size_of::<fuse_in_header>();
+        let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
 
         loop {
             match conn.read_vectored(&mut [
                 io::IoSliceMut::new(header.as_mut_bytes()),
-                io::IoSliceMut::new(&mut arg[..]),
+                io::IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
             ]) {
                 Ok(len) => {
                     if len < mem::size_of::<fuse_in_header>() {
@@ -431,14 +431,14 @@ where
     R: io::Read,
     W: io::Write,
 {
-    // FIXME: align the allocated buffer in `buf` with FUSE argument types.
     let mut header = fuse_in_header::default();
-    let mut arg = vec![0u8; pagesize() * MAX_MAX_PAGES];
+    let bufsize = pagesize() * MAX_MAX_PAGES;
+    let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
 
     for _ in 0..10 {
         let len = reader.read_vectored(&mut [
             io::IoSliceMut::new(header.as_mut_bytes()),
-            io::IoSliceMut::new(&mut arg[..]),
+            io::IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
         ])?;
         if len < mem::size_of::<fuse_in_header>() {
             return Err(io::Error::new(
@@ -447,7 +447,7 @@ where
             ));
         }
 
-        let mut decoder = Decoder::new(&arg[..]);
+        let mut decoder = Decoder::new(bytemuck::cast_slice(&arg[..]));
 
         match fuse_opcode::try_from(header.opcode) {
             Ok(fuse_opcode::FUSE_INIT) => {
@@ -558,7 +558,7 @@ where
 pub struct Request {
     session: Arc<SessionInner>,
     header: fuse_in_header,
-    arg: Vec<u8>,
+    arg: Vec<u64>,
 }
 
 impl Request {
@@ -592,11 +592,13 @@ impl Request {
             return Ok(Operation::unknown());
         }
 
+        let arg: &[u8] = bytemuck::cast_slice(&self.arg[..]);
+
         let (arg, data) = match fuse_opcode::try_from(self.header.opcode).ok() {
             Some(fuse_opcode::FUSE_WRITE) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
-                self.arg.split_at(mem::size_of::<fuse_write_in>())
+                arg.split_at(mem::size_of::<fuse_write_in>())
             }
-            _ => (&self.arg[..], &[] as &[_]),
+            _ => (arg, &[] as &[_]),
         };
 
         Operation::decode(&self.header, arg, Data { data })

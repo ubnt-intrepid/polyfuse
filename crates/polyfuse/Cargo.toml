@@ -13,6 +13,7 @@ keywords = [ "fuse", "filesystem", "async", "futures" ]
 [dependencies]
 polyfuse-kernel = { version = "0.2.0", path = "../polyfuse-kernel" }
 
+bytemuck = "1.23"
 either = "1"
 libc = "0.2"
 tracing = "0.1"
