@@ -51,10 +51,11 @@ fn main() -> Result<()> {
     let conn = MountOptions::default()
         .mount_option("default_permissions")
         .mount_option("fsname=passthrough")
-        .mount(mountpoint)?;
+        .mount(mountpoint)
+        .map(Arc::new)?;
 
     // TODO: splice read/write
-    let session = Session::init(conn, {
+    let session = Session::init(&conn, {
         let mut config = KernelConfig::default();
         config.export_support(true);
         config.flock_locks(true);
@@ -64,8 +65,9 @@ fn main() -> Result<()> {
 
     let fs = Arc::new(Passthrough::new(source, timeout)?);
 
-    while let Some(req) = session.next_request()? {
+    while let Some(req) = session.next_request(&conn)? {
         let fs = fs.clone();
+        let conn = conn.clone();
 
         std::thread::spawn(move || -> Result<()> {
             let span = tracing::debug_span!("handle_request", unique = req.unique());
@@ -79,12 +81,12 @@ fn main() -> Result<()> {
                     match $e {
                         Ok(data) => {
                             tracing::debug!(?data);
-                            req.reply(data)?;
+                            req.reply(&conn, data)?;
                         }
                         Err(err) => {
                             let errno = io_to_errno(err);
                             tracing::debug!(errno = errno);
-                            req.reply_error(errno)?;
+                            req.reply_error(&conn, errno)?;
                         }
                     }
                 };
@@ -151,7 +153,7 @@ fn main() -> Result<()> {
 
                 Operation::Statfs(op) => try_reply!(fs.do_statfs(&op)),
 
-                _ => req.reply_error(libc::ENOSYS)?,
+                _ => req.reply_error(&conn, libc::ENOSYS)?,
             }
 
             Ok(())

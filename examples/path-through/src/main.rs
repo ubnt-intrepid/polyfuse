@@ -43,19 +43,19 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     let conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(conn, KernelConfig::default())?;
+    let session = Session::init(&conn, KernelConfig::default())?;
 
     let mut fs = PathThrough::new(source)?;
 
-    while let Some(req) = session.next_request()? {
+    while let Some(req) = session.next_request(&conn)? {
         let op = req.operation()?;
         tracing::debug!("handle operation: {:#?}", op);
 
         macro_rules! try_reply {
             ($e:expr) => {
                 match $e {
-                    Ok(data) => req.reply(data)?,
-                    Err(err) => req.reply_error(err.raw_os_error().unwrap_or(libc::EIO))?,
+                    Ok(data) => req.reply(&conn, data)?,
+                    Err(err) => req.reply_error(&conn, err.raw_os_error().unwrap_or(libc::EIO))?,
                 }
             };
         }
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
             Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
             Operation::Release(op) => try_reply!(fs.do_release(&op)),
 
-            _ => req.reply_error(libc::ENOSYS)?,
+            _ => req.reply_error(&conn, libc::ENOSYS)?,
         }
     }
 

@@ -257,7 +257,6 @@ impl fmt::Debug for Session {
 }
 
 struct SessionInner {
-    conn: Connection,
     init_out: fuse_init_out,
     bufsize: usize,
     exited: AtomicBool,
@@ -284,23 +283,16 @@ impl Drop for Session {
     }
 }
 
-impl AsRawFd for Session {
-    fn as_raw_fd(&self) -> RawFd {
-        self.inner.conn.as_raw_fd()
-    }
-}
-
 impl Session {
     /// Start a FUSE daemon mount on the specified path.
-    pub fn init(conn: Connection, config: KernelConfig) -> io::Result<Self> {
+    pub fn init(conn: &Connection, config: KernelConfig) -> io::Result<Self> {
         let KernelConfig { mut init_out } = config;
 
-        init_session(&mut init_out, &conn, &conn)?;
+        init_session(&mut init_out, conn, conn)?;
         let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;
 
         Ok(Self {
             inner: Arc::new(SessionInner {
-                conn,
                 init_out,
                 bufsize,
                 exited: AtomicBool::new(false),
@@ -327,9 +319,7 @@ impl Session {
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub fn next_request(&self) -> io::Result<Option<Request>> {
-        let mut conn = &self.inner.conn;
-
+    pub fn next_request(&self, mut conn: &Connection) -> io::Result<Option<Request>> {
         let mut header = fuse_in_header::default();
         let bufsize = self.inner.bufsize - mem::size_of::<fuse_in_header>();
         let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
@@ -560,15 +550,15 @@ impl Request {
         Operation::decode(&self.header, arg, Data { data })
     }
 
-    pub fn reply<T>(&self, arg: T) -> io::Result<()>
+    pub fn reply<T>(&self, conn: &Connection, arg: T) -> io::Result<()>
     where
         T: Bytes,
     {
-        write_bytes(&self.session.conn, Reply::new(self.unique(), 0, arg))
+        write_bytes(conn, Reply::new(self.unique(), 0, arg))
     }
 
-    pub fn reply_error(&self, code: i32) -> io::Result<()> {
-        write_bytes(&self.session.conn, Reply::new(self.unique(), code, ()))
+    pub fn reply_error(&self, conn: &Connection, code: i32) -> io::Result<()> {
+        write_bytes(conn, Reply::new(self.unique(), code, ()))
     }
 }
 
@@ -616,14 +606,14 @@ pub struct Notifier {
 
 impl Notifier {
     /// Notify the cache invalidation about an inode to the kernel.
-    pub fn inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+    pub fn inval_inode(&self, conn: &Connection, ino: u64, off: i64, len: i64) -> io::Result<()> {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_inval_inode_out>(),
         )
         .unwrap();
 
         return write_bytes(
-            &self.session.conn,
+            conn,
             InvalInode {
                 header: fuse_out_header {
                     len: total_len,
@@ -655,7 +645,7 @@ impl Notifier {
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
-    pub fn inval_entry<T>(&self, parent: u64, name: T) -> io::Result<()>
+    pub fn inval_entry<T>(&self, conn: &Connection, parent: u64, name: T) -> io::Result<()>
     where
         T: AsRef<OsStr>,
     {
@@ -670,7 +660,7 @@ impl Notifier {
         .unwrap();
 
         return write_bytes(
-            &self.session.conn,
+            conn,
             InvalEntry {
                 header: fuse_out_header {
                     len: total_len,
@@ -721,7 +711,7 @@ impl Notifier {
     /// Additionally, when the provided `child` inode matches the inode
     /// in the dentry cache, the inotify will inform the deletion to
     /// watchers if exists.
-    pub fn delete<T>(&self, parent: u64, child: u64, name: T) -> io::Result<()>
+    pub fn delete<T>(&self, conn: &Connection, parent: u64, child: u64, name: T) -> io::Result<()>
     where
         T: AsRef<OsStr>,
     {
@@ -736,7 +726,7 @@ impl Notifier {
         .expect("payload is too long");
 
         return write_bytes(
-            &self.session.conn,
+            conn,
             Delete {
                 header: fuse_out_header {
                     len: total_len,
@@ -783,7 +773,7 @@ impl Notifier {
     }
 
     /// Push the data in an inode for updating the kernel cache.
-    pub fn store<T>(&self, ino: u64, offset: u64, data: T) -> io::Result<()>
+    pub fn store<T>(&self, conn: &Connection, ino: u64, offset: u64, data: T) -> io::Result<()>
     where
         T: Bytes,
     {
@@ -797,7 +787,7 @@ impl Notifier {
         .expect("payload is too long");
 
         return write_bytes(
-            &self.session.conn,
+            conn,
             Store {
                 header: fuse_out_header {
                     len: total_len,
@@ -843,7 +833,7 @@ impl Notifier {
     }
 
     /// Retrieve data in an inode from the kernel cache.
-    pub fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
+    pub fn retrieve(&self, conn: &Connection, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_retrieve_out>(),
         )
@@ -853,7 +843,7 @@ impl Notifier {
         let notify_unique = self.session.notify_unique.fetch_add(1, Ordering::SeqCst);
 
         write_bytes(
-            &self.session.conn,
+            conn,
             Retrieve {
                 header: fuse_out_header {
                     len: total_len,
@@ -893,14 +883,14 @@ impl Notifier {
     }
 
     /// Send I/O readiness to the kernel.
-    pub fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
+    pub fn poll_wakeup(&self, conn: &Connection, kh: u64) -> io::Result<()> {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_poll_wakeup_out>(),
         )
         .unwrap();
 
         return write_bytes(
-            &self.session.conn,
+            conn,
             PollWakeup {
                 header: fuse_out_header {
                     len: total_len,

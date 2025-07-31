@@ -9,7 +9,7 @@
 
 use polyfuse::{
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    KernelConfig, MountOptions, Notifier, Operation, Request, Session,
+    Connection, KernelConfig, MountOptions, Notifier, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -48,8 +48,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(conn, KernelConfig::default())?;
+    let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
+    let session = Session::init(&conn, KernelConfig::default())?;
 
     let fs = {
         let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
@@ -77,21 +77,23 @@ fn main() -> Result<()> {
     // Spawn a task that beats the heart.
     std::thread::spawn({
         let fs = fs.clone();
+        let conn = conn.clone();
         let notifier = if !no_notify {
             Some(session.notifier())
         } else {
             None
         };
         move || -> Result<()> {
-            fs.heartbeat(notifier)?;
+            fs.heartbeat(&conn, notifier)?;
             Ok(())
         }
     });
 
-    while let Some(req) = session.next_request()? {
+    while let Some(req) = session.next_request(&conn)? {
         let fs = fs.clone();
+        let conn = conn.clone();
         std::thread::spawn(move || -> Result<()> {
-            fs.handle_request(&req)?;
+            fs.handle_request(&conn, &req)?;
             Ok(())
         });
     }
@@ -118,7 +120,7 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    fn heartbeat(&self, notifier: Option<Notifier>) -> Result<()> {
+    fn heartbeat(&self, conn: &Connection, notifier: Option<Notifier>) -> Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
         let _enter = span.enter();
 
@@ -134,7 +136,7 @@ impl Heartbeat {
             match notifier {
                 Some(ref notifier) if current.nlookup > 0 => {
                     tracing::info!("send notify_inval_entry");
-                    notifier.inval_entry(ROOT_INO, old_filename)?;
+                    notifier.inval_entry(conn, ROOT_INO, old_filename)?;
                 }
                 _ => (),
             }
@@ -145,7 +147,7 @@ impl Heartbeat {
         }
     }
 
-    fn handle_request(&self, req: &Request) -> Result<()> {
+    fn handle_request(&self, conn: &Connection, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 
@@ -164,14 +166,14 @@ impl Heartbeat {
                         out.ttl_entry(self.ttl);
                         out.ttl_attr(self.ttl);
 
-                        req.reply(out)?;
+                        req.reply(conn, out)?;
 
                         current.nlookup += 1;
                     } else {
-                        req.reply_error(libc::ENOENT)?;
+                        req.reply_error(conn, libc::ENOENT)?;
                     }
                 }
-                _ => req.reply_error(libc::ENOTDIR)?,
+                _ => req.reply_error(conn, libc::ENOTDIR)?,
             },
 
             Operation::Forget(forgets) => {
@@ -187,20 +189,20 @@ impl Heartbeat {
                 let attr = match op.ino() {
                     ROOT_INO => &self.root_attr,
                     FILE_INO => &self.file_attr,
-                    _ => return req.reply_error(libc::ENOENT).map_err(Into::into),
+                    _ => return req.reply_error(conn, libc::ENOENT).map_err(Into::into),
                 };
 
                 let mut out = AttrOut::default();
                 fill_attr(out.attr(), attr);
                 out.ttl(self.ttl);
 
-                req.reply(out)?;
+                req.reply(conn, out)?;
             }
 
             Operation::Read(op) => match op.ino() {
-                ROOT_INO => req.reply_error(libc::EISDIR)?,
-                FILE_INO => req.reply(&[])?,
-                _ => req.reply_error(libc::ENOENT)?,
+                ROOT_INO => req.reply_error(conn, libc::EISDIR)?,
+                FILE_INO => req.reply(conn, &[])?,
+                _ => req.reply_error(conn, libc::ENOENT)?,
             },
 
             Operation::Readdir(op) => match op.ino() {
@@ -210,15 +212,15 @@ impl Heartbeat {
 
                         let mut out = ReaddirOut::new(op.size() as usize);
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
-                        req.reply(out)?;
+                        req.reply(conn, out)?;
                     } else {
-                        req.reply(&[])?;
+                        req.reply(conn, &[])?;
                     }
                 }
-                _ => req.reply_error(libc::ENOTDIR)?,
+                _ => req.reply_error(conn, libc::ENOTDIR)?,
             },
 
-            _ => req.reply_error(libc::ENOSYS)?,
+            _ => req.reply_error(conn, libc::ENOSYS)?,
         }
 
         Ok(())

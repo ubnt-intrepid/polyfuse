@@ -4,7 +4,7 @@
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    KernelConfig, MountOptions, Operation, Request, Session,
+    Connection, KernelConfig, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -25,17 +25,17 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "tmountpoint must be a directory");
 
     let conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(conn, KernelConfig::default())?;
+    let session = Session::init(&conn, KernelConfig::default())?;
 
     let fs = Hello::new();
 
-    while let Some(req) = session.next_request()? {
+    while let Some(req) = session.next_request(&conn)? {
         match req.operation()? {
-            Operation::Lookup(op) => fs.lookup(&req, op)?,
-            Operation::Getattr(op) => fs.getattr(&req, op)?,
-            Operation::Read(op) => fs.read(&req, op)?,
-            Operation::Readdir(op) => fs.readdir(&req, op)?,
-            _ => req.reply_error(libc::ENOSYS)?,
+            Operation::Lookup(op) => fs.lookup(&conn, &req, op)?,
+            Operation::Getattr(op) => fs.getattr(&conn, &req, op)?,
+            Operation::Read(op) => fs.read(&conn, &req, op)?,
+            Operation::Readdir(op) => fs.readdir(&conn, &req, op)?,
+            _ => req.reply_error(&conn, libc::ENOSYS)?,
         }
     }
 
@@ -97,7 +97,7 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    fn lookup(&self, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
+    fn lookup(&self, conn: &Connection, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -105,31 +105,31 @@ impl Hello {
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                req.reply(out)
+                req.reply(conn, out)
             }
-            _ => req.reply_error(libc::ENOENT),
+            _ => req.reply_error(conn, libc::ENOENT),
         }
     }
 
-    fn getattr(&self, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
+    fn getattr(&self, conn: &Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
-            _ => return req.reply_error(libc::ENOENT),
+            _ => return req.reply_error(conn, libc::ENOENT),
         };
 
         let mut out = AttrOut::default();
         fill_attr(self, out.attr());
         out.ttl(TTL);
 
-        req.reply(out)
+        req.reply(conn, out)
     }
 
-    fn read(&self, req: &Request, op: op::Read<'_>) -> io::Result<()> {
+    fn read(&self, conn: &Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
-            ROOT_INO => return req.reply_error(libc::EISDIR),
-            _ => return req.reply_error(libc::ENOENT),
+            ROOT_INO => return req.reply_error(conn, libc::EISDIR),
+            _ => return req.reply_error(conn, libc::ENOENT),
         }
 
         let mut data: &[u8] = &[];
@@ -141,7 +141,7 @@ impl Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        req.reply(data)
+        req.reply(conn, data)
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -151,9 +151,9 @@ impl Hello {
         })
     }
 
-    fn readdir(&self, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
+    fn readdir(&self, conn: &Connection, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
         if op.ino() != ROOT_INO {
-            return req.reply_error(libc::ENOTDIR);
+            return req.reply_error(conn, libc::ENOTDIR);
         }
 
         let mut out = ReaddirOut::new(op.size() as usize);
@@ -170,6 +170,6 @@ impl Hello {
             }
         }
 
-        req.reply(out)
+        req.reply(conn, out)
     }
 }
