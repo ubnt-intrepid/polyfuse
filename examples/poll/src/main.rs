@@ -1,6 +1,6 @@
 use polyfuse::{
     reply::{AttrOut, OpenOut, PollOut},
-    Notifier, Operation, Request, Session,
+    MountOptions, Notifier, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let session = Session::mount(mountpoint, Default::default())?;
+    let session = Session::mount(MountOptions::new(mountpoint), Default::default())?;
 
     let fs = Arc::new(PollFS::new(session.notifier(), wakeup_interval));
 
