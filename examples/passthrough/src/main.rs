@@ -48,22 +48,19 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
+    let conn = MountOptions::new(mountpoint)
+        .mount_option("default_permissions")
+        .mount_option("fsname=passthrough")
+        .mount()?;
+
     // TODO: splice read/write
-    let session = Session::mount(
-        {
-            let mut opts = MountOptions::new(mountpoint);
-            opts.mount_option("default_permissions");
-            opts.mount_option("fsname=passthrough");
-            opts
-        },
-        {
-            let mut config = KernelConfig::default();
-            config.export_support(true);
-            config.flock_locks(true);
-            config.writeback_cache(timeout.is_some());
-            config
-        },
-    )?;
+    let session = Session::init(conn, {
+        let mut config = KernelConfig::default();
+        config.export_support(true);
+        config.flock_locks(true);
+        config.writeback_cache(timeout.is_some());
+        config
+    })?;
 
     let fs = Arc::new(Passthrough::new(source, timeout)?);
 

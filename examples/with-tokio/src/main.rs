@@ -4,7 +4,7 @@
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    KernelConfig, MountOptions, Operation, Request, Session,
+    Connection, KernelConfig, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -29,8 +29,8 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let session =
-        AsyncSession::mount(MountOptions::new(mountpoint), KernelConfig::default()).await?;
+    let conn = MountOptions::new(mountpoint).mount()?;
+    let session = AsyncSession::init(conn, KernelConfig::default()).await?;
 
     let fs = Arc::new(Hello::new());
 
@@ -192,9 +192,9 @@ struct AsyncSession {
 }
 
 impl AsyncSession {
-    async fn mount(mountopts: MountOptions, config: KernelConfig) -> io::Result<Self> {
+    async fn init(conn: Connection, config: KernelConfig) -> io::Result<Self> {
         tokio::task::spawn_blocking(move || {
-            let session = Session::mount(mountopts, config)?;
+            let session = Session::init(conn, config)?;
             Ok(Self {
                 inner: AsyncFd::with_interest(session, Interest::READABLE)?,
             })

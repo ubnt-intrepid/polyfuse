@@ -29,7 +29,6 @@ macro_rules! syscall {
 pub struct Connection {
     fd: RawFd,
     child: Option<Fusermount>,
-    #[allow(dead_code)]
     mountopts: MountOptions,
 }
 
@@ -41,14 +40,6 @@ impl Drop for Connection {
 
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
-    pub(crate) fn open(mountopts: MountOptions) -> io::Result<Self> {
-        let (fd, child) = mount(&mountopts)?;
-        Ok(Self {
-            fd,
-            child,
-            mountopts,
-        })
-    }
 
     fn read(&self, dst: &mut [u8]) -> io::Result<usize> {
         let len = syscall! {
@@ -173,7 +164,7 @@ impl io::Write for &Connection {
 
 // ==== mount ====
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MountOptions {
     pub(crate) mountpoint: PathBuf,
     options: Vec<String>,
@@ -223,6 +214,15 @@ impl MountOptions {
     pub fn fuse_comm_fd(&mut self, name: impl AsRef<OsStr>) -> &mut Self {
         self.fuse_comm_fd = Some(name.as_ref().to_owned());
         self
+    }
+
+    pub fn mount(&self) -> io::Result<Connection> {
+        let (fd, child) = mount(self)?;
+        Ok(Connection {
+            fd,
+            child,
+            mountopts: self.clone(),
+        })
     }
 }
 

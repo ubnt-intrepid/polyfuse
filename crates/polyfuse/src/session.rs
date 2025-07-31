@@ -1,6 +1,6 @@
 use crate::{
     bytes::{Bytes, FillBytes},
-    conn::{Connection, MountOptions},
+    conn::Connection,
     decoder::Decoder,
     op::{DecodeError, Operation},
 };
@@ -292,10 +292,8 @@ impl AsRawFd for Session {
 
 impl Session {
     /// Start a FUSE daemon mount on the specified path.
-    pub fn mount(mountopts: MountOptions, config: KernelConfig) -> io::Result<Self> {
+    pub fn init(conn: Connection, config: KernelConfig) -> io::Result<Self> {
         let KernelConfig { mut init_out } = config;
-
-        let conn = Connection::open(mountopts)?;
 
         init_session(&mut init_out, &conn, &conn)?;
         let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;

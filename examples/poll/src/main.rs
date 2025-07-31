@@ -30,7 +30,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let session = Session::mount(MountOptions::new(mountpoint), Default::default())?;
+    let conn = MountOptions::new(mountpoint).mount()?;
+    let session = Session::init(conn, Default::default())?;
 
     let fs = Arc::new(PollFS::new(session.notifier(), wakeup_interval));
 
