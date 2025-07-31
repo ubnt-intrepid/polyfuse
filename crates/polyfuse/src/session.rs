@@ -357,11 +357,7 @@ impl Session {
             }
         }
 
-        Ok(Some(Request {
-            session: self.inner.clone(),
-            header,
-            arg,
-        }))
+        Ok(Some(Request { header, arg }))
     }
 }
 
@@ -495,7 +491,6 @@ where
 
 /// Context about an incoming FUSE request.
 pub struct Request {
-    session: Arc<SessionInner>,
     header: fuse_in_header,
     arg: Vec<u64>,
 }
@@ -526,8 +521,8 @@ impl Request {
     }
 
     /// Decode the argument of this request.
-    pub fn operation(&self) -> Result<Operation<'_, Data<'_>>, DecodeError> {
-        if self.session.exited() {
+    pub fn operation(&self, session: &Session) -> Result<Operation<'_, Data<'_>>, DecodeError> {
+        if session.inner.exited() {
             return Ok(Operation::unknown());
         }
 
@@ -542,16 +537,18 @@ impl Request {
 
         Operation::decode(&self.header, arg, Data { data })
     }
+}
 
-    pub fn reply<T>(&self, conn: &Connection, arg: T) -> io::Result<()>
+impl Session {
+    pub fn reply<T>(&self, conn: &Connection, req: &Request, arg: T) -> io::Result<()>
     where
         T: Bytes,
     {
-        write_bytes(conn, Reply::new(self.unique(), 0, arg))
+        write_bytes(conn, Reply::new(req.unique(), 0, arg))
     }
 
-    pub fn reply_error(&self, conn: &Connection, code: i32) -> io::Result<()> {
-        write_bytes(conn, Reply::new(self.unique(), code, ()))
+    pub fn reply_error(&self, conn: &Connection, req: &Request, code: i32) -> io::Result<()> {
+        write_bytes(conn, Reply::new(req.unique(), code, ()))
     }
 }
 

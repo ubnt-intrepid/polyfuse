@@ -51,6 +51,7 @@ fn main() -> Result<()> {
     // Spawn a task that beats the heart.
     std::thread::spawn({
         let heartbeat = heartbeat.clone();
+        let session = session.clone();
         let conn = conn.clone();
         let notifier = if !no_notify {
             Some(session.clone())
@@ -78,13 +79,14 @@ fn main() -> Result<()> {
     // Run the filesystem daemon on the foreground.
     while let Some(req) = session.next_request(&conn)? {
         let heartbeat = heartbeat.clone();
+        let session = session.clone();
         let conn = conn.clone();
 
         std::thread::spawn(move || -> Result<()> {
             let span = tracing::debug_span!("handle request", unique = req.unique());
             let _enter = span.enter();
 
-            let op = req.operation()?;
+            let op = req.operation(&session)?;
             tracing::debug!(?op);
 
             match op {
@@ -93,17 +95,17 @@ fn main() -> Result<()> {
                         let inner = heartbeat.inner.lock().unwrap();
                         let mut out = AttrOut::default();
                         fill_attr(out.attr(), &inner.attr);
-                        req.reply(&conn, out)?;
+                        session.reply(&conn, &req, out)?;
                     }
-                    _ => req.reply_error(&conn, libc::ENOENT)?,
+                    _ => session.reply_error(&conn, &req, libc::ENOENT)?,
                 },
                 Operation::Open(op) => match op.ino() {
                     ROOT_INO => {
                         let mut out = OpenOut::default();
                         out.keep_cache(true);
-                        req.reply(&conn, out)?;
+                        session.reply(&conn, &req, out)?;
                     }
-                    _ => req.reply_error(&conn, libc::ENOENT)?,
+                    _ => session.reply_error(&conn, &req, libc::ENOENT)?,
                 },
                 Operation::Read(op) => match op.ino() {
                     ROOT_INO => {
@@ -111,15 +113,15 @@ fn main() -> Result<()> {
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
-                            req.reply(&conn, &[])?;
+                            session.reply(&conn, &req, &[])?;
                         } else {
                             let size = op.size() as usize;
                             let data = &inner.content.as_bytes()[offset..];
                             let data = &data[..std::cmp::min(data.len(), size)];
-                            req.reply(&conn, data)?;
+                            session.reply(&conn, &req, data)?;
                         }
                     }
-                    _ => req.reply_error(&conn, libc::ENOENT)?,
+                    _ => session.reply_error(&conn, &req, libc::ENOENT)?,
                 },
                 Operation::NotifyReply(op, mut data) => {
                     let mut retrieves = heartbeat.retrieves.lock().unwrap();
@@ -130,7 +132,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                _ => req.reply_error(&conn, libc::ENOSYS)?,
+                _ => session.reply_error(&conn, &req, libc::ENOSYS)?,
             }
 
             Ok(())

@@ -8,7 +8,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use std::{io, os::unix::prelude::*, path::PathBuf, time::Duration};
+use std::{io, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const ROOT_INO: u64 = 1;
@@ -25,17 +25,17 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "tmountpoint must be a directory");
 
     let conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(&conn, KernelConfig::default())?;
+    let session = Session::init(&conn, KernelConfig::default()).map(Arc::new)?;
 
-    let fs = Hello::new();
+    let fs = Hello::new(session.clone());
 
     while let Some(req) = session.next_request(&conn)? {
-        match req.operation()? {
+        match req.operation(&session)? {
             Operation::Lookup(op) => fs.lookup(&conn, &req, op)?,
             Operation::Getattr(op) => fs.getattr(&conn, &req, op)?,
             Operation::Read(op) => fs.read(&conn, &req, op)?,
             Operation::Readdir(op) => fs.readdir(&conn, &req, op)?,
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            _ => session.reply_error(&conn, &req, libc::ENOSYS)?,
         }
     }
 
@@ -43,6 +43,7 @@ fn main() -> Result<()> {
 }
 
 struct Hello {
+    session: Arc<Session>,
     entries: Vec<DirEntry>,
     uid: u32,
     gid: u32,
@@ -55,7 +56,7 @@ struct DirEntry {
 }
 
 impl Hello {
-    fn new() -> Self {
+    fn new(session: Arc<Session>) -> Self {
         let mut entries = Vec::with_capacity(3);
         entries.push(DirEntry {
             name: ".",
@@ -74,6 +75,7 @@ impl Hello {
         });
 
         Self {
+            session,
             entries,
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
@@ -105,9 +107,9 @@ impl Hello {
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                req.reply(conn, out)
+                self.session.reply(conn, req, out)
             }
-            _ => req.reply_error(conn, libc::ENOENT),
+            _ => self.session.reply_error(conn, req, libc::ENOENT),
         }
     }
 
@@ -115,21 +117,21 @@ impl Hello {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
-            _ => return req.reply_error(conn, libc::ENOENT),
+            _ => return self.session.reply_error(conn, req, libc::ENOENT),
         };
 
         let mut out = AttrOut::default();
         fill_attr(self, out.attr());
         out.ttl(TTL);
 
-        req.reply(conn, out)
+        self.session.reply(conn, req, out)
     }
 
     fn read(&self, conn: &Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
-            ROOT_INO => return req.reply_error(conn, libc::EISDIR),
-            _ => return req.reply_error(conn, libc::ENOENT),
+            ROOT_INO => return self.session.reply_error(conn, req, libc::EISDIR),
+            _ => return self.session.reply_error(conn, req, libc::ENOENT),
         }
 
         let mut data: &[u8] = &[];
@@ -141,7 +143,7 @@ impl Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        req.reply(conn, data)
+        self.session.reply(conn, req, data)
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -153,7 +155,7 @@ impl Hello {
 
     fn readdir(&self, conn: &Connection, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
         if op.ino() != ROOT_INO {
-            return req.reply_error(conn, libc::ENOTDIR);
+            return self.session.reply_error(conn, req, libc::ENOTDIR);
         }
 
         let mut out = ReaddirOut::new(op.size() as usize);
@@ -170,6 +172,6 @@ impl Hello {
             }
         }
 
-        req.reply(conn, out)
+        self.session.reply(conn, req, out)
     }
 }

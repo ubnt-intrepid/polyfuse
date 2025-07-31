@@ -91,9 +91,10 @@ fn main() -> Result<()> {
 
     while let Some(req) = session.next_request(&conn)? {
         let fs = fs.clone();
+        let session = session.clone();
         let conn = conn.clone();
         std::thread::spawn(move || -> Result<()> {
-            fs.handle_request(&conn, &req)?;
+            fs.handle_request(&session, &conn, &req)?;
             Ok(())
         });
     }
@@ -147,11 +148,11 @@ impl Heartbeat {
         }
     }
 
-    fn handle_request(&self, conn: &Connection, req: &Request) -> Result<()> {
+    fn handle_request(&self, session: &Session, conn: &Connection, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 
-        let op = req.operation()?;
+        let op = req.operation(session)?;
         tracing::debug!(?op);
 
         match op {
@@ -166,14 +167,14 @@ impl Heartbeat {
                         out.ttl_entry(self.ttl);
                         out.ttl_attr(self.ttl);
 
-                        req.reply(conn, out)?;
+                        session.reply(conn, req, out)?;
 
                         current.nlookup += 1;
                     } else {
-                        req.reply_error(conn, libc::ENOENT)?;
+                        session.reply_error(conn, req, libc::ENOENT)?;
                     }
                 }
-                _ => req.reply_error(conn, libc::ENOTDIR)?,
+                _ => session.reply_error(conn, req, libc::ENOTDIR)?,
             },
 
             Operation::Forget(forgets) => {
@@ -189,20 +190,24 @@ impl Heartbeat {
                 let attr = match op.ino() {
                     ROOT_INO => &self.root_attr,
                     FILE_INO => &self.file_attr,
-                    _ => return req.reply_error(conn, libc::ENOENT).map_err(Into::into),
+                    _ => {
+                        return session
+                            .reply_error(conn, req, libc::ENOENT)
+                            .map_err(Into::into)
+                    }
                 };
 
                 let mut out = AttrOut::default();
                 fill_attr(out.attr(), attr);
                 out.ttl(self.ttl);
 
-                req.reply(conn, out)?;
+                session.reply(conn, req, out)?;
             }
 
             Operation::Read(op) => match op.ino() {
-                ROOT_INO => req.reply_error(conn, libc::EISDIR)?,
-                FILE_INO => req.reply(conn, &[])?,
-                _ => req.reply_error(conn, libc::ENOENT)?,
+                ROOT_INO => session.reply_error(conn, req, libc::EISDIR)?,
+                FILE_INO => session.reply(conn, req, &[])?,
+                _ => session.reply_error(conn, req, libc::ENOENT)?,
             },
 
             Operation::Readdir(op) => match op.ino() {
@@ -212,15 +217,15 @@ impl Heartbeat {
 
                         let mut out = ReaddirOut::new(op.size() as usize);
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
-                        req.reply(conn, out)?;
+                        session.reply(conn, req, out)?;
                     } else {
-                        req.reply(conn, &[])?;
+                        session.reply(conn, req, &[])?;
                     }
                 }
-                _ => req.reply_error(conn, libc::ENOTDIR)?,
+                _ => session.reply_error(conn, req, libc::ENOTDIR)?,
             },
 
-            _ => req.reply_error(conn, libc::ENOSYS)?,
+            _ => session.reply_error(conn, req, libc::ENOSYS)?,
         }
 
         Ok(())

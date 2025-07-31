@@ -61,19 +61,21 @@ fn main() -> Result<()> {
         config.flock_locks(true);
         config.writeback_cache(timeout.is_some());
         config
-    })?;
+    })
+    .map(Arc::new)?;
 
     let fs = Arc::new(Passthrough::new(source, timeout)?);
 
     while let Some(req) = session.next_request(&conn)? {
         let fs = fs.clone();
+        let session = session.clone();
         let conn = conn.clone();
 
         std::thread::spawn(move || -> Result<()> {
             let span = tracing::debug_span!("handle_request", unique = req.unique());
             let _enter = span.enter();
 
-            let op = req.operation()?;
+            let op = req.operation(&session)?;
             tracing::debug!(?op);
 
             macro_rules! try_reply {
@@ -81,12 +83,12 @@ fn main() -> Result<()> {
                     match $e {
                         Ok(data) => {
                             tracing::debug!(?data);
-                            req.reply(&conn, data)?;
+                            session.reply(&conn, &req, data)?;
                         }
                         Err(err) => {
                             let errno = io_to_errno(err);
                             tracing::debug!(errno = errno);
-                            req.reply_error(&conn, errno)?;
+                            session.reply_error(&conn, &req, errno)?;
                         }
                     }
                 };
@@ -153,7 +155,7 @@ fn main() -> Result<()> {
 
                 Operation::Statfs(op) => try_reply!(fs.do_statfs(&op)),
 
-                _ => req.reply_error(&conn, libc::ENOSYS)?,
+                _ => session.reply_error(&conn, &req, libc::ENOSYS)?,
             }
 
             Ok(())
