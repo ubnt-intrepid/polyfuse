@@ -13,7 +13,6 @@ use std::{
     io::{self, prelude::*, IoSlice, IoSliceMut},
     mem::{self, MaybeUninit},
     os::unix::prelude::*,
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -293,14 +292,10 @@ impl AsRawFd for Session {
 
 impl Session {
     /// Start a FUSE daemon mount on the specified path.
-    pub fn mount(
-        mountpoint: PathBuf,
-        mountopts: MountOptions,
-        config: KernelConfig,
-    ) -> io::Result<Self> {
+    pub fn mount(mountopts: MountOptions, config: KernelConfig) -> io::Result<Self> {
         let KernelConfig { mut init_out } = config;
 
-        let conn = Connection::open(mountpoint, mountopts)?;
+        let conn = Connection::open(mountopts)?;
 
         init_session(&mut init_out, &conn, &conn)?;
         let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;

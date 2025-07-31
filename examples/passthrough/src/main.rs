@@ -50,9 +50,8 @@ fn main() -> Result<()> {
 
     // TODO: splice read/write
     let session = Session::mount(
-        mountpoint,
         {
-            let mut opts = MountOptions::default();
+            let mut opts = MountOptions::new(mountpoint);
             opts.mount_option("default_permissions");
             opts.mount_option("fsname=passthrough");
             opts

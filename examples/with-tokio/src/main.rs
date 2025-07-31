@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     let session =
-        AsyncSession::mount(mountpoint, MountOptions::default(), KernelConfig::default()).await?;
+        AsyncSession::mount(MountOptions::new(mountpoint), KernelConfig::default()).await?;
 
     let fs = Arc::new(Hello::new());
 
@@ -192,13 +192,9 @@ struct AsyncSession {
 }
 
 impl AsyncSession {
-    async fn mount(
-        mountpoint: PathBuf,
-        mountopts: MountOptions,
-        config: KernelConfig,
-    ) -> io::Result<Self> {
+    async fn mount(mountopts: MountOptions, config: KernelConfig) -> io::Result<Self> {
         tokio::task::spawn_blocking(move || {
-            let session = Session::mount(mountpoint, mountopts, config)?;
+            let session = Session::mount(mountopts, config)?;
             Ok(Self {
                 inner: AsyncFd::with_interest(session, Interest::READABLE)?,
             })

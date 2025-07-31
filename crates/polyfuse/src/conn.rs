@@ -29,7 +29,6 @@ macro_rules! syscall {
 pub struct Connection {
     fd: RawFd,
     child: Option<Fusermount>,
-    mountpoint: PathBuf,
     #[allow(dead_code)]
     mountopts: MountOptions,
 }
@@ -42,12 +41,11 @@ impl Drop for Connection {
 
 impl Connection {
     /// Establish a connection with the FUSE kernel driver.
-    pub(crate) fn open(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<Self> {
-        let (fd, child) = mount(&mountpoint, &mountopts)?;
+    pub(crate) fn open(mountopts: MountOptions) -> io::Result<Self> {
+        let (fd, child) = mount(&mountopts)?;
         Ok(Self {
             fd,
             child,
-            mountpoint,
             mountopts,
         })
     }
@@ -105,7 +103,7 @@ impl Connection {
             let _ = child.wait();
         }
 
-        unmount(&self.mountpoint);
+        unmount(&self.mountopts.mountpoint);
     }
 }
 
@@ -177,24 +175,24 @@ impl io::Write for &Connection {
 
 #[derive(Debug)]
 pub struct MountOptions {
+    pub(crate) mountpoint: PathBuf,
     options: Vec<String>,
     auto_unmount: bool,
     fusermount_path: Option<PathBuf>,
     fuse_comm_fd: Option<OsString>,
 }
 
-impl Default for MountOptions {
-    fn default() -> Self {
+impl MountOptions {
+    pub fn new(mountpoint: impl Into<PathBuf>) -> Self {
         Self {
+            mountpoint: mountpoint.into(),
             options: vec![],
             auto_unmount: true,
             fusermount_path: None,
             fuse_comm_fd: None,
         }
     }
-}
 
-impl MountOptions {
     pub fn auto_unmount(&mut self, enabled: bool) -> &mut Self {
         self.auto_unmount = enabled;
         self
@@ -243,7 +241,7 @@ impl Fusermount {
     }
 }
 
-fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<(RawFd, Option<Fusermount>)> {
+fn mount(mountopts: &MountOptions) -> io::Result<(RawFd, Option<Fusermount>)> {
     let (input, output) = UnixStream::pair()?;
 
     let mut fusermount = Command::new(
@@ -273,7 +271,7 @@ fn mount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<(RawFd, Opti
         fusermount.arg("-o").arg(opts);
     }
 
-    fusermount.arg("--").arg(mountpoint);
+    fusermount.arg("--").arg(&mountopts.mountpoint);
 
     fusermount.env(
         mountopts

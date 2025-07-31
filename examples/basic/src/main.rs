@@ -14,7 +14,7 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let session = Session::mount(mountpoint, MountOptions::default(), KernelConfig::default())?;
+    let session = Session::mount(MountOptions::new(mountpoint), KernelConfig::default())?;
 
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request()? {
