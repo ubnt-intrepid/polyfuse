@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let conn = MountOptions::new(mountpoint).mount()?;
+    let conn = MountOptions::default().mount(mountpoint)?;
     let session = AsyncSession::init(conn, KernelConfig::default()).await?;
 
     let fs = Arc::new(Hello::new());

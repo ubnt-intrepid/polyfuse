@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let conn = MountOptions::new(mountpoint).mount()?;
+    let conn = MountOptions::default().mount(mountpoint)?;
     let session = Session::init(conn, KernelConfig::default())?;
 
     let heartbeat = Arc::new(Heartbeat::now());

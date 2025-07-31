@@ -48,10 +48,10 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let conn = MountOptions::new(mountpoint)
+    let conn = MountOptions::default()
         .mount_option("default_permissions")
         .mount_option("fsname=passthrough")
-        .mount()?;
+        .mount(mountpoint)?;
 
     // TODO: splice read/write
     let session = Session::init(conn, {
