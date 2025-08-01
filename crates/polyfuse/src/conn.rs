@@ -1,18 +1,19 @@
 use libc::{c_int, c_void, iovec};
+use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
 use std::{
     cmp,
-    ffi::{OsStr, OsString},
+    ffi::{CStr, OsStr, OsString},
     io,
     mem::{self, MaybeUninit},
     os::unix::{net::UnixStream, prelude::*},
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
     ptr,
-    sync::Arc,
 };
 
 const FUSERMOUNT_PROG: &str = "/usr/bin/fusermount";
 const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
+const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
 
 macro_rules! syscall {
     ($fn:ident ( $($arg:expr),* $(,)* ) ) => {{
@@ -29,63 +30,16 @@ macro_rules! syscall {
 #[derive(Debug)]
 pub struct Connection {
     fd: OwnedFd,
-    fusermount: Option<Arc<Fusermount>>,
-    mountpoint: PathBuf,
-    mountopts: MountOptions,
+    _fusermount: Option<Fusermount>,
+    _mountpoint: PathBuf,
+    _mountopts: MountOptions,
 }
 
 impl Connection {
-    pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(Self {
-            fd: self.fd.try_clone()?,
-            fusermount: self.fusermount.clone(),
-            mountpoint: self.mountpoint.clone(),
-            mountopts: self.mountopts.clone(),
+    pub fn try_ioc_clone(&self) -> io::Result<ClonedConnection> {
+        Ok(ClonedConnection {
+            fd: fuse_ioc_clone(&self.fd)?,
         })
-    }
-
-    fn read(&self, dst: &mut [u8]) -> io::Result<usize> {
-        let len = syscall! {
-            read(
-                self.fd.as_raw_fd(), //
-                dst.as_mut_ptr() as *mut c_void,
-                dst.len(),
-            )
-        };
-        Ok(len as usize)
-    }
-
-    fn read_vectored(&self, dst: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        let len = syscall! {
-            readv(
-                self.fd.as_raw_fd(), //
-                dst.as_mut_ptr() as *mut iovec,
-                cmp::min(dst.len(), c_int::max_value() as usize) as c_int,
-            )
-        };
-        Ok(len as usize)
-    }
-
-    fn write(&self, src: &[u8]) -> io::Result<usize> {
-        let res = syscall! {
-            write(
-                self.fd.as_raw_fd(), //
-                src.as_ptr() as *const c_void,
-                src.len(),
-            )
-        };
-        Ok(res as usize)
-    }
-
-    fn write_vectored(&self, src: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        let res = syscall! {
-            writev(
-                self.fd.as_raw_fd(), //
-                src.as_ptr() as *const iovec,
-                cmp::min(src.len(), c_int::max_value() as usize) as c_int,
-            )
-        };
-        Ok(res as usize)
     }
 }
 
@@ -105,30 +59,110 @@ impl AsRawFd for Connection {
 impl io::Read for Connection {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (*self).read(buf)
+        read(&self.fd, buf)
     }
 
     #[inline]
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        (*self).read_vectored(bufs)
+        read_vectored(&self.fd, bufs)
     }
 }
 
 impl io::Write for Connection {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (*self).write(buf)
+        write(&self.fd, buf)
     }
 
     #[inline]
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        (*self).write_vectored(bufs)
+        write_vectored(&self.fd, bufs)
     }
 
     #[inline]
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+impl io::Read for &Connection {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        read(&self.fd, buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+        read_vectored(&self.fd, bufs)
+    }
+}
+
+impl io::Write for &Connection {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        write(&self.fd, buf)
+    }
+
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        write_vectored(&self.fd, bufs)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub struct ClonedConnection {
+    fd: OwnedFd,
+}
+
+impl ClonedConnection {
+    pub fn try_ioc_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            fd: fuse_ioc_clone(&self.fd)?,
+        })
+    }
+}
+
+impl AsFd for ClonedConnection {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+impl AsRawFd for ClonedConnection {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+impl io::Read for ClonedConnection {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        read(&self.fd, buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+        read_vectored(&self.fd, bufs)
+    }
+}
+
+impl io::Write for ClonedConnection {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        write(&self.fd, buf)
+    }
+
+    #[inline]
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        write_vectored(&self.fd, bufs)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn fuse_ioc_clone(fd: &impl AsRawFd) -> io::Result<OwnedFd> {
+    let newfd = syscall! { open(FUSE_DEV_NAME.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    syscall! { ioctl(newfd, FUSE_DEV_IOC_CLONE, &fd.as_raw_fd()) };
+    Ok(unsafe { OwnedFd::from_raw_fd(newfd) })
 }
 
 // ==== mount ====
@@ -187,12 +221,12 @@ impl MountOptions {
 
     pub fn mount(&self, mountpoint: impl Into<PathBuf>) -> io::Result<Connection> {
         let mountpoint = mountpoint.into();
-        let (fd, child) = fusermount(&mountpoint, self)?;
+        let (fd, _fusermount) = fusermount(&mountpoint, self)?;
         Ok(Connection {
             fd,
-            fusermount: child.map(Arc::new),
-            mountpoint,
-            mountopts: self.clone(),
+            _fusermount,
+            _mountpoint: mountpoint,
+            _mountopts: self.clone(),
         })
     }
 }
@@ -363,6 +397,50 @@ fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
 }
 
 // ==== util ====
+
+fn read(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<usize> {
+    let len = syscall! {
+        read(
+            fd.as_raw_fd(), //
+            buf.as_mut_ptr() as *mut c_void,
+            buf.len(),
+        )
+    };
+    Ok(len as usize)
+}
+
+fn read_vectored(fd: &impl AsRawFd, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+    let len = syscall! {
+        readv(
+            fd.as_raw_fd(), //
+            bufs.as_mut_ptr() as *mut iovec,
+            cmp::min(bufs.len(), c_int::max_value() as usize) as c_int,
+        )
+    };
+    Ok(len as usize)
+}
+
+fn write(fd: &impl AsRawFd, buf: &[u8]) -> io::Result<usize> {
+    let res = syscall! {
+        write(
+            fd.as_raw_fd(), //
+            buf.as_ptr() as *const c_void,
+            buf.len(),
+        )
+    };
+    Ok(res as usize)
+}
+
+fn write_vectored(fd: &impl AsRawFd, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+    let res = syscall! {
+        writev(
+            fd.as_raw_fd(), //
+            bufs.as_ptr() as *const iovec,
+            cmp::min(bufs.len(), c_int::max_value() as usize) as c_int,
+        )
+    };
+    Ok(res as usize)
+}
 
 enum ForkResult {
     Parent { child_pid: c_int },

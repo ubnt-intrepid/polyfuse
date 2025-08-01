@@ -48,8 +48,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let mut conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(&mut conn, KernelConfig::default()).map(Arc::new)?;
+    let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
+    let session = Session::init(&*conn, KernelConfig::default()).map(Arc::new)?;
 
     let fs = {
         let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
@@ -77,24 +77,24 @@ fn main() -> Result<()> {
     // Spawn a task that beats the heart.
     std::thread::spawn({
         let fs = fs.clone();
-        let mut conn = conn.try_clone()?;
+        let conn = conn.clone();
         let notifier = if !no_notify {
             Some(session.clone())
         } else {
             None
         };
         move || -> Result<()> {
-            fs.heartbeat(&mut conn, notifier)?;
+            fs.heartbeat(&*conn, notifier)?;
             Ok(())
         }
     });
 
-    while let Some(req) = session.next_request(&mut conn)? {
+    while let Some(req) = session.next_request(&*conn)? {
         let fs = fs.clone();
         let session = session.clone();
-        let mut conn = conn.try_clone()?;
+        let conn = conn.clone();
         std::thread::spawn(move || -> Result<()> {
-            fs.handle_request(&session, &mut conn, &req)?;
+            fs.handle_request(&session, &*conn, &req)?;
             Ok(())
         });
     }
@@ -121,7 +121,7 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    fn heartbeat(&self, mut conn: &mut Connection, notifier: Option<Arc<Session>>) -> Result<()> {
+    fn heartbeat(&self, conn: &Connection, notifier: Option<Arc<Session>>) -> Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
         let _enter = span.enter();
 
@@ -137,7 +137,7 @@ impl Heartbeat {
             match notifier {
                 Some(ref notifier) if current.nlookup > 0 => {
                     tracing::info!("send notify_inval_entry");
-                    notifier.inval_entry(&mut conn, ROOT_INO, old_filename)?;
+                    notifier.inval_entry(conn, ROOT_INO, old_filename)?;
                 }
                 _ => (),
             }
@@ -148,12 +148,7 @@ impl Heartbeat {
         }
     }
 
-    fn handle_request(
-        &self,
-        session: &Session,
-        conn: &mut Connection,
-        req: &Request,
-    ) -> Result<()> {
+    fn handle_request(&self, session: &Session, conn: &Connection, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 

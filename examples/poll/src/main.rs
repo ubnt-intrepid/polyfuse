@@ -30,16 +30,16 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let mut conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(&mut conn, Default::default()).map(Arc::new)?;
+    let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
+    let session = Session::init(&*conn, Default::default()).map(Arc::new)?;
 
     let fs = Arc::new(PollFS::new(session.clone(), wakeup_interval));
 
-    while let Some(req) = session.next_request(&mut conn)? {
+    while let Some(req) = session.next_request(&*conn)? {
         let fs = fs.clone();
-        let mut conn = conn.try_clone()?;
+        let conn = conn.clone();
         std::thread::spawn(move || -> Result<()> {
-            fs.handle_request(&mut conn, &req)?;
+            fs.handle_request(&conn, &req)?;
             Ok(())
         });
     }
@@ -65,7 +65,7 @@ impl PollFS {
         }
     }
 
-    fn handle_request(&self, conn: &mut Connection, req: &Request) -> Result<()> {
+    fn handle_request(&self, conn: &Arc<Connection>, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 
@@ -82,14 +82,14 @@ impl PollFS {
                 out.attr().gid(unsafe { libc::getgid() });
                 out.ttl(Duration::from_secs(u64::max_value() / 2));
 
-                self.session.reply(conn, req, out)?;
+                self.session.reply(&**conn, req, out)?;
             }
 
             Operation::Open(op) => {
                 if op.flags() as i32 & libc::O_ACCMODE != libc::O_RDONLY {
                     return self
                         .session
-                        .reply_error(conn, req, libc::EACCES)
+                        .reply_error(&**conn, req, libc::EACCES)
                         .map_err(Into::into);
                 }
 
@@ -107,7 +107,7 @@ impl PollFS {
                     let handle = Arc::downgrade(&handle);
                     let session = self.session.clone();
                     let wakeup_interval = self.wakeup_interval;
-                    let mut conn = conn.try_clone()?;
+                    let conn = conn.clone();
 
                     move || -> Result<()> {
                         let span = tracing::debug_span!("reading_task", fh=?fh);
@@ -124,7 +124,7 @@ impl PollFS {
 
                             if let Some(kh) = state.kh {
                                 tracing::info!("send wakeup notification, kh={}", kh);
-                                session.poll_wakeup(&mut conn, kh)?;
+                                session.poll_wakeup(&*conn, kh)?;
                             }
 
                             state.is_ready = true;
@@ -142,7 +142,7 @@ impl PollFS {
                 out.direct_io(true);
                 out.nonseekable(true);
 
-                self.session.reply(conn, req, out)?;
+                self.session.reply(&**conn, req, out)?;
             }
 
             Operation::Read(op) => {
@@ -151,7 +151,7 @@ impl PollFS {
                     None => {
                         return self
                             .session
-                            .reply_error(conn, req, libc::EINVAL)
+                            .reply_error(&**conn, req, libc::EINVAL)
                             .map_err(Into::into)
                     }
                 };
@@ -162,7 +162,7 @@ impl PollFS {
                         tracing::info!("send EAGAIN immediately");
                         return self
                             .session
-                            .reply_error(conn, req, libc::EAGAIN)
+                            .reply_error(&**conn, req, libc::EAGAIN)
                             .map_err(Into::into);
                     }
                 } else {
@@ -181,8 +181,11 @@ impl PollFS {
                 let bufsize = op.size() as usize;
                 let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-                self.session
-                    .reply(conn, req, &content[..std::cmp::min(content.len(), bufsize)])?;
+                self.session.reply(
+                    &**conn,
+                    req,
+                    &content[..std::cmp::min(content.len(), bufsize)],
+                )?;
             }
 
             Operation::Poll(op) => {
@@ -191,7 +194,7 @@ impl PollFS {
                     None => {
                         return self
                             .session
-                            .reply_error(conn, req, libc::EINVAL)
+                            .reply_error(&**conn, req, libc::EINVAL)
                             .map_err(Into::into)
                     }
                 };
@@ -207,15 +210,15 @@ impl PollFS {
                     state.kh = Some(kh);
                 }
 
-                self.session.reply(conn, req, out)?;
+                self.session.reply(&**conn, req, out)?;
             }
 
             Operation::Release(op) => {
                 drop(self.handles.remove(&op.fh()));
-                self.session.reply(conn, req, &[])?;
+                self.session.reply(&**conn, req, &[])?;
             }
 
-            _ => self.session.reply_error(conn, req, libc::ENOSYS)?,
+            _ => self.session.reply_error(&**conn, req, libc::ENOSYS)?,
         }
 
         Ok(())
