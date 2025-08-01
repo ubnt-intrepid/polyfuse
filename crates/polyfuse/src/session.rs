@@ -13,10 +13,7 @@ use std::{
     io::{self, prelude::*, IoSlice, IoSliceMut},
     mem::{self, MaybeUninit},
     os::unix::prelude::*,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use zerocopy::IntoBytes as _;
 
@@ -247,7 +244,10 @@ impl KernelConfig {
 
 /// The object containing the contextrual information about a FUSE session.
 pub struct Session {
-    inner: Arc<SessionInner>,
+    init_out: fuse_init_out,
+    bufsize: usize,
+    exited: AtomicBool,
+    notify_unique: AtomicU64,
 }
 
 impl fmt::Debug for Session {
@@ -256,14 +256,13 @@ impl fmt::Debug for Session {
     }
 }
 
-struct SessionInner {
-    init_out: fuse_init_out,
-    bufsize: usize,
-    exited: AtomicBool,
-    notify_unique: AtomicU64,
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.exit();
+    }
 }
 
-impl SessionInner {
+impl Session {
     #[inline]
     fn exited(&self) -> bool {
         // FIXME: choose appropriate atomic ordering.
@@ -275,15 +274,7 @@ impl SessionInner {
         // FIXME: choose appropriate atomic ordering.
         self.exited.store(true, Ordering::SeqCst)
     }
-}
 
-impl Drop for Session {
-    fn drop(&mut self) {
-        self.inner.exit();
-    }
-}
-
-impl Session {
     /// Start a FUSE daemon mount on the specified path.
     pub fn init(conn: &Connection, config: KernelConfig) -> io::Result<Self> {
         let KernelConfig { mut init_out } = config;
@@ -292,12 +283,10 @@ impl Session {
         let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;
 
         Ok(Self {
-            inner: Arc::new(SessionInner {
-                init_out,
-                bufsize,
-                exited: AtomicBool::new(false),
-                notify_unique: AtomicU64::new(0),
-            }),
+            init_out,
+            bufsize,
+            exited: AtomicBool::new(false),
+            notify_unique: AtomicU64::new(0),
         })
     }
 
@@ -308,20 +297,20 @@ impl Session {
     /// subsequent `open` requests.  Otherwise, the filesystem should
     /// implement the handler for `open` requests appropriately.
     pub fn no_open_support(&self) -> bool {
-        self.inner.init_out.flags & FUSE_NO_OPEN_SUPPORT != 0
+        self.init_out.flags & FUSE_NO_OPEN_SUPPORT != 0
     }
 
     /// Return whether the kernel supports for zero-message opendirs.
     ///
     /// See the documentation of `no_open_support` for details.
     pub fn no_opendir_support(&self) -> bool {
-        self.inner.init_out.flags & FUSE_NO_OPENDIR_SUPPORT != 0
+        self.init_out.flags & FUSE_NO_OPENDIR_SUPPORT != 0
     }
 
     /// Receive an incoming FUSE request from the kernel.
     pub fn next_request(&self, mut conn: &Connection) -> io::Result<Option<Request>> {
         let mut header = fuse_in_header::default();
-        let bufsize = self.inner.bufsize - mem::size_of::<fuse_in_header>();
+        let bufsize = self.bufsize - mem::size_of::<fuse_in_header>();
         let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
 
         loop {
@@ -522,7 +511,7 @@ impl Request {
 
     /// Decode the argument of this request.
     pub fn operation(&self, session: &Session) -> Result<Operation<'_, Data<'_>>, DecodeError> {
-        if session.inner.exited() {
+        if session.exited() {
             return Ok(Operation::unknown());
         }
 
@@ -823,7 +812,7 @@ impl Session {
         .unwrap();
 
         // FIXME: choose appropriate memory ordering.
-        let notify_unique = self.inner.notify_unique.fetch_add(1, Ordering::SeqCst);
+        let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
 
         write_bytes(
             conn,
