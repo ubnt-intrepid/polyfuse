@@ -30,16 +30,16 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
-    let session = Session::init(&conn, Default::default()).map(Arc::new)?;
+    let mut conn = MountOptions::default().mount(mountpoint)?;
+    let session = Session::init(&mut conn, Default::default()).map(Arc::new)?;
 
     let fs = Arc::new(PollFS::new(session.clone(), wakeup_interval));
 
-    while let Some(req) = session.next_request(&conn)? {
+    while let Some(req) = session.next_request(&mut conn)? {
         let fs = fs.clone();
-        let conn = conn.clone();
+        let mut conn = conn.try_clone()?;
         std::thread::spawn(move || -> Result<()> {
-            fs.handle_request(&conn, &req)?;
+            fs.handle_request(&mut conn, &req)?;
             Ok(())
         });
     }
@@ -65,7 +65,7 @@ impl PollFS {
         }
     }
 
-    fn handle_request(&self, conn: &Arc<Connection>, req: &Request) -> Result<()> {
+    fn handle_request(&self, conn: &mut Connection, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 
@@ -107,7 +107,7 @@ impl PollFS {
                     let handle = Arc::downgrade(&handle);
                     let session = self.session.clone();
                     let wakeup_interval = self.wakeup_interval;
-                    let conn = conn.clone();
+                    let mut conn = conn.try_clone()?;
 
                     move || -> Result<()> {
                         let span = tracing::debug_span!("reading_task", fh=?fh);
@@ -124,7 +124,7 @@ impl PollFS {
 
                             if let Some(kh) = state.kh {
                                 tracing::info!("send wakeup notification, kh={}", kh);
-                                session.poll_wakeup(&conn, kh)?;
+                                session.poll_wakeup(&mut conn, kh)?;
                             }
 
                             state.is_ready = true;

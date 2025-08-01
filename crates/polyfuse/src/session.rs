@@ -276,10 +276,10 @@ impl Session {
     }
 
     /// Start a FUSE daemon mount on the specified path.
-    pub fn init(conn: &Connection, config: KernelConfig) -> io::Result<Self> {
+    pub fn init(conn: &mut Connection, config: KernelConfig) -> io::Result<Self> {
         let KernelConfig { mut init_out } = config;
 
-        init_session(&mut init_out, conn, conn)?;
+        init_session(&mut init_out, conn)?;
         let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;
 
         Ok(Self {
@@ -308,7 +308,7 @@ impl Session {
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub fn next_request(&self, mut conn: &Connection) -> io::Result<Option<Request>> {
+    pub fn next_request(&self, conn: &mut Connection) -> io::Result<Option<Request>> {
         let mut header = fuse_in_header::default();
         let bufsize = self.bufsize - mem::size_of::<fuse_in_header>();
         let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
@@ -350,17 +350,16 @@ impl Session {
     }
 }
 
-fn init_session<R, W>(init_out: &mut fuse_init_out, mut reader: R, mut writer: W) -> io::Result<()>
+fn init_session<T>(init_out: &mut fuse_init_out, mut conn: T) -> io::Result<()>
 where
-    R: io::Read,
-    W: io::Write,
+    T: io::Read + io::Write,
 {
     let mut header = fuse_in_header::default();
     let bufsize = pagesize() * MAX_MAX_PAGES;
     let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
 
     for _ in 0..10 {
-        let len = reader.read_vectored(&mut [
+        let len = conn.read_vectored(&mut [
             io::IoSliceMut::new(header.as_mut_bytes()),
             io::IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
         ])?;
@@ -405,10 +404,7 @@ where
                         minor: FUSE_KERNEL_MINOR_VERSION,
                         ..Default::default()
                     };
-                    write_bytes(
-                        &mut writer,
-                        Reply::new(header.unique, 0, init_out.as_bytes()),
-                    )?;
+                    write_bytes(&mut conn, Reply::new(header.unique, 0, init_out.as_bytes()))?;
                     continue;
                 }
 
@@ -419,7 +415,7 @@ where
                         init_in.major,
                         init_in.minor
                     );
-                    write_bytes(&mut writer, Reply::new(header.unique, libc::EPROTO, ()))?;
+                    write_bytes(&mut conn, Reply::new(header.unique, libc::EPROTO, ()))?;
                     continue;
                 }
 
@@ -452,7 +448,7 @@ where
                     init_out.congestion_threshold
                 );
                 tracing::debug!("  time_gran = {}", init_out.time_gran);
-                write_bytes(writer, Reply::new(header.unique, 0, init_out.as_bytes()))?;
+                write_bytes(&mut conn, Reply::new(header.unique, 0, init_out.as_bytes()))?;
 
                 init_out.flags |= readonly_flags;
 
@@ -464,7 +460,7 @@ where
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode
                 );
-                write_bytes(&mut writer, Reply::new(header.unique, libc::EIO, ()))?;
+                write_bytes(&mut conn, Reply::new(header.unique, libc::EIO, ()))?;
                 continue;
             }
         }
@@ -529,14 +525,14 @@ impl Request {
 }
 
 impl Session {
-    pub fn reply<T>(&self, conn: &Connection, req: &Request, arg: T) -> io::Result<()>
+    pub fn reply<T>(&self, conn: &mut Connection, req: &Request, arg: T) -> io::Result<()>
     where
         T: Bytes,
     {
         write_bytes(conn, Reply::new(req.unique(), 0, arg))
     }
 
-    pub fn reply_error(&self, conn: &Connection, req: &Request, code: i32) -> io::Result<()> {
+    pub fn reply_error(&self, conn: &mut Connection, req: &Request, code: i32) -> io::Result<()> {
         write_bytes(conn, Reply::new(req.unique(), code, ()))
     }
 }
@@ -578,7 +574,13 @@ impl<'op> BufRead for Data<'op> {
 
 impl Session {
     /// Notify the cache invalidation about an inode to the kernel.
-    pub fn inval_inode(&self, conn: &Connection, ino: u64, off: i64, len: i64) -> io::Result<()> {
+    pub fn inval_inode(
+        &self,
+        conn: &mut Connection,
+        ino: u64,
+        off: i64,
+        len: i64,
+    ) -> io::Result<()> {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_inval_inode_out>(),
         )
@@ -617,7 +619,7 @@ impl Session {
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
-    pub fn inval_entry<T>(&self, conn: &Connection, parent: u64, name: T) -> io::Result<()>
+    pub fn inval_entry<T>(&self, conn: &mut Connection, parent: u64, name: T) -> io::Result<()>
     where
         T: AsRef<OsStr>,
     {
@@ -683,7 +685,13 @@ impl Session {
     /// Additionally, when the provided `child` inode matches the inode
     /// in the dentry cache, the inotify will inform the deletion to
     /// watchers if exists.
-    pub fn delete<T>(&self, conn: &Connection, parent: u64, child: u64, name: T) -> io::Result<()>
+    pub fn delete<T>(
+        &self,
+        conn: &mut Connection,
+        parent: u64,
+        child: u64,
+        name: T,
+    ) -> io::Result<()>
     where
         T: AsRef<OsStr>,
     {
@@ -745,7 +753,7 @@ impl Session {
     }
 
     /// Push the data in an inode for updating the kernel cache.
-    pub fn store<T>(&self, conn: &Connection, ino: u64, offset: u64, data: T) -> io::Result<()>
+    pub fn store<T>(&self, conn: &mut Connection, ino: u64, offset: u64, data: T) -> io::Result<()>
     where
         T: Bytes,
     {
@@ -805,7 +813,13 @@ impl Session {
     }
 
     /// Retrieve data in an inode from the kernel cache.
-    pub fn retrieve(&self, conn: &Connection, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
+    pub fn retrieve(
+        &self,
+        conn: &mut Connection,
+        ino: u64,
+        offset: u64,
+        size: u32,
+    ) -> io::Result<u64> {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_retrieve_out>(),
         )
@@ -855,7 +869,7 @@ impl Session {
     }
 
     /// Send I/O readiness to the kernel.
-    pub fn poll_wakeup(&self, conn: &Connection, kh: u64) -> io::Result<()> {
+    pub fn poll_wakeup(&self, conn: &mut Connection, kh: u64) -> io::Result<()> {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_poll_wakeup_out>(),
         )
@@ -1050,6 +1064,41 @@ mod tests {
     use super::*;
     use std::mem;
 
+    struct Unite<R, W> {
+        reader: R,
+        writer: W,
+    }
+
+    impl<R, W> io::Read for Unite<R, W>
+    where
+        R: io::Read,
+    {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.reader.read(buf)
+        }
+
+        fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+            self.reader.read_vectored(bufs)
+        }
+    }
+
+    impl<R, W> io::Write for Unite<R, W>
+    where
+        W: io::Write,
+    {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writer.write(buf)
+        }
+
+        fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+            self.writer.write_vectored(bufs)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.writer.flush()
+        }
+    }
+
     #[test]
     fn init_default() {
         let input_len = mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>();
@@ -1081,7 +1130,14 @@ mod tests {
         let mut output = Vec::<u8>::new();
 
         let mut init_out = default_init_out();
-        init_session(&mut init_out, &input[..], &mut output).expect("initialization failed");
+        init_session(
+            &mut init_out,
+            Unite {
+                reader: &input[..],
+                writer: &mut output,
+            },
+        )
+        .expect("initialization failed");
 
         let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
 

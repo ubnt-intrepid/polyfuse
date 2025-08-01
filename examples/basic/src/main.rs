@@ -16,20 +16,20 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let conn = MountOptions::default().mount(mountpoint)?;
+    let mut conn = MountOptions::default().mount(mountpoint)?;
 
     // Initialize the FUSE session.
-    let session = Session::init(&conn, KernelConfig::default())?;
+    let session = Session::init(&mut conn, KernelConfig::default())?;
 
     // Receive an incoming FUSE request from the kernel.
-    while let Some(req) = session.next_request(&conn)? {
+    while let Some(req) = session.next_request(&mut conn)? {
         match req.operation(&session)? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&session, &conn, &req, op)?,
-            Operation::Read(op) => read(&session, &conn, &req, op)?,
+            Operation::Getattr(op) => getattr(&session, &mut conn, &req, op)?,
+            Operation::Read(op) => read(&session, &mut conn, &req, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => session.reply_error(&conn, &req, libc::ENOSYS)?,
+            _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
         };
     }
 
@@ -38,7 +38,7 @@ fn main() -> Result<()> {
 
 fn getattr(
     session: &Session,
-    conn: &Connection,
+    conn: &mut Connection,
     req: &Request,
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
@@ -58,7 +58,12 @@ fn getattr(
     session.reply(conn, &req, out)
 }
 
-fn read(session: &Session, conn: &Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
+fn read(
+    session: &Session,
+    conn: &mut Connection,
+    req: &Request,
+    op: op::Read<'_>,
+) -> io::Result<()> {
     if op.ino() != 1 {
         return session.reply_error(conn, req, libc::ENOENT);
     }

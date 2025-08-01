@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
     ptr,
+    sync::Arc,
 };
 
 const FUSERMOUNT_PROG: &str = "/usr/bin/fusermount";
@@ -27,25 +28,26 @@ macro_rules! syscall {
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
 pub struct Connection {
-    fd: RawFd,
-    child: Option<Fusermount>,
+    fd: OwnedFd,
+    fusermount: Option<Arc<Fusermount>>,
     mountpoint: PathBuf,
-    _mountopts: MountOptions,
-}
-
-impl Drop for Connection {
-    fn drop(&mut self) {
-        self.unmount();
-    }
+    mountopts: MountOptions,
 }
 
 impl Connection {
-    /// Establish a connection with the FUSE kernel driver.
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            fd: self.fd.try_clone()?,
+            fusermount: self.fusermount.clone(),
+            mountpoint: self.mountpoint.clone(),
+            mountopts: self.mountopts.clone(),
+        })
+    }
 
     fn read(&self, dst: &mut [u8]) -> io::Result<usize> {
         let len = syscall! {
             read(
-                self.fd, //
+                self.fd.as_raw_fd(), //
                 dst.as_mut_ptr() as *mut c_void,
                 dst.len(),
             )
@@ -56,7 +58,7 @@ impl Connection {
     fn read_vectored(&self, dst: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
         let len = syscall! {
             readv(
-                self.fd, //
+                self.fd.as_raw_fd(), //
                 dst.as_mut_ptr() as *mut iovec,
                 cmp::min(dst.len(), c_int::max_value() as usize) as c_int,
             )
@@ -67,7 +69,7 @@ impl Connection {
     fn write(&self, src: &[u8]) -> io::Result<usize> {
         let res = syscall! {
             write(
-                self.fd, //
+                self.fd.as_raw_fd(), //
                 src.as_ptr() as *const c_void,
                 src.len(),
             )
@@ -78,30 +80,25 @@ impl Connection {
     fn write_vectored(&self, src: &[io::IoSlice<'_>]) -> io::Result<usize> {
         let res = syscall! {
             writev(
-                self.fd, //
+                self.fd.as_raw_fd(), //
                 src.as_ptr() as *const iovec,
                 cmp::min(src.len(), c_int::max_value() as usize) as c_int,
             )
         };
         Ok(res as usize)
     }
+}
 
-    fn unmount(&mut self) {
-        unsafe {
-            libc::close(self.fd);
-        }
-
-        if let Some(child) = self.child.take() {
-            let _ = child.wait();
-        }
-
-        unmount(&self.mountpoint);
+impl AsFd for Connection {
+    #[inline]
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
     }
 }
 
 impl AsRawFd for Connection {
     fn as_raw_fd(&self) -> RawFd {
-        self.fd
+        self.fd.as_raw_fd()
     }
 }
 
@@ -117,18 +114,6 @@ impl io::Read for Connection {
     }
 }
 
-impl io::Read for &Connection {
-    #[inline]
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (**self).read(buf)
-    }
-
-    #[inline]
-    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        (**self).read_vectored(bufs)
-    }
-}
-
 impl io::Write for Connection {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -138,23 +123,6 @@ impl io::Write for Connection {
     #[inline]
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
         (*self).write_vectored(bufs)
-    }
-
-    #[inline]
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl io::Write for &Connection {
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (**self).write(buf)
-    }
-
-    #[inline]
-    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        (**self).write_vectored(bufs)
     }
 
     #[inline]
@@ -222,9 +190,9 @@ impl MountOptions {
         let (fd, child) = fusermount(&mountpoint, self)?;
         Ok(Connection {
             fd,
-            child,
+            fusermount: child.map(Arc::new),
             mountpoint,
-            _mountopts: self.clone(),
+            mountopts: self.clone(),
         })
     }
 }
@@ -232,22 +200,38 @@ impl MountOptions {
 #[derive(Debug)]
 struct Fusermount {
     pid: c_int,
-    input: UnixStream,
+    input: Option<UnixStream>,
+    mountpoint: PathBuf,
 }
 
 impl Fusermount {
-    fn wait(self) -> io::Result<ExitStatus> {
-        drop(self.input);
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        drop(self.input.take());
         let mut status = 0;
         syscall! { waitpid(self.pid, &mut status, 0) };
         Ok(ExitStatus::from_raw(status))
+    }
+
+    fn unmount(&mut self) -> io::Result<()> {
+        let _st = Command::new(FUSERMOUNT_PROG)
+            .args(&["-u", "-q", "-z", "--"])
+            .arg(&self.mountpoint)
+            .status()?;
+        Ok(())
+    }
+}
+
+impl Drop for Fusermount {
+    fn drop(&mut self) {
+        let _ = self.wait();
+        let _ = self.unmount();
     }
 }
 
 fn fusermount(
     mountpoint: &Path,
     mountopts: &MountOptions,
-) -> io::Result<(RawFd, Option<Fusermount>)> {
+) -> io::Result<(OwnedFd, Option<Fusermount>)> {
     let (input, output) = UnixStream::pair()?;
 
     let mut fusermount = Command::new(
@@ -314,15 +298,16 @@ fn fusermount(
 
             let mut child = Some(Fusermount {
                 pid: child_pid,
-                input,
+                input: Some(input),
+                mountpoint: mountpoint.to_owned(),
             });
 
             if !mountopts.auto_unmount {
                 // When auto_unmount is not specified, `fusermount` exits immediately
                 // after sending the file descriptor and thus we need to wait until
                 // the command is exited.
-                let child = child.take().unwrap();
-                let _st = child.wait()?;
+                let mut child = child.take().unwrap();
+                let _st = child.wait();
             }
 
             Ok((fd, child))
@@ -330,14 +315,7 @@ fn fusermount(
     }
 }
 
-fn unmount(mountpoint: &Path) {
-    let _ = Command::new(FUSERMOUNT_PROG)
-        .args(&["-u", "-q", "-z", "--"])
-        .arg(&mountpoint)
-        .status();
-}
-
-fn receive_fd(reader: &UnixStream) -> io::Result<RawFd> {
+fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
     let mut buf = [0u8; 1];
     let mut iov = libc::iovec {
         iov_base: buf.as_mut_ptr() as *mut c_void,
@@ -381,7 +359,7 @@ fn receive_fd(reader: &UnixStream) -> io::Result<RawFd> {
     let fd = cmsg.fd;
     syscall! { fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
 
-    Ok(fd)
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 // ==== util ====
