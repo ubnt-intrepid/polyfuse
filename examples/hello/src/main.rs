@@ -24,18 +24,18 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "tmountpoint must be a directory");
 
-    let conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(&conn, KernelConfig::default()).map(Arc::new)?;
+    let mut conn = MountOptions::default().mount(mountpoint)?;
+    let session = Session::init(&mut conn, KernelConfig::default()).map(Arc::new)?;
 
     let fs = Hello::new(session.clone());
 
-    while let Some(req) = session.next_request(&conn)? {
+    while let Some(req) = session.next_request(&mut conn)? {
         match req.operation(&session)? {
-            Operation::Lookup(op) => fs.lookup(&conn, &req, op)?,
-            Operation::Getattr(op) => fs.getattr(&conn, &req, op)?,
-            Operation::Read(op) => fs.read(&conn, &req, op)?,
-            Operation::Readdir(op) => fs.readdir(&conn, &req, op)?,
-            _ => session.reply_error(&conn, &req, libc::ENOSYS)?,
+            Operation::Lookup(op) => fs.lookup(&mut conn, &req, op)?,
+            Operation::Getattr(op) => fs.getattr(&mut conn, &req, op)?,
+            Operation::Read(op) => fs.read(&mut conn, &req, op)?,
+            Operation::Readdir(op) => fs.readdir(&mut conn, &req, op)?,
+            _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
         }
     }
 
@@ -99,7 +99,7 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    fn lookup(&self, conn: &Connection, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
+    fn lookup(&self, conn: &mut Connection, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -113,7 +113,7 @@ impl Hello {
         }
     }
 
-    fn getattr(&self, conn: &Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
+    fn getattr(&self, conn: &mut Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
@@ -127,7 +127,7 @@ impl Hello {
         self.session.reply(conn, req, out)
     }
 
-    fn read(&self, conn: &Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
+    fn read(&self, conn: &mut Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
             ROOT_INO => return self.session.reply_error(conn, req, libc::EISDIR),
@@ -153,7 +153,7 @@ impl Hello {
         })
     }
 
-    fn readdir(&self, conn: &Connection, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
+    fn readdir(&self, conn: &mut Connection, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
         if op.ino() != ROOT_INO {
             return self.session.reply_error(conn, req, libc::ENOTDIR);
         }

@@ -42,22 +42,24 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(&conn, KernelConfig::default())?;
+    let mut conn = MountOptions::default().mount(mountpoint)?;
+    let session = Session::init(&mut conn, KernelConfig::default())?;
 
     let mut fs = PathThrough::new(source)?;
 
-    while let Some(req) = session.next_request(&conn)? {
+    while let Some(req) = session.next_request(&mut conn)? {
         let op = req.operation(&session)?;
         tracing::debug!("handle operation: {:#?}", op);
 
         macro_rules! try_reply {
             ($e:expr) => {
                 match $e {
-                    Ok(data) => session.reply(&conn, &req, data)?,
-                    Err(err) => {
-                        session.reply_error(&conn, &req, err.raw_os_error().unwrap_or(libc::EIO))?
-                    }
+                    Ok(data) => session.reply(&mut conn, &req, data)?,
+                    Err(err) => session.reply_error(
+                        &mut conn,
+                        &req,
+                        err.raw_os_error().unwrap_or(libc::EIO),
+                    )?,
                 }
             };
         }
@@ -80,7 +82,7 @@ fn main() -> Result<()> {
             Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
             Operation::Release(op) => try_reply!(fs.do_release(&op)),
 
-            _ => session.reply_error(&conn, &req, libc::ENOSYS)?,
+            _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
         }
     }
 
