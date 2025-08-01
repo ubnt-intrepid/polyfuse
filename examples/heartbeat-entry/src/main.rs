@@ -121,7 +121,7 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    fn heartbeat(&self, conn: &mut Connection, notifier: Option<Arc<Session>>) -> Result<()> {
+    fn heartbeat(&self, mut conn: &mut Connection, notifier: Option<Arc<Session>>) -> Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
         let _enter = span.enter();
 
@@ -137,7 +137,7 @@ impl Heartbeat {
             match notifier {
                 Some(ref notifier) if current.nlookup > 0 => {
                     tracing::info!("send notify_inval_entry");
-                    notifier.inval_entry(conn, ROOT_INO, old_filename)?;
+                    notifier.inval_entry(&mut conn, ROOT_INO, old_filename)?;
                 }
                 _ => (),
             }
