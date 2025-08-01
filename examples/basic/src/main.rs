@@ -23,22 +23,27 @@ fn main() -> Result<()> {
 
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request(&conn)? {
-        match req.operation()? {
+        match req.operation(&session)? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&conn, &req, op)?,
-            Operation::Read(op) => read(&conn, &req, op)?,
+            Operation::Getattr(op) => getattr(&session, &conn, &req, op)?,
+            Operation::Read(op) => read(&session, &conn, &req, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => req.reply_error(&conn, libc::ENOSYS)?,
+            _ => session.reply_error(&conn, &req, libc::ENOSYS)?,
         };
     }
 
     Ok(())
 }
 
-fn getattr(conn: &Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
+fn getattr(
+    session: &Session,
+    conn: &Connection,
+    req: &Request,
+    op: op::Getattr<'_>,
+) -> io::Result<()> {
     if op.ino() != 1 {
-        return req.reply_error(conn, libc::ENOENT);
+        return session.reply_error(conn, req, libc::ENOENT);
     }
 
     let mut out = AttrOut::default();
@@ -50,12 +55,12 @@ fn getattr(conn: &Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<
     out.attr().gid(unsafe { libc::getgid() });
     out.ttl(Duration::from_secs(1));
 
-    req.reply(conn, out)
+    session.reply(conn, &req, out)
 }
 
-fn read(conn: &Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
+fn read(session: &Session, conn: &Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
     if op.ino() != 1 {
-        return req.reply_error(conn, libc::ENOENT);
+        return session.reply_error(conn, req, libc::ENOENT);
     }
 
     let mut data: &[u8] = &[];
@@ -67,5 +72,5 @@ fn read(conn: &Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    req.reply(conn, data)
+    session.reply(conn, req, data)
 }

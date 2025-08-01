@@ -1,6 +1,6 @@
 use polyfuse::{
     reply::{AttrOut, OpenOut, PollOut},
-    Connection, MountOptions, Notifier, Operation, Request, Session,
+    Connection, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -31,9 +31,9 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
-    let session = Session::init(&conn, Default::default())?;
+    let session = Session::init(&conn, Default::default()).map(Arc::new)?;
 
-    let fs = Arc::new(PollFS::new(session.notifier(), wakeup_interval));
+    let fs = Arc::new(PollFS::new(session.clone(), wakeup_interval));
 
     while let Some(req) = session.next_request(&conn)? {
         let fs = fs.clone();
@@ -48,19 +48,19 @@ fn main() -> Result<()> {
 }
 
 struct PollFS {
+    session: Arc<Session>,
     handles: DashMap<u64, Arc<FileHandle>>,
     next_fh: AtomicU64,
 
-    notifier: Notifier,
     wakeup_interval: Duration,
 }
 
 impl PollFS {
-    fn new(notifier: Notifier, wakeup_interval: Duration) -> Self {
+    fn new(session: Arc<Session>, wakeup_interval: Duration) -> Self {
         Self {
+            session,
             handles: DashMap::new(),
             next_fh: AtomicU64::new(0),
-            notifier,
             wakeup_interval,
         }
     }
@@ -69,7 +69,7 @@ impl PollFS {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 
-        let op = req.operation()?;
+        let op = req.operation(&self.session)?;
         tracing::debug!(?op);
 
         match op {
@@ -82,12 +82,15 @@ impl PollFS {
                 out.attr().gid(unsafe { libc::getgid() });
                 out.ttl(Duration::from_secs(u64::max_value() / 2));
 
-                req.reply(conn, out)?;
+                self.session.reply(conn, req, out)?;
             }
 
             Operation::Open(op) => {
                 if op.flags() as i32 & libc::O_ACCMODE != libc::O_RDONLY {
-                    return req.reply_error(conn, libc::EACCES).map_err(Into::into);
+                    return self
+                        .session
+                        .reply_error(conn, req, libc::EACCES)
+                        .map_err(Into::into);
                 }
 
                 let is_nonblock = op.flags() as i32 & libc::O_NONBLOCK != 0;
@@ -102,7 +105,7 @@ impl PollFS {
                 tracing::info!("spawn reading task");
                 std::thread::spawn({
                     let handle = Arc::downgrade(&handle);
-                    let notifier = self.notifier.clone();
+                    let session = self.session.clone();
                     let wakeup_interval = self.wakeup_interval;
                     let conn = conn.clone();
 
@@ -121,7 +124,7 @@ impl PollFS {
 
                             if let Some(kh) = state.kh {
                                 tracing::info!("send wakeup notification, kh={}", kh);
-                                notifier.poll_wakeup(&conn, kh)?;
+                                session.poll_wakeup(&conn, kh)?;
                             }
 
                             state.is_ready = true;
@@ -139,20 +142,28 @@ impl PollFS {
                 out.direct_io(true);
                 out.nonseekable(true);
 
-                req.reply(conn, out)?;
+                self.session.reply(conn, req, out)?;
             }
 
             Operation::Read(op) => {
                 let handle = match self.handles.get(&op.fh()) {
                     Some(h) => h,
-                    None => return req.reply_error(conn, libc::EINVAL).map_err(Into::into),
+                    None => {
+                        return self
+                            .session
+                            .reply_error(conn, req, libc::EINVAL)
+                            .map_err(Into::into)
+                    }
                 };
 
                 let mut state = handle.state.lock().unwrap();
                 if handle.is_nonblock {
                     if !state.is_ready {
                         tracing::info!("send EAGAIN immediately");
-                        return req.reply_error(conn, libc::EAGAIN).map_err(Into::into);
+                        return self
+                            .session
+                            .reply_error(conn, req, libc::EAGAIN)
+                            .map_err(Into::into);
                     }
                 } else {
                     tracing::info!("wait for the completion of background task");
@@ -170,13 +181,19 @@ impl PollFS {
                 let bufsize = op.size() as usize;
                 let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-                req.reply(conn, &content[..std::cmp::min(content.len(), bufsize)])?;
+                self.session
+                    .reply(conn, req, &content[..std::cmp::min(content.len(), bufsize)])?;
             }
 
             Operation::Poll(op) => {
                 let handle = match self.handles.get(&op.fh()) {
                     Some(h) => h,
-                    None => return req.reply_error(conn, libc::EINVAL).map_err(Into::into),
+                    None => {
+                        return self
+                            .session
+                            .reply_error(conn, req, libc::EINVAL)
+                            .map_err(Into::into)
+                    }
                 };
                 let state = &mut *handle.state.lock().unwrap();
 
@@ -190,15 +207,15 @@ impl PollFS {
                     state.kh = Some(kh);
                 }
 
-                req.reply(conn, out)?;
+                self.session.reply(conn, req, out)?;
             }
 
             Operation::Release(op) => {
                 drop(self.handles.remove(&op.fh()));
-                req.reply(conn, &[])?;
+                self.session.reply(conn, req, &[])?;
             }
 
-            _ => req.reply_error(conn, libc::ENOSYS)?,
+            _ => self.session.reply_error(conn, req, libc::ENOSYS)?,
         }
 
         Ok(())
