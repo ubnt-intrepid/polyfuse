@@ -117,6 +117,9 @@ pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
 pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 
+// Device ioctls
+pub const FUSE_DEV_IOC_CLONE: u64 = libc::_IOR::<u32>(229, 0);
+
 #[derive(Clone, Copy, Default, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct fuse_attr {

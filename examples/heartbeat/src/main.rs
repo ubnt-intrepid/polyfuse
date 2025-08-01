@@ -43,8 +43,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let mut conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(&mut conn, KernelConfig::default()).map(Arc::new)?;
+    let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
+    let session = Session::init(&*conn, KernelConfig::default()).map(Arc::new)?;
 
     let heartbeat = Arc::new(Heartbeat::now());
 
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     std::thread::spawn({
         let heartbeat = heartbeat.clone();
         let session = session.clone();
-        let mut conn = conn.try_clone()?;
+        let conn = conn.clone();
         let notifier = if !no_notify {
             Some(session.clone())
         } else {
@@ -66,10 +66,8 @@ fn main() -> Result<()> {
 
                 if let Some(ref notifier) = notifier {
                     match notify_kind {
-                        NotifyKind::Store => heartbeat.notify_store(&mut conn, notifier)?,
-                        NotifyKind::Invalidate => {
-                            heartbeat.notify_inval_inode(&mut conn, notifier)?
-                        }
+                        NotifyKind::Store => heartbeat.notify_store(&*conn, notifier)?,
+                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(&*conn, notifier)?,
                     }
                 }
 
@@ -79,10 +77,10 @@ fn main() -> Result<()> {
     });
 
     // Run the filesystem daemon on the foreground.
-    while let Some(req) = session.next_request(&mut conn)? {
+    while let Some(req) = session.next_request(&*conn)? {
         let heartbeat = heartbeat.clone();
         let session = session.clone();
-        let mut conn = conn.try_clone()?;
+        let conn = conn.clone();
 
         std::thread::spawn(move || -> Result<()> {
             let span = tracing::debug_span!("handle request", unique = req.unique());
@@ -97,17 +95,17 @@ fn main() -> Result<()> {
                         let inner = heartbeat.inner.lock().unwrap();
                         let mut out = AttrOut::default();
                         fill_attr(out.attr(), &inner.attr);
-                        session.reply(&mut conn, &req, out)?;
+                        session.reply(&*conn, &req, out)?;
                     }
-                    _ => session.reply_error(&mut conn, &req, libc::ENOENT)?,
+                    _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
                 },
                 Operation::Open(op) => match op.ino() {
                     ROOT_INO => {
                         let mut out = OpenOut::default();
                         out.keep_cache(true);
-                        session.reply(&mut conn, &req, out)?;
+                        session.reply(&*conn, &req, out)?;
                     }
-                    _ => session.reply_error(&mut conn, &req, libc::ENOENT)?,
+                    _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
                 },
                 Operation::Read(op) => match op.ino() {
                     ROOT_INO => {
@@ -115,15 +113,15 @@ fn main() -> Result<()> {
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
-                            session.reply(&mut conn, &req, &[])?;
+                            session.reply(&*conn, &req, &[])?;
                         } else {
                             let size = op.size() as usize;
                             let data = &inner.content.as_bytes()[offset..];
                             let data = &data[..std::cmp::min(data.len(), size)];
-                            session.reply(&mut conn, &req, data)?;
+                            session.reply(&*conn, &req, data)?;
                         }
                     }
-                    _ => session.reply_error(&mut conn, &req, libc::ENOENT)?,
+                    _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
                 },
                 Operation::NotifyReply(op, mut data) => {
                     let mut retrieves = heartbeat.retrieves.lock().unwrap();
@@ -134,7 +132,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
+                _ => session.reply_error(&*conn, &req, libc::ENOSYS)?,
             }
 
             Ok(())
@@ -182,19 +180,19 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    fn notify_store(&self, mut conn: &mut Connection, notifier: &Session) -> io::Result<()> {
+    fn notify_store(&self, conn: &Connection, notifier: &Session) -> io::Result<()> {
         let inner = self.inner.lock().unwrap();
         let content = &inner.content;
 
         tracing::info!("send notify_store(data={:?})", content);
-        notifier.store(&mut conn, ROOT_INO, 0, content)?;
+        notifier.store(conn, ROOT_INO, 0, content)?;
 
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
         let data = {
             // FIXME: choose appropriate atomic ordering.
-            let unique = notifier.retrieve(&mut conn, ROOT_INO, 0, 1024)?;
+            let unique = notifier.retrieve(conn, ROOT_INO, 0, 1024)?;
             let (tx, rx) = mpsc::channel();
             self.retrieves.lock().unwrap().insert(unique, tx);
             rx.recv().unwrap()
@@ -208,7 +206,7 @@ impl Heartbeat {
         Ok(())
     }
 
-    fn notify_inval_inode(&self, conn: &mut Connection, notifier: &Session) -> io::Result<()> {
+    fn notify_inval_inode(&self, conn: &Connection, notifier: &Session) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
         notifier.inval_inode(conn, ROOT_INO, 0, 0)?;
         Ok(())

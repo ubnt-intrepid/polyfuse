@@ -48,13 +48,14 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let mut conn = MountOptions::default()
+    let conn = MountOptions::default()
         .mount_option("default_permissions")
         .mount_option("fsname=passthrough")
-        .mount(mountpoint)?;
+        .mount(mountpoint)
+        .map(Arc::new)?;
 
     // TODO: splice read/write
-    let session = Session::init(&mut conn, {
+    let session = Session::init(&*conn, {
         let mut config = KernelConfig::default();
         config.export_support(true);
         config.flock_locks(true);
@@ -65,10 +66,10 @@ fn main() -> Result<()> {
 
     let fs = Arc::new(Passthrough::new(source, timeout)?);
 
-    while let Some(req) = session.next_request(&mut conn)? {
+    while let Some(req) = session.next_request(&*conn)? {
         let fs = fs.clone();
         let session = session.clone();
-        let mut conn = conn.try_clone()?;
+        let conn = conn.clone();
 
         std::thread::spawn(move || -> Result<()> {
             let span = tracing::debug_span!("handle_request", unique = req.unique());
@@ -82,12 +83,12 @@ fn main() -> Result<()> {
                     match $e {
                         Ok(data) => {
                             tracing::debug!(?data);
-                            session.reply(&mut conn, &req, data)?;
+                            session.reply(&*conn, &req, data)?;
                         }
                         Err(err) => {
                             let errno = io_to_errno(err);
                             tracing::debug!(errno = errno);
-                            session.reply_error(&mut conn, &req, errno)?;
+                            session.reply_error(&*conn, &req, errno)?;
                         }
                     }
                 };
@@ -154,7 +155,7 @@ fn main() -> Result<()> {
 
                 Operation::Statfs(op) => try_reply!(fs.do_statfs(&op)),
 
-                _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
+                _ => session.reply_error(&*conn, &req, libc::ENOSYS)?,
             }
 
             Ok(())

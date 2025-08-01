@@ -12,7 +12,7 @@ categories = [ "filesystem" ]
 keywords = [ "fuse", "filesystem", "async", "futures" ]
 
 [dependencies]
-polyfuse-kernel = { version = "0.2.0", path = "../polyfuse-kernel" }
+polyfuse-kernel = { version = ">=0.2.1", path = "../polyfuse-kernel" }
 
 bytemuck = "1.23"
 either = "1"
