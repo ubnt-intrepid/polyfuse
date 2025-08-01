@@ -1,6 +1,5 @@
 use crate::{
     bytes::{Bytes, FillBytes},
-    conn::Connection,
     decoder::Decoder,
     op::{DecodeError, Operation},
 };
@@ -276,7 +275,10 @@ impl Session {
     }
 
     /// Start a FUSE daemon mount on the specified path.
-    pub fn init(conn: &mut Connection, config: KernelConfig) -> io::Result<Self> {
+    pub fn init<T>(conn: T, config: KernelConfig) -> io::Result<Self>
+    where
+        T: io::Read + io::Write,
+    {
         let KernelConfig { mut init_out } = config;
 
         init_session(&mut init_out, conn)?;
@@ -308,7 +310,10 @@ impl Session {
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub fn next_request(&self, conn: &mut Connection) -> io::Result<Option<Request>> {
+    pub fn next_request<T>(&self, mut conn: T) -> io::Result<Option<Request>>
+    where
+        T: io::Read + io::Write,
+    {
         let mut header = fuse_in_header::default();
         let bufsize = self.bufsize - mem::size_of::<fuse_in_header>();
         let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
@@ -525,14 +530,18 @@ impl Request {
 }
 
 impl Session {
-    pub fn reply<T>(&self, conn: &mut Connection, req: &Request, arg: T) -> io::Result<()>
+    pub fn reply<T, B>(&self, conn: T, req: &Request, arg: B) -> io::Result<()>
     where
-        T: Bytes,
+        T: io::Write,
+        B: Bytes,
     {
         write_bytes(conn, Reply::new(req.unique(), 0, arg))
     }
 
-    pub fn reply_error(&self, conn: &mut Connection, req: &Request, code: i32) -> io::Result<()> {
+    pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
+    where
+        T: io::Write,
+    {
         write_bytes(conn, Reply::new(req.unique(), code, ()))
     }
 }
@@ -574,13 +583,10 @@ impl<'op> BufRead for Data<'op> {
 
 impl Session {
     /// Notify the cache invalidation about an inode to the kernel.
-    pub fn inval_inode(
-        &self,
-        conn: &mut Connection,
-        ino: u64,
-        off: i64,
-        len: i64,
-    ) -> io::Result<()> {
+    pub fn inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
+    where
+        T: io::Write,
+    {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_inval_inode_out>(),
         )
@@ -619,9 +625,9 @@ impl Session {
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
-    pub fn inval_entry<T>(&self, conn: &mut Connection, parent: u64, name: T) -> io::Result<()>
+    pub fn inval_entry<T>(&self, conn: T, parent: u64, name: impl AsRef<OsStr>) -> io::Result<()>
     where
-        T: AsRef<OsStr>,
+        T: io::Write,
     {
         let namelen = u32::try_from(name.as_ref().len()).expect("provided name is too long");
 
@@ -687,13 +693,13 @@ impl Session {
     /// watchers if exists.
     pub fn delete<T>(
         &self,
-        conn: &mut Connection,
+        conn: T,
         parent: u64,
         child: u64,
-        name: T,
+        name: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        T: AsRef<OsStr>,
+        T: io::Write,
     {
         let namelen = u32::try_from(name.as_ref().len()).expect("provided name is too long");
 
@@ -753,9 +759,10 @@ impl Session {
     }
 
     /// Push the data in an inode for updating the kernel cache.
-    pub fn store<T>(&self, conn: &mut Connection, ino: u64, offset: u64, data: T) -> io::Result<()>
+    pub fn store<T, B>(&self, conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
     where
-        T: Bytes,
+        T: io::Write,
+        B: Bytes,
     {
         let size = u32::try_from(data.size()).expect("provided data is too large");
 
@@ -813,13 +820,10 @@ impl Session {
     }
 
     /// Retrieve data in an inode from the kernel cache.
-    pub fn retrieve(
-        &self,
-        conn: &mut Connection,
-        ino: u64,
-        offset: u64,
-        size: u32,
-    ) -> io::Result<u64> {
+    pub fn retrieve<T>(&self, conn: T, ino: u64, offset: u64, size: u32) -> io::Result<u64>
+    where
+        T: io::Write,
+    {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_retrieve_out>(),
         )
@@ -869,7 +873,10 @@ impl Session {
     }
 
     /// Send I/O readiness to the kernel.
-    pub fn poll_wakeup(&self, conn: &mut Connection, kh: u64) -> io::Result<()> {
+    pub fn poll_wakeup<T>(&self, conn: T, kh: u64) -> io::Result<()>
+    where
+        T: io::Write,
+    {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_poll_wakeup_out>(),
         )

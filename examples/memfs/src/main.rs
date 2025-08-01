@@ -289,7 +289,8 @@ impl<'a> MemFS<'a> {
 
             _ => {
                 tracing::debug!("NOSYS");
-                self.session.reply_error(self.conn, req, libc::ENOSYS)?;
+                self.session
+                    .reply_error(&mut self.conn, req, libc::ENOSYS)?;
             }
         }
 
@@ -299,17 +300,17 @@ impl<'a> MemFS<'a> {
     fn do_lookup(&mut self, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
         let parent = match self.inodes.get(op.parent()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         let parent = match parent.kind {
             INodeKind::Directory(ref dir) => dir,
-            _ => return self.session.reply_error(self.conn, req, libc::ENOTDIR),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::ENOTDIR),
         };
 
         let child_ino = match parent.children.get(op.name()) {
             Some(&ino) => ino,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
         let mut child = self
             .inodes
@@ -322,7 +323,7 @@ impl<'a> MemFS<'a> {
         fill_attr(out.attr(), &child.attr);
         out.ttl_entry(self.ttl);
 
-        self.session.reply(self.conn, req, out)
+        self.session.reply(&mut self.conn, req, out)
     }
 
     fn do_forget(&self, forgets: &[op::Forget]) {
@@ -341,20 +342,20 @@ impl<'a> MemFS<'a> {
     fn do_getattr(&mut self, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
         let inode = match self.inodes.get(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         let mut out = AttrOut::default();
         fill_attr(out.attr(), &inode.attr);
         out.ttl(self.ttl);
 
-        self.session.reply(self.conn, req, out)
+        self.session.reply(&mut self.conn, req, out)
     }
 
     fn do_setattr(&mut self, req: &Request, op: op::Setattr<'_>) -> io::Result<()> {
         let mut inode = match self.inodes.get_mut(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         fn to_duration(t: op::SetAttrTime) -> Duration {
@@ -397,34 +398,34 @@ impl<'a> MemFS<'a> {
         fill_attr(out.attr(), &inode.attr);
         out.ttl(self.ttl);
 
-        self.session.reply(self.conn, req, out)
+        self.session.reply(&mut self.conn, req, out)
     }
 
     fn do_readlink(&mut self, req: &Request, op: op::Readlink<'_>) -> io::Result<()> {
         let inode = match self.inodes.get(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         let link = match inode.kind {
             INodeKind::Symlink(ref link) => link,
-            _ => return self.session.reply_error(self.conn, req, libc::EINVAL),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::EINVAL),
         };
 
-        self.session.reply(self.conn, req, link)
+        self.session.reply(&mut self.conn, req, link)
     }
 
     fn do_opendir(&mut self, req: &Request, op: op::Opendir<'_>) -> io::Result<()> {
         let inode = match self.inodes.get(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
         if inode.attr.st_nlink == 0 {
-            return self.session.reply_error(self.conn, req, libc::ENOENT);
+            return self.session.reply_error(&mut self.conn, req, libc::ENOENT);
         }
         let dir = match inode.kind {
             INodeKind::Directory(ref dir) => dir,
-            _ => return self.session.reply_error(self.conn, req, libc::ENOTDIR),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::ENOTDIR),
         };
 
         let key = self.dir_handles.insert(DirHandle {
@@ -435,17 +436,17 @@ impl<'a> MemFS<'a> {
         let mut out = OpenOut::default();
         out.fh(key as u64);
 
-        self.session.reply(self.conn, req, out)
+        self.session.reply(&mut self.conn, req, out)
     }
 
     fn do_readdir(&mut self, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
         if op.mode() == op::ReaddirMode::Plus {
-            return self.session.reply_error(self.conn, req, libc::ENOSYS);
+            return self.session.reply_error(&mut self.conn, req, libc::ENOSYS);
         }
 
         let dir = match self.dir_handles.get(op.fh() as usize) {
             Some(dir) => dir,
-            None => return self.session.reply_error(self.conn, req, libc::EINVAL),
+            None => return self.session.reply_error(&mut self.conn, req, libc::EINVAL),
         };
 
         let mut out = ReaddirOut::new(op.size() as usize);
@@ -457,18 +458,18 @@ impl<'a> MemFS<'a> {
             dir.offset.fetch_add(1, Ordering::SeqCst);
         }
 
-        self.session.reply(self.conn, req, out)
+        self.session.reply(&mut self.conn, req, out)
     }
 
     fn do_releasedir(&mut self, req: &Request, op: op::Releasedir<'_>) -> io::Result<()> {
         self.dir_handles.remove(op.fh() as usize);
-        self.session.reply(self.conn, req, ())
+        self.session.reply(&mut self.conn, req, ())
     }
 
     fn do_mknod(&mut self, req: &Request, op: op::Mknod<'_>) -> io::Result<()> {
         match op.mode() & libc::S_IFMT {
             libc::S_IFREG => (),
-            _ => return self.session.reply_error(self.conn, req, libc::ENOTSUP),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::ENOTSUP),
         }
 
         self.make_node(req, op.parent(), op.name(), |entry| INode {
@@ -527,15 +528,17 @@ impl<'a> MemFS<'a> {
     {
         let mut parent = match self.inodes.get_mut(parent) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
         let parent = match parent.kind {
             INodeKind::Directory(ref mut dir) => dir,
-            _ => return self.session.reply_error(self.conn, req, libc::ENOTDIR),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::ENOTDIR),
         };
 
         let map_entry = match parent.children.entry(name.into()) {
-            Entry::Occupied(..) => return self.session.reply_error(self.conn, req, libc::EEXIST),
+            Entry::Occupied(..) => {
+                return self.session.reply_error(&mut self.conn, req, libc::EEXIST)
+            }
             Entry::Vacant(map_entry) => map_entry,
         };
         let inode_entry = self.inodes.vacant_entry().expect("inode number conflict");
@@ -545,7 +548,7 @@ impl<'a> MemFS<'a> {
         out.ino(inode_entry.ino());
         fill_attr(out.attr(), &inode.attr);
         out.ttl_entry(self.ttl);
-        self.session.reply(self.conn, req, out)?;
+        self.session.reply(&mut self.conn, req, out)?;
 
         map_entry.insert(inode_entry.ino());
         inode_entry.insert(inode);
@@ -556,21 +559,23 @@ impl<'a> MemFS<'a> {
     fn do_link(&mut self, req: &Request, op: op::Link<'_>) -> io::Result<()> {
         let mut inode = match self.inodes.get_mut(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         debug_assert!(op.ino() != op.newparent());
         let mut newparent = match self.inodes.get_mut(op.newparent()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
         let newparent = match newparent.kind {
             INodeKind::Directory(ref mut dir) => dir,
-            _ => return self.session.reply_error(self.conn, req, libc::ENOTDIR),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::ENOTDIR),
         };
 
         match newparent.children.entry(op.newname().into()) {
-            Entry::Occupied(..) => return self.session.reply_error(self.conn, req, libc::EEXIST),
+            Entry::Occupied(..) => {
+                return self.session.reply_error(&mut self.conn, req, libc::EEXIST)
+            }
             Entry::Vacant(entry) => {
                 entry.insert(op.ino());
                 inode.links += 1;
@@ -584,7 +589,7 @@ impl<'a> MemFS<'a> {
         fill_attr(out.attr(), &inode.attr);
         out.ttl_entry(self.ttl);
 
-        self.session.reply(self.conn, req, out)
+        self.session.reply(&mut self.conn, req, out)
     }
 
     fn do_unlink(&mut self, req: &Request, op: op::Unlink<'_>) -> io::Result<()> {
@@ -598,22 +603,24 @@ impl<'a> MemFS<'a> {
     fn unlink_node(&mut self, req: &Request, parent: Ino, name: &OsStr) -> io::Result<()> {
         let mut parent = match self.inodes.get_mut(parent) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
         let parent: &mut Directory = match parent.kind {
             INodeKind::Directory(ref mut dir) => dir,
-            _ => return self.session.reply_error(self.conn, req, libc::ENOTDIR),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::ENOTDIR),
         };
 
         let ino = match parent.children.get(name) {
             Some(&ino) => ino,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         let mut inode = self.inodes.get_mut(ino).unwrap_or_else(|| unreachable!());
         match inode.kind {
             INodeKind::Directory(ref dir) if !dir.children.is_empty() => {
-                return self.session.reply_error(self.conn, req, libc::ENOTEMPTY);
+                return self
+                    .session
+                    .reply_error(&mut self.conn, req, libc::ENOTEMPTY);
             }
             _ => (),
         }
@@ -626,34 +633,34 @@ impl<'a> MemFS<'a> {
         inode.links = inode.links.saturating_sub(1);
         inode.attr.st_nlink = inode.attr.st_nlink.saturating_sub(1);
 
-        self.session.reply(self.conn, req, ())
+        self.session.reply(&mut self.conn, req, ())
     }
 
     fn do_rename(&mut self, req: &Request, op: op::Rename<'_>) -> io::Result<()> {
         if op.flags() != 0 {
             // TODO: handle RENAME_NOREPLACE and RENAME_EXCHANGE.
-            return self.session.reply_error(self.conn, req, libc::EINVAL);
+            return self.session.reply_error(&mut self.conn, req, libc::EINVAL);
         }
 
         let mut parent = match self.inodes.get_mut(op.parent()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
         let parent = match parent.kind {
             INodeKind::Directory(ref mut dir) => dir,
-            _ => return self.session.reply_error(self.conn, req, libc::ENOTDIR),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::ENOTDIR),
         };
 
         match op.newparent() {
             newparent if newparent == op.parent() => {
                 let ino = match parent.children.get(op.name()) {
                     Some(&ino) => ino,
-                    None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+                    None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
                 };
 
                 match parent.children.entry(op.newname().into()) {
                     Entry::Occupied(..) => {
-                        return self.session.reply_error(self.conn, req, libc::EEXIST)
+                        return self.session.reply_error(&mut self.conn, req, libc::EEXIST)
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(ino);
@@ -668,52 +675,52 @@ impl<'a> MemFS<'a> {
             newparent => {
                 let mut newparent = match self.inodes.get_mut(newparent) {
                     Some(inode) => inode,
-                    None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+                    None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
                 };
                 let newparent = match newparent.kind {
                     INodeKind::Directory(ref mut dir) => dir,
-                    _ => return self.session.reply_error(self.conn, req, libc::ENOTDIR),
+                    _ => return self.session.reply_error(&mut self.conn, req, libc::ENOTDIR),
                 };
 
                 let entry = match newparent.children.entry(op.newname().into()) {
                     Entry::Occupied(..) => {
-                        return self.session.reply_error(self.conn, req, libc::EEXIST)
+                        return self.session.reply_error(&mut self.conn, req, libc::EEXIST)
                     }
                     Entry::Vacant(entry) => entry,
                 };
                 let ino = match parent.children.remove(op.name()) {
                     Some(ino) => ino,
-                    None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+                    None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
                 };
                 entry.insert(ino);
             }
         }
 
-        self.session.reply(self.conn, req, ())
+        self.session.reply(&mut self.conn, req, ())
     }
 
     fn do_getxattr(&mut self, req: &Request, op: op::Getxattr<'_>) -> io::Result<()> {
         let inode = match self.inodes.get(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         let value = match inode.xattrs.get(op.name()) {
             Some(value) => value,
-            None => return self.session.reply_error(self.conn, req, libc::ENODATA),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENODATA),
         };
 
         match op.size() {
             0 => {
                 let mut out = XattrOut::default();
                 out.size(value.len() as u32);
-                self.session.reply(self.conn, req, out)
+                self.session.reply(&mut self.conn, req, out)
             }
             size => {
                 if value.len() as u32 > size {
-                    return self.session.reply_error(self.conn, req, libc::ERANGE);
+                    return self.session.reply_error(&mut self.conn, req, libc::ERANGE);
                 }
-                self.session.reply(self.conn, req, value)
+                self.session.reply(&mut self.conn, req, value)
             }
         }
     }
@@ -722,25 +729,25 @@ impl<'a> MemFS<'a> {
         let create = op.flags() as i32 & libc::XATTR_CREATE != 0;
         let replace = op.flags() as i32 & libc::XATTR_REPLACE != 0;
         if create && replace {
-            return self.session.reply_error(self.conn, req, libc::EINVAL);
+            return self.session.reply_error(&mut self.conn, req, libc::EINVAL);
         }
 
         let mut inode = match self.inodes.get_mut(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         match inode.xattrs.entry(op.name().into()) {
             Entry::Occupied(entry) => {
                 if create {
-                    return self.session.reply_error(self.conn, req, libc::EEXIST);
+                    return self.session.reply_error(&mut self.conn, req, libc::EEXIST);
                 }
                 let value = Arc::make_mut(entry.into_mut());
                 *value = op.value().into();
             }
             Entry::Vacant(entry) => {
                 if replace {
-                    return self.session.reply_error(self.conn, req, libc::ENODATA);
+                    return self.session.reply_error(&mut self.conn, req, libc::ENODATA);
                 }
                 if create {
                     entry.insert(Arc::default());
@@ -750,13 +757,13 @@ impl<'a> MemFS<'a> {
             }
         }
 
-        self.session.reply(self.conn, req, ())
+        self.session.reply(&mut self.conn, req, ())
     }
 
     fn do_listxattr(&mut self, req: &Request, op: op::Listxattr<'_>) -> io::Result<()> {
         let inode = match self.inodes.get(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         match op.size() {
@@ -764,7 +771,7 @@ impl<'a> MemFS<'a> {
                 let total_len = inode.xattrs.keys().map(|name| name.len() as u32 + 1).sum();
                 let mut out = XattrOut::default();
                 out.size(total_len);
-                self.session.reply(self.conn, req, out)
+                self.session.reply(&mut self.conn, req, out)
             }
 
             size => {
@@ -777,10 +784,10 @@ impl<'a> MemFS<'a> {
                 });
 
                 if total_len > size {
-                    return self.session.reply_error(self.conn, req, libc::ERANGE);
+                    return self.session.reply_error(&mut self.conn, req, libc::ERANGE);
                 }
 
-                self.session.reply(self.conn, req, names)
+                self.session.reply(&mut self.conn, req, names)
             }
         }
     }
@@ -788,28 +795,30 @@ impl<'a> MemFS<'a> {
     fn do_removexattr(&mut self, req: &Request, op: op::Removexattr<'_>) -> io::Result<()> {
         let mut inode = match self.inodes.get_mut(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         match inode.xattrs.entry(op.name().into()) {
             Entry::Occupied(entry) => {
                 entry.remove();
             }
-            Entry::Vacant(..) => return self.session.reply_error(self.conn, req, libc::ENODATA),
+            Entry::Vacant(..) => {
+                return self.session.reply_error(&mut self.conn, req, libc::ENODATA)
+            }
         }
 
-        self.session.reply(self.conn, req, ())
+        self.session.reply(&mut self.conn, req, ())
     }
 
     fn do_read(&mut self, req: &Request, op: op::Read<'_>) -> io::Result<()> {
         let inode = match self.inodes.get(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         let content = match inode.kind {
             INodeKind::RegularFile(ref content) => content,
-            _ => return self.session.reply_error(self.conn, req, libc::EINVAL),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::EINVAL),
         };
 
         let offset = op.offset() as usize;
@@ -818,7 +827,7 @@ impl<'a> MemFS<'a> {
         let content = content.get(offset..).unwrap_or(&[]);
         let content = &content[..std::cmp::min(content.len(), size)];
 
-        self.session.reply(self.conn, req, content)
+        self.session.reply(&mut self.conn, req, content)
     }
 
     fn do_write<T>(&mut self, req: &Request, op: op::Write<'_>, mut data: T) -> io::Result<()>
@@ -827,12 +836,12 @@ impl<'a> MemFS<'a> {
     {
         let mut inode = match self.inodes.get_mut(op.ino()) {
             Some(inode) => inode,
-            None => return self.session.reply_error(self.conn, req, libc::ENOENT),
+            None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
         let content = match inode.kind {
             INodeKind::RegularFile(ref mut content) => content,
-            _ => return self.session.reply_error(self.conn, req, libc::EINVAL),
+            _ => return self.session.reply_error(&mut self.conn, req, libc::EINVAL),
         };
 
         let offset = op.offset() as usize;
@@ -847,7 +856,7 @@ impl<'a> MemFS<'a> {
         let mut out = WriteOut::default();
         out.size(op.size());
 
-        self.session.reply(self.conn, req, out)
+        self.session.reply(&mut self.conn, req, out)
     }
 }
 

@@ -182,19 +182,19 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    fn notify_store(&self, conn: &mut Connection, notifier: &Session) -> io::Result<()> {
+    fn notify_store(&self, mut conn: &mut Connection, notifier: &Session) -> io::Result<()> {
         let inner = self.inner.lock().unwrap();
         let content = &inner.content;
 
         tracing::info!("send notify_store(data={:?})", content);
-        notifier.store(conn, ROOT_INO, 0, content)?;
+        notifier.store(&mut conn, ROOT_INO, 0, content)?;
 
         // To check if the cache is updated correctly, pull the
         // content from the kernel using notify_retrieve.
         tracing::info!("send notify_retrieve");
         let data = {
             // FIXME: choose appropriate atomic ordering.
-            let unique = notifier.retrieve(conn, ROOT_INO, 0, 1024)?;
+            let unique = notifier.retrieve(&mut conn, ROOT_INO, 0, 1024)?;
             let (tx, rx) = mpsc::channel();
             self.retrieves.lock().unwrap().insert(unique, tx);
             rx.recv().unwrap()
