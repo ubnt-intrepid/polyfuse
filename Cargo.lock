@@ -569,6 +569,8 @@ version = "0.6.0-dev"
 dependencies = [
  "bytemuck",
  "either",
+ "futures-executor",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "polyfuse-kernel",
