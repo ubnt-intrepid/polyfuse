@@ -12,9 +12,10 @@
 // the path based filesystems such as libfuse's highlevel API.
 
 use polyfuse::{
+    mount::{mount, MountOptions},
     op::{self, Forget},
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
-    KernelConfig, MountOptions, Operation, Session,
+    Connection, KernelConfig, Operation, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -42,7 +43,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let mut conn = MountOptions::default().mount(mountpoint)?;
+    let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
+    let mut conn = Connection::from(conn);
     let session = Session::init(&mut conn, KernelConfig::default())?;
 
     let mut fs = PathThrough::new(source)?;
@@ -85,6 +87,8 @@ fn main() -> Result<()> {
             _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
         }
     }
+
+    fusermount.unmount()?;
 
     Ok(())
 }

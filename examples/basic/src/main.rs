@@ -1,5 +1,8 @@
 use polyfuse::{
-    op, reply::AttrOut, Connection, KernelConfig, MountOptions, Operation, Request, Session,
+    mount::{mount, MountOptions},
+    op,
+    reply::AttrOut,
+    Connection, KernelConfig, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -16,7 +19,8 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let mut conn = MountOptions::default().mount(mountpoint)?;
+    let (devfd, fusermount) = mount(mountpoint, MountOptions::default())?;
+    let mut conn = Connection::from(devfd);
 
     // Initialize the FUSE session.
     let session = Session::init(&mut conn, KernelConfig::default())?;
@@ -32,6 +36,8 @@ fn main() -> Result<()> {
             _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
         };
     }
+
+    fusermount.unmount()?;
 
     Ok(())
 }
