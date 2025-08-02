@@ -4,7 +4,8 @@
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Connection, KernelConfig, MountOptions, Operation, Request, Session,
+    tokio::Connection,
+    KernelConfig, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -16,7 +17,8 @@ const HELLO_INO: u64 = 2;
 const HELLO_FILENAME: &str = "hello.txt";
 const HELLO_CONTENT: &[u8] = b"Hello, world!\n";
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -24,18 +26,21 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "tmountpoint must be a directory");
 
-    let mut conn = MountOptions::default().mount(mountpoint)?;
-    let session = Session::init(&mut conn, KernelConfig::default()).map(Arc::new)?;
+    let conn = MountOptions::default().mount(mountpoint)?;
+    let mut conn = Connection::new(conn)?;
+    let session = Session::init(&mut conn, KernelConfig::default())
+        .await
+        .map(Arc::new)?;
 
     let fs = Hello::new(session.clone());
 
-    while let Some(req) = session.next_request(&mut conn)? {
+    while let Some(req) = session.next_request(&mut conn).await? {
         match req.operation(&session)? {
-            Operation::Lookup(op) => fs.lookup(&mut conn, &req, op)?,
-            Operation::Getattr(op) => fs.getattr(&mut conn, &req, op)?,
-            Operation::Read(op) => fs.read(&mut conn, &req, op)?,
-            Operation::Readdir(op) => fs.readdir(&mut conn, &req, op)?,
-            _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
+            Operation::Lookup(op) => fs.lookup(&mut conn, &req, op).await?,
+            Operation::Getattr(op) => fs.getattr(&mut conn, &req, op).await?,
+            Operation::Read(op) => fs.read(&mut conn, &req, op).await?,
+            Operation::Readdir(op) => fs.readdir(&mut conn, &req, op).await?,
+            _ => session.reply_error(&mut conn, &req, libc::ENOSYS).await?,
         }
     }
 
@@ -99,7 +104,12 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    fn lookup(&self, conn: &mut Connection, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
+    async fn lookup(
+        &self,
+        conn: &mut Connection,
+        req: &Request,
+        op: op::Lookup<'_>,
+    ) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -107,31 +117,36 @@ impl Hello {
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                self.session.reply(conn, req, out)
+                self.session.reply(conn, req, out).await
             }
-            _ => self.session.reply_error(conn, req, libc::ENOENT),
+            _ => self.session.reply_error(conn, req, libc::ENOENT).await,
         }
     }
 
-    fn getattr(&self, conn: &mut Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
+    async fn getattr(
+        &self,
+        conn: &mut Connection,
+        req: &Request,
+        op: op::Getattr<'_>,
+    ) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
-            _ => return self.session.reply_error(conn, req, libc::ENOENT),
+            _ => return self.session.reply_error(conn, req, libc::ENOENT).await,
         };
 
         let mut out = AttrOut::default();
         fill_attr(self, out.attr());
         out.ttl(TTL);
 
-        self.session.reply(conn, req, out)
+        self.session.reply(conn, req, out).await
     }
 
-    fn read(&self, conn: &mut Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
+    async fn read(&self, conn: &mut Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
-            ROOT_INO => return self.session.reply_error(conn, req, libc::EISDIR),
-            _ => return self.session.reply_error(conn, req, libc::ENOENT),
+            ROOT_INO => return self.session.reply_error(conn, req, libc::EISDIR).await,
+            _ => return self.session.reply_error(conn, req, libc::ENOENT).await,
         }
 
         let mut data: &[u8] = &[];
@@ -143,7 +158,7 @@ impl Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        self.session.reply(conn, req, data)
+        self.session.reply(conn, req, data).await
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -153,9 +168,14 @@ impl Hello {
         })
     }
 
-    fn readdir(&self, conn: &mut Connection, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
+    async fn readdir(
+        &self,
+        conn: &mut Connection,
+        req: &Request,
+        op: op::Readdir<'_>,
+    ) -> io::Result<()> {
         if op.ino() != ROOT_INO {
-            return self.session.reply_error(conn, req, libc::ENOTDIR);
+            return self.session.reply_error(conn, req, libc::ENOTDIR).await;
         }
 
         let mut out = ReaddirOut::new(op.size() as usize);
@@ -172,6 +192,6 @@ impl Hello {
             }
         }
 
-        self.session.reply(conn, req, out)
+        self.session.reply(conn, req, out).await
     }
 }
