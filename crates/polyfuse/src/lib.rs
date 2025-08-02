@@ -16,3 +16,6 @@ pub use crate::{
     op::Operation,
     session::{Data, KernelConfig, Request, Session},
 };
+
+#[cfg(feature = "tokio")]
+pub use crate::conn::tokio;

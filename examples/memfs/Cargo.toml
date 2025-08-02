@@ -5,12 +5,13 @@ publish = false
 edition = "2021"
 
 [dependencies]
-polyfuse = { path = "../../crates/polyfuse" }
+polyfuse = { path = "../../crates/polyfuse", features = [ "tokio" ] }
 
 anyhow = "1"
 dashmap = { workspace = true }
 libc = "0.2"
 pico-args = { workspace = true }
 slab = "0.4"
+tokio = { version = ">=1.8.4", features = [ "macros", "rt-multi-thread" ] }
 tracing = "0.1"
 tracing-subscriber = { workspace = true }

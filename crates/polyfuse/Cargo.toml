@@ -16,9 +16,13 @@ polyfuse-kernel = { version = ">=0.2.1", path = "../polyfuse-kernel" }
 
 bytemuck = "1.23"
 either = "1"
+futures-util = { version = "0.3", features = [ "io" ], default-features = false }
 libc = "0.2"
 tracing = "0.1"
 zerocopy = "0.8.26"
 
+tokio = { version = "1.47.1", optional = true, features = [ "net" ], default-features = false }
+
 [dev-dependencies]
+futures-executor = "0.3"
 pin-project-lite = "0.2"

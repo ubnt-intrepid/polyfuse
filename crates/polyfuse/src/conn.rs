@@ -1,3 +1,5 @@
+pub mod tokio;
+
 use libc::{c_int, c_void, iovec};
 use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
 use std::{

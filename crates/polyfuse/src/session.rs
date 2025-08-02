@@ -3,6 +3,7 @@ use crate::{
     decoder::Decoder,
     op::{DecodeError, Operation},
 };
+use futures_util::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use polyfuse_kernel::*;
 use std::{
     cmp,
@@ -275,13 +276,13 @@ impl Session {
     }
 
     /// Start a FUSE daemon mount on the specified path.
-    pub fn init<T>(conn: T, config: KernelConfig) -> io::Result<Self>
+    pub async fn init<T>(conn: T, config: KernelConfig) -> io::Result<Self>
     where
-        T: io::Read + io::Write,
+        T: AsyncRead + AsyncWrite + Unpin,
     {
         let KernelConfig { mut init_out } = config;
 
-        init_session(&mut init_out, conn)?;
+        init_session(&mut init_out, conn).await?;
         let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;
 
         Ok(Self {
@@ -310,19 +311,22 @@ impl Session {
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub fn next_request<T>(&self, mut conn: T) -> io::Result<Option<Request>>
+    pub async fn next_request<T>(&self, mut conn: T) -> io::Result<Option<Request>>
     where
-        T: io::Read + io::Write,
+        T: AsyncRead + AsyncWrite + Unpin,
     {
         let mut header = fuse_in_header::default();
         let bufsize = self.bufsize - mem::size_of::<fuse_in_header>();
         let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
 
         loop {
-            match conn.read_vectored(&mut [
-                io::IoSliceMut::new(header.as_mut_bytes()),
-                io::IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
-            ]) {
+            match conn
+                .read_vectored(&mut [
+                    IoSliceMut::new(header.as_mut_bytes()),
+                    IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
+                ])
+                .await
+            {
                 Ok(len) => {
                     if len < mem::size_of::<fuse_in_header>() {
                         return Err(io::Error::new(
@@ -355,19 +359,21 @@ impl Session {
     }
 }
 
-fn init_session<T>(init_out: &mut fuse_init_out, mut conn: T) -> io::Result<()>
+async fn init_session<T>(init_out: &mut fuse_init_out, mut conn: T) -> io::Result<()>
 where
-    T: io::Read + io::Write,
+    T: AsyncRead + AsyncWrite + Unpin,
 {
     let mut header = fuse_in_header::default();
     let bufsize = pagesize() * MAX_MAX_PAGES;
     let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
 
     for _ in 0..10 {
-        let len = conn.read_vectored(&mut [
-            io::IoSliceMut::new(header.as_mut_bytes()),
-            io::IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
-        ])?;
+        let len = conn
+            .read_vectored(&mut [
+                io::IoSliceMut::new(header.as_mut_bytes()),
+                io::IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
+            ])
+            .await?;
         if len < mem::size_of::<fuse_in_header>() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -409,7 +415,8 @@ where
                         minor: FUSE_KERNEL_MINOR_VERSION,
                         ..Default::default()
                     };
-                    write_bytes(&mut conn, Reply::new(header.unique, 0, init_out.as_bytes()))?;
+                    write_bytes(&mut conn, Reply::new(header.unique, 0, init_out.as_bytes()))
+                        .await?;
                     continue;
                 }
 
@@ -420,7 +427,7 @@ where
                         init_in.major,
                         init_in.minor
                     );
-                    write_bytes(&mut conn, Reply::new(header.unique, libc::EPROTO, ()))?;
+                    write_bytes(&mut conn, Reply::new(header.unique, libc::EPROTO, ())).await?;
                     continue;
                 }
 
@@ -453,7 +460,7 @@ where
                     init_out.congestion_threshold
                 );
                 tracing::debug!("  time_gran = {}", init_out.time_gran);
-                write_bytes(&mut conn, Reply::new(header.unique, 0, init_out.as_bytes()))?;
+                write_bytes(&mut conn, Reply::new(header.unique, 0, init_out.as_bytes())).await?;
 
                 init_out.flags |= readonly_flags;
 
@@ -465,7 +472,7 @@ where
                     "ignoring an operation before init (opcode={:?})",
                     header.opcode
                 );
-                write_bytes(&mut conn, Reply::new(header.unique, libc::EIO, ()))?;
+                write_bytes(&mut conn, Reply::new(header.unique, libc::EIO, ())).await?;
                 continue;
             }
         }
@@ -530,19 +537,19 @@ impl Request {
 }
 
 impl Session {
-    pub fn reply<T, B>(&self, conn: T, req: &Request, arg: B) -> io::Result<()>
+    pub async fn reply<T, B>(&self, conn: T, req: &Request, arg: B) -> io::Result<()>
     where
-        T: io::Write,
+        T: AsyncWrite + Unpin,
         B: Bytes,
     {
-        write_bytes(conn, Reply::new(req.unique(), 0, arg))
+        write_bytes(conn, Reply::new(req.unique(), 0, arg)).await
     }
 
-    pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
+    pub async fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
     where
-        T: io::Write,
+        T: AsyncWrite + Unpin,
     {
-        write_bytes(conn, Reply::new(req.unique(), code, ()))
+        write_bytes(conn, Reply::new(req.unique(), code, ())).await
     }
 }
 
@@ -583,9 +590,9 @@ impl<'op> BufRead for Data<'op> {
 
 impl Session {
     /// Notify the cache invalidation about an inode to the kernel.
-    pub fn inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
+    pub async fn inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
     where
-        T: io::Write,
+        T: AsyncWrite + Unpin,
     {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_inval_inode_out>(),
@@ -602,7 +609,8 @@ impl Session {
                 },
                 arg: fuse_notify_inval_inode_out { ino, off, len },
             },
-        );
+        )
+        .await;
 
         struct InvalInode {
             header: fuse_out_header,
@@ -625,9 +633,14 @@ impl Session {
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
-    pub fn inval_entry<T>(&self, conn: T, parent: u64, name: impl AsRef<OsStr>) -> io::Result<()>
+    pub async fn inval_entry<T>(
+        &self,
+        conn: T,
+        parent: u64,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
     where
-        T: io::Write,
+        T: AsyncWrite + Unpin,
     {
         let namelen = u32::try_from(name.as_ref().len()).expect("provided name is too long");
 
@@ -654,7 +667,8 @@ impl Session {
                 },
                 name,
             },
-        );
+        )
+        .await;
 
         struct InvalEntry<T>
         where
@@ -691,7 +705,7 @@ impl Session {
     /// Additionally, when the provided `child` inode matches the inode
     /// in the dentry cache, the inotify will inform the deletion to
     /// watchers if exists.
-    pub fn delete<T>(
+    pub async fn delete<T>(
         &self,
         conn: T,
         parent: u64,
@@ -699,7 +713,7 @@ impl Session {
         name: impl AsRef<OsStr>,
     ) -> io::Result<()>
     where
-        T: io::Write,
+        T: AsyncWrite + Unpin,
     {
         let namelen = u32::try_from(name.as_ref().len()).expect("provided name is too long");
 
@@ -727,7 +741,8 @@ impl Session {
                 },
                 name,
             },
-        );
+        )
+        .await;
 
         struct Delete<T>
         where
@@ -759,9 +774,9 @@ impl Session {
     }
 
     /// Push the data in an inode for updating the kernel cache.
-    pub fn store<T, B>(&self, conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
+    pub async fn store<T, B>(&self, conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
     where
-        T: io::Write,
+        T: AsyncWrite + Unpin,
         B: Bytes,
     {
         let size = u32::try_from(data.size()).expect("provided data is too large");
@@ -789,7 +804,8 @@ impl Session {
                 },
                 data,
             },
-        );
+        )
+        .await;
 
         struct Store<T>
         where
@@ -820,9 +836,9 @@ impl Session {
     }
 
     /// Retrieve data in an inode from the kernel cache.
-    pub fn retrieve<T>(&self, conn: T, ino: u64, offset: u64, size: u32) -> io::Result<u64>
+    pub async fn retrieve<T>(&self, conn: T, ino: u64, offset: u64, size: u32) -> io::Result<u64>
     where
-        T: io::Write,
+        T: AsyncWrite + Unpin,
     {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_retrieve_out>(),
@@ -848,7 +864,8 @@ impl Session {
                     padding: 0,
                 },
             },
-        )?;
+        )
+        .await?;
 
         return Ok(notify_unique);
 
@@ -873,9 +890,9 @@ impl Session {
     }
 
     /// Send I/O readiness to the kernel.
-    pub fn poll_wakeup<T>(&self, conn: T, kh: u64) -> io::Result<()>
+    pub async fn poll_wakeup<T>(&self, conn: T, kh: u64) -> io::Result<()>
     where
-        T: io::Write,
+        T: AsyncWrite + Unpin,
     {
         let total_len = u32::try_from(
             mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_poll_wakeup_out>(),
@@ -892,7 +909,8 @@ impl Session {
                 },
                 arg: fuse_notify_poll_wakeup_out { kh },
             },
-        );
+        )
+        .await;
 
         struct PollWakeup {
             header: fuse_out_header,
@@ -961,9 +979,9 @@ where
 }
 
 #[inline]
-fn write_bytes<W, T>(mut writer: W, bytes: T) -> io::Result<()>
+async fn write_bytes<W, T>(mut writer: W, bytes: T) -> io::Result<()>
 where
-    W: io::Write,
+    W: AsyncWrite + Unpin,
     T: Bytes,
 {
     let size = bytes.size();
@@ -981,7 +999,7 @@ where
             });
             let vec = unsafe { slice_assume_init_ref(&vec[..]) };
 
-            written = writer.write_vectored(vec)?;
+            written = writer.write_vectored(vec).await?;
         }};
     }
 
@@ -1009,7 +1027,7 @@ where
                 vec.set_len(count);
             }
 
-            written = writer.write_vectored(&*vec)?;
+            written = writer.write_vectored(&*vec).await?;
         }
     }
 
@@ -1069,40 +1087,70 @@ const fn default_init_out() -> fuse_init_out {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem;
+    use futures_executor::block_on;
+    use futures_util::io::AllowStdIo;
+    use std::{
+        mem,
+        pin::Pin,
+        task::{self, Poll},
+    };
 
-    struct Unite<R, W> {
-        reader: R,
-        writer: W,
-    }
-
-    impl<R, W> io::Read for Unite<R, W>
-    where
-        R: io::Read,
-    {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            self.reader.read(buf)
-        }
-
-        fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-            self.reader.read_vectored(bufs)
+    pin_project_lite::pin_project! {
+        struct Unite<R, W> {
+            #[pin]
+            reader: R,
+            #[pin]
+            writer: W,
         }
     }
 
-    impl<R, W> io::Write for Unite<R, W>
+    impl<R, W> AsyncRead for Unite<R, W>
     where
-        W: io::Write,
+        R: AsyncRead,
     {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.writer.write(buf)
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            self.project().reader.poll_read(cx, buf)
         }
 
-        fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-            self.writer.write_vectored(bufs)
+        fn poll_read_vectored(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            bufs: &mut [IoSliceMut<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.project().reader.poll_read_vectored(cx, bufs)
+        }
+    }
+
+    impl<R, W> AsyncWrite for Unite<R, W>
+    where
+        W: AsyncWrite,
+    {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.project().writer.poll_write(cx, buf)
         }
 
-        fn flush(&mut self) -> io::Result<()> {
-            self.writer.flush()
+        fn poll_write_vectored(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            bufs: &[IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.project().writer.poll_write_vectored(cx, bufs)
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+            self.project().writer.poll_flush(cx)
+        }
+
+        fn poll_close(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<io::Result<()>> {
+            self.project().writer.poll_close(cx)
         }
     }
 
@@ -1137,13 +1185,13 @@ mod tests {
         let mut output = Vec::<u8>::new();
 
         let mut init_out = default_init_out();
-        init_session(
+        block_on(init_session(
             &mut init_out,
             Unite {
-                reader: &input[..],
-                writer: &mut output,
+                reader: AllowStdIo::new(&input[..]),
+                writer: AllowStdIo::new(&mut output),
             },
-        )
+        ))
         .expect("initialization failed");
 
         let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
@@ -1220,7 +1268,7 @@ mod tests {
     #[test]
     fn send_msg_empty() {
         let mut buf = vec![0u8; 0];
-        write_bytes(&mut buf, Reply::new(42, -4, &[])).unwrap();
+        block_on(write_bytes(&mut buf, Reply::new(42, -4, &[]))).unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -1233,7 +1281,7 @@ mod tests {
     #[test]
     fn send_msg_single_data() {
         let mut buf = vec![0u8; 0];
-        write_bytes(&mut buf, Reply::new(42, 0, "hello")).unwrap();
+        block_on(write_bytes(&mut buf, Reply::new(42, 0, "hello"))).unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -1253,7 +1301,7 @@ mod tests {
             "message.".as_ref(),
         ];
         let mut buf = vec![0u8; 0];
-        write_bytes(&mut buf, Reply::new(26, 0, payload)).unwrap();
+        block_on(write_bytes(&mut buf, Reply::new(26, 0, payload))).unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
