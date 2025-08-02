@@ -2,9 +2,10 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
+    mount::{mount, MountOptions},
     op,
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
-    Connection, KernelConfig, MountOptions, Operation, Request, Session,
+    Connection, KernelConfig, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -31,7 +32,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let mut conn = MountOptions::default().mount(mountpoint)?;
+    let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
+    let mut conn = Connection::from(conn);
     let session = Session::init(&mut conn, KernelConfig::default())?;
 
     let mut fs = MemFS::new(&session, &mut conn);
@@ -42,6 +44,8 @@ fn main() -> Result<()> {
 
         fs.handle_request(&req)?;
     }
+
+    fusermount.unmount()?;
 
     Ok(())
 }

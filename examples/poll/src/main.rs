@@ -1,6 +1,7 @@
 use polyfuse::{
+    mount::{mount, MountOptions},
     reply::{AttrOut, OpenOut, PollOut},
-    Connection, MountOptions, Operation, Request, Session,
+    Connection, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -30,7 +31,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
+    let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
+    let conn = Arc::new(Connection::from(conn));
     let session = Session::init(&*conn, Default::default()).map(Arc::new)?;
 
     let fs = Arc::new(PollFS::new(session.clone(), wakeup_interval));
@@ -43,6 +45,8 @@ fn main() -> Result<()> {
             Ok(())
         });
     }
+
+    fusermount.unmount()?;
 
     Ok(())
 }

@@ -8,8 +8,9 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
+    mount::{mount, MountOptions},
     reply::{AttrOut, FileAttr, OpenOut},
-    Connection, KernelConfig, MountOptions, Operation, Session,
+    Connection, KernelConfig, Operation, Session,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
@@ -43,7 +44,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let conn = MountOptions::default().mount(mountpoint).map(Arc::new)?;
+    let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
+    let conn = Arc::new(Connection::from(conn));
     let session = Session::init(&*conn, KernelConfig::default()).map(Arc::new)?;
 
     let heartbeat = Arc::new(Heartbeat::now());
@@ -138,6 +140,8 @@ fn main() -> Result<()> {
             Ok(())
         });
     }
+
+    fusermount.unmount()?;
 
     Ok(())
 }

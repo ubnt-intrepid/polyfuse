@@ -4,11 +4,12 @@
 mod fs;
 
 use polyfuse::{
+    mount::{mount, MountOptions},
     op,
     reply::{
         AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
-    KernelConfig, MountOptions, Operation, Session,
+    Connection, KernelConfig, Operation, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -48,11 +49,14 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let conn = MountOptions::default()
-        .mount_option("default_permissions")
-        .mount_option("fsname=passthrough")
-        .mount(mountpoint)
-        .map(Arc::new)?;
+    let (conn, fusermount) = mount(
+        mountpoint,
+        MountOptions::default()
+            .mount_option("default_permissions")
+            .mount_option("fsname=passthrough")
+            .clone(),
+    )?;
+    let conn = Arc::new(Connection::from(conn));
 
     // TODO: splice read/write
     let session = Session::init(&*conn, {
@@ -161,6 +165,8 @@ fn main() -> Result<()> {
             Ok(())
         });
     }
+
+    fusermount.unmount()?;
 
     Ok(())
 }
