@@ -4,7 +4,9 @@ on:
   pull_request:
     types:
       - opened
+      - reopened
       - synchronize
+      - ready_for_review
     branches:
       - main
   push:
@@ -18,6 +20,7 @@ env:
 jobs:
   Test:
     runs-on: ubuntu-24.04
+    if: github.event.pull_request.draft == false
     steps:
     - uses: actions/checkout@v4
       with:
