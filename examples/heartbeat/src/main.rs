@@ -9,7 +9,7 @@
 
 use polyfuse::{
     reply::{AttrOut, FileAttr, OpenOut},
-    Connection, KernelConfig, MountOptions, Operation, Session,
+    Device, KernelConfig, MountOptions, Operation, Session,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
@@ -180,7 +180,7 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    fn notify_store(&self, conn: &Connection, notifier: &Session) -> io::Result<()> {
+    fn notify_store(&self, conn: &Device, notifier: &Session) -> io::Result<()> {
         let inner = self.inner.lock().unwrap();
         let content = &inner.content;
 
@@ -206,7 +206,7 @@ impl Heartbeat {
         Ok(())
     }
 
-    fn notify_inval_inode(&self, conn: &Connection, notifier: &Session) -> io::Result<()> {
+    fn notify_inval_inode(&self, conn: &Device, notifier: &Session) -> io::Result<()> {
         tracing::info!("send notify_invalidate_inode");
         notifier.inval_inode(conn, ROOT_INO, 0, 0)?;
         Ok(())

@@ -1,6 +1,6 @@
 use polyfuse::{
     reply::{AttrOut, OpenOut, PollOut},
-    Connection, MountOptions, Operation, Request, Session,
+    Device, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -65,7 +65,7 @@ impl PollFS {
         }
     }
 
-    fn handle_request(&self, conn: &Arc<Connection>, req: &Request) -> Result<()> {
+    fn handle_request(&self, conn: &Arc<Device>, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 

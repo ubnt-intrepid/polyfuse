@@ -9,7 +9,7 @@
 
 use polyfuse::{
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Connection, KernelConfig, MountOptions, Operation, Request, Session,
+    Device, KernelConfig, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -121,7 +121,7 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    fn heartbeat(&self, conn: &Connection, notifier: Option<Arc<Session>>) -> Result<()> {
+    fn heartbeat(&self, conn: &Device, notifier: Option<Arc<Session>>) -> Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
         let _enter = span.enter();
 
@@ -148,7 +148,7 @@ impl Heartbeat {
         }
     }
 
-    fn handle_request(&self, session: &Session, conn: &Connection, req: &Request) -> Result<()> {
+    fn handle_request(&self, session: &Session, conn: &Device, req: &Request) -> Result<()> {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 

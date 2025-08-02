@@ -4,7 +4,7 @@
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
-    Connection, KernelConfig, MountOptions, Operation, Request, Session,
+    Device, KernelConfig, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -219,14 +219,14 @@ struct DirHandle {
 
 struct MemFS<'a> {
     session: &'a Session,
-    conn: &'a mut Connection,
+    conn: &'a mut Device,
     inodes: INodeTable,
     dir_handles: Slab<DirHandle>,
     ttl: Duration,
 }
 
 impl<'a> MemFS<'a> {
-    fn new(session: &'a Session, conn: &'a mut Connection) -> Self {
+    fn new(session: &'a Session, conn: &'a mut Device) -> Self {
         let inodes = INodeTable::new();
         inodes.vacant_entry().unwrap().insert(INode {
             attr: {

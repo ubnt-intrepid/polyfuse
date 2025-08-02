@@ -4,7 +4,7 @@
 use polyfuse::{
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Connection, KernelConfig, MountOptions, Operation, Request, Session,
+    Device, KernelConfig, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -99,7 +99,7 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    fn lookup(&self, conn: &mut Connection, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
+    fn lookup(&self, conn: &mut Device, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -113,7 +113,7 @@ impl Hello {
         }
     }
 
-    fn getattr(&self, conn: &mut Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
+    fn getattr(&self, conn: &mut Device, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
@@ -127,7 +127,7 @@ impl Hello {
         self.session.reply(conn, req, out)
     }
 
-    fn read(&self, conn: &mut Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {
+    fn read(&self, conn: &mut Device, req: &Request, op: op::Read<'_>) -> io::Result<()> {
         match op.ino() {
             HELLO_INO => (),
             ROOT_INO => return self.session.reply_error(conn, req, libc::EISDIR),
@@ -153,7 +153,7 @@ impl Hello {
         })
     }
 
-    fn readdir(&self, conn: &mut Connection, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
+    fn readdir(&self, conn: &mut Device, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {
         if op.ino() != ROOT_INO {
             return self.session.reply_error(conn, req, libc::ENOTDIR);
         }

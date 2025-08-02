@@ -1,5 +1,5 @@
 use polyfuse::{
-    op, reply::AttrOut, Connection, KernelConfig, MountOptions, Operation, Request, Session,
+    op, reply::AttrOut, Device, KernelConfig, MountOptions, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let mut conn = MountOptions::default().mount(mountpoint)?;
+    let mut conn = Device::mount(mountpoint, MountOptions::default())?;
 
     // Initialize the FUSE session.
     let session = Session::init(&mut conn, KernelConfig::default())?;
@@ -38,7 +38,7 @@ fn main() -> Result<()> {
 
 fn getattr(
     session: &Session,
-    conn: &mut Connection,
+    conn: &mut Device,
     req: &Request,
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
@@ -58,12 +58,7 @@ fn getattr(
     session.reply(conn, &req, out)
 }
 
-fn read(
-    session: &Session,
-    conn: &mut Connection,
-    req: &Request,
-    op: op::Read<'_>,
-) -> io::Result<()> {
+fn read(session: &Session, conn: &mut Device, req: &Request, op: op::Read<'_>) -> io::Result<()> {
     if op.ino() != 1 {
         return session.reply_error(conn, req, libc::ENOENT);
     }
