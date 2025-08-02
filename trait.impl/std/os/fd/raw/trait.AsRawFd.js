@@ -1,0 +1,3 @@
+(function() {var implementors = {
+"polyfuse":[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.78.0/std/os/fd/raw/trait.AsRawFd.html\" title=\"trait std::os::fd::raw::AsRawFd\">AsRawFd</a> for <a class=\"struct\" href=\"polyfuse/struct.ClonedConnection.html\" title=\"struct polyfuse::ClonedConnection\">ClonedConnection</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.78.0/std/os/fd/raw/trait.AsRawFd.html\" title=\"trait std::os::fd::raw::AsRawFd\">AsRawFd</a> for <a class=\"struct\" href=\"polyfuse/struct.Connection.html\" title=\"struct polyfuse::Connection\">Connection</a>"]]
+};if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
