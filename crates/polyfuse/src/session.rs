@@ -315,13 +315,12 @@ impl Session {
         T: io::Read + io::Write,
     {
         let mut header = fuse_in_header::default();
-        let bufsize = self.bufsize - mem::size_of::<fuse_in_header>();
-        let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
+        let mut arg = vec![0u8; self.bufsize - mem::size_of::<fuse_in_header>()];
 
         loop {
             match conn.read_vectored(&mut [
                 io::IoSliceMut::new(header.as_mut_bytes()),
-                io::IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
+                io::IoSliceMut::new(&mut arg[..]),
             ]) {
                 Ok(len) => {
                     if len < mem::size_of::<fuse_in_header>() {
@@ -360,13 +359,12 @@ where
     T: io::Read + io::Write,
 {
     let mut header = fuse_in_header::default();
-    let bufsize = pagesize() * MAX_MAX_PAGES;
-    let mut arg = vec![0u64; bufsize.div_ceil(mem::size_of::<u64>())];
+    let mut arg = vec![0u8; pagesize() * MAX_MAX_PAGES];
 
     for _ in 0..10 {
         let len = conn.read_vectored(&mut [
             io::IoSliceMut::new(header.as_mut_bytes()),
-            io::IoSliceMut::new(bytemuck::cast_slice_mut(&mut arg[..])),
+            io::IoSliceMut::new(&mut arg[..]),
         ])?;
         if len < mem::size_of::<fuse_in_header>() {
             return Err(io::Error::new(
@@ -375,7 +373,7 @@ where
             ));
         }
 
-        let mut decoder = Decoder::new(bytemuck::cast_slice(&arg[..]));
+        let mut decoder = Decoder::new(&arg[..]);
 
         match fuse_opcode::try_from(header.opcode) {
             Ok(fuse_opcode::FUSE_INIT) => {
@@ -482,7 +480,7 @@ where
 /// Context about an incoming FUSE request.
 pub struct Request {
     header: fuse_in_header,
-    arg: Vec<u64>,
+    arg: Vec<u8>,
 }
 
 impl Request {
@@ -516,7 +514,7 @@ impl Request {
             return Ok(Operation::unknown());
         }
 
-        let arg: &[u8] = bytemuck::cast_slice(&self.arg[..]);
+        let arg: &[u8] = &self.arg[..];
 
         let (arg, data) = match fuse_opcode::try_from(self.header.opcode).ok() {
             Some(fuse_opcode::FUSE_WRITE) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
