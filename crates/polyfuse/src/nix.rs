@@ -55,17 +55,3 @@ pub fn write_vectored(fd: &impl AsRawFd, bufs: &[io::IoSlice<'_>]) -> io::Result
     };
     Ok(res as usize)
 }
-
-pub enum ForkResult {
-    Parent { child_pid: c_int },
-    Child,
-}
-
-pub unsafe fn fork() -> io::Result<ForkResult> {
-    let pid = syscall! { fork() };
-    match pid {
-        -1 => Err(io::Error::last_os_error()),
-        0 => Ok(ForkResult::Child),
-        pid => Ok(ForkResult::Parent { child_pid: pid }),
-    }
-}
