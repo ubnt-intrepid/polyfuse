@@ -3,6 +3,7 @@ use crate::{
     decoder::Decoder,
     op::{DecodeError, Operation},
 };
+use crossbeam_queue::SegQueue;
 use polyfuse_kernel::*;
 use std::{
     cmp,
@@ -247,6 +248,7 @@ pub struct Session {
     bufsize: usize,
     exited: AtomicBool,
     notify_unique: AtomicU64,
+    pending_requests: SegQueue<Request>,
 }
 
 impl fmt::Debug for Session {
@@ -281,7 +283,7 @@ impl Session {
     {
         let KernelConfig { mut init_out } = config;
 
-        init_session(&mut init_out, conn)?;
+        let pending_requests = init_session(&mut init_out, conn)?;
         let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;
 
         Ok(Self {
@@ -289,6 +291,7 @@ impl Session {
             bufsize,
             exited: AtomicBool::new(false),
             notify_unique: AtomicU64::new(0),
+            pending_requests,
         })
     }
 
@@ -314,6 +317,10 @@ impl Session {
     where
         T: io::Read + io::Write,
     {
+        if let Some(req) = self.pending_requests.pop() {
+            return Ok(Some(req));
+        }
+
         let mut header = fuse_in_header::default();
         let mut arg = vec![0u8; self.bufsize - mem::size_of::<fuse_in_header>()];
 
@@ -354,14 +361,17 @@ impl Session {
     }
 }
 
-fn init_session<T>(init_out: &mut fuse_init_out, mut conn: T) -> io::Result<()>
+fn init_session<T>(init_out: &mut fuse_init_out, mut conn: T) -> io::Result<SegQueue<Request>>
 where
     T: io::Read + io::Write,
 {
-    let mut header = fuse_in_header::default();
-    let mut arg = vec![0u8; pagesize() * MAX_MAX_PAGES];
+    let default_bufsize = pagesize() * MAX_MAX_PAGES;
 
-    for _ in 0..10 {
+    let mut header = fuse_in_header::default();
+    let mut arg = vec![0u8; default_bufsize];
+    let pending_requests = SegQueue::new();
+
+    loop {
         let len = conn.read_vectored(&mut [
             io::IoSliceMut::new(header.as_mut_bytes()),
             io::IoSliceMut::new(&mut arg[..]),
@@ -373,10 +383,9 @@ where
             ));
         }
 
-        let mut decoder = Decoder::new(&arg[..]);
-
         match fuse_opcode::try_from(header.opcode) {
             Ok(fuse_opcode::FUSE_INIT) => {
+                let mut decoder = Decoder::new(&arg[..]);
                 let init_in = decoder
                     .fetch::<fuse_init_in>() //
                     .map_err(|_| {
@@ -455,24 +464,34 @@ where
 
                 init_out.flags |= readonly_flags;
 
-                return Ok(());
+                return Ok(pending_requests);
             }
 
-            _ => {
-                tracing::warn!(
-                    "ignoring an operation before init (opcode={:?})",
-                    header.opcode
+            Ok(_opcode) => {
+                tracing::debug!(
+                    "The request received before FUSE_INIT stores the internal queue (unique={}, opcode={})",
+                    header.unique,
+                    header.opcode,
                 );
-                write_bytes(&mut conn, Reply::new(header.unique, libc::EIO, ()))?;
+                let header = mem::replace(&mut header, fuse_in_header::default());
+                // FIXME: サイズが小さいリクエストで Vec<u8> まるごと複製するのはさすがに重い。コピーを最小限にしたい
+                let mut arg = mem::replace(&mut arg, vec![0u8; default_bufsize]);
+                arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
+                pending_requests.push(Request { header, arg });
+                continue;
+            }
+
+            Err(_) => {
+                tracing::warn!(
+                    "This request is not supported by the polyfuse for now (unique={}, opcode={})",
+                    header.unique,
+                    header.opcode,
+                );
+                write_bytes(&mut conn, Reply::new(header.unique, libc::ENOSYS, ()))?;
                 continue;
             }
         }
     }
-
-    Err(io::Error::new(
-        io::ErrorKind::ConnectionRefused,
-        "session initialization is aborted",
-    ))
 }
 
 // ==== Request ====
@@ -1135,7 +1154,7 @@ mod tests {
         let mut output = Vec::<u8>::new();
 
         let mut init_out = default_init_out();
-        init_session(
+        let pending_requests = init_session(
             &mut init_out,
             Unite {
                 reader: &input[..],
@@ -1143,6 +1162,8 @@ mod tests {
             },
         )
         .expect("initialization failed");
+
+        assert!(pending_requests.is_empty());
 
         let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
 
