@@ -8,11 +8,9 @@ use std::{
         unix::{net::UnixStream, prelude::*},
     },
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
+    process::{Child, Command},
     ptr,
 };
-
-use crate::nix::{self, ForkResult};
 
 const FUSERMOUNT_PROG: &str = "/usr/bin/fusermount";
 const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
@@ -78,7 +76,7 @@ fn fusermount_path(opts: &MountOptions) -> &Path {
 
 #[derive(Debug)]
 pub struct Fusermount {
-    inner: Option<FusermountInner>,
+    child: Option<PipedChild>,
     mountpoint: PathBuf,
     mountopts: MountOptions,
 }
@@ -89,10 +87,10 @@ impl Fusermount {
     }
 
     fn unmount_(&mut self) -> io::Result<()> {
-        if let Some(fusermount) = self.inner.take() {
+        if let Some(child) = self.child.take() {
             // この場合、fusermount の終了にともない umount(2) が暗黙的に呼び出される。
             // なので、fd受信用の UnixStream を閉じてバックグラウンドの fusermount を終了する。
-            let _st = fusermount.wait()?;
+            child.wait()?;
         } else {
             // fusermount は fd を受信した直後に終了しているので、明示的に umount(2) を呼ぶ必要がある。
             // 非特権プロセスなので `fusermount -u /path/to/mountpoint` を呼ぶことで間接的にアンマウントを行う
@@ -109,25 +107,21 @@ impl Drop for Fusermount {
 }
 
 #[derive(Debug)]
-struct FusermountInner {
-    pid: c_int,
+struct PipedChild {
+    child: Child,
     input: UnixStream,
 }
 
-impl FusermountInner {
-    fn wait(mut self) -> io::Result<ExitStatus> {
+impl PipedChild {
+    fn wait(mut self) -> io::Result<()> {
         drop(self.input);
-        let mut status = 0;
-        syscall! { waitpid(self.pid, &mut status, 0) };
-        self.pid = -1;
-        Ok(ExitStatus::from_raw(status))
+        let _st = self.child.wait()?;
+        Ok(())
     }
 }
 
 /// Acquire the connection to the FUSE kernel driver associated with the specified mountpoint.
 pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedFd, Fusermount)> {
-    let (input, output) = UnixStream::pair()?;
-
     let mut fusermount = Command::new(fusermount_path(&mountopts));
 
     let opts = mountopts
@@ -152,61 +146,45 @@ pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedF
 
     fusermount.arg("--").arg(&mountpoint);
 
+    let (input, output) = UnixStream::pair()?;
+    let output = output.into_raw_fd();
+
     fusermount.env(
         mountopts
             .fuse_comm_fd
             .as_deref()
             .unwrap_or_else(|| OsStr::new(FUSE_COMMFD_ENV)),
-        output.as_raw_fd().to_string(),
+        output.to_string(),
     );
 
-    match unsafe { nix::fork()? } {
-        ForkResult::Child => {
-            // Only async-signal-safe functions are allowed to call here.
-            // in a multi threaded situation.
-
-            let output = output.into_raw_fd();
-            unsafe { libc::fcntl(output, libc::F_SETFD, 0) };
-
-            // Assumes that the UnixStream destructor only calls close(2).
-            drop(input);
-
-            let _err = fusermount.exec();
-
-            // Exit immediately since the process may be in a "broken state".
-            // https://doc.rust-lang.org/stable/std/os/unix/process/trait.CommandExt.html#notes
-            unsafe {
-                libc::_exit(1);
-            }
-        }
-
-        ForkResult::Parent { child_pid, .. } => {
-            drop(output);
-
-            let fd = receive_fd(&input)?;
-
-            let mut child = Some(FusermountInner {
-                pid: child_pid,
-                input,
-            });
-            if !mountopts.auto_unmount {
-                // When auto_unmount is not specified, `fusermount` exits immediately
-                // after sending the file descriptor and thus we need to wait until
-                // the command is exited.
-                let child = child.take().unwrap();
-                let _st = child.wait()?;
-            }
-
-            Ok((
-                fd,
-                Fusermount {
-                    inner: child,
-                    mountpoint,
-                    mountopts,
-                },
-            ))
-        }
+    unsafe {
+        fusermount.pre_exec(move || {
+            syscall! { fcntl(output, libc::F_SETFD, 0) };
+            Ok(())
+        });
     }
+
+    let child = fusermount.spawn()?;
+
+    let fd = receive_fd(&input)?;
+
+    let mut child = Some(PipedChild { child, input });
+    if !mountopts.auto_unmount {
+        // When auto_unmount is not specified, `fusermount` exits immediately
+        // after sending the file descriptor and thus we need to wait until
+        // the command is exited.
+        let child = child.take().unwrap();
+        child.wait()?;
+    }
+
+    Ok((
+        fd,
+        Fusermount {
+            child,
+            mountpoint,
+            mountopts,
+        },
+    ))
 }
 
 fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
