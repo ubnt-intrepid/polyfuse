@@ -318,6 +318,7 @@ impl Session {
         T: io::Read + io::Write,
     {
         if let Some(req) = self.pending_requests.pop() {
+            tracing::debug!("pop a pending request from the queue");
             return Ok(Some(req));
         }
 
@@ -336,18 +337,25 @@ impl Session {
                             "dequeued request message is too short",
                         ));
                     }
-                    arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
 
                     match fuse_opcode::try_from(header.opcode) {
-                        Ok(opcode) => {
-                            break Ok(Some(Request {
-                                header,
-                                opcode,
-                                arg,
-                            }));
+                        Ok(fuse_opcode::FUSE_INIT) => {
+                            // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
+                            tracing::error!("unexpected FUSE_INIT request received");
+                            continue;
                         }
 
-                        Err(_err) => {
+                        Ok(fuse_opcode::FUSE_DESTROY) => {
+                            // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
+                            tracing::debug!("FUSE_DESTROY received");
+                            self.exit();
+                            return Ok(None);
+                        }
+
+                        Ok(fuse_opcode::FUSE_IOCTL)
+                        | Ok(fuse_opcode::FUSE_LSEEK)
+                        | Ok(fuse_opcode::CUSE_INIT)
+                        | Err(..) => {
                             tracing::warn!(
                                 "unsupported opcode (unique={}, opcode={})",
                                 header.unique,
@@ -355,6 +363,21 @@ impl Session {
                             );
                             write_bytes(&mut conn, Reply::new(header.unique, libc::ENOSYS, ()))?;
                             continue;
+                        }
+
+                        Ok(opcode) => {
+                            // FIXME: impl fmt::Debug for fuse_opcode
+                            tracing::debug!(
+                                "Got a request (unique={}, opcode={})",
+                                header.unique,
+                                header.opcode
+                            );
+                            arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
+                            break Ok(Some(Request {
+                                header,
+                                opcode,
+                                arg,
+                            }));
                         }
                     }
                 }
