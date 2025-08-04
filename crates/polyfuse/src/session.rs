@@ -336,11 +336,27 @@ impl Session {
                             "dequeued request message is too short",
                         ));
                     }
-                    unsafe {
-                        arg.set_len(len - mem::size_of::<fuse_in_header>());
-                    }
+                    arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
 
-                    break;
+                    match fuse_opcode::try_from(header.opcode) {
+                        Ok(opcode) => {
+                            break Ok(Some(Request {
+                                header,
+                                opcode,
+                                arg,
+                            }));
+                        }
+
+                        Err(_err) => {
+                            tracing::warn!(
+                                "unsupported opcode (unique={}, opcode={})",
+                                header.unique,
+                                header.opcode
+                            );
+                            write_bytes(&mut conn, Reply::new(header.unique, libc::ENOSYS, ()))?;
+                            continue;
+                        }
+                    }
                 }
 
                 Err(err) => match err.raw_os_error() {
@@ -356,8 +372,6 @@ impl Session {
                 },
             }
         }
-
-        Ok(Some(Request { header, arg }))
     }
 }
 
@@ -467,7 +481,7 @@ where
                 return Ok(pending_requests);
             }
 
-            Ok(_opcode) => {
+            Ok(opcode) => {
                 tracing::debug!(
                     "The request received before FUSE_INIT stores the internal queue (unique={}, opcode={})",
                     header.unique,
@@ -477,7 +491,11 @@ where
                 // FIXME: サイズが小さいリクエストで Vec<u8> まるごと複製するのはさすがに重い。コピーを最小限にしたい
                 let mut arg = mem::replace(&mut arg, vec![0u8; default_bufsize]);
                 arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
-                pending_requests.push(Request { header, arg });
+                pending_requests.push(Request {
+                    header,
+                    opcode,
+                    arg,
+                });
                 continue;
             }
 
@@ -499,6 +517,7 @@ where
 /// Context about an incoming FUSE request.
 pub struct Request {
     header: fuse_in_header,
+    opcode: fuse_opcode,
     arg: Vec<u8>,
 }
 
@@ -538,7 +557,7 @@ impl Request {
             _ => (arg, &[] as &[_]),
         };
 
-        Operation::decode(&self.header, arg, Data { data })
+        Operation::decode(&self.header, self.opcode, arg, Data { data })
     }
 }
 
