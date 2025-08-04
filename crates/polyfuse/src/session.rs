@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, FillBytes},
     decoder::Decoder,
-    op::{DecodeError, Operation},
+    op::Operation,
 };
 use crossbeam_queue::SegQueue;
 use polyfuse_kernel::*;
@@ -528,7 +528,10 @@ impl Request {
     }
 
     /// Decode the argument of this request.
-    pub fn operation(&self, session: &Session) -> Result<Operation<'_, Data<'_>>, DecodeError> {
+    pub fn operation(
+        &self,
+        session: &Session,
+    ) -> Result<Operation<'_, Data<'_>>, crate::op::Error> {
         if session.exited() {
             return Ok(Operation::unknown());
         }

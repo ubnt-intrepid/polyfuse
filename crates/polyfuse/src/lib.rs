@@ -17,6 +17,7 @@ pub mod reply;
 
 pub use crate::{
     conn::Connection,
+    decoder::DecodeError,
     op::Operation,
     session::{Data, KernelConfig, Request, Session},
 };

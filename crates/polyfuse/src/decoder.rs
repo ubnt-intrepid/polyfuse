@@ -1,10 +1,15 @@
 use std::{ffi::OsStr, mem, os::unix::prelude::*};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
-#[derive(Debug)]
-pub(crate) enum DecodeError {
+#[derive(Debug, thiserror::Error)]
+pub enum DecodeError {
+    #[error("unexpected eof")]
     UnexpectedEof,
+
+    #[error("missing null character")]
     MissingNulCharacter,
+
+    #[error("the unaligned pointer specified")]
     Unaligned,
 }
 
