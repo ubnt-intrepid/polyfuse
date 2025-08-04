@@ -88,7 +88,7 @@ fn main() -> Result<()> {
             let span = tracing::debug_span!("handle request", unique = req.unique());
             let _enter = span.enter();
 
-            let op = req.operation(&session)?;
+            let op = req.operation()?;
             tracing::debug!(?op);
 
             match op {

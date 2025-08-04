@@ -27,7 +27,7 @@ fn main() -> Result<()> {
 
     // Receive an incoming FUSE request from the kernel.
     while let Some(req) = session.next_request(&mut conn)? {
-        match req.operation(&session)? {
+        match req.operation()? {
             // Dispatch your callbacks to the supported operations...
             Operation::Getattr(op) => getattr(&session, &mut conn, &req, op)?,
             Operation::Read(op) => read(&session, &mut conn, &req, op)?,

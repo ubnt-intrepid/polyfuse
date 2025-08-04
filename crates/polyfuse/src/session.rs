@@ -265,7 +265,7 @@ impl Drop for Session {
 
 impl Session {
     #[inline]
-    fn exited(&self) -> bool {
+    pub fn exited(&self) -> bool {
         // FIXME: choose appropriate atomic ordering.
         self.exited.load(Ordering::SeqCst)
     }
@@ -528,14 +528,7 @@ impl Request {
     }
 
     /// Decode the argument of this request.
-    pub fn operation(
-        &self,
-        session: &Session,
-    ) -> Result<Operation<'_, Data<'_>>, crate::op::Error> {
-        if session.exited() {
-            return Ok(Operation::unknown());
-        }
-
+    pub fn operation(&self) -> Result<Operation<'_, Data<'_>>, crate::op::Error> {
         let arg: &[u8] = &self.arg[..];
 
         let (arg, data) = match fuse_opcode::try_from(self.header.opcode).ok() {

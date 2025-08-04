@@ -7,6 +7,9 @@ use std::{convert::TryFrom, ffi::OsStr, fmt, time::Duration, u32, u64};
 pub enum Error {
     #[error("during decoding: {}", _0)]
     Decode(#[from] DecodeError),
+
+    #[error("unsupported opcode")]
+    UnsupportedOpcode,
 }
 
 /// The kind of filesystem operation requested by the kernel.
@@ -51,9 +54,6 @@ pub enum Operation<'op, T> {
     Forget(Forgets<'op>),
     Interrupt(Interrupt<'op>),
     NotifyReply(NotifyReply<'op>, T),
-
-    #[doc(hidden)]
-    Unknown,
 }
 
 impl<T> fmt::Debug for Operation<'_, T>
@@ -109,18 +109,11 @@ where
                 .field("op", op)
                 .field("data", data)
                 .finish(),
-
-            _ => f.debug_struct("Unknown").finish(),
         }
     }
 }
 
 impl<'op, T> Operation<'op, T> {
-    #[inline]
-    pub(crate) fn unknown() -> Self {
-        Self::Unknown
-    }
-
     pub(crate) fn decode(
         header: &'op fuse_in_header,
         arg: &'op [u8],
@@ -381,7 +374,7 @@ impl<'op, T> Operation<'op, T> {
 
             _ => {
                 tracing::warn!("unsupported opcode: {}", header.opcode);
-                Ok(Operation::Unknown)
+                Err(Error::UnsupportedOpcode)
             }
         }
     }

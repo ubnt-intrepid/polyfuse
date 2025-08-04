@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     let fs = Hello::new(session.clone());
 
     while let Some(req) = session.next_request(&mut conn)? {
-        match req.operation(&session)? {
+        match req.operation()? {
             Operation::Lookup(op) => fs.lookup(&mut conn, &req, op)?,
             Operation::Getattr(op) => fs.getattr(&mut conn, &req, op)?,
             Operation::Read(op) => fs.read(&mut conn, &req, op)?,
