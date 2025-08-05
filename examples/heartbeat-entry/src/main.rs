@@ -156,7 +156,7 @@ impl Heartbeat {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 
-        let op = req.operation(session)?;
+        let op = req.operation()?;
         tracing::debug!(?op);
 
         match op {

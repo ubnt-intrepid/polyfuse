@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, FillBytes},
     decoder::Decoder,
-    op::{DecodeError, Operation},
+    op::Operation,
 };
 use crossbeam_queue::SegQueue;
 use polyfuse_kernel::*;
@@ -265,7 +265,7 @@ impl Drop for Session {
 
 impl Session {
     #[inline]
-    fn exited(&self) -> bool {
+    pub fn exited(&self) -> bool {
         // FIXME: choose appropriate atomic ordering.
         self.exited.load(Ordering::SeqCst)
     }
@@ -318,6 +318,7 @@ impl Session {
         T: io::Read + io::Write,
     {
         if let Some(req) = self.pending_requests.pop() {
+            tracing::debug!("pop a pending request from the queue");
             return Ok(Some(req));
         }
 
@@ -336,11 +337,49 @@ impl Session {
                             "dequeued request message is too short",
                         ));
                     }
-                    unsafe {
-                        arg.set_len(len - mem::size_of::<fuse_in_header>());
-                    }
 
-                    break;
+                    match fuse_opcode::try_from(header.opcode) {
+                        Ok(fuse_opcode::FUSE_INIT) => {
+                            // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
+                            tracing::error!("unexpected FUSE_INIT request received");
+                            continue;
+                        }
+
+                        Ok(fuse_opcode::FUSE_DESTROY) => {
+                            // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
+                            tracing::debug!("FUSE_DESTROY received");
+                            self.exit();
+                            return Ok(None);
+                        }
+
+                        Ok(fuse_opcode::FUSE_IOCTL)
+                        | Ok(fuse_opcode::FUSE_LSEEK)
+                        | Ok(fuse_opcode::CUSE_INIT)
+                        | Err(..) => {
+                            tracing::warn!(
+                                "unsupported opcode (unique={}, opcode={})",
+                                header.unique,
+                                header.opcode
+                            );
+                            write_bytes(&mut conn, Reply::new(header.unique, libc::ENOSYS, ()))?;
+                            continue;
+                        }
+
+                        Ok(opcode) => {
+                            // FIXME: impl fmt::Debug for fuse_opcode
+                            tracing::debug!(
+                                "Got a request (unique={}, opcode={})",
+                                header.unique,
+                                header.opcode
+                            );
+                            arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
+                            break Ok(Some(Request {
+                                header,
+                                opcode,
+                                arg,
+                            }));
+                        }
+                    }
                 }
 
                 Err(err) => match err.raw_os_error() {
@@ -356,8 +395,6 @@ impl Session {
                 },
             }
         }
-
-        Ok(Some(Request { header, arg }))
     }
 }
 
@@ -467,7 +504,7 @@ where
                 return Ok(pending_requests);
             }
 
-            Ok(_opcode) => {
+            Ok(opcode) => {
                 tracing::debug!(
                     "The request received before FUSE_INIT stores the internal queue (unique={}, opcode={})",
                     header.unique,
@@ -477,7 +514,11 @@ where
                 // FIXME: サイズが小さいリクエストで Vec<u8> まるごと複製するのはさすがに重い。コピーを最小限にしたい
                 let mut arg = mem::replace(&mut arg, vec![0u8; default_bufsize]);
                 arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
-                pending_requests.push(Request { header, arg });
+                pending_requests.push(Request {
+                    header,
+                    opcode,
+                    arg,
+                });
                 continue;
             }
 
@@ -499,6 +540,7 @@ where
 /// Context about an incoming FUSE request.
 pub struct Request {
     header: fuse_in_header,
+    opcode: fuse_opcode,
     arg: Vec<u8>,
 }
 
@@ -528,11 +570,7 @@ impl Request {
     }
 
     /// Decode the argument of this request.
-    pub fn operation(&self, session: &Session) -> Result<Operation<'_, Data<'_>>, DecodeError> {
-        if session.exited() {
-            return Ok(Operation::unknown());
-        }
-
+    pub fn operation(&self) -> Result<Operation<'_, Data<'_>>, crate::op::Error> {
         let arg: &[u8] = &self.arg[..];
 
         let (arg, data) = match fuse_opcode::try_from(self.header.opcode).ok() {
@@ -542,7 +580,7 @@ impl Request {
             _ => (arg, &[] as &[_]),
         };
 
-        Operation::decode(&self.header, arg, Data { data })
+        Operation::decode(&self.header, self.opcode, arg, Data { data })
     }
 }
 

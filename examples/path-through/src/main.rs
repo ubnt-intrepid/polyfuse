@@ -50,7 +50,7 @@ fn main() -> Result<()> {
     let mut fs = PathThrough::new(source)?;
 
     while let Some(req) = session.next_request(&mut conn)? {
-        let op = req.operation(&session)?;
+        let op = req.operation()?;
         tracing::debug!("handle operation: {:#?}", op);
 
         macro_rules! try_reply {

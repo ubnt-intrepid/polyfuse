@@ -259,7 +259,7 @@ impl<'a> MemFS<'a> {
     }
 
     fn handle_request(&mut self, req: &Request) -> Result<()> {
-        let op = req.operation(self.session)?;
+        let op = req.operation()?;
         tracing::debug!(?op);
 
         match op {
