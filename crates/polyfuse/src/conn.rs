@@ -42,49 +42,49 @@ impl AsRawFd for Connection {
 impl io::Read for Connection {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        nix::read(&self.fd, buf)
+        (&*self).read(buf)
     }
 
     #[inline]
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        nix::read_vectored(&self.fd, bufs)
+        (&*self).read_vectored(bufs)
     }
 }
 
 impl io::Write for Connection {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        nix::write(&self.fd, buf)
+        (&*self).write(buf)
     }
 
     #[inline]
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        nix::write_vectored(&self.fd, bufs)
+        (&*self).write_vectored(bufs)
     }
 
     #[inline]
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        (&*self).flush()
     }
 }
 
 impl io::Read for &Connection {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        nix::read(&self.fd, buf)
+        nix::read(self.fd.as_fd(), buf)
     }
 
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        nix::read_vectored(&self.fd, bufs)
+        nix::readv(self.fd.as_fd(), bufs)
     }
 }
 
 impl io::Write for &Connection {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        nix::write(&self.fd, buf)
+        nix::write(self.fd.as_fd(), buf)
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        nix::write_vectored(&self.fd, bufs)
+        nix::writev(self.fd.as_fd(), bufs)
     }
 
     fn flush(&mut self) -> io::Result<()> {

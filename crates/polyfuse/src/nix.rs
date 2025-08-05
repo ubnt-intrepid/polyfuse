@@ -1,5 +1,10 @@
+//! A small facilities of Unix syscalls.
+
 use libc::{c_int, c_void, iovec};
-use std::{cmp, io, os::fd::AsRawFd};
+use std::{
+    cmp, io,
+    os::{fd::BorrowedFd, unix::prelude::*},
+};
 
 macro_rules! syscall {
     ($fn:ident ( $($arg:expr),* $(,)* ) ) => {{
@@ -12,7 +17,7 @@ macro_rules! syscall {
     }};
 }
 
-pub fn read(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<usize> {
+pub fn read(fd: BorrowedFd<'_>, buf: &mut [u8]) -> io::Result<usize> {
     let len = syscall! {
         read(
             fd.as_raw_fd(), //
@@ -23,7 +28,7 @@ pub fn read(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<usize> {
     Ok(len as usize)
 }
 
-pub fn read_vectored(fd: &impl AsRawFd, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+pub fn readv(fd: BorrowedFd<'_>, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
     let len = syscall! {
         readv(
             fd.as_raw_fd(), //
@@ -34,7 +39,7 @@ pub fn read_vectored(fd: &impl AsRawFd, bufs: &mut [io::IoSliceMut<'_>]) -> io::
     Ok(len as usize)
 }
 
-pub fn write(fd: &impl AsRawFd, buf: &[u8]) -> io::Result<usize> {
+pub fn write(fd: BorrowedFd<'_>, buf: &[u8]) -> io::Result<usize> {
     let res = syscall! {
         write(
             fd.as_raw_fd(), //
@@ -45,7 +50,7 @@ pub fn write(fd: &impl AsRawFd, buf: &[u8]) -> io::Result<usize> {
     Ok(res as usize)
 }
 
-pub fn write_vectored(fd: &impl AsRawFd, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+pub fn writev(fd: BorrowedFd<'_>, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
     let res = syscall! {
         writev(
             fd.as_raw_fd(), //
