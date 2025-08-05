@@ -1,6 +1,5 @@
 use crate::{
-    bytes::{Bytes, FillBytes},
-    decoder::Decoder,
+    bytes::{Bytes, Decoder, FillBytes},
     op::Operation,
 };
 use crossbeam_queue::SegQueue;

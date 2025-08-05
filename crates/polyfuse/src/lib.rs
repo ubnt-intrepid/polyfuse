@@ -7,7 +7,6 @@
 mod nix;
 
 mod conn;
-mod decoder;
 mod session;
 
 pub mod bytes;
@@ -17,7 +16,6 @@ pub mod reply;
 
 pub use crate::{
     conn::Connection,
-    decoder::DecodeError,
     op::Operation,
     session::{Data, KernelConfig, Request, Session},
 };

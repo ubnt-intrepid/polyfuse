@@ -1,4 +1,4 @@
-use crate::decoder::{DecodeError, Decoder};
+use crate::bytes::{DecodeError, Decoder};
 use polyfuse_kernel::*;
 use std::{ffi::OsStr, fmt, time::Duration, u32, u64};
 

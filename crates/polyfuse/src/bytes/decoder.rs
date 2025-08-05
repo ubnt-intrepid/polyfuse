@@ -13,16 +13,16 @@ pub enum DecodeError {
     Unaligned,
 }
 
-pub(crate) struct Decoder<'a> {
+pub struct Decoder<'a> {
     bytes: &'a [u8],
 }
 
 impl<'a> Decoder<'a> {
-    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+    pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes }
     }
 
-    pub(crate) fn fetch_bytes(&mut self, count: usize) -> Result<&'a [u8], DecodeError> {
+    pub fn fetch_bytes(&mut self, count: usize) -> Result<&'a [u8], DecodeError> {
         if self.bytes.len() < count {
             return Err(DecodeError::UnexpectedEof);
         }
@@ -36,7 +36,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// Fetch a value of Plain-Old-Data (POD) type by reference.
-    pub(crate) fn fetch<T>(&mut self) -> Result<&'a T, DecodeError>
+    pub fn fetch<T>(&mut self) -> Result<&'a T, DecodeError>
     where
         T: FromBytes + KnownLayout + Immutable,
     {
@@ -45,8 +45,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// Fetch an array of Plain-Old Data (POD) type by reference.
-    #[allow(dead_code)]
-    pub(crate) fn fetch_array<T>(&mut self, count: usize) -> Result<&'a [T], DecodeError>
+    pub fn fetch_array<T>(&mut self, count: usize) -> Result<&'a [T], DecodeError>
     where
         T: FromBytes + KnownLayout + Immutable,
     {
@@ -55,7 +54,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// Fetch a zero-terminated OS string by reference.
-    pub(crate) fn fetch_str(&mut self) -> Result<&'a OsStr, DecodeError> {
+    pub fn fetch_str(&mut self) -> Result<&'a OsStr, DecodeError> {
         let len = self
             .bytes
             .iter()
@@ -66,6 +65,10 @@ impl<'a> Decoder<'a> {
             .expect("invalid null terminator position");
         let bytes = &bytes[..bytes.len() - 1];
         Ok(OsStr::from_bytes(bytes))
+    }
+
+    pub fn remains(&self) -> &[u8] {
+        self.bytes
     }
 }
 
