@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, FillBytes, Pod},
     op::Operation,
-    reply::FileAttr,
+    reply::{FileAttr, OpenFlags},
 };
 use crossbeam_queue::SegQueue;
 use polyfuse_kernel::*;
@@ -686,6 +686,30 @@ impl Session {
                     attr_valid_nsec: ttl.subsec_nanos(),
                     dummy: 0,
                     attr: attr.attr,
+                }),
+            ),
+        )
+    }
+
+    pub fn reply_open<T>(&self, conn: T, req: &Request, fh: u64, flags: OpenFlags) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_OPEN | fuse_opcode::FUSE_OPENDIR => (),
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+        write_bytes(
+            conn,
+            Reply::new(
+                req.unique(),
+                0,
+                Pod(fuse_open_out {
+                    fh,
+                    open_flags: flags.bits(),
+                    padding: 0,
                 }),
             ),
         )

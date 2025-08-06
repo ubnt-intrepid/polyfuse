@@ -1,4 +1,5 @@
 use crate::bytes::{Bytes, FillBytes};
+use bitflags::bitflags;
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::IntoBytes as _;
@@ -118,71 +119,18 @@ impl From<&libc::stat> for FileAttr {
     }
 }
 
-#[derive(Default)]
-pub struct OpenOut {
-    out: fuse_open_out,
-}
-
-impl fmt::Debug for OpenOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("OpenOut").finish()
-    }
-}
-
-impl Bytes for OpenOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
-impl OpenOut {
-    /// Set the handle of opened file.
-    pub fn fh(&mut self, fh: u64) {
-        self.out.fh = fh;
-    }
-
-    #[inline]
-    fn set_flag(&mut self, flag: u32, enabled: bool) {
-        if enabled {
-            self.out.open_flags |= flag;
-        } else {
-            self.out.open_flags &= !flag;
-        }
-    }
-
-    /// Indicates that the direct I/O is used on this file.
-    pub fn direct_io(&mut self, enabled: bool) {
-        self.set_flag(FOPEN_DIRECT_IO, enabled);
-    }
-
-    /// Indicates that the currently cached file data in the kernel
-    /// need not be invalidated.
-    pub fn keep_cache(&mut self, enabled: bool) {
-        self.set_flag(FOPEN_KEEP_CACHE, enabled);
-    }
-
-    /// Indicates that the opened file is not seekable.
-    pub fn nonseekable(&mut self, enabled: bool) {
-        self.set_flag(FOPEN_NONSEEKABLE, enabled);
-    }
-
-    /// Enable caching of entries returned by `readdir`.
-    ///
-    /// This flag is meaningful only for `opendir` operations.
-    pub fn cache_dir(&mut self, enabled: bool) {
-        self.set_flag(FOPEN_CACHE_DIR, enabled);
+bitflags! {
+    pub struct OpenFlags: u32 {
+        /// The direct I/O is used on the opened file.
+        const DIRECT_IO = FOPEN_DIRECT_IO;
+        /// The currently cached file data in the kernel need not be invalidated.
+        const KEEP_CACHE = FOPEN_KEEP_CACHE;
+        /// The opened file is not seekable.
+        const NONSEEKABLE = FOPEN_NONSEEKABLE;
+        /// Enable caching of entries returned by `readdir`.
+        ///
+        /// This flag is meaningful only for `opendir` operations.
+        const CACHE_DIR = FOPEN_CACHE_DIR;
     }
 }
 

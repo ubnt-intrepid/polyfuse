@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{OpenOut, ReaddirOut, WriteOut, XattrOut},
+    reply::{OpenFlags, ReaddirOut, WriteOut, XattrOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -434,10 +434,8 @@ impl<'a> MemFS<'a> {
             offset: AtomicUsize::new(0),
         });
 
-        let mut out = OpenOut::default();
-        out.fh(key as u64);
-
-        self.session.reply(&mut self.conn, req, out)
+        self.session
+            .reply_open(&mut self.conn, req, key as u64, OpenFlags::empty())
     }
 
     fn do_readdir(&mut self, req: &Request, op: op::Readdir<'_>) -> io::Result<()> {

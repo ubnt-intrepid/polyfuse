@@ -20,6 +20,7 @@ libc = "0.2"
 thiserror = "2"
 tracing = "0.1"
 zerocopy = "0.8.26"
+bitflags = "2.9"
 
 [dev-dependencies]
 pin-project-lite = "0.2"

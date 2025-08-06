@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{FileAttr, OpenOut, ReaddirOut},
+    reply::{FileAttr, OpenFlags, ReaddirOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -178,8 +178,7 @@ impl Hello {
     }
 
     fn opendir(&self, conn: &mut Connection, req: &Request, op: op::Opendir<'_>) -> io::Result<()> {
-        let mut out = OpenOut::default();
-        out.fh(op.ino());
-        self.session.reply(conn, req, out)
+        self.session
+            .reply_open(conn, req, op.ino(), OpenFlags::empty())
     }
 }

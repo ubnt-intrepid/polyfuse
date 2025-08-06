@@ -9,7 +9,7 @@
 
 use polyfuse::{
     mount::{mount, MountOptions},
-    reply::OpenOut,
+    reply::OpenFlags,
     Connection, KernelConfig, Operation, Session,
 };
 
@@ -105,11 +105,7 @@ fn main() -> Result<()> {
                     _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
                 },
                 Operation::Open(op) => match op.ino() {
-                    ROOT_INO => {
-                        let mut out = OpenOut::default();
-                        out.keep_cache(true);
-                        session.reply(&*conn, &req, out)?;
-                    }
+                    ROOT_INO => session.reply_open(&*conn, &req, 0, OpenFlags::KEEP_CACHE)?,
                     _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
                 },
                 Operation::Read(op) => match op.ino() {

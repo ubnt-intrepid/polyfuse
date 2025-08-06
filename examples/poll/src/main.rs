@@ -1,6 +1,6 @@
 use polyfuse::{
     mount::{mount, MountOptions},
-    reply::{FileAttr, OpenOut, PollOut},
+    reply::{FileAttr, OpenFlags, PollOut},
     Connection, Operation, Request, Session,
 };
 
@@ -139,12 +139,12 @@ impl PollFS {
 
                 self.handles.insert(fh, handle);
 
-                let mut out = OpenOut::default();
-                out.fh(fh);
-                out.direct_io(true);
-                out.nonseekable(true);
-
-                self.session.reply(&**conn, req, out)?;
+                self.session.reply_open(
+                    &**conn,
+                    req,
+                    fh,
+                    OpenFlags::DIRECT_IO | OpenFlags::NONSEEKABLE,
+                )?;
             }
 
             Operation::Read(op) => {
