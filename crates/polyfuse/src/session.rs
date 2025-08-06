@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn init_default() {
+    fn session_init() {
         let input_len = mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>();
         let in_header = fuse_in_header {
             len: input_len as u32,
@@ -1190,30 +1190,30 @@ mod tests {
 
         let mut output = Vec::<u8>::new();
 
-        let mut init_out = default_init_out();
-        let pending_requests = init_session(
-            &mut init_out,
+        let config = KernelConfig::default();
+        let session = Session::init(
             Unite {
                 reader: &input[..],
                 writer: &mut output,
             },
+            config,
         )
         .expect("initialization failed");
 
-        assert!(pending_requests.is_empty());
+        assert!(session.pending_requests.is_empty());
 
         let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
 
-        assert_eq!(init_out.major, 7);
-        assert_eq!(init_out.minor, 23);
-        assert_eq!(init_out.max_readahead, 40);
-        assert_eq!(init_out.max_background, 0);
-        assert_eq!(init_out.congestion_threshold, 0);
-        assert_eq!(init_out.max_write, DEFAULT_MAX_WRITE);
-        assert_eq!(init_out.max_pages, expected_max_pages);
-        assert_eq!(init_out.time_gran, 1);
-        assert!(init_out.flags & FUSE_NO_OPEN_SUPPORT != 0);
-        assert!(init_out.flags & FUSE_NO_OPENDIR_SUPPORT != 0);
+        assert_eq!(session.init_out.major, 7);
+        assert_eq!(session.init_out.minor, 23);
+        assert_eq!(session.init_out.max_readahead, 40);
+        assert_eq!(session.init_out.max_background, 0);
+        assert_eq!(session.init_out.congestion_threshold, 0);
+        assert_eq!(session.init_out.max_write, DEFAULT_MAX_WRITE);
+        assert_eq!(session.init_out.max_pages, expected_max_pages);
+        assert_eq!(session.init_out.time_gran, 1);
+        assert!(session.init_out.flags & FUSE_NO_OPEN_SUPPORT != 0);
+        assert!(session.init_out.flags & FUSE_NO_OPENDIR_SUPPORT != 0);
 
         let output_len = mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>();
         let out_header = fuse_out_header {
