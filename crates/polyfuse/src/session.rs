@@ -809,6 +809,29 @@ impl Session {
         )
     }
 
+    pub fn reply_poll<T>(&self, conn: T, req: &Request, revents: u32) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_POLL => (),
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+        write_bytes(
+            conn,
+            Reply::new(
+                req.unique(),
+                0,
+                Pod(fuse_poll_out {
+                    revents, //
+                    padding: 0,
+                }),
+            ),
+        )
+    }
+
     pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
     where
         T: io::Write,

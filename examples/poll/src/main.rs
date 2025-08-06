@@ -1,6 +1,6 @@
 use polyfuse::{
     mount::{mount, MountOptions},
-    reply::{FileAttr, OpenFlags, PollOut},
+    reply::{FileAttr, OpenFlags},
     Connection, Operation, Request, Session,
 };
 
@@ -202,17 +202,18 @@ impl PollFS {
                 };
                 let state = &mut *handle.state.lock().unwrap();
 
-                let mut out = PollOut::default();
-
-                if state.is_ready {
+                let revents = if state.is_ready {
                     tracing::info!("file is ready to read");
-                    out.revents(op.events() & libc::POLLIN as u32);
-                } else if let Some(kh) = op.kh() {
-                    tracing::info!("register the poll handle for notification: kh={}", kh);
-                    state.kh = Some(kh);
-                }
+                    op.events() & libc::POLLIN as u32
+                } else {
+                    if let Some(kh) = op.kh() {
+                        tracing::info!("register the poll handle for notification: kh={}", kh);
+                        state.kh = Some(kh);
+                    }
+                    0
+                };
 
-                self.session.reply(&**conn, req, out)?;
+                self.session.reply_poll(&**conn, req, revents)?;
             }
 
             Operation::Release(op) => {
