@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, FillBytes, Pod},
     op::Operation,
-    reply::{FileAttr, OpenFlags, Statfs},
+    reply::{FileAttr, FileLock, OpenFlags, Statfs},
 };
 use crossbeam_queue::SegQueue;
 use polyfuse_kernel::*;
@@ -774,6 +774,22 @@ impl Session {
                     padding: 0,
                 }),
             ),
+        )
+    }
+
+    pub fn reply_lock<T>(&self, conn: T, req: &Request, lk: FileLock) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_GETLK => (),
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+        write_bytes(
+            conn,
+            Reply::new(req.unique(), 0, Pod(fuse_lk_out { lk: lk.lk })),
         )
     }
 

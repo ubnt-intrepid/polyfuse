@@ -212,51 +212,12 @@ impl TryFrom<&libc::statvfs> for Statfs {
 }
 
 #[derive(Default)]
-pub struct LkOut {
-    out: fuse_lk_out,
-}
-
-impl fmt::Debug for LkOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("LkOut").finish()
-    }
-}
-
-impl Bytes for LkOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
-impl LkOut {
-    pub fn file_lock(&mut self) -> &mut FileLock {
-        FileLock::from_file_lock_mut(&mut self.out.lk)
-    }
-}
-
 #[repr(transparent)]
 pub struct FileLock {
-    lk: fuse_file_lock,
+    pub(crate) lk: fuse_file_lock,
 }
 
 impl FileLock {
-    #[inline]
-    fn from_file_lock_mut(lk: &mut fuse_file_lock) -> &mut Self {
-        unsafe { &mut *(lk as *mut fuse_file_lock as *mut Self) }
-    }
-
     /// Set the type of this lock.
     pub fn typ(&mut self, typ: u32) {
         self.lk.typ = typ;
@@ -275,6 +236,32 @@ impl FileLock {
     /// Set the process ID.
     pub fn pid(&mut self, pid: u32) {
         self.lk.pid = pid;
+    }
+}
+
+impl From<libc::flock> for FileLock {
+    fn from(lk: libc::flock) -> Self {
+        Self::from(&lk)
+    }
+}
+
+impl From<&libc::flock> for FileLock {
+    fn from(src: &libc::flock) -> Self {
+        let mut dst = fuse_file_lock {
+            start: 0,
+            end: 0,
+            typ: src.l_type as u32,
+            pid: src.l_pid as u32,
+        };
+        if src.l_type as i32 == libc::F_UNLCK {
+            dst.start = src.l_start as u64;
+            dst.end = if src.l_len == 0 {
+                0x7fffffffffffffff // OFFSET_MAX
+            } else {
+                (src.l_start + src.l_len - 1) as u64
+            };
+        }
+        Self { lk: dst }
     }
 }
 
