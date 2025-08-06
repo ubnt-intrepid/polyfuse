@@ -266,41 +266,6 @@ impl From<&libc::flock> for FileLock {
 }
 
 #[derive(Default)]
-pub struct BmapOut {
-    out: fuse_bmap_out,
-}
-
-impl fmt::Debug for BmapOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("BmapOut").finish()
-    }
-}
-
-impl Bytes for BmapOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
-impl BmapOut {
-    pub fn block(&mut self, block: u64) {
-        self.out.block = block;
-    }
-}
-
-#[derive(Default)]
 pub struct PollOut {
     out: fuse_poll_out,
 }

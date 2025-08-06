@@ -793,6 +793,22 @@ impl Session {
         )
     }
 
+    pub fn reply_bmap<T>(&self, conn: T, req: &Request, block: u64) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_BMAP => (),
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+        write_bytes(
+            conn,
+            Reply::new(req.unique(), 0, Pod(fuse_bmap_out { block })),
+        )
+    }
+
     pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
     where
         T: io::Write,
