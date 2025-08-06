@@ -9,7 +9,7 @@
 
 use polyfuse::{
     mount::{mount, MountOptions},
-    reply::{AttrOut, FileAttr, ReaddirOut},
+    reply::{FileAttr, ReaddirOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -203,11 +203,7 @@ impl Heartbeat {
                     }
                 };
 
-                let mut out = AttrOut::default();
-                *out.attr() = fill_attr(attr);
-                out.ttl(self.ttl);
-
-                session.reply(conn, req, out)?;
+                session.reply_attr(conn, req, fill_attr(attr), self.ttl)?;
             }
 
             Operation::Read(op) => match op.ino() {

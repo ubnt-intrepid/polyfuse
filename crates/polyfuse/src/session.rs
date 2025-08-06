@@ -679,6 +679,66 @@ impl Session {
         }
     }
 
+    /// Reply to the specified request with file/directory attributes.
+    ///
+    /// The parameters are as follows:
+    /// * `attr` - the attribute values to be set.
+    /// * `ttl` - the validity timeout for this attribute.
+    pub fn reply_attr<T>(
+        &self,
+        conn: T,
+        req: &Request,
+        attr: FileAttr,
+        ttl: Duration,
+    ) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_GETATTR | fuse_opcode::FUSE_SETATTR => (),
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+
+        return write_bytes(
+            conn,
+            Reply::new(
+                req.unique(),
+                0,
+                AttrOut {
+                    out: fuse_attr_out {
+                        attr_valid: ttl.as_secs(),
+                        attr_valid_nsec: ttl.subsec_nanos(),
+                        dummy: 0,
+                        attr: attr.attr,
+                    },
+                },
+            ),
+        );
+
+        struct AttrOut {
+            out: fuse_attr_out,
+        }
+
+        impl Bytes for AttrOut {
+            #[inline]
+            fn size(&self) -> usize {
+                self.out.as_bytes().len()
+            }
+
+            #[inline]
+            fn count(&self) -> usize {
+                1
+            }
+
+            #[inline]
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+                dst.put(self.out.as_bytes());
+            }
+        }
+    }
+
     pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
     where
         T: io::Write,

@@ -1,7 +1,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::AttrOut,
+    reply::FileAttr,
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -52,16 +52,15 @@ fn getattr(
         return session.reply_error(conn, req, libc::ENOENT);
     }
 
-    let mut out = AttrOut::default();
-    out.attr().ino(1);
-    out.attr().mode(libc::S_IFREG as u32 | 0o444);
-    out.attr().size(CONTENT.len() as u64);
-    out.attr().nlink(1);
-    out.attr().uid(unsafe { libc::getuid() });
-    out.attr().gid(unsafe { libc::getgid() });
-    out.ttl(Duration::from_secs(1));
+    let mut attr = FileAttr::default();
+    attr.ino(1);
+    attr.mode(libc::S_IFREG as u32 | 0o444);
+    attr.size(CONTENT.len() as u64);
+    attr.nlink(1);
+    attr.uid(unsafe { libc::getuid() });
+    attr.gid(unsafe { libc::getgid() });
 
-    session.reply(conn, &req, out)
+    session.reply_attr(conn, &req, attr, Duration::from_secs(1))
 }
 
 fn read(

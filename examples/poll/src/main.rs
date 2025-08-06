@@ -1,6 +1,6 @@
 use polyfuse::{
     mount::{mount, MountOptions},
-    reply::{AttrOut, OpenOut, PollOut},
+    reply::{FileAttr, OpenOut, PollOut},
     Connection, Operation, Request, Session,
 };
 
@@ -78,15 +78,13 @@ impl PollFS {
 
         match op {
             Operation::Getattr(..) => {
-                let mut out = AttrOut::default();
-                out.attr().ino(1);
-                out.attr().nlink(1);
-                out.attr().mode(libc::S_IFREG | 0o444);
-                out.attr().uid(unsafe { libc::getuid() });
-                out.attr().gid(unsafe { libc::getgid() });
-                out.ttl(Duration::from_secs(u64::max_value() / 2));
-
-                self.session.reply(&**conn, req, out)?;
+                let mut attr = FileAttr::default();
+                attr.ino(1);
+                attr.nlink(1);
+                attr.mode(libc::S_IFREG | 0o444);
+                attr.uid(unsafe { libc::getuid() });
+                attr.gid(unsafe { libc::getgid() });
+                self.session.reply_attr(&**conn, req, attr, Duration::MAX)?;
             }
 
             Operation::Open(op) => {

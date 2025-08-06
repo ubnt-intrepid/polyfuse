@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{AttrOut, FileAttr, OpenOut, ReaddirOut},
+    reply::{FileAttr, OpenOut, ReaddirOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -121,15 +121,12 @@ impl Hello {
     }
 
     fn getattr(&self, conn: &mut Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
-        let mut out = AttrOut::default();
-        *out.attr() = match op.ino() {
+        let attr = match op.ino() {
             ROOT_INO => self.root_attr(),
             HELLO_INO => self.hello_attr(),
             _ => return self.session.reply_error(conn, req, libc::ENOENT),
         };
-        out.ttl(TTL);
-
-        self.session.reply(conn, req, out)
+        self.session.reply_attr(conn, req, attr, TTL)
     }
 
     fn read(&self, conn: &mut Connection, req: &Request, op: op::Read<'_>) -> io::Result<()> {

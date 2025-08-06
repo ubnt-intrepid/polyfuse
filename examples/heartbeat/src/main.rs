@@ -9,7 +9,7 @@
 
 use polyfuse::{
     mount::{mount, MountOptions},
-    reply::{AttrOut, FileAttr, OpenOut},
+    reply::{FileAttr, OpenOut},
     Connection, KernelConfig, Operation, Session,
 };
 
@@ -95,9 +95,12 @@ fn main() -> Result<()> {
                 Operation::Getattr(op) => match op.ino() {
                     ROOT_INO => {
                         let inner = heartbeat.inner.lock().unwrap();
-                        let mut out = AttrOut::default();
-                        fill_attr(out.attr(), &inner.attr);
-                        session.reply(&*conn, &req, out)?;
+                        session.reply_attr(
+                            &*conn,
+                            &req,
+                            fill_attr(&inner.attr),
+                            Duration::from_secs(0),
+                        )?;
                     }
                     _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
                 },
@@ -217,7 +220,8 @@ impl Heartbeat {
     }
 }
 
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
+fn fill_attr(st: &libc::stat) -> FileAttr {
+    let mut attr = FileAttr::default();
     attr.ino(st.st_ino);
     attr.size(st.st_size as u64);
     attr.mode(st.st_mode);
@@ -230,4 +234,5 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
     attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
     attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
+    attr
 }

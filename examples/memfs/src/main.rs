@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{AttrOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    reply::{FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -352,11 +352,8 @@ impl<'a> MemFS<'a> {
             None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
         };
 
-        let mut out = AttrOut::default();
-        *out.attr() = fill_attr(&inode.attr);
-        out.ttl(self.ttl);
-
-        self.session.reply(&mut self.conn, req, out)
+        self.session
+            .reply_attr(&mut self.conn, req, fill_attr(&inode.attr), self.ttl)
     }
 
     fn do_setattr(&mut self, req: &Request, op: op::Setattr<'_>) -> io::Result<()> {
@@ -401,11 +398,8 @@ impl<'a> MemFS<'a> {
             inode.attr.st_ctime_nsec = ctime.subsec_nanos() as u64 as i64;
         }
 
-        let mut out = AttrOut::default();
-        *out.attr() = fill_attr(&inode.attr);
-        out.ttl(self.ttl);
-
-        self.session.reply(&mut self.conn, req, out)
+        self.session
+            .reply_attr(&mut self.conn, req, fill_attr(&inode.attr), self.ttl)
     }
 
     fn do_readlink(&mut self, req: &Request, op: op::Readlink<'_>) -> io::Result<()> {

@@ -11,11 +11,6 @@ pub struct FileAttr {
 }
 
 impl FileAttr {
-    #[inline]
-    fn from_attr_mut(attr: &mut fuse_attr) -> &mut FileAttr {
-        unsafe { &mut *(attr as *mut fuse_attr as *mut FileAttr) }
-    }
-
     /// Set the inode number.
     #[inline]
     pub fn ino(&mut self, ino: u64) {
@@ -89,49 +84,6 @@ impl FileAttr {
     pub fn ctime(&mut self, ctime: Duration) {
         self.attr.ctime = ctime.as_secs();
         self.attr.ctimensec = ctime.subsec_nanos();
-    }
-}
-
-#[derive(Default)]
-pub struct AttrOut {
-    out: fuse_attr_out,
-}
-
-impl fmt::Debug for AttrOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("AttrOut").finish()
-    }
-}
-
-impl AttrOut {
-    /// Return the object to fill attribute values.
-    #[inline]
-    pub fn attr(&mut self) -> &mut FileAttr {
-        FileAttr::from_attr_mut(&mut self.out.attr)
-    }
-
-    /// Set the validity timeout for this attribute.
-    pub fn ttl(&mut self, ttl: Duration) {
-        self.out.attr_valid = ttl.as_secs();
-        self.out.attr_valid_nsec = ttl.subsec_nanos();
-    }
-}
-
-impl Bytes for AttrOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
     }
 }
 
