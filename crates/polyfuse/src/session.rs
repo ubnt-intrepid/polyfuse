@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, FillBytes, Pod},
     op::Operation,
-    reply::{FileAttr, OpenFlags},
+    reply::{FileAttr, OpenFlags, Statfs},
 };
 use crossbeam_queue::SegQueue;
 use polyfuse_kernel::*;
@@ -735,6 +735,22 @@ impl Session {
                     padding: 0,
                 }),
             ),
+        )
+    }
+
+    pub fn reply_statfs<T>(&self, conn: T, req: &Request, st: Statfs) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_STATFS => (),
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+        write_bytes(
+            conn,
+            Reply::new(req.unique(), 0, Pod(fuse_statfs_out { st: st.st })),
         )
     }
 

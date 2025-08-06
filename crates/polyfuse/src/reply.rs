@@ -135,52 +135,11 @@ bitflags! {
 }
 
 #[derive(Default)]
-pub struct StatfsOut {
-    out: fuse_statfs_out,
-}
-
-impl fmt::Debug for StatfsOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("StatfsOut").finish()
-    }
-}
-
-impl Bytes for StatfsOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
-impl StatfsOut {
-    /// Return the object to fill the filesystem statistics.
-    pub fn statfs(&mut self) -> &mut Statfs {
-        Statfs::from_kstatfs_mut(&mut self.out.st)
-    }
-}
-
-#[derive(Default)]
 pub struct Statfs {
-    st: fuse_kstatfs,
+    pub(crate) st: fuse_kstatfs,
 }
 
 impl Statfs {
-    #[inline]
-    fn from_kstatfs_mut(st: &mut fuse_kstatfs) -> &mut Statfs {
-        unsafe { &mut *(st as *mut fuse_kstatfs as *mut Statfs) }
-    }
-
     /// Set the block size.
     pub fn bsize(&mut self, bsize: u32) {
         self.st.bsize = bsize;
@@ -219,6 +178,36 @@ impl Statfs {
     /// Set the maximum length of file names.
     pub fn namelen(&mut self, namelen: u32) {
         self.st.namelen = namelen;
+    }
+}
+
+impl TryFrom<libc::statvfs> for Statfs {
+    type Error = std::num::TryFromIntError;
+
+    #[inline]
+    fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
+        Self::try_from(&st)
+    }
+}
+
+impl TryFrom<&libc::statvfs> for Statfs {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(st: &libc::statvfs) -> Result<Self, Self::Error> {
+        Ok(Self {
+            st: fuse_kstatfs {
+                blocks: st.f_blocks,
+                bfree: st.f_bfree,
+                bavail: st.f_bavail,
+                files: st.f_files,
+                ffree: st.f_ffree,
+                bsize: st.f_bsize.try_into()?,
+                namelen: st.f_namemax.try_into()?,
+                frsize: st.f_frsize.try_into()?,
+                padding: 0,
+                spare: [0; 6],
+            },
+        })
     }
 }
 
