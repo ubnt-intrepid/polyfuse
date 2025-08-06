@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut},
+    reply::{AttrOut, FileAttr, OpenOut, ReaddirOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -90,46 +90,43 @@ impl Hello {
         }
     }
 
-    fn fill_root_attr(&self, attr: &mut FileAttr) {
+    fn root_attr(&self) -> FileAttr {
+        let mut attr = FileAttr::default();
         attr.ino(ROOT_INO);
         attr.mode(libc::S_IFDIR as u32 | 0o555);
         attr.nlink(2);
         attr.uid(self.uid);
         attr.gid(self.gid);
+        attr
     }
 
-    fn fill_hello_attr(&self, attr: &mut FileAttr) {
+    fn hello_attr(&self) -> FileAttr {
+        let mut attr = FileAttr::default();
         attr.ino(HELLO_INO);
         attr.size(HELLO_CONTENT.len() as u64);
         attr.mode(libc::S_IFREG as u32 | 0o444);
         attr.nlink(1);
         attr.uid(self.uid);
         attr.gid(self.gid);
+        attr
     }
 
     fn lookup(&self, conn: &mut Connection, req: &Request, op: op::Lookup<'_>) -> io::Result<()> {
         match op.parent() {
-            ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
-                let mut out = EntryOut::default();
-                self.fill_hello_attr(out.attr());
-                out.ino(HELLO_INO);
-                out.ttl_attr(TTL);
-                out.ttl_entry(TTL);
-                self.session.reply(conn, req, out)
-            }
+            ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => self
+                .session
+                .reply_entry(conn, req, self.hello_attr(), HELLO_INO, 0, TTL, TTL),
             _ => self.session.reply_error(conn, req, libc::ENOENT),
         }
     }
 
     fn getattr(&self, conn: &mut Connection, req: &Request, op: op::Getattr<'_>) -> io::Result<()> {
-        let fill_attr = match op.ino() {
-            ROOT_INO => Self::fill_root_attr,
-            HELLO_INO => Self::fill_hello_attr,
+        let mut out = AttrOut::default();
+        *out.attr() = match op.ino() {
+            ROOT_INO => self.root_attr(),
+            HELLO_INO => self.hello_attr(),
             _ => return self.session.reply_error(conn, req, libc::ENOENT),
         };
-
-        let mut out = AttrOut::default();
-        fill_attr(self, out.attr());
         out.ttl(TTL);
 
         self.session.reply(conn, req, out)

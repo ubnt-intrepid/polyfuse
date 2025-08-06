@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    reply::{AttrOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -322,12 +322,15 @@ impl<'a> MemFS<'a> {
             .unwrap_or_else(|| unreachable!());
         child.refcount += 1;
 
-        let mut out = EntryOut::default();
-        out.ino(child_ino);
-        fill_attr(out.attr(), &child.attr);
-        out.ttl_entry(self.ttl);
-
-        self.session.reply(&mut self.conn, req, out)
+        self.session.reply_entry(
+            &mut self.conn,
+            req,
+            fill_attr(&child.attr),
+            child_ino,
+            0,
+            self.ttl,
+            self.ttl,
+        )
     }
 
     fn do_forget(&self, forgets: &[op::Forget]) {
@@ -350,7 +353,7 @@ impl<'a> MemFS<'a> {
         };
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &inode.attr);
+        *out.attr() = fill_attr(&inode.attr);
         out.ttl(self.ttl);
 
         self.session.reply(&mut self.conn, req, out)
@@ -399,7 +402,7 @@ impl<'a> MemFS<'a> {
         }
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &inode.attr);
+        *out.attr() = fill_attr(&inode.attr);
         out.ttl(self.ttl);
 
         self.session.reply(&mut self.conn, req, out)
@@ -548,11 +551,15 @@ impl<'a> MemFS<'a> {
         let inode_entry = self.inodes.vacant_entry().expect("inode number conflict");
         let inode = f(&inode_entry);
 
-        let mut out = EntryOut::default();
-        out.ino(inode_entry.ino());
-        fill_attr(out.attr(), &inode.attr);
-        out.ttl_entry(self.ttl);
-        self.session.reply(&mut self.conn, req, out)?;
+        self.session.reply_entry(
+            &mut self.conn,
+            req,
+            fill_attr(&inode.attr),
+            inode_entry.ino(),
+            0,
+            self.ttl,
+            self.ttl,
+        )?;
 
         map_entry.insert(inode_entry.ino());
         inode_entry.insert(inode);
@@ -588,12 +595,15 @@ impl<'a> MemFS<'a> {
             }
         }
 
-        let mut out = EntryOut::default();
-        out.ino(op.ino());
-        fill_attr(out.attr(), &inode.attr);
-        out.ttl_entry(self.ttl);
-
-        self.session.reply(&mut self.conn, req, out)
+        self.session.reply_entry(
+            &mut self.conn,
+            req,
+            fill_attr(&inode.attr),
+            op.ino(),
+            0,
+            self.ttl,
+            self.ttl,
+        )
     }
 
     fn do_unlink(&mut self, req: &Request, op: op::Unlink<'_>) -> io::Result<()> {
@@ -864,7 +874,8 @@ impl<'a> MemFS<'a> {
     }
 }
 
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
+fn fill_attr(st: &libc::stat) -> FileAttr {
+    let mut attr = FileAttr::default();
     attr.ino(st.st_ino);
     attr.size(st.st_size as u64);
     attr.mode(st.st_mode);
@@ -877,4 +888,5 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
     attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
     attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
+    attr
 }

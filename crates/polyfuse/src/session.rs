@@ -1,6 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, FillBytes},
     op::Operation,
+    reply::FileAttr,
 };
 use crossbeam_queue::SegQueue;
 use polyfuse_kernel::*;
@@ -13,6 +14,7 @@ use std::{
     mem::{self, MaybeUninit},
     os::unix::prelude::*,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::Duration,
 };
 use zerocopy::IntoBytes as _;
 
@@ -590,6 +592,91 @@ impl Session {
         B: Bytes,
     {
         write_bytes(conn, Reply::new(req.unique(), 0, arg))
+    }
+
+    /// Reply to the specified request with directory entry.
+    ///
+    /// The arguments passed to this method are as follows:
+    /// * `attr` - the attribute of this entry.
+    /// * `ino` - the inode number of this entry.
+    ///    - If this value is zero, it means that the entry is *negative*.
+    ///      Returning a negative entry is also possible with the `ENOENT` error,
+    ///      but the *zeroed* entries also have the ability to specify the lifetime
+    ///      of the entry cache by using the `ttl_entry` parameter.
+    /// * `generation` - the generation of this entry.
+    ///    - This parameter is used to distinguish the inode from the past one
+    ///      when the filesystem reuse inode numbers.  That is, the operations
+    ///      must ensure that the pair of entry's inode number and generation
+    ///      are unique for the lifetime of the filesystem.
+    /// * `ttl_attr` - the validity timeout for inode attributes.
+    ///    - The operations should set this value to very large when the changes
+    ///      of inode attributes are caused only by FUSE requests.
+    /// * `ttl_entry` - the validity timeout for the name.
+    ///    - The operations should set this value to very large when
+    ///      the changes/deletions of directory entries are caused only by FUSE requests.
+    pub fn reply_entry<T>(
+        &self,
+        conn: T,
+        req: &Request,
+        attr: FileAttr,
+        ino: u64,
+        generation: u64,
+        ttl_attr: Duration,
+        ttl_entry: Duration,
+    ) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_LOOKUP
+            | fuse_opcode::FUSE_MKNOD
+            | fuse_opcode::FUSE_MKDIR
+            | fuse_opcode::FUSE_LINK
+            | fuse_opcode::FUSE_SYMLINK => {}
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+
+        return write_bytes(
+            conn,
+            Reply::new(
+                req.unique(),
+                0,
+                EntryOut {
+                    out: fuse_entry_out {
+                        nodeid: ino,
+                        generation,
+                        entry_valid: ttl_entry.as_secs(),
+                        attr_valid: ttl_attr.as_secs(),
+                        entry_valid_nsec: ttl_entry.subsec_nanos(),
+                        attr_valid_nsec: ttl_attr.subsec_nanos(),
+                        attr: attr.attr,
+                    },
+                },
+            ),
+        );
+
+        struct EntryOut {
+            out: fuse_entry_out,
+        }
+
+        impl Bytes for EntryOut {
+            #[inline]
+            fn size(&self) -> usize {
+                self.out.as_bytes().len()
+            }
+
+            #[inline]
+            fn count(&self) -> usize {
+                1
+            }
+
+            #[inline]
+            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+                dst.put(self.out.as_bytes());
+            }
+        }
     }
 
     pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>

@@ -4,9 +4,10 @@ use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, tim
 use zerocopy::IntoBytes as _;
 
 /// Attributes about a file.
+#[derive(Default)]
 #[repr(transparent)]
 pub struct FileAttr {
-    attr: fuse_attr,
+    pub(crate) attr: fuse_attr,
 }
 
 impl FileAttr {
@@ -88,84 +89,6 @@ impl FileAttr {
     pub fn ctime(&mut self, ctime: Duration) {
         self.attr.ctime = ctime.as_secs();
         self.attr.ctimensec = ctime.subsec_nanos();
-    }
-}
-
-#[derive(Default)]
-pub struct EntryOut {
-    out: fuse_entry_out,
-}
-
-impl fmt::Debug for EntryOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("EntryOut").finish()
-    }
-}
-
-impl Bytes for EntryOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
-impl EntryOut {
-    /// Return the object to fill attribute values about this entry.
-    #[inline]
-    pub fn attr(&mut self) -> &mut FileAttr {
-        FileAttr::from_attr_mut(&mut self.out.attr)
-    }
-
-    /// Set the inode number of this entry.
-    ///
-    /// If this value is zero, it means that the entry is *negative*.
-    /// Returning a negative entry is also possible with the `ENOENT` error,
-    /// but the *zeroed* entries also have the ability to specify the lifetime
-    /// of the entry cache by using the `ttl_entry` parameter.
-    #[inline]
-    pub fn ino(&mut self, ino: u64) {
-        self.out.nodeid = ino;
-    }
-
-    /// Set the generation of this entry.
-    ///
-    /// This parameter is used to distinguish the inode from the past one
-    /// when the filesystem reuse inode numbers.  That is, the operations
-    /// must ensure that the pair of entry's inode number and generation
-    /// are unique for the lifetime of the filesystem.
-    pub fn generation(&mut self, generation: u64) {
-        self.out.generation = generation;
-    }
-
-    /// Set the validity timeout for inode attributes.
-    ///
-    /// The operations should set this value to very large
-    /// when the changes of inode attributes are caused
-    /// only by FUSE requests.
-    pub fn ttl_attr(&mut self, ttl: Duration) {
-        self.out.attr_valid = ttl.as_secs();
-        self.out.attr_valid_nsec = ttl.subsec_nanos();
-    }
-
-    /// Set the validity timeout for the name.
-    ///
-    /// The operations should set this value to very large
-    /// when the changes/deletions of directory entries are
-    /// caused only by FUSE requests.
-    pub fn ttl_entry(&mut self, ttl: Duration) {
-        self.out.entry_valid = ttl.as_secs();
-        self.out.entry_valid_nsec = ttl.subsec_nanos();
     }
 }
 
