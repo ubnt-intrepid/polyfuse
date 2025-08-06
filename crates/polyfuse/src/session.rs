@@ -1,5 +1,5 @@
 use crate::{
-    bytes::{Bytes, Decoder, FillBytes},
+    bytes::{Bytes, Decoder, FillBytes, Pod},
     op::Operation,
     reply::FileAttr,
 };
@@ -637,46 +637,22 @@ impl Session {
                 tracing::warn!("It is not match the specified request");
             }
         }
-
-        return write_bytes(
+        write_bytes(
             conn,
             Reply::new(
                 req.unique(),
                 0,
-                EntryOut {
-                    out: fuse_entry_out {
-                        nodeid: ino,
-                        generation,
-                        entry_valid: ttl_entry.as_secs(),
-                        attr_valid: ttl_attr.as_secs(),
-                        entry_valid_nsec: ttl_entry.subsec_nanos(),
-                        attr_valid_nsec: ttl_attr.subsec_nanos(),
-                        attr: attr.attr,
-                    },
-                },
+                Pod(fuse_entry_out {
+                    nodeid: ino,
+                    generation,
+                    entry_valid: ttl_entry.as_secs(),
+                    attr_valid: ttl_attr.as_secs(),
+                    entry_valid_nsec: ttl_entry.subsec_nanos(),
+                    attr_valid_nsec: ttl_attr.subsec_nanos(),
+                    attr: attr.attr,
+                }),
             ),
-        );
-
-        struct EntryOut {
-            out: fuse_entry_out,
-        }
-
-        impl Bytes for EntryOut {
-            #[inline]
-            fn size(&self) -> usize {
-                self.out.as_bytes().len()
-            }
-
-            #[inline]
-            fn count(&self) -> usize {
-                1
-            }
-
-            #[inline]
-            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                dst.put(self.out.as_bytes());
-            }
-        }
+        )
     }
 
     /// Reply to the specified request with file/directory attributes.
@@ -700,43 +676,19 @@ impl Session {
                 tracing::warn!("It is not match the specified request");
             }
         }
-
-        return write_bytes(
+        write_bytes(
             conn,
             Reply::new(
                 req.unique(),
                 0,
-                AttrOut {
-                    out: fuse_attr_out {
-                        attr_valid: ttl.as_secs(),
-                        attr_valid_nsec: ttl.subsec_nanos(),
-                        dummy: 0,
-                        attr: attr.attr,
-                    },
-                },
+                Pod(fuse_attr_out {
+                    attr_valid: ttl.as_secs(),
+                    attr_valid_nsec: ttl.subsec_nanos(),
+                    dummy: 0,
+                    attr: attr.attr,
+                }),
             ),
-        );
-
-        struct AttrOut {
-            out: fuse_attr_out,
-        }
-
-        impl Bytes for AttrOut {
-            #[inline]
-            fn size(&self) -> usize {
-                self.out.as_bytes().len()
-            }
-
-            #[inline]
-            fn count(&self) -> usize {
-                1
-            }
-
-            #[inline]
-            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                dst.put(self.out.as_bytes());
-            }
-        }
+        )
     }
 
     pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>

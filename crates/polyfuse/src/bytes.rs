@@ -6,6 +6,7 @@ pub use decoder::{DecodeError, Decoder};
 
 use either::Either;
 use std::os::unix::prelude::*;
+use zerocopy::{Immutable, IntoBytes};
 
 /// A trait that represents a collection of bytes.
 ///
@@ -32,6 +33,28 @@ pub trait Bytes {
     ///
     /// [bytes_vectored]: https://docs.rs/bytes/0.6/bytes/trait.Buf.html#method.bytes_vectored
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>);
+}
+
+pub struct Pod<T>(pub T);
+
+impl<T> Bytes for Pod<T>
+where
+    T: IntoBytes + Immutable,
+{
+    #[inline]
+    fn size(&self) -> usize {
+        self.0.as_bytes().len()
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.0.as_bytes());
+    }
 }
 
 /// The container of scattered bytes.
