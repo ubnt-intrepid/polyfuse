@@ -212,41 +212,6 @@ impl TryFrom<&libc::statvfs> for Statfs {
 }
 
 #[derive(Default)]
-pub struct XattrOut {
-    out: fuse_getxattr_out,
-}
-
-impl fmt::Debug for XattrOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("XattrOut").finish()
-    }
-}
-
-impl Bytes for XattrOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
-impl XattrOut {
-    pub fn size(&mut self, size: u32) {
-        self.out.size = size;
-    }
-}
-
-#[derive(Default)]
 pub struct LkOut {
     out: fuse_lk_out,
 }

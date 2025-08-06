@@ -754,6 +754,29 @@ impl Session {
         )
     }
 
+    pub fn reply_xattr<T>(&self, conn: T, req: &Request, size: u32) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_GETXATTR | fuse_opcode::FUSE_LISTXATTR => (),
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+        write_bytes(
+            conn,
+            Reply::new(
+                req.unique(),
+                0,
+                Pod(fuse_getxattr_out {
+                    size, //
+                    padding: 0,
+                }),
+            ),
+        )
+    }
+
     pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
     where
         T: io::Write,

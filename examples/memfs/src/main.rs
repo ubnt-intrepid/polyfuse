@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{OpenFlags, ReaddirOut, XattrOut},
+    reply::{OpenFlags, ReaddirOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -717,11 +717,9 @@ impl<'a> MemFS<'a> {
         };
 
         match op.size() {
-            0 => {
-                let mut out = XattrOut::default();
-                out.size(value.len() as u32);
-                self.session.reply(&mut self.conn, req, out)
-            }
+            0 => self
+                .session
+                .reply_xattr(&mut self.conn, req, value.len() as u32),
             size => {
                 if value.len() as u32 > size {
                     return self.session.reply_error(&mut self.conn, req, libc::ERANGE);
@@ -775,9 +773,7 @@ impl<'a> MemFS<'a> {
         match op.size() {
             0 => {
                 let total_len = inode.xattrs.keys().map(|name| name.len() as u32 + 1).sum();
-                let mut out = XattrOut::default();
-                out.size(total_len);
-                self.session.reply(&mut self.conn, req, out)
+                self.session.reply_xattr(&mut self.conn, req, total_len)
             }
 
             size => {
