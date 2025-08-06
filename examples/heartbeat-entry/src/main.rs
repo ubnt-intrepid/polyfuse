@@ -9,7 +9,7 @@
 
 use polyfuse::{
     mount::{mount, MountOptions},
-    reply::{FileAttr, ReaddirOut},
+    reply::ReaddirOut,
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -168,7 +168,7 @@ impl Heartbeat {
                         session.reply_entry(
                             conn,
                             req,
-                            fill_attr(&self.file_attr),
+                            (&self.file_attr).into(),
                             self.file_attr.st_ino,
                             0,
                             self.ttl,
@@ -203,7 +203,7 @@ impl Heartbeat {
                     }
                 };
 
-                session.reply_attr(conn, req, fill_attr(attr), self.ttl)?;
+                session.reply_attr(conn, req, attr.into(), self.ttl)?;
             }
 
             Operation::Read(op) => match op.ino() {
@@ -232,21 +232,4 @@ impl Heartbeat {
 
         Ok(())
     }
-}
-
-fn fill_attr(st: &libc::stat) -> FileAttr {
-    let mut attr = FileAttr::default();
-    attr.ino(st.st_ino);
-    attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
-    attr.rdev(st.st_rdev as u32);
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
-    attr
 }

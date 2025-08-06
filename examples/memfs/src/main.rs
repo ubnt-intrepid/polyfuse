@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    reply::{OpenOut, ReaddirOut, WriteOut, XattrOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -325,7 +325,7 @@ impl<'a> MemFS<'a> {
         self.session.reply_entry(
             &mut self.conn,
             req,
-            fill_attr(&child.attr),
+            (&child.attr).into(),
             child_ino,
             0,
             self.ttl,
@@ -353,7 +353,7 @@ impl<'a> MemFS<'a> {
         };
 
         self.session
-            .reply_attr(&mut self.conn, req, fill_attr(&inode.attr), self.ttl)
+            .reply_attr(&mut self.conn, req, (&inode.attr).into(), self.ttl)
     }
 
     fn do_setattr(&mut self, req: &Request, op: op::Setattr<'_>) -> io::Result<()> {
@@ -399,7 +399,7 @@ impl<'a> MemFS<'a> {
         }
 
         self.session
-            .reply_attr(&mut self.conn, req, fill_attr(&inode.attr), self.ttl)
+            .reply_attr(&mut self.conn, req, (&inode.attr).into(), self.ttl)
     }
 
     fn do_readlink(&mut self, req: &Request, op: op::Readlink<'_>) -> io::Result<()> {
@@ -548,7 +548,7 @@ impl<'a> MemFS<'a> {
         self.session.reply_entry(
             &mut self.conn,
             req,
-            fill_attr(&inode.attr),
+            (&inode.attr).into(),
             inode_entry.ino(),
             0,
             self.ttl,
@@ -592,7 +592,7 @@ impl<'a> MemFS<'a> {
         self.session.reply_entry(
             &mut self.conn,
             req,
-            fill_attr(&inode.attr),
+            (&inode.attr).into(),
             op.ino(),
             0,
             self.ttl,
@@ -866,21 +866,4 @@ impl<'a> MemFS<'a> {
 
         self.session.reply(&mut self.conn, req, out)
     }
-}
-
-fn fill_attr(st: &libc::stat) -> FileAttr {
-    let mut attr = FileAttr::default();
-    attr.ino(st.st_ino);
-    attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
-    attr.rdev(st.st_rdev as u32);
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
-    attr
 }

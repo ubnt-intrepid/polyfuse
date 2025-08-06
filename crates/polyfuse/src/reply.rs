@@ -87,6 +87,37 @@ impl FileAttr {
     }
 }
 
+impl From<libc::stat> for FileAttr {
+    fn from(value: libc::stat) -> Self {
+        Self::from(&value)
+    }
+}
+
+impl From<&libc::stat> for FileAttr {
+    fn from(st: &libc::stat) -> Self {
+        Self {
+            attr: fuse_attr {
+                ino: st.st_ino,
+                size: st.st_size as u64,
+                blocks: st.st_blocks as u64,
+                atime: st.st_atime as u64,
+                mtime: st.st_mtime as u64,
+                ctime: st.st_ctime as u64,
+                atimensec: st.st_atime_nsec as u32,
+                mtimensec: st.st_mtime_nsec as u32,
+                ctimensec: st.st_ctime_nsec as u32,
+                mode: st.st_mode,
+                nlink: st.st_nlink as u32,
+                uid: st.st_uid,
+                gid: st.st_gid,
+                rdev: st.st_rdev as u32,
+                blksize: st.st_blksize as u32,
+                padding: 0,
+            },
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct OpenOut {
     out: fuse_open_out,
