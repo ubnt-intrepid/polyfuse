@@ -715,6 +715,29 @@ impl Session {
         )
     }
 
+    pub fn reply_write<T>(&self, conn: T, req: &Request, size: u32) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        match req.opcode {
+            fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_COPY_FILE_RANGE => (),
+            _ => {
+                tracing::warn!("It is not match the specified request");
+            }
+        }
+        write_bytes(
+            conn,
+            Reply::new(
+                req.unique(),
+                0,
+                Pod(fuse_write_out {
+                    size, //
+                    padding: 0,
+                }),
+            ),
+        )
+    }
+
     pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
     where
         T: io::Write,

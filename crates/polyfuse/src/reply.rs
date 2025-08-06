@@ -135,41 +135,6 @@ bitflags! {
 }
 
 #[derive(Default)]
-pub struct WriteOut {
-    out: fuse_write_out,
-}
-
-impl fmt::Debug for WriteOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("WriteOut").finish()
-    }
-}
-
-impl Bytes for WriteOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
-impl WriteOut {
-    pub fn size(&mut self, size: u32) {
-        self.out.size = size;
-    }
-}
-
-#[derive(Default)]
 pub struct StatfsOut {
     out: fuse_statfs_out,
 }

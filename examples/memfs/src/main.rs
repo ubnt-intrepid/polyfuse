@@ -4,7 +4,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::{OpenFlags, ReaddirOut, WriteOut, XattrOut},
+    reply::{OpenFlags, ReaddirOut, XattrOut},
     Connection, KernelConfig, Operation, Request, Session,
 };
 
@@ -859,9 +859,6 @@ impl<'a> MemFS<'a> {
 
         inode.attr.st_size = (offset + size) as libc::off_t;
 
-        let mut out = WriteOut::default();
-        out.size(op.size());
-
-        self.session.reply(&mut self.conn, req, out)
+        self.session.reply_write(&mut self.conn, req, op.size())
     }
 }
