@@ -273,22 +273,137 @@ impl Session {
         self.exited.store(true, Ordering::SeqCst)
     }
 
-    /// Start a FUSE daemon mount on the specified path.
-    pub fn init<T>(conn: T, config: KernelConfig) -> io::Result<Self>
+    /// Initialize a FUSE session by communicating with the kernel driver over
+    /// the established channel.
+    pub fn init<T>(mut conn: T, config: KernelConfig) -> io::Result<Self>
     where
         T: io::Read + io::Write,
     {
         let KernelConfig { mut init_out } = config;
 
-        init_session(&mut init_out, conn)?;
-        let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;
+        loop {
+            let mut header_in = fuse_in_header::default();
+            let mut arg_in = vec![0u8; pagesize() * MAX_MAX_PAGES];
 
-        Ok(Self {
-            init_out,
-            bufsize,
-            exited: AtomicBool::new(false),
-            notify_unique: AtomicU64::new(0),
-        })
+            let len = conn.read_vectored(&mut [
+                io::IoSliceMut::new(header_in.as_mut_bytes()),
+                io::IoSliceMut::new(&mut arg_in[..]),
+            ])?;
+
+            if len < mem::size_of::<fuse_in_header>() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "request message is too short",
+                ));
+            }
+
+            if !matches!(
+                fuse_opcode::try_from(header_in.opcode),
+                Ok(fuse_opcode::FUSE_INIT)
+            ) {
+                // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
+                // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
+                // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
+                tracing::error!(
+                    "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={})",
+                    header_in.unique,
+                    header_in.opcode,
+                );
+                continue;
+            }
+
+            let init_in = Decoder::new(&arg_in[..len - mem::size_of::<fuse_in_header>()])
+                .fetch::<fuse_init_in>() //
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::Other, "failed to decode fuse_init_in")
+                })?;
+
+            let capable = init_in.flags & INIT_FLAGS_MASK;
+            let readonly_flags = init_in.flags & !INIT_FLAGS_MASK;
+
+            tracing::debug!("INIT request:");
+            tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
+            tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
+            tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
+            tracing::debug!("  max_pages = {}", readonly_flags & FUSE_MAX_PAGES != 0);
+            tracing::debug!(
+                "  no_open_support = {}",
+                readonly_flags & FUSE_NO_OPEN_SUPPORT != 0
+            );
+            tracing::debug!(
+                "  no_opendir_support = {}",
+                readonly_flags & FUSE_NO_OPENDIR_SUPPORT != 0
+            );
+
+            if init_in.major > 7 {
+                tracing::debug!("wait for a second INIT request with an older version.");
+                let init_out = fuse_init_out {
+                    major: FUSE_KERNEL_VERSION,
+                    minor: FUSE_KERNEL_MINOR_VERSION,
+                    ..Default::default()
+                };
+                write_bytes(
+                    &mut conn,
+                    Reply::new(header_in.unique, 0, init_out.as_bytes()),
+                )?;
+                continue;
+            }
+
+            if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
+                tracing::warn!(
+                    "polyfuse supports only ABI 7.{} or later. {}.{} is not supported",
+                    MINIMUM_SUPPORTED_MINOR_VERSION,
+                    init_in.major,
+                    init_in.minor
+                );
+                write_bytes(&mut conn, Reply::new(header_in.unique, libc::EPROTO, ()))?;
+                continue;
+            }
+
+            init_out.minor = cmp::min(init_out.minor, init_in.minor);
+            debug_assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+            debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
+
+            init_out.max_readahead = cmp::min(init_out.max_readahead, init_in.max_readahead);
+
+            init_out.flags &= capable;
+            init_out.flags |= FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
+
+            if init_in.flags & FUSE_MAX_PAGES != 0 {
+                init_out.flags |= FUSE_MAX_PAGES;
+                init_out.max_pages = cmp::min(
+                    (init_out.max_write - 1) / (pagesize() as u32) + 1,
+                    u16::max_value() as u32,
+                ) as u16;
+            }
+
+            tracing::debug!("Reply to INIT:");
+            tracing::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
+            tracing::debug!("  flags = 0x{:08x}", init_out.flags);
+            tracing::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
+            tracing::debug!("  max_write = 0x{:08X}", init_out.max_write);
+            tracing::debug!("  max_background = 0x{:04X}", init_out.max_background);
+            tracing::debug!(
+                "  congestion_threshold = 0x{:04X}",
+                init_out.congestion_threshold
+            );
+            tracing::debug!("  time_gran = {}", init_out.time_gran);
+            write_bytes(
+                &mut conn,
+                Reply::new(header_in.unique, 0, init_out.as_bytes()),
+            )?;
+
+            init_out.flags |= readonly_flags;
+
+            let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;
+
+            return Ok(Self {
+                init_out,
+                bufsize,
+                exited: AtomicBool::new(false),
+                notify_unique: AtomicU64::new(0),
+            });
+        }
     }
 
     /// Return whether the kernel supports for zero-message opens.
@@ -384,136 +499,6 @@ impl Session {
                     }
                     _ => return Err(err),
                 },
-            }
-        }
-    }
-}
-
-fn init_session<T>(init_out: &mut fuse_init_out, mut conn: T) -> io::Result<()>
-where
-    T: io::Read + io::Write,
-{
-    let default_bufsize = pagesize() * MAX_MAX_PAGES;
-
-    let mut header = fuse_in_header::default();
-    let mut arg = vec![0u8; default_bufsize];
-
-    loop {
-        let len = conn.read_vectored(&mut [
-            io::IoSliceMut::new(header.as_mut_bytes()),
-            io::IoSliceMut::new(&mut arg[..]),
-        ])?;
-        if len < mem::size_of::<fuse_in_header>() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "request message is too short",
-            ));
-        }
-
-        match fuse_opcode::try_from(header.opcode) {
-            Ok(fuse_opcode::FUSE_INIT) => {
-                let mut decoder = Decoder::new(&arg[..]);
-                let init_in = decoder
-                    .fetch::<fuse_init_in>() //
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::Other, "failed to decode fuse_init_in")
-                    })?;
-
-                let capable = init_in.flags & INIT_FLAGS_MASK;
-                let readonly_flags = init_in.flags & !INIT_FLAGS_MASK;
-
-                tracing::debug!("INIT request:");
-                tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
-                tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
-                tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
-                tracing::debug!("  max_pages = {}", readonly_flags & FUSE_MAX_PAGES != 0);
-                tracing::debug!(
-                    "  no_open_support = {}",
-                    readonly_flags & FUSE_NO_OPEN_SUPPORT != 0
-                );
-                tracing::debug!(
-                    "  no_opendir_support = {}",
-                    readonly_flags & FUSE_NO_OPENDIR_SUPPORT != 0
-                );
-
-                if init_in.major > 7 {
-                    tracing::debug!("wait for a second INIT request with an older version.");
-                    let init_out = fuse_init_out {
-                        major: FUSE_KERNEL_VERSION,
-                        minor: FUSE_KERNEL_MINOR_VERSION,
-                        ..Default::default()
-                    };
-                    write_bytes(&mut conn, Reply::new(header.unique, 0, init_out.as_bytes()))?;
-                    continue;
-                }
-
-                if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
-                    tracing::warn!(
-                        "polyfuse supports only ABI 7.{} or later. {}.{} is not supported",
-                        MINIMUM_SUPPORTED_MINOR_VERSION,
-                        init_in.major,
-                        init_in.minor
-                    );
-                    write_bytes(&mut conn, Reply::new(header.unique, libc::EPROTO, ()))?;
-                    continue;
-                }
-
-                init_out.minor = cmp::min(init_out.minor, init_in.minor);
-
-                init_out.max_readahead = cmp::min(init_out.max_readahead, init_in.max_readahead);
-
-                init_out.flags &= capable;
-                init_out.flags |= FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
-
-                if init_in.flags & FUSE_MAX_PAGES != 0 {
-                    init_out.flags |= FUSE_MAX_PAGES;
-                    init_out.max_pages = cmp::min(
-                        (init_out.max_write - 1) / (pagesize() as u32) + 1,
-                        u16::max_value() as u32,
-                    ) as u16;
-                }
-
-                debug_assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
-                debug_assert!(init_out.minor >= MINIMUM_SUPPORTED_MINOR_VERSION);
-
-                tracing::debug!("Reply to INIT:");
-                tracing::debug!("  proto = {}.{}:", init_out.major, init_out.minor);
-                tracing::debug!("  flags = 0x{:08x}", init_out.flags);
-                tracing::debug!("  max_readahead = 0x{:08X}", init_out.max_readahead);
-                tracing::debug!("  max_write = 0x{:08X}", init_out.max_write);
-                tracing::debug!("  max_background = 0x{:04X}", init_out.max_background);
-                tracing::debug!(
-                    "  congestion_threshold = 0x{:04X}",
-                    init_out.congestion_threshold
-                );
-                tracing::debug!("  time_gran = {}", init_out.time_gran);
-                write_bytes(&mut conn, Reply::new(header.unique, 0, init_out.as_bytes()))?;
-
-                init_out.flags |= readonly_flags;
-
-                return Ok(());
-            }
-
-            Ok(_opcode) => {
-                // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
-                // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
-                // カーネル側の実装に問題があると解釈し、無視する
-                tracing::error!(
-                    "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={})",
-                    header.unique,
-                    header.opcode,
-                );
-                continue;
-            }
-
-            Err(_) => {
-                tracing::warn!(
-                    "This request is not supported by the polyfuse for now (unique={}, opcode={})",
-                    header.unique,
-                    header.opcode,
-                );
-                write_bytes(&mut conn, Reply::new(header.unique, libc::ENOSYS, ()))?;
-                continue;
             }
         }
     }
