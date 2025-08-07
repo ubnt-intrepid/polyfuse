@@ -14,7 +14,6 @@ keywords = [ "fuse", "filesystem", "async", "futures" ]
 [dependencies]
 polyfuse-kernel = { version = ">=0.2.1", path = "../polyfuse-kernel" }
 
-crossbeam-queue = "0.3.12"
 either = "1"
 libc = "0.2"
 thiserror = "2"
