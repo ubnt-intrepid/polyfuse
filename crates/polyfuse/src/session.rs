@@ -2,7 +2,6 @@ use crate::{
     bytes::{Bytes, Decoder, FillBytes},
     op::Operation,
 };
-use crossbeam_queue::SegQueue;
 use polyfuse_kernel::*;
 use std::{
     cmp,
@@ -247,7 +246,6 @@ pub struct Session {
     bufsize: usize,
     exited: AtomicBool,
     notify_unique: AtomicU64,
-    pending_requests: SegQueue<Request>,
 }
 
 impl fmt::Debug for Session {
@@ -282,7 +280,7 @@ impl Session {
     {
         let KernelConfig { mut init_out } = config;
 
-        let pending_requests = init_session(&mut init_out, conn)?;
+        init_session(&mut init_out, conn)?;
         let bufsize = BUFFER_HEADER_SIZE + init_out.max_write as usize;
 
         Ok(Self {
@@ -290,7 +288,6 @@ impl Session {
             bufsize,
             exited: AtomicBool::new(false),
             notify_unique: AtomicU64::new(0),
-            pending_requests,
         })
     }
 
@@ -316,11 +313,6 @@ impl Session {
     where
         T: io::Read + io::Write,
     {
-        if let Some(req) = self.pending_requests.pop() {
-            tracing::debug!("pop a pending request from the queue");
-            return Ok(Some(req));
-        }
-
         let mut header = fuse_in_header::default();
         let mut arg = vec![0u8; self.bufsize - mem::size_of::<fuse_in_header>()];
 
@@ -397,7 +389,7 @@ impl Session {
     }
 }
 
-fn init_session<T>(init_out: &mut fuse_init_out, mut conn: T) -> io::Result<SegQueue<Request>>
+fn init_session<T>(init_out: &mut fuse_init_out, mut conn: T) -> io::Result<()>
 where
     T: io::Read + io::Write,
 {
@@ -405,7 +397,6 @@ where
 
     let mut header = fuse_in_header::default();
     let mut arg = vec![0u8; default_bufsize];
-    let pending_requests = SegQueue::new();
 
     loop {
         let len = conn.read_vectored(&mut [
@@ -500,24 +491,18 @@ where
 
                 init_out.flags |= readonly_flags;
 
-                return Ok(pending_requests);
+                return Ok(());
             }
 
-            Ok(opcode) => {
-                tracing::debug!(
-                    "The request received before FUSE_INIT stores the internal queue (unique={}, opcode={})",
+            Ok(_opcode) => {
+                // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
+                // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
+                // カーネル側の実装に問題があると解釈し、無視する
+                tracing::error!(
+                    "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={})",
                     header.unique,
                     header.opcode,
                 );
-                let header = mem::replace(&mut header, fuse_in_header::default());
-                // FIXME: サイズが小さいリクエストで Vec<u8> まるごと複製するのはさすがに重い。コピーを最小限にしたい
-                let mut arg = mem::replace(&mut arg, vec![0u8; default_bufsize]);
-                arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
-                pending_requests.push(Request {
-                    header,
-                    opcode,
-                    arg,
-                });
                 continue;
             }
 
@@ -1199,8 +1184,6 @@ mod tests {
             config,
         )
         .expect("initialization failed");
-
-        assert!(session.pending_requests.is_empty());
 
         let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
 
