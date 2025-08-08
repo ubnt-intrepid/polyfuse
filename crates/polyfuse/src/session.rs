@@ -32,7 +32,9 @@ const DEFAULT_INIT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_AUTO_INVAL_DATA
     | FUSE_HANDLE_KILLPRIV
     | FUSE_ASYNC_DIO
-    | FUSE_ATOMIC_O_TRUNC;
+    | FUSE_ATOMIC_O_TRUNC
+    | FUSE_NO_OPEN_SUPPORT
+    | FUSE_NO_OPENDIR_SUPPORT;
 
 const INIT_FLAGS_MASK: u32 = FUSE_ASYNC_READ
     | FUSE_ATOMIC_O_TRUNC
@@ -47,7 +49,9 @@ const INIT_FLAGS_MASK: u32 = FUSE_ASYNC_READ
     | FUSE_WRITEBACK_CACHE
     | FUSE_POSIX_ACL
     | FUSE_DO_READDIRPLUS
-    | FUSE_READDIRPLUS_AUTO;
+    | FUSE_READDIRPLUS_AUTO
+    | FUSE_NO_OPEN_SUPPORT
+    | FUSE_NO_OPENDIR_SUPPORT;
 
 // ==== KernelConfig ====
 
@@ -181,6 +185,29 @@ impl KernelConfig {
         self
     }
 
+    /// Specify whether the kernel supports for zero-message opens.
+    ///
+    /// When the value is `true`, the kernel treat an `ENOSYS` error
+    /// for a `FUSE_OPEN` request as successful and does not send
+    /// subsequent `open` requests.  Otherwise, the filesystem should
+    /// implement the handler for `open` requests appropriately.
+    ///
+    /// Enabled by default.
+    pub fn no_open_support(&mut self, enabled: bool) -> &mut Self {
+        self.set_init_flag(FUSE_NO_OPEN_SUPPORT, enabled);
+        self
+    }
+
+    /// Specify whether the kernel supports for zero-message opendirs.
+    ///
+    /// See the documentation of `no_open_support` for details.
+    ///
+    /// Enabled by default.
+    pub fn no_opendir_support(&mut self, enabled: bool) -> &mut Self {
+        self.set_init_flag(FUSE_NO_OPENDIR_SUPPORT, enabled);
+        self
+    }
+
     /// Set the maximum readahead.
     pub fn max_readahead(&mut self, value: u32) -> &mut Self {
         self.init_out.max_readahead = value;
@@ -242,6 +269,7 @@ impl KernelConfig {
 
 /// The object containing the contextrual information about a FUSE session.
 pub struct Session {
+    #[allow(dead_code)]
     init_out: fuse_init_out,
     bufsize: usize,
     exited: AtomicBool,
@@ -404,23 +432,6 @@ impl Session {
                 notify_unique: AtomicU64::new(0),
             });
         }
-    }
-
-    /// Return whether the kernel supports for zero-message opens.
-    ///
-    /// When the returned value is `true`, the kernel treat an `ENOSYS`
-    /// error for a `FUSE_OPEN` request as successful and does not send
-    /// subsequent `open` requests.  Otherwise, the filesystem should
-    /// implement the handler for `open` requests appropriately.
-    pub fn no_open_support(&self) -> bool {
-        self.init_out.flags & FUSE_NO_OPEN_SUPPORT != 0
-    }
-
-    /// Return whether the kernel supports for zero-message opendirs.
-    ///
-    /// See the documentation of `no_open_support` for details.
-    pub fn no_opendir_support(&self) -> bool {
-        self.init_out.flags & FUSE_NO_OPENDIR_SUPPORT != 0
     }
 
     /// Receive an incoming FUSE request from the kernel.
