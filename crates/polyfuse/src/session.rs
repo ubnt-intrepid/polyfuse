@@ -18,11 +18,17 @@ use zerocopy::IntoBytes as _;
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
 
-const DEFAULT_MAX_WRITE: u32 = 16 * 1024 * 1024;
+const DEFAULT_MAX_PAGES_PER_REQ: usize = 32;
+const MAX_MAX_PAGES: usize = 256;
 
-// copied from fuse_i.h
-//const DEFAULT_MAX_PAGES_PER_REQ: usize = 32;
-const BUFFER_HEADER_SIZE: usize = 0x1000;
+const DEFAULT_MAX_WRITE: u32 = (FUSE_MIN_READ_BUFFER as usize
+    - mem::size_of::<fuse_in_header>()
+    - mem::size_of::<fuse_write_in>()) as u32;
+
+#[inline]
+fn pagesize() -> usize {
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+}
 
 // ==== KernelConfig ====
 
@@ -43,8 +49,22 @@ pub struct KernelConfig {
     /// If the value is not specified, it is automatically calculated using `max_background`.
     pub congestion_threshold: u16,
 
-    /// The maximum size of the write buffer.
+    /// The maximum length of bytes attached each `FUSE_WRITE` request.
+    ///
+    /// The specified value should satisfy the following inequalities:
+    ///
+    /// * `size_of::<fuse_in_header>() + size_of::<fuse_write_in>() + max_write <= FUSE_MIN_READ_BUFFER`
+    /// * `max_write <= DEFAULT_MAX_PAGES_PER_REQ * pagesize()` (if `FUSE_MAX_PAGES` disabled)
+    /// * `max_write <= MAX_MAX_PAGES * pagesize()` (if `FUSE_MAX_PAGES` enabled)
+    ///
+    /// If not satisfied, the value will be automatically adjusted into appropriate range during
+    /// the initialization process.
     pub max_write: u32,
+
+    /// The maximum number of pages attached each `FUSE_WRITE` request.
+    ///
+    /// This value will be automatically calculated during the initialization process.
+    pub max_pages: u16,
 
     /// The timestamp resolution supported by the filesystem.
     ///
@@ -55,8 +75,6 @@ pub struct KernelConfig {
 
     /// The flags.
     pub flags: KernelFlags,
-
-    pub max_pages: u16,
 }
 
 impl Default for KernelConfig {
@@ -66,8 +84,8 @@ impl Default for KernelConfig {
             max_background: 0,
             congestion_threshold: 0,
             max_write: DEFAULT_MAX_WRITE,
+            max_pages: 0, // read only
             time_gran: 1,
-            max_pages: 0,
             flags: KernelFlags::default(),
         }
     }
@@ -182,23 +200,10 @@ impl Session {
     where
         T: io::Read + io::Write,
     {
-        // FIXME: max_write / bufsize まわりの処理が雑なので直す
-
-        if config.congestion_threshold == 0 {
-            config.congestion_threshold = config.max_background * 3 / 4;
-        }
-        config.congestion_threshold = cmp::min(config.congestion_threshold, config.max_background);
-
-        config.max_write = cmp::max(
-            config.max_write,
-            FUSE_MIN_READ_BUFFER - BUFFER_HEADER_SIZE as u32,
-        );
-
+        let mut header_in = fuse_in_header::default();
+        let mut arg_in =
+            vec![0u8; FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>()];
         loop {
-            let mut header_in = fuse_in_header::default();
-            let mut arg_in =
-                vec![0u8; FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>()];
-
             let len = conn.read_vectored(&mut [
                 io::IoSliceMut::new(header_in.as_mut_bytes()),
                 io::IoSliceMut::new(&mut arg_in[..]),
@@ -278,13 +283,32 @@ impl Session {
 
             config.max_readahead = cmp::min(config.max_readahead, init_in.max_readahead);
 
-            let mut additional_flags = FUSE_BIG_WRITES; // the flag was superseded by `max_write`.
+            if config.congestion_threshold == 0 {
+                config.congestion_threshold = config.max_background * 3 / 4;
+            }
+            config.congestion_threshold =
+                cmp::min(config.congestion_threshold, config.max_background);
+
+            config.max_write = cmp::max(
+                config.max_write,
+                FUSE_MIN_READ_BUFFER
+                    - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32,
+            );
+
+            let mut additional_flags = 0;
             if init_in.flags & FUSE_MAX_PAGES != 0 {
                 additional_flags |= FUSE_MAX_PAGES;
+                config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * pagesize()) as u32);
                 config.max_pages = cmp::min(
-                    (config.max_write - 1) / (pagesize() as u32) + 1,
+                    config.max_write.div_ceil(pagesize() as u32),
                     u16::max_value() as u32,
                 ) as u16;
+            } else {
+                config.max_write = cmp::min(
+                    config.max_write,
+                    (DEFAULT_MAX_PAGES_PER_REQ * pagesize()) as u32,
+                );
+                config.max_pages = 0;
             }
 
             tracing::debug!("INIT request:");
@@ -312,7 +336,7 @@ impl Session {
                 major,
                 minor,
                 max_readahead: config.max_readahead,
-                flags: config.flags.bits() | additional_flags,
+                flags: config.flags.bits() | additional_flags | FUSE_BIG_WRITES, // the flag was superseded by `max_write`
                 max_background: config.max_background,
                 time_gran: config.time_gran,
                 congestion_threshold: config.congestion_threshold,
@@ -362,7 +386,9 @@ impl Session {
 
     #[inline]
     pub fn request_buffer_size(&self) -> usize {
-        BUFFER_HEADER_SIZE + self.config.max_write as usize
+        mem::size_of::<fuse_in_header>()
+            + mem::size_of::<fuse_write_in>()
+            + self.config.max_write as usize
     }
 
     /// Receive an incoming FUSE request from the kernel.
@@ -1010,11 +1036,6 @@ unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
     }
 }
 
-#[inline]
-fn pagesize() -> usize {
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1091,7 +1112,7 @@ mod tests {
         )
         .expect("initialization failed");
 
-        let expected_max_pages = (DEFAULT_MAX_WRITE / (pagesize() as u32)) as u16;
+        let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(pagesize() as u32) as u16;
 
         assert_eq!(session.major, FUSE_KERNEL_VERSION);
         assert_eq!(session.minor, FUSE_KERNEL_MINOR_VERSION);
