@@ -22,25 +22,6 @@ where
     }
 }
 
-impl Reader for &[u8] {
-    fn read_request(&mut self, header: &mut fuse_in_header, arg: &mut [u8]) -> io::Result<usize> {
-        let this = self;
-
-        if this.len() < mem::size_of::<fuse_in_header>() {
-            return Err(io::Error::from_raw_os_error(libc::EINVAL));
-        }
-        header
-            .as_mut_bytes()
-            .copy_from_slice(&this[..mem::size_of::<fuse_in_header>()]);
-        *this = &this[mem::size_of::<fuse_in_header>()..];
-
-        let arg_len = this.len();
-        arg[..arg_len].copy_from_slice(this);
-
-        Ok(arg_len)
-    }
-}
-
 pub trait Writer {
     /// Send a reply associated with a processing request to the kernel.
     fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
@@ -71,22 +52,6 @@ where
         B: Bytes,
     {
         (**self).write_notify(code, arg)
-    }
-}
-
-impl Writer for Vec<u8> {
-    fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
-    where
-        B: Bytes,
-    {
-        crate::util::write_bytes(self, crate::util::Reply::new(unique, error, arg))
-    }
-
-    fn write_notify<B>(&mut self, code: fuse_notify_code, arg: B) -> io::Result<()>
-    where
-        B: Bytes,
-    {
-        crate::util::write_bytes(self, crate::util::Notify::new(code, arg))
     }
 }
 

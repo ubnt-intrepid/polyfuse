@@ -680,81 +680,117 @@ impl Session {
 mod tests {
     use super::*;
     use std::mem;
+    use zerocopy::FromBytes;
 
-    struct Unite<R, W> {
-        reader: R,
-        writer: W,
+    #[derive(Default)]
+    struct DummyConnection {
+        request: Option<(fuse_in_header, fuse_init_in)>,
+        reply: Option<(fuse_out_header, fuse_init_out)>,
     }
 
-    impl<R, W> Reader for Unite<R, W>
-    where
-        R: Reader,
-    {
+    impl Reader for DummyConnection {
         fn read_request(
             &mut self,
-            header: &mut fuse_in_header,
-            arg: &mut [u8],
+            header_slot: &mut fuse_in_header,
+            arg_slot: &mut [u8],
         ) -> io::Result<usize> {
-            self.reader.read_request(header, arg)
+            assert!(arg_slot.len() >= mem::size_of::<fuse_init_in>());
+
+            let (header_in, arg_in) = self.request.take().expect("should not be None");
+
+            let _ = mem::replace(header_slot, header_in);
+            header_slot.len =
+                (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>()) as u32;
+
+            let arg_buf = POD(arg_in).to_vec();
+            arg_slot[..mem::size_of::<fuse_init_in>()].copy_from_slice(&arg_buf[..]);
+
+            Ok(mem::size_of::<fuse_init_in>())
         }
     }
 
-    impl<R, W> Writer for Unite<R, W>
-    where
-        W: Writer,
-    {
+    impl Writer for DummyConnection {
         fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
         where
             B: Bytes,
         {
-            self.writer.write_reply(unique, error, arg)
+            assert!(arg.size() >= mem::size_of::<fuse_init_out>());
+            let arg = arg.to_vec();
+
+            let out_header = fuse_out_header {
+                len: (mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>()) as u32,
+                error,
+                unique,
+            };
+            let init_out = fuse_init_out::ref_from_bytes(&arg[..mem::size_of::<fuse_init_out>()])
+                .copied()
+                .unwrap();
+
+            let a = self.reply.replace((out_header, init_out));
+            assert!(a.is_none());
+
+            Ok(())
         }
 
-        fn write_notify<B>(&mut self, code: fuse_notify_code, arg: B) -> io::Result<()>
+        fn write_notify<B>(&mut self, _code: fuse_notify_code, _arg: B) -> io::Result<()>
         where
             B: Bytes,
         {
-            self.writer.write_notify(code, arg)
+            unreachable!()
         }
     }
 
     #[test]
     fn session_init() {
-        let input_len = mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>();
-        let in_header = fuse_in_header {
-            len: input_len as u32,
-            opcode: fuse_opcode::FUSE_INIT as u32,
-            unique: 2,
-            nodeid: 0,
-            uid: 100,
-            gid: 100,
-            pid: 12,
-            padding: 0,
-        };
-        let init_in = fuse_init_in {
-            major: FUSE_KERNEL_VERSION,
-            minor: FUSE_KERNEL_MINOR_VERSION,
-            max_readahead: 40,
-            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
-        };
+        let mut conn = DummyConnection::default();
 
-        let mut input = Vec::with_capacity(input_len);
-        input.extend_from_slice(in_header.as_bytes());
-        input.extend_from_slice(init_in.as_bytes());
-        assert_eq!(input.len(), input_len);
-
-        let mut output = Vec::<u8>::new();
-
-        let session = Session::init(
-            Unite {
-                reader: &input[..],
-                writer: &mut output,
+        conn.request = Some((
+            fuse_in_header {
+                len: 0, // filled by read_request()
+                opcode: fuse_opcode::FUSE_INIT as u32,
+                unique: 2,
+                nodeid: 0,
+                uid: 100,
+                gid: 100,
+                pid: 12,
+                padding: 0,
             },
-            KernelConfig::default(),
-        )
-        .expect("initialization failed");
+            fuse_init_in {
+                major: FUSE_KERNEL_VERSION,
+                minor: FUSE_KERNEL_MINOR_VERSION,
+                max_readahead: 40,
+                flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
+            },
+        ));
+
+        let session = Session::init(&mut conn, KernelConfig::default()) //
+            .expect("initialization failed");
 
         let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(pagesize() as u32) as u16;
+
+        let (out_header, init_out) = conn.reply.as_ref().unwrap();
+
+        assert_eq!(
+            out_header.len,
+            (mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>()) as u32
+        );
+        assert_eq!(out_header.unique, 2);
+        assert_eq!(out_header.error, 0);
+
+        assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+        assert_eq!(init_out.minor, FUSE_KERNEL_MINOR_VERSION);
+        assert_eq!(init_out.max_readahead, 40);
+        assert_eq!(
+            init_out.flags,
+            KernelFlags::default().bits() | FUSE_MAX_PAGES | FUSE_BIG_WRITES
+        );
+        assert_eq!(init_out.max_background, 0);
+        assert_eq!(init_out.congestion_threshold, 0);
+        assert_eq!(init_out.max_write, DEFAULT_MAX_WRITE);
+        assert_eq!(init_out.time_gran, 1);
+        assert_eq!(init_out.max_pages, expected_max_pages);
+        assert_eq!(init_out.padding, 0);
+        assert_eq!(init_out.unused, [0; 8]);
 
         assert_eq!(session.major, FUSE_KERNEL_VERSION);
         assert_eq!(session.minor, FUSE_KERNEL_MINOR_VERSION);
@@ -765,54 +801,5 @@ mod tests {
         assert_eq!(session.config.max_pages, expected_max_pages);
         assert_eq!(session.config.time_gran, 1);
         assert_eq!(session.config.flags, KernelFlags::default());
-
-        let output_len = mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>();
-        let out_header = fuse_out_header {
-            len: output_len as u32,
-            error: 0,
-            unique: 2,
-        };
-        let init_out = fuse_init_out {
-            major: FUSE_KERNEL_VERSION,
-            minor: FUSE_KERNEL_MINOR_VERSION,
-            max_readahead: 40,
-            flags: KernelFlags::default().bits() | FUSE_MAX_PAGES | FUSE_BIG_WRITES,
-            max_background: 0,
-            congestion_threshold: 0,
-            max_write: DEFAULT_MAX_WRITE,
-            time_gran: 1,
-            max_pages: expected_max_pages,
-            padding: 0,
-            unused: [0; 8],
-        };
-
-        let mut expected = Vec::with_capacity(output_len);
-        expected.extend_from_slice(out_header.as_bytes());
-        expected.extend_from_slice(init_out.as_bytes());
-        assert_eq!(output.len(), output_len);
-
-        assert_eq!(expected[0..4], output[0..4], "out_header.len");
-        assert_eq!(expected[4..8], output[4..8], "out_header.error");
-        assert_eq!(expected[8..16], output[8..16], "out_header.unique");
-
-        let expected = &expected[mem::size_of::<fuse_out_header>()..];
-        let output = &output[mem::size_of::<fuse_out_header>()..];
-        assert_eq!(expected[0..4], output[0..4], "init_out.major");
-        assert_eq!(expected[4..8], output[4..8], "init_out.minor");
-        assert_eq!(expected[8..12], output[8..12], "init_out.max_readahead");
-        assert_eq!(expected[12..16], output[12..16], "init_out.flags");
-        assert_eq!(expected[16..18], output[16..18], "init_out.max_background");
-        assert_eq!(
-            expected[18..20],
-            output[18..20],
-            "init_out.congestion_threshold"
-        );
-        assert_eq!(expected[20..24], output[20..24], "init_out.max_write");
-        assert_eq!(expected[24..28], output[24..28], "init_out.time_gran");
-        assert_eq!(expected[28..30], output[28..30], "init_out.max_pages");
-        assert!(
-            output[30..30 + 2 + 4 * 8].iter().all(|&b| b == 0x00),
-            "init_out.paddings"
-        );
     }
 }

@@ -33,12 +33,24 @@ pub trait Bytes {
     ///
     /// [bytes_vectored]: https://docs.rs/bytes/0.6/bytes/trait.Buf.html#method.bytes_vectored
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>);
+
+    fn to_vec(&self) -> Vec<u8> {
+        let mut vec = Vec::with_capacity(self.size());
+        self.fill_bytes(&mut vec);
+        vec
+    }
 }
 
 /// The container of scattered bytes.
 pub trait FillBytes<'a> {
     /// Put a chunk of bytes into this container.
     fn put(&mut self, chunk: &'a [u8]);
+}
+
+impl<'a> FillBytes<'a> for Vec<u8> {
+    fn put(&mut self, chunk: &'a [u8]) {
+        self.extend_from_slice(chunk);
+    }
 }
 
 // ==== pointer types ====
