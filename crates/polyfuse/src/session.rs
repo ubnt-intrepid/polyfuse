@@ -1,5 +1,5 @@
 use crate::{
-    bytes::{Bytes, Decoder, FillBytes},
+    bytes::{Bytes, Decoder, FillBytes, POD},
     op::Operation,
 };
 use polyfuse_kernel::*;
@@ -10,7 +10,6 @@ use std::{
     fmt,
     io::{self, prelude::*, IoSlice, IoSliceMut},
     mem::{self, MaybeUninit},
-    os::unix::prelude::*,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use zerocopy::IntoBytes as _;
@@ -575,106 +574,40 @@ impl<'op> BufRead for Data<'op> {
 
 impl Session {
     /// Notify the cache invalidation about an inode to the kernel.
-    pub fn inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
+    pub fn notify_inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
     where
         T: io::Write,
     {
-        let total_len = u32::try_from(
-            mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_inval_inode_out>(),
-        )
-        .unwrap();
-
-        return write_bytes(
+        write_bytes(
             conn,
-            InvalInode {
-                header: fuse_out_header {
-                    len: total_len,
-                    error: fuse_notify_code::FUSE_NOTIFY_INVAL_INODE as i32,
-                    unique: 0,
-                },
-                arg: fuse_notify_inval_inode_out { ino, off, len },
-            },
-        );
-
-        struct InvalInode {
-            header: fuse_out_header,
-            arg: fuse_notify_inval_inode_out,
-        }
-        impl Bytes for InvalInode {
-            fn size(&self) -> usize {
-                self.header.len as usize
-            }
-
-            fn count(&self) -> usize {
-                2
-            }
-
-            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                dst.put(self.header.as_bytes());
-                dst.put(self.arg.as_bytes());
-            }
-        }
+            Notify::new(
+                fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+                POD(fuse_notify_inval_inode_out { ino, off, len }),
+            ),
+        )
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
-    pub fn inval_entry<T>(&self, conn: T, parent: u64, name: impl AsRef<OsStr>) -> io::Result<()>
+    pub fn notify_inval_entry<T>(&self, conn: T, parent: u64, name: &OsStr) -> io::Result<()>
     where
         T: io::Write,
     {
-        let namelen = u32::try_from(name.as_ref().len()).expect("provided name is too long");
+        let namelen = name.len().try_into().expect("provided name is too long");
 
-        let total_len = u32::try_from(
-            mem::size_of::<fuse_out_header>()
-                + mem::size_of::<fuse_notify_inval_entry_out>()
-                + name.as_ref().len()
-                + 1,
-        )
-        .unwrap();
-
-        return write_bytes(
+        write_bytes(
             conn,
-            InvalEntry {
-                header: fuse_out_header {
-                    len: total_len,
-                    error: fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY as i32,
-                    unique: 0,
-                },
-                arg: fuse_notify_inval_entry_out {
-                    parent,
-                    namelen,
-                    padding: 0,
-                },
-                name,
-            },
-        );
-
-        struct InvalEntry<T>
-        where
-            T: AsRef<OsStr>,
-        {
-            header: fuse_out_header,
-            arg: fuse_notify_inval_entry_out,
-            name: T,
-        }
-        impl<T> Bytes for InvalEntry<T>
-        where
-            T: AsRef<OsStr>,
-        {
-            fn size(&self) -> usize {
-                self.header.len as usize
-            }
-
-            fn count(&self) -> usize {
-                4
-            }
-
-            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                dst.put(self.header.as_bytes());
-                dst.put(self.arg.as_bytes());
-                dst.put(self.name.as_ref().as_bytes());
-                dst.put(b"\0"); // null terminator
-            }
-        }
+            Notify::new(
+                fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+                (
+                    POD(fuse_notify_inval_entry_out {
+                        parent,
+                        namelen,
+                        padding: 0,
+                    }),
+                    (name, b"\0".as_slice()),
+                ),
+            ),
+        )
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
@@ -683,227 +616,91 @@ impl Session {
     /// Additionally, when the provided `child` inode matches the inode
     /// in the dentry cache, the inotify will inform the deletion to
     /// watchers if exists.
-    pub fn delete<T>(
-        &self,
-        conn: T,
-        parent: u64,
-        child: u64,
-        name: impl AsRef<OsStr>,
-    ) -> io::Result<()>
+    pub fn notify_delete<T>(&self, conn: T, parent: u64, child: u64, name: &OsStr) -> io::Result<()>
     where
         T: io::Write,
     {
-        let namelen = u32::try_from(name.as_ref().len()).expect("provided name is too long");
+        let namelen = name.len().try_into().expect("provided name is too long");
 
-        let total_len = u32::try_from(
-            mem::size_of::<fuse_out_header>()
-                + mem::size_of::<fuse_notify_delete_out>()
-                + name.as_ref().len()
-                + 1,
-        )
-        .expect("payload is too long");
-
-        return write_bytes(
+        write_bytes(
             conn,
-            Delete {
-                header: fuse_out_header {
-                    len: total_len,
-                    error: fuse_notify_code::FUSE_NOTIFY_DELETE as i32,
-                    unique: 0,
-                },
-                arg: fuse_notify_delete_out {
-                    parent,
-                    child,
-                    namelen,
-                    padding: 0,
-                },
-                name,
-            },
-        );
-
-        struct Delete<T>
-        where
-            T: AsRef<OsStr>,
-        {
-            header: fuse_out_header,
-            arg: fuse_notify_delete_out,
-            name: T,
-        }
-        impl<T> Bytes for Delete<T>
-        where
-            T: AsRef<OsStr>,
-        {
-            fn size(&self) -> usize {
-                self.header.len as usize
-            }
-
-            fn count(&self) -> usize {
-                4
-            }
-
-            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                dst.put(self.header.as_bytes());
-                dst.put(self.arg.as_bytes());
-                dst.put(self.name.as_ref().as_bytes());
-                dst.put(b"\0"); // null terminator
-            }
-        }
+            Notify::new(
+                fuse_notify_code::FUSE_NOTIFY_DELETE,
+                (
+                    POD(fuse_notify_delete_out {
+                        parent,
+                        child,
+                        namelen,
+                        padding: 0,
+                    }),
+                    (name, b"\0".as_ref()),
+                ),
+            ),
+        )
     }
 
     /// Push the data in an inode for updating the kernel cache.
-    pub fn store<T, B>(&self, conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
+    pub fn notify_store<T, B>(&self, conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
     {
-        let size = u32::try_from(data.size()).expect("provided data is too large");
+        let size = data.size().try_into().expect("provided data is too large");
 
-        let total_len = u32::try_from(
-            mem::size_of::<fuse_out_header>()
-                + mem::size_of::<fuse_notify_store_out>()
-                + data.size(),
-        )
-        .expect("payload is too long");
-
-        return write_bytes(
+        write_bytes(
             conn,
-            Store {
-                header: fuse_out_header {
-                    len: total_len,
-                    error: fuse_notify_code::FUSE_NOTIFY_STORE as i32,
-                    unique: 0,
-                },
-                arg: fuse_notify_store_out {
-                    nodeid: ino,
-                    offset,
-                    size,
-                    padding: 0,
-                },
-                data,
-            },
-        );
-
-        struct Store<T>
-        where
-            T: Bytes,
-        {
-            header: fuse_out_header,
-            arg: fuse_notify_store_out,
-            data: T,
-        }
-        impl<T> Bytes for Store<T>
-        where
-            T: Bytes,
-        {
-            fn size(&self) -> usize {
-                self.header.len as usize
-            }
-
-            fn count(&self) -> usize {
-                2 + self.data.count()
-            }
-
-            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                dst.put(self.header.as_bytes());
-                dst.put(self.arg.as_bytes());
-                self.data.fill_bytes(dst);
-            }
-        }
+            Notify::new(
+                fuse_notify_code::FUSE_NOTIFY_STORE,
+                (
+                    POD(fuse_notify_store_out {
+                        nodeid: ino,
+                        offset,
+                        size,
+                        padding: 0,
+                    }),
+                    data,
+                ),
+            ),
+        )
     }
 
     /// Retrieve data in an inode from the kernel cache.
-    pub fn retrieve<T>(&self, conn: T, ino: u64, offset: u64, size: u32) -> io::Result<u64>
+    pub fn notify_retrieve<T>(&self, conn: T, ino: u64, offset: u64, size: u32) -> io::Result<u64>
     where
         T: io::Write,
     {
-        let total_len = u32::try_from(
-            mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_retrieve_out>(),
-        )
-        .unwrap();
-
         // FIXME: choose appropriate memory ordering.
         let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
 
         write_bytes(
             conn,
-            Retrieve {
-                header: fuse_out_header {
-                    len: total_len,
-                    error: fuse_notify_code::FUSE_NOTIFY_RETRIEVE as i32,
-                    unique: 0,
-                },
-                arg: fuse_notify_retrieve_out {
+            Notify::new(
+                fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+                POD(fuse_notify_retrieve_out {
                     nodeid: ino,
                     offset,
                     size,
                     notify_unique,
                     padding: 0,
-                },
-            },
+                }),
+            ),
         )?;
 
-        return Ok(notify_unique);
-
-        struct Retrieve {
-            header: fuse_out_header,
-            arg: fuse_notify_retrieve_out,
-        }
-        impl Bytes for Retrieve {
-            fn size(&self) -> usize {
-                self.header.len as usize
-            }
-
-            fn count(&self) -> usize {
-                2
-            }
-
-            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                dst.put(self.header.as_bytes());
-                dst.put(self.arg.as_bytes());
-            }
-        }
+        Ok(notify_unique)
     }
 
     /// Send I/O readiness to the kernel.
-    pub fn poll_wakeup<T>(&self, conn: T, kh: u64) -> io::Result<()>
+    pub fn notify_poll_wakeup<T>(&self, conn: T, kh: u64) -> io::Result<()>
     where
         T: io::Write,
     {
-        let total_len = u32::try_from(
-            mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_notify_poll_wakeup_out>(),
-        )
-        .unwrap();
-
-        return write_bytes(
+        write_bytes(
             conn,
-            PollWakeup {
-                header: fuse_out_header {
-                    len: total_len,
-                    error: fuse_notify_code::FUSE_NOTIFY_POLL as i32,
-                    unique: 0,
-                },
-                arg: fuse_notify_poll_wakeup_out { kh },
-            },
-        );
-
-        struct PollWakeup {
-            header: fuse_out_header,
-            arg: fuse_notify_poll_wakeup_out,
-        }
-        impl Bytes for PollWakeup {
-            fn size(&self) -> usize {
-                self.header.len as usize
-            }
-
-            fn count(&self) -> usize {
-                2
-            }
-
-            fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                dst.put(self.header.as_bytes());
-                dst.put(self.arg.as_bytes());
-            }
-        }
+            Notify::new(
+                fuse_notify_code::FUSE_NOTIFY_POLL,
+                POD(fuse_notify_poll_wakeup_out { kh }),
+            ),
+        )
     }
 }
 
@@ -933,6 +730,49 @@ where
     }
 }
 impl<T> Bytes for Reply<T>
+where
+    T: Bytes,
+{
+    #[inline]
+    fn size(&self) -> usize {
+        self.header.len as usize
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        self.arg.count() + 1
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.header.as_bytes());
+        self.arg.fill_bytes(dst);
+    }
+}
+
+struct Notify<T> {
+    header: fuse_out_header,
+    arg: T,
+}
+impl<T> Notify<T>
+where
+    T: Bytes,
+{
+    #[inline]
+    fn new(code: fuse_notify_code, arg: T) -> Self {
+        let len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .expect("Argument size is too large");
+        Self {
+            header: fuse_out_header {
+                len,
+                error: code as i32,
+                unique: 0,
+            },
+            arg,
+        }
+    }
+}
+impl<T> Bytes for Notify<T>
 where
     T: Bytes,
 {

@@ -141,7 +141,7 @@ impl Heartbeat {
             match notifier {
                 Some(ref notifier) if current.nlookup > 0 => {
                     tracing::info!("send notify_inval_entry");
-                    notifier.inval_entry(conn, ROOT_INO, old_filename)?;
+                    notifier.notify_inval_entry(conn, ROOT_INO, old_filename.as_ref())?;
                 }
                 _ => (),
             }

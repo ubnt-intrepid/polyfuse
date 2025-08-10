@@ -128,7 +128,7 @@ impl PollFS {
 
                             if let Some(kh) = state.kh {
                                 tracing::info!("send wakeup notification, kh={}", kh);
-                                session.poll_wakeup(&*conn, kh)?;
+                                session.notify_poll_wakeup(&*conn, kh)?;
                             }
 
                             state.is_ready = true;
