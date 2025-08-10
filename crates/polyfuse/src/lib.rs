@@ -17,5 +17,5 @@ pub mod reply;
 pub use crate::{
     conn::Connection,
     op::Operation,
-    session::{Data, KernelConfig, Request, Session},
+    session::{Data, KernelConfig, KernelFlags, Request, Session},
 };

@@ -9,7 +9,7 @@ use polyfuse::{
     reply::{
         AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
-    Connection, KernelConfig, Operation, Session,
+    Connection, KernelConfig, KernelFlags, Operation, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -61,9 +61,9 @@ fn main() -> Result<()> {
     // TODO: splice read/write
     let session = Session::init(&*conn, {
         let mut config = KernelConfig::default();
-        config.export_support(true);
-        config.flock_locks(true);
-        config.writeback_cache(timeout.is_some());
+        config.flags |= KernelFlags::EXPORT_SUPPORT;
+        config.flags |= KernelFlags::FLOCK_LOCKS;
+        config.flags |= KernelFlags::WRITEBACK_CACHE;
         config
     })
     .map(Arc::new)?;
