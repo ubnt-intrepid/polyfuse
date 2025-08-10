@@ -6,10 +6,11 @@
 #[macro_use]
 mod nix;
 
-mod conn;
 mod session;
+mod util;
 
 pub mod bytes;
+pub mod conn;
 pub mod mount;
 pub mod op;
 pub mod reply;

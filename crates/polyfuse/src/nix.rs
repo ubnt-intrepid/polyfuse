@@ -17,6 +17,7 @@ macro_rules! syscall {
     }};
 }
 
+#[allow(dead_code)]
 pub fn read(fd: BorrowedFd<'_>, buf: &mut [u8]) -> io::Result<usize> {
     let len = syscall! {
         read(
@@ -39,6 +40,7 @@ pub fn readv(fd: BorrowedFd<'_>, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<
     Ok(len as usize)
 }
 
+#[allow(dead_code)]
 pub fn write(fd: BorrowedFd<'_>, buf: &[u8]) -> io::Result<usize> {
     let res = syscall! {
         write(

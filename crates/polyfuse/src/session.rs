@@ -1,5 +1,6 @@
 use crate::{
-    bytes::{Bytes, Decoder, FillBytes, POD},
+    bytes::{Bytes, Decoder, POD},
+    conn::{Reader, Writer},
     op::Operation,
 };
 use polyfuse_kernel::*;
@@ -8,8 +9,8 @@ use std::{
     convert::{TryFrom, TryInto as _},
     ffi::OsStr,
     fmt,
-    io::{self, prelude::*, IoSlice, IoSliceMut},
-    mem::{self, MaybeUninit},
+    io::{self, prelude::*, IoSliceMut},
+    mem,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use zerocopy::IntoBytes as _;
@@ -197,23 +198,13 @@ impl Session {
     /// the established channel.
     pub fn init<T>(mut conn: T, mut config: KernelConfig) -> io::Result<Self>
     where
-        T: io::Read + io::Write,
+        T: Reader + Writer,
     {
         let mut header_in = fuse_in_header::default();
         let mut arg_in =
             vec![0u8; FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>()];
         loop {
-            let len = conn.read_vectored(&mut [
-                io::IoSliceMut::new(header_in.as_mut_bytes()),
-                io::IoSliceMut::new(&mut arg_in[..]),
-            ])?;
-
-            if len < mem::size_of::<fuse_in_header>() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "request message is too short",
-                ));
-            }
+            let len = conn.read_request(&mut header_in, &mut arg_in[..])?;
 
             if !matches!(
                 fuse_opcode::try_from(header_in.opcode),
@@ -230,7 +221,7 @@ impl Session {
                 continue;
             }
 
-            let init_in = Decoder::new(&arg_in[..len - mem::size_of::<fuse_in_header>()])
+            let init_in = Decoder::new(&arg_in[..len])
                 .fetch::<fuse_init_in>() //
                 .map_err(|_| {
                     io::Error::new(io::ErrorKind::Other, "failed to decode fuse_init_in")
@@ -250,7 +241,7 @@ impl Session {
                     minor: FUSE_KERNEL_MINOR_VERSION,
                     ..Default::default()
                 };
-                write_bytes(&mut conn, Reply::new(header_in.unique, 0, args.as_bytes()))?;
+                conn.write_reply(header_in.unique, 0, args.as_bytes())?;
                 continue;
             }
 
@@ -264,7 +255,7 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                write_bytes(&mut conn, Reply::new(header_in.unique, libc::EPROTO, ()))?;
+                conn.write_reply(header_in.unique, libc::EPROTO, ())?;
                 continue;
             }
 
@@ -344,10 +335,7 @@ impl Session {
                 padding: 0,
                 unused: [0; 8],
             };
-            write_bytes(
-                &mut conn,
-                Reply::new(header_in.unique, 0, init_out.as_bytes()),
-            )?;
+            conn.write_reply(header_in.unique, 0, init_out.as_bytes())?;
 
             return Ok(Self {
                 config,
@@ -393,24 +381,14 @@ impl Session {
     /// Receive an incoming FUSE request from the kernel.
     pub fn next_request<T>(&self, mut conn: T) -> io::Result<Option<Request>>
     where
-        T: io::Read + io::Write,
+        T: Reader + Writer,
     {
         let mut header = fuse_in_header::default();
         let mut arg = vec![0u8; self.request_buffer_size() - mem::size_of::<fuse_in_header>()];
 
         loop {
-            match conn.read_vectored(&mut [
-                io::IoSliceMut::new(header.as_mut_bytes()),
-                io::IoSliceMut::new(&mut arg[..]),
-            ]) {
+            match conn.read_request(&mut header, &mut arg[..]) {
                 Ok(len) => {
-                    if len < mem::size_of::<fuse_in_header>() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "dequeued request message is too short",
-                        ));
-                    }
-
                     match fuse_opcode::try_from(header.opcode) {
                         Ok(fuse_opcode::FUSE_INIT) => {
                             // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
@@ -434,7 +412,7 @@ impl Session {
                                 header.unique,
                                 header.opcode
                             );
-                            write_bytes(&mut conn, Reply::new(header.unique, libc::ENOSYS, ()))?;
+                            conn.write_reply(header.unique, libc::ENOSYS, ())?;
                             continue;
                         }
 
@@ -445,7 +423,7 @@ impl Session {
                                 header.unique,
                                 header.opcode
                             );
-                            arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
+                            arg.resize(len, 0);
                             break Ok(Some(Request {
                                 header,
                                 opcode,
@@ -521,19 +499,19 @@ impl Request {
 }
 
 impl Session {
-    pub fn reply<T, B>(&self, conn: T, req: &Request, arg: B) -> io::Result<()>
+    pub fn reply<T, B>(&self, mut conn: T, req: &Request, arg: B) -> io::Result<()>
     where
-        T: io::Write,
+        T: Writer,
         B: Bytes,
     {
-        write_bytes(conn, Reply::new(req.unique(), 0, arg))
+        conn.write_reply(req.unique(), 0, arg)
     }
 
-    pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
+    pub fn reply_error<T>(&self, mut conn: T, req: &Request, code: i32) -> io::Result<()>
     where
-        T: io::Write,
+        T: Writer,
     {
-        write_bytes(conn, Reply::new(req.unique(), code, ()))
+        conn.write_reply(req.unique(), code, ())
     }
 }
 
@@ -574,38 +552,32 @@ impl<'op> BufRead for Data<'op> {
 
 impl Session {
     /// Notify the cache invalidation about an inode to the kernel.
-    pub fn notify_inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
+    pub fn notify_inval_inode<T>(&self, mut conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
     where
-        T: io::Write,
+        T: Writer,
     {
-        write_bytes(
-            conn,
-            Notify::new(
-                fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
-                POD(fuse_notify_inval_inode_out { ino, off, len }),
-            ),
+        conn.write_notify(
+            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+            POD(fuse_notify_inval_inode_out { ino, off, len }),
         )
     }
 
     /// Notify the invalidation about a directory entry to the kernel.
-    pub fn notify_inval_entry<T>(&self, conn: T, parent: u64, name: &OsStr) -> io::Result<()>
+    pub fn notify_inval_entry<T>(&self, mut conn: T, parent: u64, name: &OsStr) -> io::Result<()>
     where
-        T: io::Write,
+        T: Writer,
     {
         let namelen = name.len().try_into().expect("provided name is too long");
 
-        write_bytes(
-            conn,
-            Notify::new(
-                fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
-                (
-                    POD(fuse_notify_inval_entry_out {
-                        parent,
-                        namelen,
-                        padding: 0,
-                    }),
-                    (name, b"\0".as_slice()),
-                ),
+        conn.write_notify(
+            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+            (
+                POD(fuse_notify_inval_entry_out {
+                    parent,
+                    namelen,
+                    padding: 0,
+                }),
+                (name, b"\0".as_slice()),
             ),
         )
     }
@@ -616,263 +588,91 @@ impl Session {
     /// Additionally, when the provided `child` inode matches the inode
     /// in the dentry cache, the inotify will inform the deletion to
     /// watchers if exists.
-    pub fn notify_delete<T>(&self, conn: T, parent: u64, child: u64, name: &OsStr) -> io::Result<()>
+    pub fn notify_delete<T>(
+        &self,
+        mut conn: T,
+        parent: u64,
+        child: u64,
+        name: &OsStr,
+    ) -> io::Result<()>
     where
-        T: io::Write,
+        T: Writer,
     {
         let namelen = name.len().try_into().expect("provided name is too long");
 
-        write_bytes(
-            conn,
-            Notify::new(
-                fuse_notify_code::FUSE_NOTIFY_DELETE,
-                (
-                    POD(fuse_notify_delete_out {
-                        parent,
-                        child,
-                        namelen,
-                        padding: 0,
-                    }),
-                    (name, b"\0".as_ref()),
-                ),
+        conn.write_notify(
+            fuse_notify_code::FUSE_NOTIFY_DELETE,
+            (
+                POD(fuse_notify_delete_out {
+                    parent,
+                    child,
+                    namelen,
+                    padding: 0,
+                }),
+                (name, b"\0".as_ref()),
             ),
         )
     }
 
     /// Push the data in an inode for updating the kernel cache.
-    pub fn notify_store<T, B>(&self, conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
+    pub fn notify_store<T, B>(&self, mut conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
     where
-        T: io::Write,
+        T: Writer,
         B: Bytes,
     {
         let size = data.size().try_into().expect("provided data is too large");
 
-        write_bytes(
-            conn,
-            Notify::new(
-                fuse_notify_code::FUSE_NOTIFY_STORE,
-                (
-                    POD(fuse_notify_store_out {
-                        nodeid: ino,
-                        offset,
-                        size,
-                        padding: 0,
-                    }),
-                    data,
-                ),
+        conn.write_notify(
+            fuse_notify_code::FUSE_NOTIFY_STORE,
+            (
+                POD(fuse_notify_store_out {
+                    nodeid: ino,
+                    offset,
+                    size,
+                    padding: 0,
+                }),
+                data,
             ),
         )
     }
 
     /// Retrieve data in an inode from the kernel cache.
-    pub fn notify_retrieve<T>(&self, conn: T, ino: u64, offset: u64, size: u32) -> io::Result<u64>
+    pub fn notify_retrieve<T>(
+        &self,
+        mut conn: T,
+        ino: u64,
+        offset: u64,
+        size: u32,
+    ) -> io::Result<u64>
     where
-        T: io::Write,
+        T: Writer,
     {
         // FIXME: choose appropriate memory ordering.
         let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
 
-        write_bytes(
-            conn,
-            Notify::new(
-                fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
-                POD(fuse_notify_retrieve_out {
-                    nodeid: ino,
-                    offset,
-                    size,
-                    notify_unique,
-                    padding: 0,
-                }),
-            ),
+        conn.write_notify(
+            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+            POD(fuse_notify_retrieve_out {
+                nodeid: ino,
+                offset,
+                size,
+                notify_unique,
+                padding: 0,
+            }),
         )?;
 
         Ok(notify_unique)
     }
 
     /// Send I/O readiness to the kernel.
-    pub fn notify_poll_wakeup<T>(&self, conn: T, kh: u64) -> io::Result<()>
+    pub fn notify_poll_wakeup<T>(&self, mut conn: T, kh: u64) -> io::Result<()>
     where
-        T: io::Write,
+        T: Writer,
     {
-        write_bytes(
-            conn,
-            Notify::new(
-                fuse_notify_code::FUSE_NOTIFY_POLL,
-                POD(fuse_notify_poll_wakeup_out { kh }),
-            ),
+        conn.write_notify(
+            fuse_notify_code::FUSE_NOTIFY_POLL,
+            POD(fuse_notify_poll_wakeup_out { kh }),
         )
-    }
-}
-
-// ==== utils ====
-
-struct Reply<T> {
-    header: fuse_out_header,
-    arg: T,
-}
-impl<T> Reply<T>
-where
-    T: Bytes,
-{
-    #[inline]
-    fn new(unique: u64, error: i32, arg: T) -> Self {
-        let len = (mem::size_of::<fuse_out_header>() + arg.size())
-            .try_into()
-            .expect("Argument size is too large");
-        Self {
-            header: fuse_out_header {
-                len,
-                error: -error,
-                unique,
-            },
-            arg,
-        }
-    }
-}
-impl<T> Bytes for Reply<T>
-where
-    T: Bytes,
-{
-    #[inline]
-    fn size(&self) -> usize {
-        self.header.len as usize
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        self.arg.count() + 1
-    }
-
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.header.as_bytes());
-        self.arg.fill_bytes(dst);
-    }
-}
-
-struct Notify<T> {
-    header: fuse_out_header,
-    arg: T,
-}
-impl<T> Notify<T>
-where
-    T: Bytes,
-{
-    #[inline]
-    fn new(code: fuse_notify_code, arg: T) -> Self {
-        let len = (mem::size_of::<fuse_out_header>() + arg.size())
-            .try_into()
-            .expect("Argument size is too large");
-        Self {
-            header: fuse_out_header {
-                len,
-                error: code as i32,
-                unique: 0,
-            },
-            arg,
-        }
-    }
-}
-impl<T> Bytes for Notify<T>
-where
-    T: Bytes,
-{
-    #[inline]
-    fn size(&self) -> usize {
-        self.header.len as usize
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        self.arg.count() + 1
-    }
-
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.header.as_bytes());
-        self.arg.fill_bytes(dst);
-    }
-}
-
-#[inline]
-fn write_bytes<W, T>(mut writer: W, bytes: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    let size = bytes.size();
-    let count = bytes.count();
-
-    let written;
-
-    macro_rules! small_write {
-        ($n:expr) => {{
-            let mut vec: [MaybeUninit<IoSlice<'_>>; $n] =
-                unsafe { MaybeUninit::uninit().assume_init() };
-            bytes.fill_bytes(&mut FillWriteBytes {
-                vec: &mut vec[..],
-                offset: 0,
-            });
-            let vec = unsafe { slice_assume_init_ref(&vec[..]) };
-
-            written = writer.write_vectored(vec)?;
-        }};
-    }
-
-    match count {
-        // Skip writing.
-        0 => return Ok(()),
-
-        // Avoid heap allocation if count is small.
-        1 => small_write!(1),
-        2 => small_write!(2),
-        3 => small_write!(3),
-        4 => small_write!(4),
-
-        count => {
-            let mut vec: Vec<IoSlice<'_>> = Vec::with_capacity(count);
-            unsafe {
-                let dst = std::slice::from_raw_parts_mut(
-                    vec.as_mut_ptr().cast(), //
-                    count,
-                );
-                bytes.fill_bytes(&mut FillWriteBytes {
-                    vec: dst,
-                    offset: 0,
-                });
-                vec.set_len(count);
-            }
-
-            written = writer.write_vectored(&*vec)?;
-        }
-    }
-
-    if written < size {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "written data is too short",
-        ));
-    }
-
-    Ok(())
-}
-
-struct FillWriteBytes<'a, 'vec> {
-    vec: &'vec mut [MaybeUninit<IoSlice<'a>>],
-    offset: usize,
-}
-
-impl<'a, 'vec> FillBytes<'a> for FillWriteBytes<'a, 'vec> {
-    fn put(&mut self, chunk: &'a [u8]) {
-        self.vec[self.offset] = MaybeUninit::new(IoSlice::new(chunk));
-        self.offset += 1;
-    }
-}
-
-// FIXME: replace with stabilized MaybeUninit::slice_assume_init_ref.
-#[inline(always)]
-unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
-    #[allow(unused_unsafe)]
-    unsafe {
-        &*(slice as *const [MaybeUninit<T>] as *const [T])
     }
 }
 
@@ -886,33 +686,35 @@ mod tests {
         writer: W,
     }
 
-    impl<R, W> io::Read for Unite<R, W>
+    impl<R, W> Reader for Unite<R, W>
     where
-        R: io::Read,
+        R: Reader,
     {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            self.reader.read(buf)
-        }
-
-        fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-            self.reader.read_vectored(bufs)
+        fn read_request(
+            &mut self,
+            header: &mut fuse_in_header,
+            arg: &mut [u8],
+        ) -> io::Result<usize> {
+            self.reader.read_request(header, arg)
         }
     }
 
-    impl<R, W> io::Write for Unite<R, W>
+    impl<R, W> Writer for Unite<R, W>
     where
-        W: io::Write,
+        W: Writer,
     {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.writer.write(buf)
+        fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
+        where
+            B: Bytes,
+        {
+            self.writer.write_reply(unique, error, arg)
         }
 
-        fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-            self.writer.write_vectored(bufs)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.writer.flush()
+        fn write_notify<B>(&mut self, code: fuse_notify_code, arg: B) -> io::Result<()>
+        where
+            B: Bytes,
+        {
+            self.writer.write_notify(code, arg)
         }
     }
 
@@ -1012,60 +814,5 @@ mod tests {
             output[30..30 + 2 + 4 * 8].iter().all(|&b| b == 0x00),
             "init_out.paddings"
         );
-    }
-
-    #[inline]
-    fn bytes(bytes: &[u8]) -> &[u8] {
-        bytes
-    }
-    macro_rules! b {
-        ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
-    }
-
-    #[test]
-    fn send_msg_empty() {
-        let mut buf = vec![0u8; 0];
-        write_bytes(&mut buf, Reply::new(42, -4, &[])).unwrap();
-        assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
-        assert_eq!(
-            buf[8..16],
-            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-    }
-
-    #[test]
-    fn send_msg_single_data() {
-        let mut buf = vec![0u8; 0];
-        write_bytes(&mut buf, Reply::new(42, 0, "hello")).unwrap();
-        assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
-        assert_eq!(
-            buf[8..16],
-            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-        assert_eq!(buf[16..], b![0x68, 0x65, 0x6c, 0x6c, 0x6f], "payload");
-    }
-
-    #[test]
-    fn send_msg_chunked_data() {
-        let payload: &[&[u8]] = &[
-            "hello, ".as_ref(), //
-            "this ".as_ref(),
-            "is a ".as_ref(),
-            "message.".as_ref(),
-        ];
-        let mut buf = vec![0u8; 0];
-        write_bytes(&mut buf, Reply::new(26, 0, payload)).unwrap();
-        assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
-        assert_eq!(
-            buf[8..16],
-            b![0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-        assert_eq!(buf[16..], *b"hello, this is a message.", "payload");
     }
 }
