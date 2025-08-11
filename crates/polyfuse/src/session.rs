@@ -241,7 +241,14 @@ impl Session {
                     minor: FUSE_KERNEL_MINOR_VERSION,
                     ..Default::default()
                 };
-                conn.write_reply(header_in.unique, 0, args.as_bytes())?;
+                conn.write_reply(
+                    fuse_out_header {
+                        unique: header_in.unique,
+                        error: 0,
+                        ..Default::default()
+                    },
+                    args.as_bytes(),
+                )?;
                 continue;
             }
 
@@ -255,7 +262,14 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                conn.write_reply(header_in.unique, libc::EPROTO, ())?;
+                conn.write_reply(
+                    fuse_out_header {
+                        unique: header_in.unique,
+                        error: -libc::EPROTO,
+                        ..Default::default()
+                    },
+                    (),
+                )?;
                 continue;
             }
 
@@ -335,7 +349,13 @@ impl Session {
                 padding: 0,
                 unused: [0; 8],
             };
-            conn.write_reply(header_in.unique, 0, init_out.as_bytes())?;
+            conn.write_reply(
+                fuse_out_header {
+                    unique: header_in.unique,
+                    ..Default::default()
+                },
+                init_out.as_bytes(),
+            )?;
 
             return Ok(Self {
                 config,
@@ -412,7 +432,14 @@ impl Session {
                                 header.unique,
                                 header.opcode
                             );
-                            conn.write_reply(header.unique, libc::ENOSYS, ())?;
+                            conn.write_reply(
+                                fuse_out_header {
+                                    unique: header.unique,
+                                    error: -libc::ENOSYS,
+                                    ..Default::default()
+                                },
+                                (),
+                            )?;
                             continue;
                         }
 
@@ -504,14 +531,27 @@ impl Session {
         T: Writer,
         B: Bytes,
     {
-        conn.write_reply(req.unique(), 0, arg)
+        conn.write_reply(
+            fuse_out_header {
+                unique: req.unique(),
+                ..Default::default()
+            },
+            arg,
+        )
     }
 
     pub fn reply_error<T>(&self, mut conn: T, req: &Request, code: i32) -> io::Result<()>
     where
         T: Writer,
     {
-        conn.write_reply(req.unique(), code, ())
+        conn.write_reply(
+            fuse_out_header {
+                unique: req.unique(),
+                error: -code,
+                ..Default::default()
+            },
+            (),
+        )
     }
 }
 
@@ -556,8 +596,11 @@ impl Session {
     where
         T: Writer,
     {
-        conn.write_notify(
-            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+        conn.write_reply(
+            fuse_out_header {
+                error: fuse_notify_code::FUSE_NOTIFY_INVAL_INODE as i32,
+                ..Default::default()
+            },
             POD(fuse_notify_inval_inode_out { ino, off, len }),
         )
     }
@@ -569,8 +612,11 @@ impl Session {
     {
         let namelen = name.len().try_into().expect("provided name is too long");
 
-        conn.write_notify(
-            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+        conn.write_reply(
+            fuse_out_header {
+                error: fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY as i32,
+                ..Default::default()
+            },
             (
                 POD(fuse_notify_inval_entry_out {
                     parent,
@@ -600,8 +646,11 @@ impl Session {
     {
         let namelen = name.len().try_into().expect("provided name is too long");
 
-        conn.write_notify(
-            fuse_notify_code::FUSE_NOTIFY_DELETE,
+        conn.write_reply(
+            fuse_out_header {
+                error: fuse_notify_code::FUSE_NOTIFY_DELETE as i32,
+                ..Default::default()
+            },
             (
                 POD(fuse_notify_delete_out {
                     parent,
@@ -622,8 +671,11 @@ impl Session {
     {
         let size = data.size().try_into().expect("provided data is too large");
 
-        conn.write_notify(
-            fuse_notify_code::FUSE_NOTIFY_STORE,
+        conn.write_reply(
+            fuse_out_header {
+                error: fuse_notify_code::FUSE_NOTIFY_STORE as i32,
+                ..Default::default()
+            },
             (
                 POD(fuse_notify_store_out {
                     nodeid: ino,
@@ -650,8 +702,11 @@ impl Session {
         // FIXME: choose appropriate memory ordering.
         let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
 
-        conn.write_notify(
-            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+        conn.write_reply(
+            fuse_out_header {
+                error: fuse_notify_code::FUSE_NOTIFY_RETRIEVE as i32,
+                ..Default::default()
+            },
             POD(fuse_notify_retrieve_out {
                 nodeid: ino,
                 offset,
@@ -669,8 +724,11 @@ impl Session {
     where
         T: Writer,
     {
-        conn.write_notify(
-            fuse_notify_code::FUSE_NOTIFY_POLL,
+        conn.write_reply(
+            fuse_out_header {
+                error: fuse_notify_code::FUSE_NOTIFY_POLL as i32,
+                ..Default::default()
+            },
             POD(fuse_notify_poll_wakeup_out { kh }),
         )
     }
@@ -710,18 +768,15 @@ mod tests {
     }
 
     impl Writer for DummyConnection {
-        fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
+        fn write_reply<B>(&mut self, mut out_header: fuse_out_header, arg: B) -> io::Result<()>
         where
             B: Bytes,
         {
             assert!(arg.size() >= mem::size_of::<fuse_init_out>());
             let arg = arg.to_vec();
 
-            let out_header = fuse_out_header {
-                len: (mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>()) as u32,
-                error,
-                unique,
-            };
+            out_header.len =
+                (mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>()) as u32;
             let init_out = fuse_init_out::ref_from_bytes(&arg[..mem::size_of::<fuse_init_out>()])
                 .copied()
                 .unwrap();
@@ -730,13 +785,6 @@ mod tests {
             assert!(a.is_none());
 
             Ok(())
-        }
-
-        fn write_notify<B>(&mut self, _code: fuse_notify_code, _arg: B) -> io::Result<()>
-        where
-            B: Bytes,
-        {
-            unreachable!()
         }
     }
 

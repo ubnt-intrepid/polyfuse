@@ -1,6 +1,14 @@
-use crate::{bytes::Bytes, nix};
-use polyfuse_kernel::{fuse_in_header, fuse_notify_code, FUSE_DEV_IOC_CLONE};
-use std::{ffi::CStr, io, mem, os::unix::prelude::*};
+use crate::{
+    bytes::{Bytes, FillBytes, POD},
+    nix,
+};
+use polyfuse_kernel::{fuse_in_header, fuse_out_header, FUSE_DEV_IOC_CLONE};
+use std::{
+    ffi::CStr,
+    io::{self, IoSlice},
+    mem::{self, MaybeUninit},
+    os::unix::prelude::*,
+};
 use zerocopy::IntoBytes;
 
 const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
@@ -23,13 +31,8 @@ where
 }
 
 pub trait Writer {
-    /// Send a reply associated with a processing request to the kernel.
-    fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
-    where
-        B: Bytes;
-
-    /// Send a notification message to the kernel.
-    fn write_notify<B>(&mut self, code: fuse_notify_code, arg: B) -> io::Result<()>
+    /// Send a reply or a notification message to the kernel.
+    fn write_reply<B>(&mut self, header: fuse_out_header, arg: B) -> io::Result<()>
     where
         B: Bytes;
 }
@@ -39,19 +42,11 @@ where
     W: Writer,
 {
     #[inline]
-    fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
+    fn write_reply<B>(&mut self, header: fuse_out_header, arg: B) -> io::Result<()>
     where
         B: Bytes,
     {
-        (**self).write_reply(unique, error, arg)
-    }
-
-    #[inline]
-    fn write_notify<B>(&mut self, code: fuse_notify_code, arg: B) -> io::Result<()>
-    where
-        B: Bytes,
-    {
-        (**self).write_notify(code, arg)
+        (**self).write_reply(header, arg)
     }
 }
 
@@ -76,6 +71,68 @@ impl Connection {
         Ok(Self {
             fd: unsafe { OwnedFd::from_raw_fd(newfd) },
         })
+    }
+
+    #[inline]
+    fn write_bytes<T>(&self, bytes: T) -> io::Result<()>
+    where
+        T: Bytes,
+    {
+        let size = bytes.size();
+        let count = bytes.count();
+
+        let written;
+
+        macro_rules! small_write {
+            ($n:expr) => {{
+                let mut vec: [MaybeUninit<IoSlice<'_>>; $n] =
+                    unsafe { MaybeUninit::uninit().assume_init() };
+                bytes.fill_bytes(&mut FillWriteBytes {
+                    vec: &mut vec[..],
+                    offset: 0,
+                });
+                let vec = unsafe { slice_assume_init_ref(&vec[..]) };
+
+                written = nix::writev(self.as_fd(), vec)?;
+            }};
+        }
+
+        match count {
+            // Skip writing.
+            0 => return Ok(()),
+
+            // Avoid heap allocation if count is small.
+            1 => small_write!(1),
+            2 => small_write!(2),
+            3 => small_write!(3),
+            4 => small_write!(4),
+
+            count => {
+                let mut vec: Vec<IoSlice<'_>> = Vec::with_capacity(count);
+                unsafe {
+                    let dst = std::slice::from_raw_parts_mut(
+                        vec.as_mut_ptr().cast(), //
+                        count,
+                    );
+                    bytes.fill_bytes(&mut FillWriteBytes {
+                        vec: dst,
+                        offset: 0,
+                    });
+                    vec.set_len(count);
+                }
+
+                written = nix::writev(self.as_fd(), &*vec)?;
+            }
+        }
+
+        if written < size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "written data is too short",
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -117,50 +174,45 @@ impl Reader for &Connection {
     }
 }
 
-impl io::Write for &Connection {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.write_vectored(&[io::IoSlice::new(buf)])
-    }
-
-    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        nix::writev(self.fd.as_fd(), bufs)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 impl Writer for Connection {
     #[inline]
-    fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
+    fn write_reply<B>(&mut self, header: fuse_out_header, arg: B) -> io::Result<()>
     where
         B: crate::bytes::Bytes,
     {
-        (&*self).write_reply(unique, error, arg)
-    }
-
-    #[inline]
-    fn write_notify<B>(&mut self, code: polyfuse_kernel::fuse_notify_code, arg: B) -> io::Result<()>
-    where
-        B: crate::bytes::Bytes,
-    {
-        (&*self).write_notify(code, arg)
+        (&*self).write_reply(header, arg)
     }
 }
 
 impl Writer for &Connection {
-    fn write_reply<B>(&mut self, unique: u64, error: i32, arg: B) -> io::Result<()>
+    fn write_reply<B>(&mut self, mut header: fuse_out_header, arg: B) -> io::Result<()>
     where
         B: Bytes,
     {
-        crate::util::write_bytes(self, crate::util::Reply::new(unique, error, arg))
+        header.len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .map_err(|_e| io::Error::from_raw_os_error(libc::EINVAL))?;
+        self.write_bytes((POD(header), arg))
     }
+}
 
-    fn write_notify<B>(&mut self, code: polyfuse_kernel::fuse_notify_code, arg: B) -> io::Result<()>
-    where
-        B: Bytes,
-    {
-        crate::util::write_bytes(self, crate::util::Notify::new(code, arg))
+struct FillWriteBytes<'a, 'vec> {
+    vec: &'vec mut [MaybeUninit<IoSlice<'a>>],
+    offset: usize,
+}
+
+impl<'a, 'vec> FillBytes<'a> for FillWriteBytes<'a, 'vec> {
+    fn put(&mut self, chunk: &'a [u8]) {
+        self.vec[self.offset] = MaybeUninit::new(IoSlice::new(chunk));
+        self.offset += 1;
+    }
+}
+
+// FIXME: replace with stabilized MaybeUninit::slice_assume_init_ref.
+#[inline(always)]
+unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
+    #[allow(unused_unsafe)]
+    unsafe {
+        &*(slice as *const [MaybeUninit<T>] as *const [T])
     }
 }

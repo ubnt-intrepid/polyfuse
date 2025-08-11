@@ -7,7 +7,6 @@
 mod nix;
 
 mod session;
-mod util;
 
 pub mod bytes;
 pub mod conn;
