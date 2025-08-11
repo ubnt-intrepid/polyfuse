@@ -737,8 +737,21 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytes::FillBytes;
     use std::mem;
     use zerocopy::FromBytes;
+
+    fn to_vec(bytes: impl Bytes) -> Vec<u8> {
+        struct VecBuf(Vec<u8>);
+        impl<'a> FillBytes<'a> for VecBuf {
+            fn put(&mut self, chunk: &'a [u8]) {
+                self.0.extend_from_slice(chunk);
+            }
+        }
+        let mut buf = VecBuf(Vec::with_capacity(bytes.size()));
+        bytes.fill_bytes(&mut buf);
+        buf.0
+    }
 
     #[derive(Default)]
     struct DummyConnection {
@@ -760,7 +773,7 @@ mod tests {
             header_slot.len =
                 (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>()) as u32;
 
-            let arg_buf = POD(arg_in).to_vec();
+            let arg_buf = arg_in.as_bytes().to_owned();
             arg_slot[..mem::size_of::<fuse_init_in>()].copy_from_slice(&arg_buf[..]);
 
             Ok(mem::size_of::<fuse_init_in>())
@@ -773,7 +786,7 @@ mod tests {
             B: Bytes,
         {
             assert!(arg.size() >= mem::size_of::<fuse_init_out>());
-            let arg = arg.to_vec();
+            let arg = to_vec(arg);
 
             out_header.len =
                 (mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>()) as u32;
