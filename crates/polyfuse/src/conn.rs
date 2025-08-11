@@ -1,14 +1,9 @@
 use crate::{
-    bytes::{Bytes, FillBytes, POD},
+    bytes::{write_bytes, Bytes, POD},
     nix,
 };
 use polyfuse_kernel::{fuse_in_header, fuse_out_header, FUSE_DEV_IOC_CLONE};
-use std::{
-    ffi::CStr,
-    io::{self, IoSlice},
-    mem::{self, MaybeUninit},
-    os::unix::prelude::*,
-};
+use std::{ffi::CStr, io, mem, os::unix::prelude::*};
 use zerocopy::IntoBytes;
 
 const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
@@ -72,68 +67,6 @@ impl Connection {
             fd: unsafe { OwnedFd::from_raw_fd(newfd) },
         })
     }
-
-    #[inline]
-    fn write_bytes<T>(&self, bytes: T) -> io::Result<()>
-    where
-        T: Bytes,
-    {
-        let size = bytes.size();
-        let count = bytes.count();
-
-        let written;
-
-        macro_rules! small_write {
-            ($n:expr) => {{
-                let mut vec: [MaybeUninit<IoSlice<'_>>; $n] =
-                    unsafe { MaybeUninit::uninit().assume_init() };
-                bytes.fill_bytes(&mut FillWriteBytes {
-                    vec: &mut vec[..],
-                    offset: 0,
-                });
-                let vec = unsafe { slice_assume_init_ref(&vec[..]) };
-
-                written = nix::writev(self.as_fd(), vec)?;
-            }};
-        }
-
-        match count {
-            // Skip writing.
-            0 => return Ok(()),
-
-            // Avoid heap allocation if count is small.
-            1 => small_write!(1),
-            2 => small_write!(2),
-            3 => small_write!(3),
-            4 => small_write!(4),
-
-            count => {
-                let mut vec: Vec<IoSlice<'_>> = Vec::with_capacity(count);
-                unsafe {
-                    let dst = std::slice::from_raw_parts_mut(
-                        vec.as_mut_ptr().cast(), //
-                        count,
-                    );
-                    bytes.fill_bytes(&mut FillWriteBytes {
-                        vec: dst,
-                        offset: 0,
-                    });
-                    vec.set_len(count);
-                }
-
-                written = nix::writev(self.as_fd(), &*vec)?;
-            }
-        }
-
-        if written < size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "written data is too short",
-            ));
-        }
-
-        Ok(())
-    }
 }
 
 impl AsFd for Connection {
@@ -192,27 +125,125 @@ impl Writer for &Connection {
         header.len = (mem::size_of::<fuse_out_header>() + arg.size())
             .try_into()
             .map_err(|_e| io::Error::from_raw_os_error(libc::EINVAL))?;
-        self.write_bytes((POD(header), arg))
+        write_bytes((POD(header), arg), |bufs| nix::writev(self.as_fd(), bufs))
     }
 }
 
-struct FillWriteBytes<'a, 'vec> {
-    vec: &'vec mut [MaybeUninit<IoSlice<'a>>],
-    offset: usize,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use polyfuse_kernel::{fuse_access_in, fuse_init_in, fuse_opcode};
+    use std::io::Read;
+    use zerocopy::FromBytes;
 
-impl<'a, 'vec> FillBytes<'a> for FillWriteBytes<'a, 'vec> {
-    fn put(&mut self, chunk: &'a [u8]) {
-        self.vec[self.offset] = MaybeUninit::new(IoSlice::new(chunk));
-        self.offset += 1;
+    // FIXME: replace to std::io::pipe (since 1.87)
+    fn pipe() -> io::Result<(AnonPipe, AnonPipe)> {
+        let mut fds = [0; 2];
+        syscall! { pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        Ok((AnonPipe::new(fds[0]), AnonPipe::new(fds[1])))
     }
-}
+    struct AnonPipe(OwnedFd);
+    impl AnonPipe {
+        fn new(fd: RawFd) -> Self {
+            Self(unsafe { OwnedFd::from_raw_fd(fd) })
+        }
+    }
+    impl io::Read for AnonPipe {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.read_vectored(&mut [io::IoSliceMut::new(buf)])
+        }
+        fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+            nix::readv(self.0.as_fd(), bufs)
+        }
+    }
 
-// FIXME: replace with stabilized MaybeUninit::slice_assume_init_ref.
-#[inline(always)]
-unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
-    #[allow(unused_unsafe)]
-    unsafe {
-        &*(slice as *const [MaybeUninit<T>] as *const [T])
+    #[test]
+    fn test_read_request() {
+        let (AnonPipe(r), AnonPipe(w)) = pipe().expect("pipe2");
+        let mut conn = Connection::from(r);
+
+        write_bytes(
+            (
+                POD(fuse_in_header {
+                    len: (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_access_in>())
+                        as u32,
+                    opcode: fuse_opcode::FUSE_ACCESS as u32,
+                    unique: 2,
+                    nodeid: 1,
+                    uid: 4,
+                    gid: 5,
+                    pid: 9,
+                    padding: 0,
+                }),
+                POD(fuse_access_in {
+                    mask: 42u32,
+                    padding: 0,
+                }),
+            ),
+            |bufs| nix::writev(w.as_fd(), bufs),
+        )
+        .expect("write");
+
+        let mut header = fuse_in_header::default();
+        let mut arg = vec![0; mem::size_of::<fuse_access_in>()];
+        let len = conn
+            .read_request(&mut header, &mut arg[..])
+            .expect("read_request");
+        assert_eq!(len, mem::size_of::<fuse_access_in>());
+        let arg = fuse_access_in::ref_from_bytes(&arg[..]).expect("arg");
+
+        assert_eq!(
+            header.len,
+            (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_access_in>()) as u32
+        );
+        assert_eq!(header.opcode, fuse_opcode::FUSE_ACCESS as u32);
+        assert_eq!(header.unique, 2);
+        assert_eq!(header.nodeid, 1);
+        assert_eq!(header.uid, 4);
+        assert_eq!(header.gid, 5);
+        assert_eq!(header.pid, 9);
+
+        assert_eq!(arg.mask, 42);
+    }
+
+    #[test]
+    fn test_read_request_short_payload() {
+        let (AnonPipe(r), AnonPipe(w)) = pipe().expect("pipe2");
+        let mut conn = Connection::from(r);
+
+        write_bytes(b"a" as &[u8], |bufs| nix::writev(w.as_fd(), bufs)).expect("write");
+
+        let mut header = fuse_in_header::default();
+        let mut arg = vec![0; mem::size_of::<fuse_init_in>()];
+        assert!(conn.read_request(&mut header, &mut arg[..]).is_err());
+    }
+
+    #[test]
+    fn test_write_reply() {
+        let (mut r, AnonPipe(w)) = pipe().expect("pipe2");
+        let mut conn = Connection::from(w);
+
+        conn.write_reply(
+            fuse_out_header {
+                error: -libc::ENOSYS,
+                unique: 4,
+                ..Default::default()
+            },
+            (),
+        )
+        .expect("write_reply");
+
+        let mut out_header = fuse_out_header::default();
+        let mut arg = vec![0u8; 64];
+        let len = r
+            .read_vectored(&mut [
+                io::IoSliceMut::new(out_header.as_mut_bytes()),
+                io::IoSliceMut::new(&mut arg[..]),
+            ])
+            .expect("pipe_read");
+        assert_eq!(len, mem::size_of::<fuse_out_header>());
+        assert_eq!(out_header.len, mem::size_of::<fuse_out_header>() as u32);
+        assert_eq!(out_header.error, -libc::ENOSYS);
+        assert_eq!(out_header.unique, 4);
     }
 }

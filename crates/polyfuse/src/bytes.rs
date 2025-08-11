@@ -5,7 +5,7 @@ mod decoder;
 pub use decoder::{DecodeError, Decoder};
 
 use either::Either;
-use std::os::unix::prelude::*;
+use std::{io, mem::MaybeUninit, os::unix::prelude::*};
 use zerocopy::{Immutable, IntoBytes};
 
 /// A trait that represents a collection of bytes.
@@ -376,5 +376,122 @@ where
     #[inline]
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
         dst.put(self.0.as_bytes());
+    }
+}
+
+// ---- write_bytes ----
+
+#[inline]
+pub(crate) fn write_bytes<B, F>(bytes: B, write: F) -> io::Result<()>
+where
+    B: Bytes,
+    F: FnOnce(&[io::IoSlice<'_>]) -> io::Result<usize>,
+{
+    let size = bytes.size();
+    let count = bytes.count();
+
+    let written;
+
+    macro_rules! small_write {
+        ($n:expr) => {{
+            let mut vec: [MaybeUninit<io::IoSlice<'_>>; $n] =
+                unsafe { MaybeUninit::uninit().assume_init() };
+            bytes.fill_bytes(&mut FillWriteBytes {
+                vec: &mut vec[..],
+                offset: 0,
+            });
+            let vec = unsafe { slice_assume_init_ref(&vec[..]) };
+
+            written = write(vec)?;
+        }};
+    }
+
+    match count {
+        // Skip writing.
+        0 => return Ok(()),
+
+        // Avoid heap allocation if count is small.
+        1 => small_write!(1),
+        2 => small_write!(2),
+        3 => small_write!(3),
+        4 => small_write!(4),
+
+        count => {
+            let mut vec: Vec<io::IoSlice<'_>> = Vec::with_capacity(count);
+            unsafe {
+                let dst = std::slice::from_raw_parts_mut(
+                    vec.as_mut_ptr().cast(), //
+                    count,
+                );
+                bytes.fill_bytes(&mut FillWriteBytes {
+                    vec: dst,
+                    offset: 0,
+                });
+                vec.set_len(count);
+            }
+
+            written = write(&*vec)?;
+        }
+    }
+
+    if written < size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "written data is too short",
+        ));
+    }
+
+    Ok(())
+}
+
+struct FillWriteBytes<'a, 'vec> {
+    vec: &'vec mut [MaybeUninit<io::IoSlice<'a>>],
+    offset: usize,
+}
+
+impl<'a, 'vec> FillBytes<'a> for FillWriteBytes<'a, 'vec> {
+    fn put(&mut self, chunk: &'a [u8]) {
+        self.vec[self.offset] = MaybeUninit::new(io::IoSlice::new(chunk));
+        self.offset += 1;
+    }
+}
+
+// FIXME: replace with stabilized MaybeUninit::slice_assume_init_ref.
+#[inline(always)]
+unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
+    #[allow(unused_unsafe)]
+    unsafe {
+        &*(slice as *const [MaybeUninit<T>] as *const [T])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::prelude::*;
+
+    fn do_write_test(bytes: impl Bytes, expected: &[u8]) {
+        let mut actual = vec![];
+        write_bytes(bytes, |bufs| actual.write_vectored(bufs)).expect("write_bytes");
+        assert_eq!(actual[..], *expected);
+    }
+
+    #[inline]
+    fn bytes(bytes: &[u8]) -> &[u8] {
+        bytes
+    }
+
+    macro_rules! b {
+        ($($b:expr),*$(,)?) => ( bytes(&[$($b),*]) );
+    }
+
+    #[test]
+    fn test_write_bytes() {
+        do_write_test([], &[]);
+        do_write_test(POD(42u32), &[0x2A, 0x00, 0x00, 0x00]);
+        do_write_test((b![0x04], b![0x02]), &[0x04, 0x02]);
+        do_write_test(("hello", ", ", "world"), b"hello, world");
+        do_write_test(&["a", "b", "c", "d"] as &[_], b"abcd");
+        do_write_test(&["e", "f", "g", "h", "i"] as &[_], b"efghi");
     }
 }
