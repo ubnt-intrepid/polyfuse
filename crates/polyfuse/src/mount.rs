@@ -30,6 +30,8 @@ pub struct MountOptions {
     nodev: bool,
     noexec: bool,
     sync: bool,
+    dirsync: bool,
+    noatime: bool,
 
     // FUSE-specific options
     default_permissions: bool,
@@ -54,6 +56,8 @@ impl Default for MountOptions {
             nodev: false,
             noexec: false,
             sync: false,
+            dirsync: false,
+            noatime: false,
             default_permissions: false,
             allow_other: false,
             blksize: None,
@@ -90,6 +94,16 @@ impl MountOptions {
 
     pub fn sync(&mut self, enabled: bool) -> &mut Self {
         self.sync = enabled;
+        self
+    }
+
+    pub fn dirsync(&mut self, enabled: bool) -> &mut Self {
+        self.dirsync = enabled;
+        self
+    }
+
+    pub fn noatime(&mut self, enabled: bool) -> &mut Self {
+        self.noatime = enabled;
         self
     }
 
@@ -156,6 +170,8 @@ impl fmt::Display for MountOptions {
             .chain(self.nodev.then_some("nodev".into()))
             .chain(self.noexec.then_some("noexec".into()))
             .chain(self.sync.then_some("sync".into()))
+            .chain(self.dirsync.then_some("dirsync".into()))
+            .chain(self.noatime.then_some("noatime".into()))
             .chain(
                 self.default_permissions
                     .then_some(Cow::Borrowed("default_permissions")),
@@ -367,10 +383,12 @@ mod tests {
         opts.nodev(true);
         opts.noexec(true);
         opts.sync(true);
+        opts.dirsync(true);
+        opts.noatime(true);
         opts.default_permissions(true);
         assert_eq!(
             opts.to_string(),
-            "ro,nosuid,nodev,noexec,sync,default_permissions,auto_unmount"
+            "ro,nosuid,nodev,noexec,sync,dirsync,noatime,default_permissions,auto_unmount"
         );
 
         let mut opts = MountOptions::default();
