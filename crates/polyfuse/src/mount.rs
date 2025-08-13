@@ -1,7 +1,7 @@
 use libc::{c_int, c_void};
 use std::{
     ffi::OsStr,
-    io,
+    fmt, io,
     mem::{self, MaybeUninit},
     os::{
         fd::{AsRawFd, OwnedFd},
@@ -61,6 +61,26 @@ impl MountOptions {
     }
 }
 
+impl fmt::Display for MountOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use std::fmt::Write as _;
+
+        let opts = self
+            .options
+            .iter()
+            .map(|opt| opt.as_str())
+            .chain(self.auto_unmount.then_some("auto_unmount"));
+
+        for (i, opts) in opts.enumerate() {
+            if i > 0 {
+                f.write_char(',')?;
+            }
+            f.write_str(opts)?;
+        }
+        Ok(())
+    }
+}
+
 fn fusermount_path(opts: &MountOptions) -> &Path {
     opts.fusermount_path
         .as_deref()
@@ -117,22 +137,7 @@ impl PipedChild {
 pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedFd, Fusermount)> {
     let mut fusermount = Command::new(fusermount_path(&mountopts));
 
-    let opts = mountopts
-        .options
-        .iter()
-        .map(|opt| opt.as_str())
-        .chain(if mountopts.auto_unmount {
-            Some("auto_unmount")
-        } else {
-            None
-        })
-        .fold(String::new(), |mut opts, opt| {
-            if !opts.is_empty() {
-                opts.push(',');
-            }
-            opts.push_str(&opt);
-            opts
-        });
+    let opts = mountopts.to_string();
     if !opts.is_empty() {
         fusermount.arg("-o").arg(opts);
     }
@@ -227,4 +232,27 @@ fn unmount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<()> {
         .arg(mountpoint)
         .status()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mount_opts_encode() {
+        let opts = MountOptions::default();
+        assert_eq!(opts.to_string(), "auto_unmount");
+
+        let mut opts = MountOptions::default();
+        opts.auto_unmount(false);
+        assert_eq!(opts.to_string(), "");
+
+        let mut opts = MountOptions::default();
+        opts.mount_option("fsname=passthrough");
+        opts.mount_option("default_permissions");
+        assert_eq!(
+            opts.to_string(),
+            "fsname=passthrough,default_permissions,auto_unmount"
+        );
+    }
 }
