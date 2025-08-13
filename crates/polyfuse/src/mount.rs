@@ -209,32 +209,47 @@ fn fusermount_path(opts: &MountOptions) -> &Path {
 }
 
 #[derive(Debug)]
-pub struct Fusermount {
-    child: Option<PipedChild>,
+pub struct Mount {
+    kind: MountKind,
     mountpoint: PathBuf,
     mountopts: MountOptions,
 }
 
-impl Fusermount {
+#[derive(Debug)]
+enum MountKind {
+    Privileged,
+    Unprivileged(Option<PipedChild>),
+    Gone,
+}
+
+impl Mount {
     pub fn unmount(mut self) -> io::Result<()> {
         self.unmount_()
     }
 
     fn unmount_(&mut self) -> io::Result<()> {
-        if let Some(child) = self.child.take() {
-            // この場合、fusermount の終了にともない umount(2) が暗黙的に呼び出される。
-            // なので、fd受信用の UnixStream を閉じてバックグラウンドの fusermount を終了する。
-            child.wait()?;
-        } else {
-            // fusermount は fd を受信した直後に終了しているので、明示的に umount(2) を呼ぶ必要がある。
-            // 非特権プロセスなので `fusermount -u /path/to/mountpoint` を呼ぶことで間接的にアンマウントを行う
-            unmount(&self.mountpoint, &self.mountopts)?;
+        match mem::replace(&mut self.kind, MountKind::Gone) {
+            MountKind::Privileged => {
+                // 自力で mount(2) を呼んだので、自力で umount(2) する
+                unmount_privileged(&self.mountpoint, &self.mountopts)?;
+            }
+            MountKind::Unprivileged(Some(child)) => {
+                // この場合、fusermount の終了にともない umount(2) が暗黙的に呼び出される。
+                // なので、fd受信用の UnixStream を閉じてバックグラウンドの fusermount を終了する。
+                child.wait()?;
+            }
+            MountKind::Unprivileged(None) => {
+                // fusermount は fd を受信した直後に終了しているので、明示的に umount(2) を呼ぶ必要がある。
+                // 非特権プロセスなので `fusermount -u /path/to/mountpoint` を呼ぶことで間接的にアンマウントを行う
+                unmount_unprivileged(&self.mountpoint, &self.mountopts)?;
+            }
+            _ => unreachable!(),
         }
         Ok(())
     }
 }
 
-impl Drop for Fusermount {
+impl Drop for Mount {
     fn drop(&mut self) {
         let _ = self.unmount_();
     }
@@ -255,19 +270,59 @@ impl PipedChild {
 }
 
 /// Acquire the connection to the FUSE kernel driver associated with the specified mountpoint.
-pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedFd, Fusermount)> {
+pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedFd, Mount)> {
     tracing::debug!("Mount information:");
     tracing::debug!("  mountpoint: {:?}", mountpoint);
     tracing::debug!("  opts: {:?}", mountopts);
 
-    let mut fusermount = Command::new(fusermount_path(&mountopts));
+    if let Some(fd) = mount_privileged(&mountpoint, &mountopts)? {
+        tracing::debug!("privileged mount");
+        return Ok((
+            fd,
+            Mount {
+                kind: MountKind::Privileged,
+                mountpoint,
+                mountopts,
+            },
+        ));
+    }
+
+    let (fd, child) = mount_unprivileged(&mountpoint, &mountopts)?;
+    tracing::debug!("unprivileged mount");
+    Ok((
+        fd,
+        Mount {
+            kind: MountKind::Unprivileged(child),
+            mountpoint,
+            mountopts,
+        },
+    ))
+}
+
+// ---- privileged ----
+
+fn mount_privileged(_mountpoint: &Path, _mountopts: &MountOptions) -> io::Result<Option<OwnedFd>> {
+    Ok(None)
+}
+
+fn unmount_privileged(_mountpoint: &Path, _mountopts: &MountOptions) -> io::Result<()> {
+    Ok(())
+}
+
+// ---- unprivileged ----
+
+fn mount_unprivileged(
+    mountpoint: &Path,
+    mountopts: &MountOptions,
+) -> io::Result<(OwnedFd, Option<PipedChild>)> {
+    let mut fusermount = Command::new(fusermount_path(mountopts));
 
     let opts = mountopts.to_string();
     if !opts.is_empty() {
         fusermount.arg("-o").arg(opts);
     }
 
-    fusermount.arg("--").arg(&mountpoint);
+    fusermount.arg("--").arg(mountpoint);
 
     let (input, output) = UnixStream::pair()?;
     let output = output.into_raw_fd();
@@ -294,14 +349,7 @@ pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedF
         child.wait()?;
     }
 
-    Ok((
-        fd,
-        Fusermount {
-            child,
-            mountpoint,
-            mountopts,
-        },
-    ))
+    Ok((fd, child))
 }
 
 fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
@@ -351,7 +399,7 @@ fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-fn unmount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<()> {
+fn unmount_unprivileged(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<()> {
     let _st = Command::new(fusermount_path(mountopts))
         .args(["-u", "-q", "-z", "--"])
         .arg(mountpoint)
