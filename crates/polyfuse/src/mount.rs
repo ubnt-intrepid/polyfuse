@@ -1,5 +1,6 @@
 use libc::{c_int, c_void};
 use std::{
+    borrow::Cow,
     ffi::OsStr,
     fmt, io,
     mem::{self, MaybeUninit},
@@ -19,6 +20,8 @@ const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
 pub struct MountOptions {
     options: Vec<String>,
     auto_unmount: bool,
+    blkdev: bool,
+    fsname: Option<String>,
     fusermount_path: Option<PathBuf>,
 }
 
@@ -27,6 +30,8 @@ impl Default for MountOptions {
         Self {
             options: vec![],
             auto_unmount: true,
+            blkdev: false,
+            fsname: None,
             fusermount_path: None,
         }
     }
@@ -35,6 +40,17 @@ impl Default for MountOptions {
 impl MountOptions {
     pub fn auto_unmount(&mut self, enabled: bool) -> &mut Self {
         self.auto_unmount = enabled;
+        self
+    }
+
+    pub fn blkdev(&mut self, enabled: bool) -> &mut Self {
+        self.blkdev = enabled;
+        self
+    }
+
+    pub fn fsname(&mut self, fsname: &str) -> &mut Self {
+        // FIXME: validatation
+        self.fsname = Some(fsname.to_owned());
         self
     }
 
@@ -68,14 +84,20 @@ impl fmt::Display for MountOptions {
         let opts = self
             .options
             .iter()
-            .map(|opt| opt.as_str())
-            .chain(self.auto_unmount.then_some("auto_unmount"));
+            .map(|opt| Cow::Borrowed(opt.as_str()))
+            .chain(self.auto_unmount.then_some(Cow::Borrowed("auto_unmount")))
+            .chain(self.blkdev.then_some(Cow::Borrowed("blkdev")))
+            .chain(
+                self.fsname
+                    .as_deref()
+                    .map(|fsname| Cow::Owned(format!("fsname={}", fsname))),
+            );
 
         for (i, opts) in opts.enumerate() {
             if i > 0 {
                 f.write_char(',')?;
             }
-            f.write_str(opts)?;
+            f.write_str(&*opts)?;
         }
         Ok(())
     }
@@ -248,11 +270,13 @@ mod tests {
         assert_eq!(opts.to_string(), "");
 
         let mut opts = MountOptions::default();
-        opts.mount_option("fsname=passthrough");
+        opts.blkdev(true);
+        opts.fsname("bradbury");
+        assert_eq!(opts.to_string(), "auto_unmount,blkdev,fsname=bradbury");
+
+        let mut opts = MountOptions::default();
+        opts.mount_option("noasync");
         opts.mount_option("default_permissions");
-        assert_eq!(
-            opts.to_string(),
-            "fsname=passthrough,default_permissions,auto_unmount"
-        );
+        assert_eq!(opts.to_string(), "noasync,default_permissions,auto_unmount");
     }
 }
