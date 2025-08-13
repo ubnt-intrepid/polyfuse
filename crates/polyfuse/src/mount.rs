@@ -1,6 +1,6 @@
 use libc::{c_int, c_void};
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     io,
     mem::{self, MaybeUninit},
     os::{
@@ -20,7 +20,6 @@ pub struct MountOptions {
     options: Vec<String>,
     auto_unmount: bool,
     fusermount_path: Option<PathBuf>,
-    fuse_comm_fd: Option<OsString>,
 }
 
 impl Default for MountOptions {
@@ -29,7 +28,6 @@ impl Default for MountOptions {
             options: vec![],
             auto_unmount: true,
             fusermount_path: None,
-            fuse_comm_fd: None,
         }
     }
 }
@@ -59,11 +57,6 @@ impl MountOptions {
             "the binary path to `fusermount` must be absolute."
         );
         self.fusermount_path = Some(program.to_owned());
-        self
-    }
-
-    pub fn fuse_comm_fd(&mut self, name: impl AsRef<OsStr>) -> &mut Self {
-        self.fuse_comm_fd = Some(name.as_ref().to_owned());
         self
     }
 }
@@ -149,13 +142,7 @@ pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedF
     let (input, output) = UnixStream::pair()?;
     let output = output.into_raw_fd();
 
-    fusermount.env(
-        mountopts
-            .fuse_comm_fd
-            .as_deref()
-            .unwrap_or_else(|| OsStr::new(FUSE_COMMFD_ENV)),
-        output.to_string(),
-    );
+    fusermount.env(FUSE_COMMFD_ENV, output.to_string());
 
     unsafe {
         fusermount.pre_exec(move || {
