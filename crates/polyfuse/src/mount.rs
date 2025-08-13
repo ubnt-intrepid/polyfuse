@@ -144,7 +144,7 @@ impl MountOptions {
     }
 
     pub fn fsname(&mut self, fsname: &str) -> &mut Self {
-        // FIXME: validatation
+        // FIXME: validation
         self.fsname = Some(fsname.to_owned());
         self
     }
