@@ -1,0 +1,26 @@
+amends "package://github.com/jdx/hk/releases/download/v1.2.0/hk@1.2.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.2.0/hk@1.2.0#/Builtins.pkl"
+
+hooks {
+    ["pre-commit"] {
+        fix = true
+        stash = "git"
+        steps {
+            ["cargo-fmt"] {
+                glob = "*.rs"
+                stage = "*.rs"
+                check_first = true
+                check = "cargo fmt -- --check"
+                fix = "cargo fmt"
+            }
+            ["cargo clippy"] {
+                glob = "*.rs"
+                check_first = true
+                check = "cargo clippy"
+                fix = "cargo clippy --fix --allow-dirty --allow-staged"
+            }
+        }
+    }
+}
+
+// vim: set ts=4 sw=4 et :
