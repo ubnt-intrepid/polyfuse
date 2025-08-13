@@ -240,6 +240,10 @@ impl PipedChild {
 
 /// Acquire the connection to the FUSE kernel driver associated with the specified mountpoint.
 pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedFd, Fusermount)> {
+    tracing::debug!("Mount information:");
+    tracing::debug!("  mountpoint: {:?}", mountpoint);
+    tracing::debug!("  opts: {:?}", mountopts);
+
     let mut fusermount = Command::new(fusermount_path(&mountopts));
 
     let opts = mountopts.to_string();
