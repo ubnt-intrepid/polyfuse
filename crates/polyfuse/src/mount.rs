@@ -31,6 +31,8 @@ pub struct MountOptions {
     blksize: Option<u32>,
     max_read: Option<u32>,
 
+    subtype: Option<String>,
+
     // fusermount-specific options
     auto_unmount: bool,
     blkdev: bool,
@@ -46,6 +48,7 @@ impl Default for MountOptions {
             allow_other: false,
             blksize: None,
             max_read: None,
+            subtype: None,
             auto_unmount: true,
             blkdev: false,
             fsname: None,
@@ -72,6 +75,12 @@ impl MountOptions {
 
     pub fn max_read(&mut self, max_read: u32) -> &mut Self {
         self.max_read = Some(max_read);
+        self
+    }
+
+    pub fn subtype(&mut self, subtype: &str) -> &mut Self {
+        // TODO: validate
+        self.subtype = Some(subtype.into());
         self
     }
 
@@ -135,6 +144,11 @@ impl fmt::Display for MountOptions {
             .chain(self.allow_other.then_some(Cow::Borrowed("allow_other")))
             .chain(self.blksize.map(|n| format!("blksize={}", n).into()))
             .chain(self.max_read.map(|n| format!("max_read={}", n).into()))
+            .chain(
+                self.subtype
+                    .as_deref()
+                    .map(|s| format!("subtype={}", s).into()),
+            )
             .chain(self.auto_unmount.then_some(Cow::Borrowed("auto_unmount")))
             .chain(self.blkdev.then_some(Cow::Borrowed("blkdev")))
             .chain(
@@ -337,6 +351,10 @@ mod tests {
             opts.to_string(),
             "default_permissions,blksize=32,max_read=11,auto_unmount"
         );
+
+        let mut opts = MountOptions::default();
+        opts.subtype("myfs");
+        assert_eq!(opts.to_string(), "subtype=myfs,auto_unmount");
 
         let mut opts = MountOptions::default();
         opts.mount_option("noasync");
