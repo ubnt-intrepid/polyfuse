@@ -23,7 +23,13 @@ const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
 
 #[derive(Debug, Clone)]
 pub struct MountOptions {
-    options: Vec<String>,
+    // Common mount flags.
+    // FIXME: use bitflags
+    ro: bool,
+    nosuid: bool,
+    nodev: bool,
+    noexec: bool,
+    sync: bool,
 
     // FUSE-specific options
     default_permissions: bool,
@@ -43,7 +49,11 @@ pub struct MountOptions {
 impl Default for MountOptions {
     fn default() -> Self {
         Self {
-            options: vec![],
+            ro: false,
+            nosuid: false,
+            nodev: false,
+            noexec: false,
+            sync: false,
             default_permissions: false,
             allow_other: false,
             blksize: None,
@@ -58,6 +68,31 @@ impl Default for MountOptions {
 }
 
 impl MountOptions {
+    pub fn ro(&mut self, enabled: bool) -> &mut Self {
+        self.ro = enabled;
+        self
+    }
+
+    pub fn nosuid(&mut self, enabled: bool) -> &mut Self {
+        self.nosuid = enabled;
+        self
+    }
+
+    pub fn nodev(&mut self, enabled: bool) -> &mut Self {
+        self.nodev = enabled;
+        self
+    }
+
+    pub fn noexec(&mut self, enabled: bool) -> &mut Self {
+        self.noexec = enabled;
+        self
+    }
+
+    pub fn sync(&mut self, enabled: bool) -> &mut Self {
+        self.sync = enabled;
+        self
+    }
+
     pub fn default_permissions(&mut self, enabled: bool) -> &mut Self {
         self.default_permissions = enabled;
         self
@@ -109,34 +144,18 @@ impl MountOptions {
         self.fusermount_path = Some(program.to_owned());
         self
     }
-
-    pub fn mount_option(&mut self, option: &str) -> &mut Self {
-        for option in option.split(',').map(|s| s.trim()) {
-            match option {
-                "auto_unmount" => {
-                    self.auto_unmount(true);
-                }
-                "default_permissions" => {
-                    self.default_permissions(true);
-                }
-                "allow_other" => {
-                    self.allow_other(true);
-                }
-                option => self.options.push(option.to_owned()),
-            }
-        }
-        self
-    }
 }
 
 impl fmt::Display for MountOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use std::fmt::Write as _;
 
-        let opts = self
-            .options
-            .iter()
-            .map(|opt| Cow::Borrowed(opt.as_str()))
+        let opts = std::iter::empty()
+            .chain(self.ro.then_some("ro".into()))
+            .chain(self.nosuid.then_some("nosuid".into()))
+            .chain(self.nodev.then_some("nodev".into()))
+            .chain(self.noexec.then_some("noexec".into()))
+            .chain(self.sync.then_some("sync".into()))
             .chain(
                 self.default_permissions
                     .then_some(Cow::Borrowed("default_permissions")),
@@ -339,17 +358,25 @@ mod tests {
         assert_eq!(opts.to_string(), "auto_unmount,blkdev,fsname=bradbury");
 
         let mut opts = MountOptions::default();
-        opts.mount_option("noasync");
+        opts.ro(true);
+        opts.nosuid(true);
+        opts.nodev(true);
+        opts.noexec(true);
+        opts.sync(true);
         opts.default_permissions(true);
-        assert_eq!(opts.to_string(), "noasync,default_permissions,auto_unmount");
+        assert_eq!(
+            opts.to_string(),
+            "ro,nosuid,nodev,noexec,sync,default_permissions,auto_unmount"
+        );
 
         let mut opts = MountOptions::default();
         opts.default_permissions(true);
+        opts.allow_other(true);
         opts.blksize(32);
         opts.max_read(11);
         assert_eq!(
             opts.to_string(),
-            "default_permissions,blksize=32,max_read=11,auto_unmount"
+            "default_permissions,allow_other,blksize=32,max_read=11,auto_unmount"
         );
 
         let mut opts = MountOptions::default();
@@ -357,25 +384,8 @@ mod tests {
         assert_eq!(opts.to_string(), "subtype=myfs,auto_unmount");
 
         let mut opts = MountOptions::default();
-        opts.mount_option("noasync");
+        opts.ro(true);
         opts.default_permissions(true);
-        assert_eq!(opts.to_string(), "noasync,default_permissions,auto_unmount");
-    }
-
-    #[test]
-    fn mount_options_parse() {
-        let mut opts = MountOptions::default();
-        opts.auto_unmount(false);
-        assert!(!opts.auto_unmount);
-        assert!(!opts.default_permissions);
-        assert!(!opts.allow_other);
-        assert!(opts.options.is_empty());
-
-        opts.mount_option("noatime, auto_unmount, default_permissions, allow_other");
-        assert!(opts.auto_unmount);
-        assert!(opts.default_permissions);
-        assert!(opts.allow_other);
-        assert_eq!(opts.options.len(), 1);
-        assert_eq!(opts.options[0], "noatime");
+        assert_eq!(opts.to_string(), "ro,default_permissions,auto_unmount");
     }
 }
