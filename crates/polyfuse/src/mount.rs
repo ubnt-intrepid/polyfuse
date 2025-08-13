@@ -1,7 +1,8 @@
 use libc::{c_int, c_void};
 use std::{
-    ffi::{OsStr, OsString},
-    io,
+    borrow::Cow,
+    ffi::OsStr,
+    fmt, io,
     mem::{self, MaybeUninit},
     os::{
         fd::{AsRawFd, OwnedFd},
@@ -12,43 +13,139 @@ use std::{
     ptr,
 };
 
+// refs:
+// * https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/mount.c
+// * https://github.com/libfuse/libfuse/blob/fuse-3.10.5/util/fusermount.c
+// * https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/inode.c?h=v6.15.9
+
 const FUSERMOUNT_PROG: &str = "/usr/bin/fusermount";
 const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
 
 #[derive(Debug, Clone)]
 pub struct MountOptions {
-    options: Vec<String>,
+    // Common mount flags.
+    // FIXME: use bitflags
+    ro: bool,
+    nosuid: bool,
+    nodev: bool,
+    noexec: bool,
+    sync: bool,
+    dirsync: bool,
+    noatime: bool,
+
+    // FUSE-specific options
+    default_permissions: bool,
+    allow_other: bool,
+    blksize: Option<u32>,
+    max_read: Option<u32>,
+
+    subtype: Option<String>,
+
+    // fusermount-specific options
     auto_unmount: bool,
+    blkdev: bool,
+    fsname: Option<String>,
     fusermount_path: Option<PathBuf>,
-    fuse_comm_fd: Option<OsString>,
 }
 
 impl Default for MountOptions {
     fn default() -> Self {
         Self {
-            options: vec![],
+            ro: false,
+            nosuid: false,
+            nodev: false,
+            noexec: false,
+            sync: false,
+            dirsync: false,
+            noatime: false,
+            default_permissions: false,
+            allow_other: false,
+            blksize: None,
+            max_read: None,
+            subtype: None,
             auto_unmount: true,
+            blkdev: false,
+            fsname: None,
             fusermount_path: None,
-            fuse_comm_fd: None,
         }
     }
 }
 
 impl MountOptions {
+    pub fn ro(&mut self, enabled: bool) -> &mut Self {
+        self.ro = enabled;
+        self
+    }
+
+    pub fn nosuid(&mut self, enabled: bool) -> &mut Self {
+        self.nosuid = enabled;
+        self
+    }
+
+    pub fn nodev(&mut self, enabled: bool) -> &mut Self {
+        self.nodev = enabled;
+        self
+    }
+
+    pub fn noexec(&mut self, enabled: bool) -> &mut Self {
+        self.noexec = enabled;
+        self
+    }
+
+    pub fn sync(&mut self, enabled: bool) -> &mut Self {
+        self.sync = enabled;
+        self
+    }
+
+    pub fn dirsync(&mut self, enabled: bool) -> &mut Self {
+        self.dirsync = enabled;
+        self
+    }
+
+    pub fn noatime(&mut self, enabled: bool) -> &mut Self {
+        self.noatime = enabled;
+        self
+    }
+
+    pub fn default_permissions(&mut self, enabled: bool) -> &mut Self {
+        self.default_permissions = enabled;
+        self
+    }
+
+    pub fn allow_other(&mut self, enabled: bool) -> &mut Self {
+        self.allow_other = enabled;
+        self
+    }
+
+    pub fn blksize(&mut self, blksize: u32) -> &mut Self {
+        self.blksize = Some(blksize);
+        self
+    }
+
+    pub fn max_read(&mut self, max_read: u32) -> &mut Self {
+        self.max_read = Some(max_read);
+        self
+    }
+
+    pub fn subtype(&mut self, subtype: &str) -> &mut Self {
+        // TODO: validate
+        self.subtype = Some(subtype.into());
+        self
+    }
+
     pub fn auto_unmount(&mut self, enabled: bool) -> &mut Self {
         self.auto_unmount = enabled;
         self
     }
 
-    pub fn mount_option(&mut self, option: &str) -> &mut Self {
-        for option in option.split(',').map(|s| s.trim()) {
-            match option {
-                "auto_unmount" => {
-                    self.auto_unmount(true);
-                }
-                option => self.options.push(option.to_owned()),
-            }
-        }
+    pub fn blkdev(&mut self, enabled: bool) -> &mut Self {
+        self.blkdev = enabled;
+        self
+    }
+
+    pub fn fsname(&mut self, fsname: &str) -> &mut Self {
+        // FIXME: validation
+        self.fsname = Some(fsname.to_owned());
         self
     }
 
@@ -61,10 +158,47 @@ impl MountOptions {
         self.fusermount_path = Some(program.to_owned());
         self
     }
+}
 
-    pub fn fuse_comm_fd(&mut self, name: impl AsRef<OsStr>) -> &mut Self {
-        self.fuse_comm_fd = Some(name.as_ref().to_owned());
-        self
+impl fmt::Display for MountOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use std::fmt::Write as _;
+
+        let opts = std::iter::empty()
+            .chain(self.ro.then_some("ro".into()))
+            .chain(self.nosuid.then_some("nosuid".into()))
+            .chain(self.nodev.then_some("nodev".into()))
+            .chain(self.noexec.then_some("noexec".into()))
+            .chain(self.sync.then_some("sync".into()))
+            .chain(self.dirsync.then_some("dirsync".into()))
+            .chain(self.noatime.then_some("noatime".into()))
+            .chain(
+                self.default_permissions
+                    .then_some(Cow::Borrowed("default_permissions")),
+            )
+            .chain(self.allow_other.then_some(Cow::Borrowed("allow_other")))
+            .chain(self.blksize.map(|n| format!("blksize={}", n).into()))
+            .chain(self.max_read.map(|n| format!("max_read={}", n).into()))
+            .chain(
+                self.subtype
+                    .as_deref()
+                    .map(|s| format!("subtype={}", s).into()),
+            )
+            .chain(self.auto_unmount.then_some(Cow::Borrowed("auto_unmount")))
+            .chain(self.blkdev.then_some(Cow::Borrowed("blkdev")))
+            .chain(
+                self.fsname
+                    .as_deref()
+                    .map(|fsname| Cow::Owned(format!("fsname={}", fsname))),
+            );
+
+        for (i, opts) in opts.enumerate() {
+            if i > 0 {
+                f.write_char(',')?;
+            }
+            f.write_str(&*opts)?;
+        }
+        Ok(())
     }
 }
 
@@ -122,24 +256,13 @@ impl PipedChild {
 
 /// Acquire the connection to the FUSE kernel driver associated with the specified mountpoint.
 pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedFd, Fusermount)> {
+    tracing::debug!("Mount information:");
+    tracing::debug!("  mountpoint: {:?}", mountpoint);
+    tracing::debug!("  opts: {:?}", mountopts);
+
     let mut fusermount = Command::new(fusermount_path(&mountopts));
 
-    let opts = mountopts
-        .options
-        .iter()
-        .map(|opt| opt.as_str())
-        .chain(if mountopts.auto_unmount {
-            Some("auto_unmount")
-        } else {
-            None
-        })
-        .fold(String::new(), |mut opts, opt| {
-            if !opts.is_empty() {
-                opts.push(',');
-            }
-            opts.push_str(&opt);
-            opts
-        });
+    let opts = mountopts.to_string();
     if !opts.is_empty() {
         fusermount.arg("-o").arg(opts);
     }
@@ -149,13 +272,7 @@ pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedF
     let (input, output) = UnixStream::pair()?;
     let output = output.into_raw_fd();
 
-    fusermount.env(
-        mountopts
-            .fuse_comm_fd
-            .as_deref()
-            .unwrap_or_else(|| OsStr::new(FUSE_COMMFD_ENV)),
-        output.to_string(),
-    );
+    fusermount.env(FUSE_COMMFD_ENV, output.to_string());
 
     unsafe {
         fusermount.pre_exec(move || {
@@ -240,4 +357,57 @@ fn unmount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<()> {
         .arg(mountpoint)
         .status()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mount_opts_encode() {
+        let opts = MountOptions::default();
+        assert_eq!(opts.to_string(), "auto_unmount");
+
+        let mut opts = MountOptions::default();
+        opts.auto_unmount(false);
+        assert_eq!(opts.to_string(), "");
+
+        let mut opts = MountOptions::default();
+        opts.blkdev(true);
+        opts.fsname("bradbury");
+        assert_eq!(opts.to_string(), "auto_unmount,blkdev,fsname=bradbury");
+
+        let mut opts = MountOptions::default();
+        opts.ro(true);
+        opts.nosuid(true);
+        opts.nodev(true);
+        opts.noexec(true);
+        opts.sync(true);
+        opts.dirsync(true);
+        opts.noatime(true);
+        opts.default_permissions(true);
+        assert_eq!(
+            opts.to_string(),
+            "ro,nosuid,nodev,noexec,sync,dirsync,noatime,default_permissions,auto_unmount"
+        );
+
+        let mut opts = MountOptions::default();
+        opts.default_permissions(true);
+        opts.allow_other(true);
+        opts.blksize(32);
+        opts.max_read(11);
+        assert_eq!(
+            opts.to_string(),
+            "default_permissions,allow_other,blksize=32,max_read=11,auto_unmount"
+        );
+
+        let mut opts = MountOptions::default();
+        opts.subtype("myfs");
+        assert_eq!(opts.to_string(), "subtype=myfs,auto_unmount");
+
+        let mut opts = MountOptions::default();
+        opts.ro(true);
+        opts.default_permissions(true);
+        assert_eq!(opts.to_string(), "ro,default_permissions,auto_unmount");
+    }
 }
