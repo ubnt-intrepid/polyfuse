@@ -86,7 +86,7 @@ fn main() -> Result<()> {
             None
         };
         move || -> Result<()> {
-            fs.heartbeat(&*conn, notifier)?;
+            fs.heartbeat(&conn, notifier)?;
             Ok(())
         }
     });
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
         let session = session.clone();
         let conn = conn.clone();
         std::thread::spawn(move || -> Result<()> {
-            fs.handle_request(&session, &*conn, &req)?;
+            fs.handle_request(&session, &conn, &req)?;
             Ok(())
         });
     }
@@ -210,7 +210,7 @@ impl Heartbeat {
 
             Operation::Read(op) => match op.ino() {
                 ROOT_INO => session.reply_error(conn, req, libc::EISDIR)?,
-                FILE_INO => session.reply(conn, req, &[])?,
+                FILE_INO => session.reply(conn, req, [])?,
                 _ => session.reply_error(conn, req, libc::ENOENT)?,
             },
 
@@ -223,7 +223,7 @@ impl Heartbeat {
                         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
                         session.reply(conn, req, out)?;
                     } else {
-                        session.reply(conn, req, &[])?;
+                        session.reply(conn, req, [])?;
                     }
                 }
                 _ => session.reply_error(conn, req, libc::ENOTDIR)?,

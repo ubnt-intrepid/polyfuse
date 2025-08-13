@@ -306,11 +306,7 @@ impl Passthrough {
         } else {
             None
         };
-        let mut file = if let Some(ref mut file) = file {
-            Some(file.lock().unwrap())
-        } else {
-            None
-        };
+        let mut file = file.as_mut().map(|file| file.lock().unwrap());
 
         // chmod
         if let Some(mode) = op.mode() {
@@ -578,7 +574,7 @@ impl Passthrough {
         }
         options.custom_flags(op.flags() as i32 & !libc::O_NOFOLLOW);
 
-        let file = options.open(&inode.fd.procname())?;
+        let file = options.open(inode.fd.procname())?;
         let fh = self.opened_files.insert(Mutex::new(file));
 
         let mut out = OpenOut::default();

@@ -68,8 +68,8 @@ fn main() -> Result<()> {
 
                 if let Some(ref notifier) = notifier {
                     match notify_kind {
-                        NotifyKind::Store => heartbeat.notify_store(&*conn, notifier)?,
-                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(&*conn, notifier)?,
+                        NotifyKind::Store => heartbeat.notify_store(&conn, notifier)?,
+                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(&conn, notifier)?,
                     }
                 }
 
@@ -115,7 +115,7 @@ fn main() -> Result<()> {
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
-                            session.reply(&*conn, &req, &[])?;
+                            session.reply(&*conn, &req, [])?;
                         } else {
                             let size = op.size() as usize;
                             let data = &inner.content.as_bytes()[offset..];

@@ -841,7 +841,7 @@ where
                 vec.set_len(count);
             }
 
-            written = writer.write_vectored(&*vec)?;
+            written = writer.write_vectored(&vec)?;
         }
     }
 

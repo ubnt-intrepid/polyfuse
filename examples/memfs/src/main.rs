@@ -101,7 +101,7 @@ impl std::ops::Deref for INodeRef<'_> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &*self.ref_
+        &self.ref_
     }
 }
 
@@ -113,13 +113,13 @@ impl std::ops::Deref for INodeRefMut<'_> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &*self.ref_mut
+        &self.ref_mut
     }
 }
 impl std::ops::DerefMut for INodeRefMut<'_> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.ref_mut
+        &mut self.ref_mut
     }
 }
 
@@ -263,33 +263,33 @@ impl<'a> MemFS<'a> {
         tracing::debug!(?op);
 
         match op {
-            Operation::Lookup(op) => self.do_lookup(&req, op)?,
+            Operation::Lookup(op) => self.do_lookup(req, op)?,
             Operation::Forget(forgets) => {
                 self.do_forget(forgets.as_ref());
             }
-            Operation::Getattr(op) => self.do_getattr(&req, op)?,
-            Operation::Setattr(op) => self.do_setattr(&req, op)?,
-            Operation::Readlink(op) => self.do_readlink(&req, op)?,
+            Operation::Getattr(op) => self.do_getattr(req, op)?,
+            Operation::Setattr(op) => self.do_setattr(req, op)?,
+            Operation::Readlink(op) => self.do_readlink(req, op)?,
 
-            Operation::Opendir(op) => self.do_opendir(&req, op)?,
-            Operation::Readdir(op) => self.do_readdir(&req, op)?,
-            Operation::Releasedir(op) => self.do_releasedir(&req, op)?,
+            Operation::Opendir(op) => self.do_opendir(req, op)?,
+            Operation::Readdir(op) => self.do_readdir(req, op)?,
+            Operation::Releasedir(op) => self.do_releasedir(req, op)?,
 
-            Operation::Mknod(op) => self.do_mknod(&req, op)?,
-            Operation::Mkdir(op) => self.do_mkdir(&req, op)?,
-            Operation::Symlink(op) => self.do_symlink(&req, op)?,
-            Operation::Link(op) => self.do_link(&req, op)?,
-            Operation::Unlink(op) => self.do_unlink(&req, op)?,
-            Operation::Rmdir(op) => self.do_rmdir(&req, op)?,
-            Operation::Rename(op) => self.do_rename(&req, op)?,
+            Operation::Mknod(op) => self.do_mknod(req, op)?,
+            Operation::Mkdir(op) => self.do_mkdir(req, op)?,
+            Operation::Symlink(op) => self.do_symlink(req, op)?,
+            Operation::Link(op) => self.do_link(req, op)?,
+            Operation::Unlink(op) => self.do_unlink(req, op)?,
+            Operation::Rmdir(op) => self.do_rmdir(req, op)?,
+            Operation::Rename(op) => self.do_rename(req, op)?,
 
-            Operation::Getxattr(op) => self.do_getxattr(&req, op)?,
-            Operation::Setxattr(op) => self.do_setxattr(&req, op)?,
-            Operation::Listxattr(op) => self.do_listxattr(&req, op)?,
-            Operation::Removexattr(op) => self.do_removexattr(&req, op)?,
+            Operation::Getxattr(op) => self.do_getxattr(req, op)?,
+            Operation::Setxattr(op) => self.do_setxattr(req, op)?,
+            Operation::Listxattr(op) => self.do_listxattr(req, op)?,
+            Operation::Removexattr(op) => self.do_removexattr(req, op)?,
 
-            Operation::Read(op) => self.do_read(&req, op)?,
-            Operation::Write(op, data) => self.do_write(&req, op, data)?,
+            Operation::Read(op) => self.do_read(req, op)?,
+            Operation::Write(op, data) => self.do_write(req, op, data)?,
 
             _ => {
                 tracing::debug!("NOSYS");

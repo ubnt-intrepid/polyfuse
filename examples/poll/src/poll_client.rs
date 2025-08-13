@@ -86,6 +86,7 @@ impl AsyncRead for FileDesc {
             let mut guard = ready!(self.inner.poll_read_ready(cx))?;
 
             let unfilled = buf.initialize_unfilled();
+            #[allow(clippy::blocks_in_conditions)]
             match guard.try_io(|inner| {
                 let len = syscall!(read(
                     inner.as_raw_fd(),

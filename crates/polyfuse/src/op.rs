@@ -630,7 +630,7 @@ impl<'op> Setattr<'op> {
     #[inline(always)]
     fn get<R>(&self, flag: u32, f: impl FnOnce(&fuse_setattr_in) -> R) -> Option<R> {
         if self.arg.valid & flag != 0 {
-            Some(f(&self.arg))
+            Some(f(self.arg))
         } else {
             None
         }

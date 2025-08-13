@@ -92,7 +92,7 @@ impl Hello {
 
     fn fill_root_attr(&self, attr: &mut FileAttr) {
         attr.ino(ROOT_INO);
-        attr.mode(libc::S_IFDIR as u32 | 0o555);
+        attr.mode(libc::S_IFDIR | 0o555);
         attr.nlink(2);
         attr.uid(self.uid);
         attr.gid(self.gid);
@@ -101,7 +101,7 @@ impl Hello {
     fn fill_hello_attr(&self, attr: &mut FileAttr) {
         attr.ino(HELLO_INO);
         attr.size(HELLO_CONTENT.len() as u64);
-        attr.mode(libc::S_IFREG as u32 | 0o444);
+        attr.mode(libc::S_IFREG | 0o444);
         attr.nlink(1);
         attr.uid(self.uid);
         attr.gid(self.gid);

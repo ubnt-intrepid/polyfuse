@@ -54,14 +54,14 @@ fn getattr(
 
     let mut out = AttrOut::default();
     out.attr().ino(1);
-    out.attr().mode(libc::S_IFREG as u32 | 0o444);
+    out.attr().mode(libc::S_IFREG | 0o444);
     out.attr().size(CONTENT.len() as u64);
     out.attr().nlink(1);
     out.attr().uid(unsafe { libc::getuid() });
     out.attr().gid(unsafe { libc::getgid() });
     out.ttl(Duration::from_secs(1));
 
-    session.reply(conn, &req, out)
+    session.reply(conn, req, out)
 }
 
 fn read(
