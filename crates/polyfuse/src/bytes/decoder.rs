@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn unaligned() {
-        let input = vec![42u64, 0u64];
+        let input = [42u64, 0u64];
         let input = unsafe {
             std::slice::from_raw_parts(
                 input.as_ptr() as *const u8, //
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn unaligned_array() {
-        let input = vec![42u64, 0u64, 0u64];
+        let input = [42u64, 0u64, 0u64];
         let input = unsafe {
             std::slice::from_raw_parts(
                 input.as_ptr() as *const u8, //

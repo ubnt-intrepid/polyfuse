@@ -4,4 +4,4 @@
 #   * stabilized lockfile v4 (since 1.78.0)
 channel = "1.78.0"
 profile = "minimal"
-components = [ "rustfmt" ]
+components = [ "rustfmt", "clippy" ]

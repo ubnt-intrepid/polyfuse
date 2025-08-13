@@ -40,7 +40,11 @@ jobs:
       run: cargo fetch
 
     - name: Build API docs
-      run: cargo xtask doc
+      run: |
+        set -ex
+        cargo doc -p polyfuse-kernel --no-deps
+        cargo doc -p polyfuse --no-deps
+        echo '<meta http-equiv="refresh" content="0;url=polyfuse">' > ./target/doc/index.html
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4

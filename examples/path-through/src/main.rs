@@ -311,6 +311,7 @@ impl PathThrough {
             dir.offset += 1;
         }
 
+        #[allow(clippy::while_let_on_iterator)]
         while let Some(entry) = dir.read_dir.next() {
             let entry = entry?;
             match entry.file_name() {

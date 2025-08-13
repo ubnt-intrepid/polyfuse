@@ -196,7 +196,7 @@ impl fmt::Display for MountOptions {
             if i > 0 {
                 f.write_char(',')?;
             }
-            f.write_str(&*opts)?;
+            f.write_str(&opts)?;
         }
         Ok(())
     }
@@ -353,7 +353,7 @@ fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
 
 fn unmount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<()> {
     let _st = Command::new(fusermount_path(mountopts))
-        .args(&["-u", "-q", "-z", "--"])
+        .args(["-u", "-q", "-z", "--"])
         .arg(mountpoint)
         .status()?;
     Ok(())

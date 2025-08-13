@@ -49,14 +49,14 @@ jobs:
         set -xe
         cargo --version
         cargo fmt -- --check
+        cargo clippy
         cargo test --all
-        cargo xtask lint
 
     - name: Run tests (stable)
       run: |
         set -xe
         cargo +stable test
-        cargo +stable xtask lint
+        cargo +stable clippy
 
     - name: Run tests (beta)
       run: cargo +beta test
