@@ -14,8 +14,11 @@ on:
       - main
 
 env:
-  CARGO_HUSKY_DONT_INSTALL_HOOKS: true
-  CARGO_TERM_VERBOSE: true
+  RUST_BACKTRACE: full
+
+permissions:
+  contents: read
+  pages: write
 
 jobs:
   Doc:
@@ -26,15 +29,7 @@ jobs:
       with:
         submodules: true
 
-    - uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - uses: Swatinem/rust-cache@v2
 
     - name: Fetch cargo dependencies
       run: cargo fetch
