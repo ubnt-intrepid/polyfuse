@@ -17,8 +17,7 @@ env:
   RUST_BACKTRACE: full
 
 permissions:
-  contents: read
-  pages: write
+  contents: write # squash/force-push to gh-pages branch
 
 jobs:
   Doc:
