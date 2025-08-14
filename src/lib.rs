@@ -4,7 +4,7 @@
 #![forbid(clippy::todo, clippy::unimplemented)]
 
 #[macro_use]
-mod nix;
+pub mod nix;
 
 mod conn;
 mod session;
