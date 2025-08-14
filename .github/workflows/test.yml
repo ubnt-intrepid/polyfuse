@@ -14,8 +14,10 @@ on:
       - main
 
 env:
-  CARGO_HUSKY_DONT_INSTALL_HOOKS: true
-  CARGO_TERM_VERBOSE: true
+  RUST_BACKTRACE: full
+
+permissions:
+  contents: read # only fetching code is available
 
 jobs:
   Test:
@@ -28,21 +30,15 @@ jobs:
 
     - name: Install APT dependencies
       run: |
+        set -xe
         sudo apt-get update -yqq
         sudo apt-get install -yqq --no-install-recommends fuse
 
-    - uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - run: rustup set profile minimal
 
-    - name: Fetch cargo dependencies
-      run: cargo +stable fetch
+    - uses: taiki-e/install-action@nextest
+
+    - uses: Swatinem/rust-cache@v2
 
     - name: Run tests (MSRV)
       run: |
@@ -50,17 +46,24 @@ jobs:
         cargo --version
         cargo fmt -- --check
         cargo clippy
-        cargo test --all
+        cargo nextest run
+        cargo test -p polyfuse-kernel-systest
 
     - name: Run tests (stable)
       run: |
         set -xe
-        cargo +stable test
-        cargo +stable clippy
+        cargo +stable nextest run
+        cargo +stable test -p polyfuse-kernel-systest
 
     - name: Run tests (beta)
-      run: cargo +beta test
+      run: |
+        set -xe
+        cargo +beta nextest run
+        cargo +beta test -p polyfuse-kernel-systest
 
     - name: Run tests (nightly)
-      run: cargo +nightly test
+      run: |
+        set -x
+        cargo +nightly nextest run
+        cargo +nightly test -p polyfuse-kernel-systest
       continue-on-error: true
