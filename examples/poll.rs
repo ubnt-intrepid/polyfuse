@@ -219,7 +219,7 @@ impl PollFS {
 
             Operation::Release(op) => {
                 drop(self.handles.remove(&op.fh()));
-                self.session.reply(&**conn, req, [])?;
+                self.session.reply(&**conn, req, ())?;
             }
 
             _ => self.session.reply_error(&**conn, req, libc::ENOSYS)?,
