@@ -1,5 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, FillBytes, POD},
+    conn::SpliceRead,
+    nix::{PipeReader, PipeWriter},
     op::Operation,
 };
 use polyfuse_kernel::*;
@@ -153,6 +155,8 @@ bitflags::bitflags! {
         ///
         /// See the documentation of `no_open_support` for details.
         const NO_OPENDIR_SUPPORT = FUSE_NO_OPENDIR_SUPPORT;
+
+        const SPLICE_READ = FUSE_SPLICE_READ;
     }
 }
 
@@ -166,6 +170,7 @@ impl Default for KernelFlags {
             | Self::ATOMIC_O_TRUNC
             | Self::NO_OPEN_SUPPORT
             | Self::NO_OPENDIR_SUPPORT
+            | Self::SPLICE_READ
     }
 }
 
@@ -393,23 +398,40 @@ impl Session {
     /// Receive an incoming FUSE request from the kernel.
     pub fn next_request<T>(&self, mut conn: T) -> io::Result<Option<Request>>
     where
-        T: io::Read + io::Write,
+        T: SpliceRead + io::Write,
     {
-        let mut header = fuse_in_header::default();
-        let mut arg = vec![0u8; self.request_buffer_size() - mem::size_of::<fuse_in_header>()];
-
         loop {
-            match conn.read_vectored(&mut [
-                io::IoSliceMut::new(header.as_mut_bytes()),
-                io::IoSliceMut::new(&mut arg[..]),
-            ]) {
+            // FIXME: 毎回 pipe(2) を呼ばずに再利用する。
+            // 下の splice_read 前に pipe buffer が空になっていることを保証する必要あり
+            let (mut reader, writer) = crate::nix::pipe()?;
+
+            match conn.splice_read(&writer, self.request_buffer_size()) {
+                Ok(len) if len < mem::size_of::<fuse_in_header>() => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "dequeued request message is too short",
+                    ));
+                }
+
                 Ok(len) => {
-                    if len < mem::size_of::<fuse_in_header>() {
+                    let mut header = fuse_in_header::default();
+                    reader.read_exact(header.as_mut_bytes())?;
+
+                    if len != header.len as usize {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "dequeued request message is too short",
+                            "The value in_header.len is mismatched to the result of splice(2)",
                         ));
                     }
+
+                    let arglen = match fuse_opcode::try_from(header.opcode) {
+                        Ok(fuse_opcode::FUSE_WRITE) | Ok(fuse_opcode::FUSE_NOTIFY_REPLY) => {
+                            mem::size_of::<fuse_write_in>()
+                        }
+                        _ => header.len as usize - mem::size_of::<fuse_in_header>(),
+                    };
+                    let mut arg = vec![0u8; arglen];
+                    reader.read_exact(&mut arg[..])?;
 
                     match fuse_opcode::try_from(header.opcode) {
                         Ok(fuse_opcode::FUSE_INIT) => {
@@ -445,11 +467,12 @@ impl Session {
                                 header.unique,
                                 header.opcode
                             );
-                            arg.resize(len - mem::size_of::<fuse_in_header>(), 0);
+
                             break Ok(Some(Request {
                                 header,
                                 opcode,
                                 arg,
+                                pipe: Some((reader, writer)),
                             }));
                         }
                     }
@@ -478,6 +501,7 @@ pub struct Request {
     header: fuse_in_header,
     opcode: fuse_opcode,
     arg: Vec<u8>,
+    pipe: Option<(PipeReader, PipeWriter)>,
 }
 
 impl Request {
@@ -505,18 +529,25 @@ impl Request {
         self.header.pid
     }
 
+    #[inline]
+    pub fn opcode(&self) -> fuse_opcode {
+        self.opcode
+    }
+
     /// Decode the argument of this request.
     pub fn operation(&self) -> Result<Operation<'_, Data<'_>>, crate::op::Error> {
-        let arg: &[u8] = &self.arg[..];
-
-        let (arg, data) = match fuse_opcode::try_from(self.header.opcode).ok() {
-            Some(fuse_opcode::FUSE_WRITE) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
-                arg.split_at(mem::size_of::<fuse_write_in>())
-            }
-            _ => (arg, &[] as &[_]),
+        let (arg, data) = match self.opcode {
+            fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_NOTIFY_REPLY => match &self.pipe {
+                Some((reader, _)) => (&self.arg[..], Data::Pipe(reader)),
+                None => {
+                    let (arg, remains) = self.arg.split_at(mem::size_of::<fuse_write_in>());
+                    (arg, Data::Bytes(remains))
+                }
+            },
+            _ => (&self.arg[..], Data::Bytes(&[])),
         };
 
-        Operation::decode(&self.header, self.opcode, arg, Data { data })
+        Operation::decode(&self.header, self.opcode, arg, data)
     }
 }
 
@@ -538,8 +569,9 @@ impl Session {
 }
 
 /// The remaining part of request message.
-pub struct Data<'op> {
-    data: &'op [u8],
+pub enum Data<'op> {
+    Bytes(&'op [u8]),
+    Pipe(&'op PipeReader),
 }
 
 impl fmt::Debug for Data<'_> {
@@ -551,24 +583,18 @@ impl fmt::Debug for Data<'_> {
 impl<'op> io::Read for Data<'op> {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        io::Read::read(&mut self.data, buf)
+        match self {
+            Self::Bytes(bytes) => bytes.read(buf),
+            Self::Pipe(reader) => reader.read(buf),
+        }
     }
 
     #[inline]
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        io::Read::read_vectored(&mut self.data, bufs)
-    }
-}
-
-impl<'op> BufRead for Data<'op> {
-    #[inline]
-    fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        io::BufRead::fill_buf(&mut self.data)
-    }
-
-    #[inline]
-    fn consume(&mut self, amt: usize) {
-        io::BufRead::consume(&mut self.data, amt)
+        match self {
+            Self::Bytes(bytes) => bytes.read_vectored(bufs),
+            Self::Pipe(reader) => reader.read_vectored(bufs),
+        }
     }
 }
 

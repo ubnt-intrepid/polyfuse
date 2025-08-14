@@ -21,7 +21,7 @@ use std::{
     ffi::{OsStr, OsString},
     fmt::Debug,
     fs::{File, OpenOptions},
-    io::{self, prelude::*, BufRead},
+    io::{self, prelude::*, BufRead, BufReader},
     os::unix::prelude::*,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
 
                 Operation::Open(op) => try_reply!(fs.do_open(&op)),
                 Operation::Read(op) => try_reply!(fs.do_read(&op)),
-                Operation::Write(op, data) => try_reply!(fs.do_write(&op, data)),
+                Operation::Write(op, data) => try_reply!(fs.do_write(&op, BufReader::new(data))),
                 Operation::Flush(op) => try_reply!(fs.do_flush(&op)),
                 Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
                 Operation::Flock(op) => try_reply!(fs.do_flock(&op)),
