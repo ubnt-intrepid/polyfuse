@@ -2,13 +2,7 @@
 resolver = "2"
 members = [
   "crates/*",
-  "examples/*",
 ]
 exclude = [
   "examples_disabled/*",
 ]
-
-[workspace.dependencies]
-dashmap = "6.1"
-pico-args = "0.5"
-tracing-subscriber = "0.3"
