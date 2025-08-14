@@ -7,7 +7,7 @@ repository = "https://github.com/ubnt-intrepid/polyfuse.git"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 rust-version = "1.78.0"
-readme = "../../README.md"
+readme = "./README.md"
 categories = [ "filesystem" ]
 keywords = [ "fuse", "filesystem", "async", "futures" ]
 
