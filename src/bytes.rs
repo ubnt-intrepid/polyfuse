@@ -395,17 +395,17 @@ impl Bytes for std::ffi::OsStr {
 impl Bytes for std::ffi::OsString {
     #[inline]
     fn size(&self) -> usize {
-        Bytes::size(self.as_bytes())
+        Bytes::size(self.as_os_str())
     }
 
     #[inline]
     fn count(&self) -> usize {
-        Bytes::count(self.as_bytes())
+        Bytes::count(self.as_os_str())
     }
 
     #[inline]
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        Bytes::fill_bytes(self.as_bytes(), dst)
+        Bytes::fill_bytes(self.as_os_str(), dst)
     }
 }
 
@@ -460,5 +460,125 @@ where
     #[inline]
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
         dst.put(self.0.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use polyfuse_kernel::fuse_in_header;
+    use std::{
+        ffi::{CString, OsString},
+        mem,
+    };
+
+    use super::*;
+
+    fn to_vec(b: impl Bytes) -> Vec<u8> {
+        struct ToVec(Vec<u8>);
+        impl<'a> FillBytes<'a> for ToVec {
+            fn put(&mut self, chunk: &'a [u8]) {
+                self.0.extend_from_slice(chunk);
+            }
+        }
+        let mut to_vec = ToVec(Vec::with_capacity(b.size()));
+        b.fill_bytes(&mut to_vec);
+        to_vec.0
+    }
+
+    #[test]
+    fn test_bytes_impl_for_array() {
+        let array: [u8; 12] = *b"hello, world";
+        assert_eq!(array.size(), 12);
+        assert_eq!(array.count(), 1);
+        assert_eq!(to_vec(array), b"hello, world");
+
+        let array: [u8; 0] = [];
+        assert_eq!(array.size(), 0);
+        assert_eq!(array.count(), 0);
+        assert_eq!(to_vec(array), []);
+    }
+
+    #[test]
+    fn test_bytes_impl_for_compound_types() {
+        let bytes = (
+            Either::<_, ()>::Left("foo"),
+            (Some("bar"), (None::<&str>, Either::<(), _>::Right("baz"))),
+        );
+        assert_eq!(bytes.size(), 9);
+        assert_eq!(bytes.count(), 3);
+        assert_eq!(to_vec(bytes), b"foobarbaz");
+
+        let array = ["foo", "bar", "", "baz"];
+        assert_eq!(array.size(), 9);
+        assert_eq!(array.count(), 3);
+        assert_eq!(to_vec(array), b"foobarbaz");
+
+        let vec = vec!["foo", "bar", "", "baz"];
+        assert_eq!(vec.size(), 9);
+        assert_eq!(vec.count(), 3);
+        assert_eq!(to_vec(vec), b"foobarbaz");
+    }
+
+    #[test]
+    fn test_bytes_impl_misc() {
+        let b: &[u8] = b"";
+        assert_eq!(b.size(), 0);
+        assert_eq!(b.count(), 0);
+        assert_eq!(to_vec(b), b"");
+    }
+
+    #[test]
+    fn test_bytes_impl_for_os_str() {
+        let s = OsString::from("hello, world");
+        assert_eq!(s.size(), 12);
+        assert_eq!(s.count(), 1);
+        assert_eq!(to_vec(s), b"hello, world");
+    }
+
+    #[test]
+    fn test_bytes_impl_for_c_str() {
+        let s = CString::new("hello, world").expect("CString::new");
+        assert_eq!(s.size(), 13);
+        assert_eq!(s.count(), 1);
+        assert_eq!(to_vec(s), b"hello, world\0");
+
+        let s = CString::new(b"").unwrap();
+        assert_eq!(s.size(), 1);
+        assert_eq!(s.count(), 1);
+        assert_eq!(to_vec(s), b"\0");
+    }
+
+    #[inline]
+    fn b(bytes: &[u8]) -> &[u8] {
+        bytes
+    }
+
+    #[test]
+    fn test_bytes_impl_for_pod() {
+        let payload = POD(fuse_in_header {
+            len: 42,
+            opcode: 23,
+            unique: 6,
+            nodeid: 95,
+            uid: 100,
+            gid: 100,
+            pid: 7,
+            padding: 0,
+        });
+        assert_eq!(payload.size(), mem::size_of::<fuse_in_header>());
+        assert_eq!(payload.count(), 1);
+        assert_eq!(
+            to_vec(payload),
+            b(&[
+                42, 0, 0, 0, // len
+                23, 0, 0, 0, //opcode
+                6, 0, 0, 0, 0, 0, 0, 0, // unique
+                95, 0, 0, 0, 0, 0, 0, 0, // nodeid
+                100, 0, 0, 0, // uid
+                100, 0, 0, 0, // gid
+                7, 0, 0, 0, // gid
+                0, 0, 0, 0, // padding
+            ])
+        );
     }
 }
