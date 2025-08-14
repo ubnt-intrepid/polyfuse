@@ -1,7 +1,42 @@
+[package]
+name = "polyfuse"
+version = "0.6.0-dev"
+publish = false
+description = "A FUSE (Filesystem in Userspace) library for Rust."
+repository = "https://github.com/ubnt-intrepid/polyfuse.git"
+license = "MIT OR Apache-2.0"
+edition = "2021"
+rust-version = "1.78.0"
+readme = "../../README.md"
+categories = [ "filesystem" ]
+keywords = [ "fuse", "filesystem", "async", "futures" ]
+
+[dependencies]
+polyfuse-kernel = { version = ">=0.2.1", path = "crates/polyfuse-kernel" }
+
+bitflags = "2.9.1"
+either = "1"
+libc = "0.2"
+thiserror = "2"
+tracing = "0.1"
+zerocopy = "0.8.26"
+
+[dev-dependencies]
+anyhow = "1"
+chrono = "0.4.41"
+dashmap = "6.1"
+nix = { version = "0.30", features = [ "user", "fs" ] }
+pico-args = "0.5"
+pin-project-lite = "0.2"
+slab = ">=0.4.11"
+tokio = { version = ">=1.8.4", features = [ "macros", "fs", "io-util", "net", "rt-multi-thread" ] }
+tracing-subscriber = "0.3"
+
 [workspace]
 resolver = "2"
 members = [
-  "crates/*",
+  "crates/polyfuse-kernel",
+  "crates/polyfuse-kernel-systest",
 ]
 exclude = [
   "examples_disabled/*",
