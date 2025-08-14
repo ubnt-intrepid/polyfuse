@@ -159,6 +159,28 @@ impl_reply_for_tuple!(T1, T2);
 impl_reply_for_tuple!(T1, T2, T3);
 impl_reply_for_tuple!(T1, T2, T3, T4);
 impl_reply_for_tuple!(T1, T2, T3, T4, T5);
+impl_reply_for_tuple!(T1, T2, T3, T4, T5, T6);
+impl_reply_for_tuple!(T1, T2, T3, T4, T5, T6, T7);
+impl_reply_for_tuple!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_reply_for_tuple!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_reply_for_tuple!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+
+impl<R, const N: usize> Bytes for [R; N]
+where
+    R: Bytes,
+{
+    fn size(&self) -> usize {
+        self.as_slice().size()
+    }
+
+    fn count(&self) -> usize {
+        self.as_slice().count()
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        self.as_slice().fill_bytes(dst)
+    }
+}
 
 impl<R> Bytes for [R]
 where
@@ -262,6 +284,56 @@ where
 
 // ==== continuous bytes ====
 
+impl Bytes for [u8] {
+    #[inline]
+    fn size(&self) -> usize {
+        self.len()
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        if self.is_empty() {
+            0
+        } else {
+            1
+        }
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        if !self.is_empty() {
+            dst.put(self);
+        }
+    }
+}
+
+impl<const N: usize> Bytes for [u8; N] {
+    #[inline]
+    fn size(&self) -> usize {
+        if N == 0 {
+            0
+        } else {
+            self.len()
+        }
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        if N == 0 || self.is_empty() {
+            0
+        } else {
+            1
+        }
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        if N > 0 && !self.is_empty() {
+            dst.put(self);
+        }
+    }
+}
+
 mod impl_scattered_bytes_for_cont {
     use super::*;
 
@@ -289,17 +361,13 @@ mod impl_scattered_bytes_for_cont {
 
                 #[inline]
                 fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-                    let this = as_bytes(self);
-                    if !this.is_empty() {
-                        dst.put(this);
-                    }
+                    as_bytes(self).fill_bytes(dst)
                 }
             }
         )*};
     }
 
     impl_reply! {
-        [u8],
         str,
         String,
         Vec<u8>,
@@ -338,6 +406,37 @@ impl Bytes for std::ffi::OsString {
     #[inline]
     fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
         Bytes::fill_bytes(self.as_bytes(), dst)
+    }
+}
+
+impl Bytes for std::ffi::CStr {
+    fn size(&self) -> usize {
+        self.to_bytes_with_nul().len()
+    }
+
+    fn count(&self) -> usize {
+        1 // &CStr always contains null terminator ('\0') and not empty
+    }
+
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.to_bytes_with_nul())
+    }
+}
+
+impl Bytes for std::ffi::CString {
+    #[inline]
+    fn size(&self) -> usize {
+        Bytes::size(self.as_c_str())
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        Bytes::count(self.as_c_str())
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        Bytes::fill_bytes(self.as_c_str(), dst);
     }
 }
 
