@@ -114,21 +114,6 @@ impl Bytes for () {
     fn fill_bytes<'a>(&'a self, _: &mut dyn FillBytes<'a>) {}
 }
 
-impl Bytes for [u8; 0] {
-    #[inline]
-    fn size(&self) -> usize {
-        0
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        0
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, _: &mut dyn FillBytes<'a>) {}
-}
-
 // ==== compound types ====
 
 macro_rules! impl_reply_for_tuple {

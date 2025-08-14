@@ -115,7 +115,7 @@ fn main() -> Result<()> {
 
                         let offset = op.offset() as usize;
                         if offset >= inner.content.len() {
-                            session.reply(&*conn, &req, [])?;
+                            session.reply(&*conn, &req, ())?;
                         } else {
                             let size = op.size() as usize;
                             let data = &inner.content.as_bytes()[offset..];
