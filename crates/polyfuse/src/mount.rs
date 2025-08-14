@@ -1,7 +1,6 @@
 use libc::{c_int, c_void};
 use std::{
     borrow::Cow,
-    ffi::OsStr,
     fmt, io,
     mem::{self, MaybeUninit},
     os::{
@@ -23,29 +22,77 @@ const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
 
 #[derive(Debug, Clone)]
 pub struct MountOptions {
-    // Common mount flags.
-    // FIXME: use bitflags
-    ro: bool,
-    nosuid: bool,
-    nodev: bool,
-    noexec: bool,
-    sync: bool,
-    dirsync: bool,
-    noatime: bool,
+    // Common mount flags (recognized in `fusermount`).
+    /// Specify that the mounted filesystem is read-only.
+    ///
+    /// This flag is associated with the constant `MS_RDONLY`.
+    pub ro: bool,
+
+    /// Specify to ignore set-user-ID / set-group-ID bits or capability
+    /// flags on files in the mounted filesystem.
+    ///
+    /// This flag is associated with the constant `MS_NOSUID`.
+    pub nosuid: bool,
+
+    /// Specify to disallow access to special files (such as device)
+    /// on the mounted filesystem.
+    ///
+    /// This flag is associated with the constant `MS_NODEV`.
+    pub nodev: bool,
+
+    /// Specify to disallow programs on the mounted filesystem to be executed.
+    ///
+    /// This flag is associated with the constant `MS_NOEXEC`.
+    pub noexec: bool,
+
+    /// Specify that write operation to files in the mounted filesystem
+    /// are performed synchronously.
+    ///
+    /// This flag is associated with the constant `MS_SYNCHRONOUS`.
+    pub sync: bool,
+
+    /// Specify that modification of directories in the mounted file system
+    /// are performed synchronously.
+    ///
+    /// This flag is associated with the constant `MS_DIRSYNC`.
+    pub dirsync: bool,
+
+    /// Specify to disable updating access times of items on the mounted
+    /// filesystems.
+    ///
+    /// This flag is associated with the constant `MS_NOATIME`.
+    pub noatime: bool,
 
     // FUSE-specific options
-    default_permissions: bool,
-    allow_other: bool,
-    blksize: Option<u32>,
-    max_read: Option<u32>,
+    pub default_permissions: bool,
+    pub allow_other: bool,
+    pub blksize: Option<u32>,
+    pub max_read: Option<u32>,
 
-    subtype: Option<String>,
+    /// Specify the subype of this filesystem.
+    pub subtype: Option<String>,
 
     // fusermount-specific options
-    auto_unmount: bool,
-    blkdev: bool,
-    fsname: Option<String>,
-    fusermount_path: Option<PathBuf>,
+    /// Specify that the mountpoint will be unmounted automatically
+    /// when the child `fusermount` is exited.
+    ///
+    /// When this flag is disabled, the filesystem daemon must explicitly
+    /// unmount by calling `umount(2)` (or calling `fusermount -u`).
+    ///
+    /// This flag is enabled by default.
+    pub auto_unmount: bool,
+
+    /// Specify to use `fuseblk` as filesystem type.
+    pub blkdev: bool,
+
+    /// Specify the name of the mounted filesystem to identify.
+    pub fsname: Option<String>,
+
+    /// Specify the path to the command `fusermount`.
+    pub fusermount_path: Option<PathBuf>,
+
+    #[doc(hidden)]
+    pub _dummy: (),
 }
 
 impl Default for MountOptions {
@@ -67,96 +114,8 @@ impl Default for MountOptions {
             blkdev: false,
             fsname: None,
             fusermount_path: None,
+            _dummy: (),
         }
-    }
-}
-
-impl MountOptions {
-    pub fn ro(&mut self, enabled: bool) -> &mut Self {
-        self.ro = enabled;
-        self
-    }
-
-    pub fn nosuid(&mut self, enabled: bool) -> &mut Self {
-        self.nosuid = enabled;
-        self
-    }
-
-    pub fn nodev(&mut self, enabled: bool) -> &mut Self {
-        self.nodev = enabled;
-        self
-    }
-
-    pub fn noexec(&mut self, enabled: bool) -> &mut Self {
-        self.noexec = enabled;
-        self
-    }
-
-    pub fn sync(&mut self, enabled: bool) -> &mut Self {
-        self.sync = enabled;
-        self
-    }
-
-    pub fn dirsync(&mut self, enabled: bool) -> &mut Self {
-        self.dirsync = enabled;
-        self
-    }
-
-    pub fn noatime(&mut self, enabled: bool) -> &mut Self {
-        self.noatime = enabled;
-        self
-    }
-
-    pub fn default_permissions(&mut self, enabled: bool) -> &mut Self {
-        self.default_permissions = enabled;
-        self
-    }
-
-    pub fn allow_other(&mut self, enabled: bool) -> &mut Self {
-        self.allow_other = enabled;
-        self
-    }
-
-    pub fn blksize(&mut self, blksize: u32) -> &mut Self {
-        self.blksize = Some(blksize);
-        self
-    }
-
-    pub fn max_read(&mut self, max_read: u32) -> &mut Self {
-        self.max_read = Some(max_read);
-        self
-    }
-
-    pub fn subtype(&mut self, subtype: &str) -> &mut Self {
-        // TODO: validate
-        self.subtype = Some(subtype.into());
-        self
-    }
-
-    pub fn auto_unmount(&mut self, enabled: bool) -> &mut Self {
-        self.auto_unmount = enabled;
-        self
-    }
-
-    pub fn blkdev(&mut self, enabled: bool) -> &mut Self {
-        self.blkdev = enabled;
-        self
-    }
-
-    pub fn fsname(&mut self, fsname: &str) -> &mut Self {
-        // FIXME: validation
-        self.fsname = Some(fsname.to_owned());
-        self
-    }
-
-    pub fn fusermount_path(&mut self, program: impl AsRef<OsStr>) -> &mut Self {
-        let program = Path::new(program.as_ref());
-        assert!(
-            program.is_absolute(),
-            "the binary path to `fusermount` must be absolute."
-        );
-        self.fusermount_path = Some(program.to_owned());
-        self
     }
 }
 
@@ -368,46 +327,58 @@ mod tests {
         let opts = MountOptions::default();
         assert_eq!(opts.to_string(), "auto_unmount");
 
-        let mut opts = MountOptions::default();
-        opts.auto_unmount(false);
+        let opts = MountOptions {
+            auto_unmount: false,
+            ..Default::default()
+        };
         assert_eq!(opts.to_string(), "");
 
-        let mut opts = MountOptions::default();
-        opts.blkdev(true);
-        opts.fsname("bradbury");
+        let opts = MountOptions {
+            blkdev: true,
+            fsname: Some("bradbury".into()),
+            ..Default::default()
+        };
         assert_eq!(opts.to_string(), "auto_unmount,blkdev,fsname=bradbury");
 
-        let mut opts = MountOptions::default();
-        opts.ro(true);
-        opts.nosuid(true);
-        opts.nodev(true);
-        opts.noexec(true);
-        opts.sync(true);
-        opts.dirsync(true);
-        opts.noatime(true);
-        opts.default_permissions(true);
+        let opts = MountOptions {
+            ro: true,
+            nosuid: true,
+            nodev: true,
+            noexec: true,
+            sync: true,
+            dirsync: true,
+            noatime: true,
+            default_permissions: true,
+            ..Default::default()
+        };
         assert_eq!(
             opts.to_string(),
             "ro,nosuid,nodev,noexec,sync,dirsync,noatime,default_permissions,auto_unmount"
         );
 
-        let mut opts = MountOptions::default();
-        opts.default_permissions(true);
-        opts.allow_other(true);
-        opts.blksize(32);
-        opts.max_read(11);
+        let opts = MountOptions {
+            default_permissions: true,
+            allow_other: true,
+            blksize: Some(32),
+            max_read: Some(11),
+            ..Default::default()
+        };
         assert_eq!(
             opts.to_string(),
             "default_permissions,allow_other,blksize=32,max_read=11,auto_unmount"
         );
 
-        let mut opts = MountOptions::default();
-        opts.subtype("myfs");
+        let opts = MountOptions {
+            subtype: Some("myfs".into()),
+            ..Default::default()
+        };
         assert_eq!(opts.to_string(), "subtype=myfs,auto_unmount");
 
-        let mut opts = MountOptions::default();
-        opts.ro(true);
-        opts.default_permissions(true);
+        let opts = MountOptions {
+            ro: true,
+            default_permissions: true,
+            ..Default::default()
+        };
         assert_eq!(opts.to_string(), "ro,default_permissions,auto_unmount");
     }
 }

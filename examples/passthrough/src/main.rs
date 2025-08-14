@@ -51,10 +51,11 @@ fn main() -> Result<()> {
 
     let (conn, fusermount) = mount(
         mountpoint,
-        MountOptions::default()
-            .default_permissions(true)
-            .fsname("passthrough")
-            .clone(),
+        MountOptions {
+            default_permissions: true,
+            fsname: Some("passthrough".into()),
+            ..Default::default()
+        },
     )?;
     let conn = Arc::new(Connection::from(conn));
 
