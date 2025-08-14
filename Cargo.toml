@@ -10,13 +10,18 @@ rust-version = "1.78.0"
 readme = "./README.md"
 categories = [ "filesystem" ]
 keywords = [ "fuse", "filesystem", "async", "futures" ]
+exclude = [
+  ".github",
+  ".gitmodules",
+  "hk.pkl",
+  "mise.toml",
+]
 
 [dependencies]
-polyfuse-kernel = { version = ">=0.2.1", path = "crates/polyfuse-kernel" }
-
 bitflags = "2.9.1"
 either = "1"
 libc = "0.2"
+polyfuse-kernel = { version = ">=0.2.1", path = "crates/polyfuse-kernel" }
 thiserror = "2"
 tracing = "0.1"
 zerocopy = "0.8.26"
