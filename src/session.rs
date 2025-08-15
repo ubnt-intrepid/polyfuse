@@ -155,8 +155,6 @@ bitflags::bitflags! {
         ///
         /// See the documentation of `no_open_support` for details.
         const NO_OPENDIR_SUPPORT = FUSE_NO_OPENDIR_SUPPORT;
-
-        const SPLICE_READ = FUSE_SPLICE_READ;
     }
 }
 
@@ -170,7 +168,6 @@ impl Default for KernelFlags {
             | Self::ATOMIC_O_TRUNC
             | Self::NO_OPEN_SUPPORT
             | Self::NO_OPENDIR_SUPPORT
-            | Self::SPLICE_READ
     }
 }
 
@@ -315,6 +312,14 @@ impl Session {
                 config.max_pages = 0;
             }
 
+            if init_in.flags & FUSE_SPLICE_READ == 0 {
+                // FIXME: SPLICE_READ が無効化されている場合、readv(2) にフォールバックする
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "The flag `SPLICE_READ` is not available",
+                ));
+            }
+
             tracing::debug!("INIT request:");
             tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
             tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
@@ -340,7 +345,8 @@ impl Session {
                 major,
                 minor,
                 max_readahead: config.max_readahead,
-                flags: config.flags.bits() | additional_flags | FUSE_BIG_WRITES, // the flag was superseded by `max_write`
+                // * the flag `FUSE_BIG_WRITE` was superseded by `max_write`
+                flags: config.flags.bits() | additional_flags | FUSE_BIG_WRITES | FUSE_SPLICE_READ,
                 max_background: config.max_background,
                 time_gran: config.time_gran,
                 congestion_threshold: config.congestion_threshold,
