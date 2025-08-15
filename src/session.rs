@@ -965,7 +965,7 @@ mod tests {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 40,
-            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
+            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES | FUSE_SPLICE_READ,
         };
 
         let mut input = Vec::with_capacity(input_len);
@@ -1006,7 +1006,10 @@ mod tests {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 40,
-            flags: KernelFlags::default().bits() | FUSE_MAX_PAGES | FUSE_BIG_WRITES,
+            flags: KernelFlags::default().bits()
+                | FUSE_MAX_PAGES
+                | FUSE_BIG_WRITES
+                | FUSE_SPLICE_READ,
             max_background: 0,
             congestion_threshold: 0,
             max_write: DEFAULT_MAX_WRITE,
