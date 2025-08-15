@@ -93,7 +93,7 @@ impl io::Write for &Connection {
 }
 
 pub trait SpliceRead: io::Read {
-    /// Splice the chunk of bytes to the specified bufffer.
+    /// Splice the chunk of bytes to the specified buffer.
     fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize>;
 }
 
