@@ -4,12 +4,12 @@
 #![forbid(clippy::todo, clippy::unimplemented)]
 
 #[macro_use]
-mod nix;
+pub mod nix;
 
-mod conn;
 mod session;
 
 pub mod bytes;
+pub mod conn;
 pub mod mount;
 pub mod op;
 pub mod reply;

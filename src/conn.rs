@@ -1,4 +1,4 @@
-use crate::nix;
+use crate::nix::{self, PipeWriter, SpliceFlags};
 use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
 use std::{ffi::CStr, io, os::unix::prelude::*};
 
@@ -89,5 +89,33 @@ impl io::Write for &Connection {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+pub trait SpliceRead: io::Read {
+    /// Splice the chunk of bytes to the specified buffer.
+    fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize>;
+}
+
+impl<R: ?Sized> SpliceRead for &mut R
+where
+    R: SpliceRead,
+{
+    #[inline]
+    fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize> {
+        (*self).splice_read(dst, bufsize)
+    }
+}
+
+impl SpliceRead for Connection {
+    #[inline]
+    fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize> {
+        (&*self).splice_read(dst, bufsize)
+    }
+}
+
+impl SpliceRead for &Connection {
+    fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize> {
+        dst.splice_from(self.fd.as_fd(), bufsize, SpliceFlags::NONBLOCK)
     }
 }

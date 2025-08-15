@@ -14,7 +14,7 @@ use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap, RandomState},
     ffi::{OsStr, OsString},
-    io::{self, BufRead},
+    io::{self, Read},
     mem,
     path::PathBuf,
     sync::{
@@ -836,7 +836,7 @@ impl<'a> MemFS<'a> {
 
     fn do_write<T>(&mut self, req: &Request, op: op::Write<'_>, mut data: T) -> io::Result<()>
     where
-        T: BufRead + Unpin,
+        T: Read + Unpin,
     {
         let mut inode = match self.inodes.get_mut(op.ino()) {
             Some(inode) => inode,
