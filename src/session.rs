@@ -499,76 +499,7 @@ impl Session {
             }
         }
     }
-}
 
-// ==== Request ====
-
-/// Context about an incoming FUSE request.
-pub struct Request {
-    header: fuse_in_header,
-    opcode: fuse_opcode,
-    arg: Vec<u8>,
-    pipe_reader: PipeReader,
-    #[allow(dead_code)]
-    pipe_writer: PipeWriter,
-}
-
-impl Request {
-    /// Return the unique ID of the request.
-    #[inline]
-    pub fn unique(&self) -> u64 {
-        self.header.unique
-    }
-
-    /// Return the user ID of the calling process.
-    #[inline]
-    pub fn uid(&self) -> u32 {
-        self.header.uid
-    }
-
-    /// Return the group ID of the calling process.
-    #[inline]
-    pub fn gid(&self) -> u32 {
-        self.header.gid
-    }
-
-    /// Return the process ID of the calling process.
-    #[inline]
-    pub fn pid(&self) -> u32 {
-        self.header.pid
-    }
-
-    #[inline]
-    pub fn opcode(&self) -> fuse_opcode {
-        self.opcode
-    }
-
-    /// Decode the argument of this request.
-    pub fn operation(&self) -> Result<Operation<'_>, crate::op::Error> {
-        Operation::decode(&self.header, self.opcode, &self.arg[..])
-    }
-}
-
-impl io::Read for Request {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&*self).read(buf)
-    }
-    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        (&*self).read_vectored(bufs)
-    }
-}
-
-impl io::Read for &Request {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.pipe_reader).read(buf)
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        (&self.pipe_reader).read_vectored(bufs)
-    }
-}
-
-impl Session {
     pub fn reply<T, B>(&self, conn: T, req: &Request, arg: B) -> io::Result<()>
     where
         T: io::Write,
@@ -583,9 +514,7 @@ impl Session {
     {
         write_bytes(conn, Reply::new(req.unique(), code, ()))
     }
-}
 
-impl Session {
     /// Notify the cache invalidation about an inode to the kernel.
     pub fn notify_inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
     where
@@ -714,6 +643,71 @@ impl Session {
                 POD(fuse_notify_poll_wakeup_out { kh }),
             ),
         )
+    }
+}
+
+/// Context about an incoming FUSE request.
+pub struct Request {
+    header: fuse_in_header,
+    opcode: fuse_opcode,
+    arg: Vec<u8>,
+    pipe_reader: PipeReader,
+    #[allow(dead_code)]
+    pipe_writer: PipeWriter,
+}
+
+impl Request {
+    /// Return the unique ID of the request.
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.header.unique
+    }
+
+    /// Return the user ID of the calling process.
+    #[inline]
+    pub fn uid(&self) -> u32 {
+        self.header.uid
+    }
+
+    /// Return the group ID of the calling process.
+    #[inline]
+    pub fn gid(&self) -> u32 {
+        self.header.gid
+    }
+
+    /// Return the process ID of the calling process.
+    #[inline]
+    pub fn pid(&self) -> u32 {
+        self.header.pid
+    }
+
+    #[inline]
+    pub fn opcode(&self) -> fuse_opcode {
+        self.opcode
+    }
+
+    /// Decode the argument of this request.
+    pub fn operation(&self) -> Result<Operation<'_>, crate::op::Error> {
+        Operation::decode(&self.header, self.opcode, &self.arg[..])
+    }
+}
+
+impl io::Read for Request {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        (&*self).read(buf)
+    }
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        (&*self).read_vectored(bufs)
+    }
+}
+
+impl io::Read for &Request {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        (&self.pipe_reader).read(buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        (&self.pipe_reader).read_vectored(bufs)
     }
 }
 
