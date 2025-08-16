@@ -49,7 +49,8 @@ fn main() -> Result<()> {
 
     let mut fs = PathThrough::new(source)?;
 
-    while let Some(req) = session.next_request(&mut conn)? {
+    let mut req = session.new_request_buffer()?;
+    while session.read_request(&mut conn, &mut req)? {
         let op = req.operation()?;
         tracing::debug!("handle operation: {:#?}", op);
 

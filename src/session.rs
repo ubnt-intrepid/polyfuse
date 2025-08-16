@@ -401,17 +401,46 @@ impl Session {
             + self.config.max_write as usize
     }
 
-    /// Receive an incoming FUSE request from the kernel.
-    pub fn next_request<T>(&self, mut conn: T) -> io::Result<Option<Request>>
+    pub fn new_request_buffer(&self) -> io::Result<Request> {
+        let (pipe_reader, pipe_writer) = crate::nix::pipe()?;
+        Ok(Request {
+            header: fuse_in_header::default(),
+            opcode: None,
+            arg: Vec::with_capacity(self.request_buffer_size() - mem::size_of::<fuse_in_header>()),
+            pipe_reader,
+            pipe_writer,
+        })
+    }
+
+    /// Read an incoming FUSE request from the kernel.
+    pub fn next_request<T>(&self, conn: T) -> io::Result<Option<Request>>
     where
         T: SpliceRead + io::Write,
     {
-        loop {
-            // FIXME: 毎回 pipe(2) を呼ばずに再利用する。
-            // 下の splice_read 前に pipe buffer が空になっていることを保証する必要あり
-            let (mut pipe_reader, pipe_writer) = crate::nix::pipe()?;
+        let mut request = self.new_request_buffer()?;
+        if self.read_request(conn, &mut request)? {
+            Ok(Some(request))
+        } else {
+            Ok(None)
+        }
+    }
 
-            match conn.splice_read(&pipe_writer, self.request_buffer_size()) {
+    pub fn read_request<T>(&self, mut conn: T, request: &mut Request) -> io::Result<bool>
+    where
+        T: SpliceRead + io::Write,
+    {
+        if request.pipe_reader.remaining_bytes()? > 0 {
+            tracing::warn!(
+                "The remaining data of request(unique={}) is destroyed",
+                request.unique()
+            );
+            let (reader, writer) = crate::nix::pipe()?;
+            request.pipe_reader = reader;
+            request.pipe_writer = writer;
+        }
+
+        loop {
+            match conn.splice_read(&request.pipe_writer, self.request_buffer_size()) {
                 Ok(len) if len < mem::size_of::<fuse_in_header>() => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -420,8 +449,8 @@ impl Session {
                 }
 
                 Ok(len) => {
-                    let mut header = fuse_in_header::default();
-                    pipe_reader.read_exact(header.as_mut_bytes())?;
+                    let header = &mut request.header;
+                    request.pipe_reader.read_exact(header.as_mut_bytes())?;
 
                     if len != header.len as usize {
                         return Err(io::Error::new(
@@ -436,8 +465,8 @@ impl Session {
                         }
                         _ => header.len as usize - mem::size_of::<fuse_in_header>(),
                     };
-                    let mut arg = vec![0u8; arglen];
-                    pipe_reader.read_exact(&mut arg[..])?;
+                    request.arg.resize(arglen, 0);
+                    request.pipe_reader.read_exact(&mut request.arg[..])?;
 
                     match fuse_opcode::try_from(header.opcode) {
                         Ok(fuse_opcode::FUSE_INIT) => {
@@ -450,7 +479,7 @@ impl Session {
                             // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
                             tracing::debug!("FUSE_DESTROY received");
                             self.exit();
-                            return Ok(None);
+                            return Ok(false);
                         }
 
                         Ok(fuse_opcode::FUSE_IOCTL)
@@ -473,14 +502,8 @@ impl Session {
                                 header.unique,
                                 header.opcode
                             );
-
-                            break Ok(Some(Request {
-                                header,
-                                opcode,
-                                arg,
-                                pipe_reader,
-                                pipe_writer,
-                            }));
+                            request.opcode = Some(opcode);
+                            break Ok(true);
                         }
                     }
                 }
@@ -488,7 +511,7 @@ impl Session {
                 Err(err) => match err.raw_os_error() {
                     Some(libc::ENODEV) => {
                         tracing::debug!("ENODEV");
-                        return Ok(None);
+                        return Ok(false);
                     }
                     Some(libc::ENOENT) => {
                         tracing::debug!("ENOENT");
@@ -499,76 +522,7 @@ impl Session {
             }
         }
     }
-}
 
-// ==== Request ====
-
-/// Context about an incoming FUSE request.
-pub struct Request {
-    header: fuse_in_header,
-    opcode: fuse_opcode,
-    arg: Vec<u8>,
-    pipe_reader: PipeReader,
-    #[allow(dead_code)]
-    pipe_writer: PipeWriter,
-}
-
-impl Request {
-    /// Return the unique ID of the request.
-    #[inline]
-    pub fn unique(&self) -> u64 {
-        self.header.unique
-    }
-
-    /// Return the user ID of the calling process.
-    #[inline]
-    pub fn uid(&self) -> u32 {
-        self.header.uid
-    }
-
-    /// Return the group ID of the calling process.
-    #[inline]
-    pub fn gid(&self) -> u32 {
-        self.header.gid
-    }
-
-    /// Return the process ID of the calling process.
-    #[inline]
-    pub fn pid(&self) -> u32 {
-        self.header.pid
-    }
-
-    #[inline]
-    pub fn opcode(&self) -> fuse_opcode {
-        self.opcode
-    }
-
-    /// Decode the argument of this request.
-    pub fn operation(&self) -> Result<Operation<'_>, crate::op::Error> {
-        Operation::decode(&self.header, self.opcode, &self.arg[..])
-    }
-}
-
-impl io::Read for Request {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&*self).read(buf)
-    }
-    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        (&*self).read_vectored(bufs)
-    }
-}
-
-impl io::Read for &Request {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.pipe_reader).read(buf)
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        (&self.pipe_reader).read_vectored(bufs)
-    }
-}
-
-impl Session {
     pub fn reply<T, B>(&self, conn: T, req: &Request, arg: B) -> io::Result<()>
     where
         T: io::Write,
@@ -583,9 +537,7 @@ impl Session {
     {
         write_bytes(conn, Reply::new(req.unique(), code, ()))
     }
-}
 
-impl Session {
     /// Notify the cache invalidation about an inode to the kernel.
     pub fn notify_inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
     where
@@ -714,6 +666,69 @@ impl Session {
                 POD(fuse_notify_poll_wakeup_out { kh }),
             ),
         )
+    }
+}
+
+/// Context about an incoming FUSE request.
+pub struct Request {
+    header: fuse_in_header,
+    opcode: Option<fuse_opcode>,
+    arg: Vec<u8>,
+    pipe_reader: PipeReader,
+    pipe_writer: PipeWriter,
+}
+
+impl Request {
+    /// Return the unique ID of the request.
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.header.unique
+    }
+
+    /// Return the user ID of the calling process.
+    #[inline]
+    pub fn uid(&self) -> u32 {
+        self.header.uid
+    }
+
+    /// Return the group ID of the calling process.
+    #[inline]
+    pub fn gid(&self) -> u32 {
+        self.header.gid
+    }
+
+    /// Return the process ID of the calling process.
+    #[inline]
+    pub fn pid(&self) -> u32 {
+        self.header.pid
+    }
+
+    /// Decode the argument of this request.
+    pub fn operation(&self) -> Result<Operation<'_>, crate::op::Error> {
+        Operation::decode(
+            &self.header,
+            self.opcode.expect("request is not initialized"),
+            &self.arg[..],
+        )
+    }
+}
+
+impl io::Read for Request {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        (&*self).read(buf)
+    }
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        (&*self).read_vectored(bufs)
+    }
+}
+
+impl io::Read for &Request {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        (&self.pipe_reader).read(buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        (&self.pipe_reader).read_vectored(bufs)
     }
 }
 
