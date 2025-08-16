@@ -429,17 +429,17 @@ impl Session {
     where
         T: SpliceRead + io::Write,
     {
-        loop {
-            if request.pipe_reader.remaining_bytes()? > 0 {
-                tracing::warn!(
-                    "The remaining data of request(unique={}) is destroyed",
-                    request.unique()
-                );
-                let (reader, writer) = crate::nix::pipe()?;
-                request.pipe_reader = reader;
-                request.pipe_writer = writer;
-            }
+        if request.pipe_reader.remaining_bytes()? > 0 {
+            tracing::warn!(
+                "The remaining data of request(unique={}) is destroyed",
+                request.unique()
+            );
+            let (reader, writer) = crate::nix::pipe()?;
+            request.pipe_reader = reader;
+            request.pipe_writer = writer;
+        }
 
+        loop {
             match conn.splice_read(&request.pipe_writer, self.request_buffer_size()) {
                 Ok(len) if len < mem::size_of::<fuse_in_header>() => {
                     return Err(io::Error::new(
