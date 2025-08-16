@@ -31,7 +31,8 @@ fn main() -> Result<()> {
 
     let fs = Hello::new(session.clone());
 
-    while let Some(req) = session.next_request(&mut conn)? {
+    let mut req = session.new_request_buffer()?;
+    while session.read_request(&mut conn, &mut req)? {
         match req.operation()? {
             Operation::Lookup(op) => fs.lookup(&mut conn, &req, op)?,
             Operation::Getattr(op) => fs.getattr(&mut conn, &req, op)?,
