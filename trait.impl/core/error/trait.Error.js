@@ -1,0 +1,3 @@
+(function() {var implementors = {
+"polyfuse":[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.78.0/core/error/trait.Error.html\" title=\"trait core::error::Error\">Error</a> for <a class=\"enum\" href=\"polyfuse/bytes/enum.DecodeError.html\" title=\"enum polyfuse::bytes::DecodeError\">DecodeError</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.78.0/core/error/trait.Error.html\" title=\"trait core::error::Error\">Error</a> for <a class=\"enum\" href=\"polyfuse/op/enum.Error.html\" title=\"enum polyfuse::op::Error\">Error</a>"]]
+};if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
