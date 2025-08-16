@@ -9,7 +9,7 @@ use polyfuse::{
     reply::{
         AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
-    Connection, KernelConfig, KernelFlags, Operation, Session,
+    Connection, KernelConfig, KernelFlags, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -21,7 +21,7 @@ use std::{
     ffi::{OsStr, OsString},
     fmt::Debug,
     fs::{File, OpenOptions},
-    io::{self, prelude::*, BufRead, BufReader},
+    io::{self, prelude::*},
     os::unix::prelude::*,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
 
                 Operation::Open(op) => try_reply!(fs.do_open(&op)),
                 Operation::Read(op) => try_reply!(fs.do_read(&op)),
-                Operation::Write(op, data) => try_reply!(fs.do_write(&op, BufReader::new(data))),
+                Operation::Write(op) => try_reply!(fs.do_write(&op, &req)),
                 Operation::Flush(op) => try_reply!(fs.do_flush(&op)),
                 Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
                 Operation::Flock(op) => try_reply!(fs.do_flock(&op)),
@@ -597,10 +597,7 @@ impl Passthrough {
         Ok(buf)
     }
 
-    fn do_write<T>(&self, op: &op::Write<'_>, mut data: T) -> io::Result<WriteOut>
-    where
-        T: BufRead + Unpin,
-    {
+    fn do_write(&self, op: &op::Write<'_>, mut req: &Request) -> io::Result<WriteOut> {
         let file = self.opened_files.get(op.fh()).ok_or_else(no_entry)?;
         let mut file = file.lock().unwrap();
         let file = &mut *file;
@@ -615,7 +612,7 @@ impl Passthrough {
         // copying support in `polyfuse` and resolution of impedance mismatch
         // between `futures::io` and `tokio::io` are required.
         let mut buf = Vec::with_capacity(op.size() as usize);
-        data.read_to_end(&mut buf)?;
+        req.read_to_end(&mut buf)?;
 
         let mut buf = &buf[..];
         let mut buf = Read::take(&mut buf, op.size() as u64);

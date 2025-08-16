@@ -289,7 +289,7 @@ impl<'a> MemFS<'a> {
             Operation::Removexattr(op) => self.do_removexattr(req, op)?,
 
             Operation::Read(op) => self.do_read(req, op)?,
-            Operation::Write(op, data) => self.do_write(req, op, data)?,
+            Operation::Write(op) => self.do_write(req, op)?,
 
             _ => {
                 tracing::debug!("NOSYS");
@@ -834,10 +834,7 @@ impl<'a> MemFS<'a> {
         self.session.reply(&mut self.conn, req, content)
     }
 
-    fn do_write<T>(&mut self, req: &Request, op: op::Write<'_>, mut data: T) -> io::Result<()>
-    where
-        T: Read + Unpin,
-    {
+    fn do_write(&mut self, mut req: &Request, op: op::Write<'_>) -> io::Result<()> {
         let mut inode = match self.inodes.get_mut(op.ino()) {
             Some(inode) => inode,
             None => return self.session.reply_error(&mut self.conn, req, libc::ENOENT),
@@ -853,7 +850,7 @@ impl<'a> MemFS<'a> {
 
         content.resize(std::cmp::max(content.len(), offset + size), 0);
 
-        data.read_exact(&mut content[offset..offset + size])?;
+        req.read_exact(&mut content[offset..offset + size])?;
 
         inode.attr.st_size = (offset + size) as libc::off_t;
 
