@@ -13,8 +13,9 @@ pub enum Error {
 }
 
 /// The kind of filesystem operation requested by the kernel.
+#[derive(Debug)]
 #[non_exhaustive]
-pub enum Operation<'op, T> {
+pub enum Operation<'op> {
     Lookup(Lookup<'op>),
     Getattr(Getattr<'op>),
     Setattr(Setattr<'op>),
@@ -28,7 +29,7 @@ pub enum Operation<'op, T> {
     Link(Link<'op>),
     Open(Open<'op>),
     Read(Read<'op>),
-    Write(Write<'op>, T),
+    Write(Write<'op>),
     Release(Release<'op>),
     Statfs(Statfs<'op>),
     Fsync(Fsync<'op>),
@@ -53,72 +54,14 @@ pub enum Operation<'op, T> {
 
     Forget(Forgets<'op>),
     Interrupt(Interrupt<'op>),
-    NotifyReply(NotifyReply<'op>, T),
+    NotifyReply(NotifyReply<'op>),
 }
 
-impl<T> fmt::Debug for Operation<'_, T>
-where
-    T: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Operation::Lookup(op) => op.fmt(f),
-            Operation::Getattr(op) => op.fmt(f),
-            Operation::Setattr(op) => op.fmt(f),
-            Operation::Readlink(op) => op.fmt(f),
-            Operation::Symlink(op) => op.fmt(f),
-            Operation::Mknod(op) => op.fmt(f),
-            Operation::Mkdir(op) => op.fmt(f),
-            Operation::Unlink(op) => op.fmt(f),
-            Operation::Rmdir(op) => op.fmt(f),
-            Operation::Rename(op) => op.fmt(f),
-            Operation::Link(op) => op.fmt(f),
-            Operation::Open(op) => op.fmt(f),
-            Operation::Read(op) => op.fmt(f),
-            Operation::Release(op) => op.fmt(f),
-            Operation::Statfs(op) => op.fmt(f),
-            Operation::Fsync(op) => op.fmt(f),
-            Operation::Setxattr(op) => op.fmt(f),
-            Operation::Getxattr(op) => op.fmt(f),
-            Operation::Listxattr(op) => op.fmt(f),
-            Operation::Removexattr(op) => op.fmt(f),
-            Operation::Flush(op) => op.fmt(f),
-            Operation::Opendir(op) => op.fmt(f),
-            Operation::Readdir(op) => op.fmt(f),
-            Operation::Releasedir(op) => op.fmt(f),
-            Operation::Fsyncdir(op) => op.fmt(f),
-            Operation::Getlk(op) => op.fmt(f),
-            Operation::Setlk(op) => op.fmt(f),
-            Operation::Flock(op) => op.fmt(f),
-            Operation::Access(op) => op.fmt(f),
-            Operation::Create(op) => op.fmt(f),
-            Operation::Bmap(op) => op.fmt(f),
-            Operation::Fallocate(op) => op.fmt(f),
-            Operation::CopyFileRange(op) => op.fmt(f),
-            Operation::Poll(op) => op.fmt(f),
-            Operation::Forget(op) => op.fmt(f),
-            Operation::Interrupt(op) => op.fmt(f),
-
-            Operation::Write(op, data) => f
-                .debug_struct("Write")
-                .field("op", op)
-                .field("data", data)
-                .finish(),
-            Operation::NotifyReply(op, data) => f
-                .debug_struct("NotifyReply")
-                .field("op", op)
-                .field("data", data)
-                .finish(),
-        }
-    }
-}
-
-impl<'op, T> Operation<'op, T> {
+impl<'op> Operation<'op> {
     pub(crate) fn decode(
         header: &'op fuse_in_header,
         opcode: fuse_opcode,
         arg: &'op [u8],
-        data: T,
     ) -> Result<Self, Error> {
         let mut decoder = Decoder::new(arg);
 
@@ -149,7 +92,7 @@ impl<'op, T> Operation<'op, T> {
 
             fuse_opcode::FUSE_NOTIFY_REPLY => {
                 let arg = decoder.fetch()?;
-                Ok(Operation::NotifyReply(NotifyReply { header, arg }, data))
+                Ok(Operation::NotifyReply(NotifyReply { header, arg }))
             }
 
             fuse_opcode::FUSE_LOOKUP => {
@@ -243,7 +186,7 @@ impl<'op, T> Operation<'op, T> {
 
             fuse_opcode::FUSE_WRITE => {
                 let arg = decoder.fetch()?;
-                Ok(Operation::Write(Write { header, arg }, data))
+                Ok(Operation::Write(Write { header, arg }))
             }
 
             fuse_opcode::FUSE_RELEASE => {

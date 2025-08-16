@@ -125,11 +125,11 @@ fn main() -> Result<()> {
                     }
                     _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
                 },
-                Operation::NotifyReply(op, mut data) => {
+                Operation::NotifyReply(op) => {
                     let mut retrieves = heartbeat.retrieves.lock().unwrap();
                     if let Some(tx) = retrieves.remove(&op.unique()) {
                         let mut buf = vec![0u8; op.size() as usize];
-                        data.read_exact(&mut buf)?;
+                        (&req).read_exact(&mut buf)?;
                         tx.send(buf).unwrap();
                     }
                 }

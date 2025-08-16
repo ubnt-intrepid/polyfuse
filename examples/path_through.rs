@@ -15,7 +15,7 @@ use polyfuse::{
     mount::{mount, MountOptions},
     op::{self, Forget},
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
-    Connection, KernelConfig, Operation, Session,
+    Connection, KernelConfig, Operation, Request, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
             Operation::Releasedir(op) => try_reply!(fs.do_releasedir(&op)),
             Operation::Open(op) => try_reply!(fs.do_open(&op)),
             Operation::Read(op) => try_reply!(fs.do_read(&op)),
-            Operation::Write(op, data) => try_reply!(fs.do_write(&op, BufReader::new(data))),
+            Operation::Write(op) => try_reply!(fs.do_write(&op, &req)),
             Operation::Flush(op) => try_reply!(fs.do_flush(&op)),
             Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
             Operation::Release(op) => try_reply!(fs.do_release(&op)),
@@ -390,12 +390,9 @@ impl PathThrough {
         Ok(buf)
     }
 
-    fn do_write<T>(&mut self, op: &op::Write<'_>, data: T) -> io::Result<WriteOut>
-    where
-        T: BufRead + Unpin,
-    {
+    fn do_write(&mut self, op: &op::Write<'_>, req: &Request) -> io::Result<WriteOut> {
         let file = Slab::get_mut(&mut self.files, op.fh() as usize).ok_or_else(invalid_handle)?;
-        let written = file.write(data.take(op.size() as u64), op.offset())?;
+        let written = file.write(BufReader::new(req).take(op.size() as u64), op.offset())?;
 
         let mut out = WriteOut::default();
         out.size(written as u32);
