@@ -15,13 +15,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
-use std::{
-    mem,
-    os::unix::prelude::*,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
 
 const ROOT_INO: u64 = 1;
 const FILE_INO: u64 = 2;
@@ -50,8 +44,8 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
-    let conn = Arc::new(Connection::from(conn));
-    let session = Session::init(&*conn, KernelConfig::default()).map(Arc::new)?;
+    let conn = Connection::from(conn);
+    let session = Session::init(&conn, KernelConfig::default())?;
 
     let fs = {
         let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
@@ -64,7 +58,7 @@ fn main() -> Result<()> {
         file_attr.st_mode = libc::S_IFREG | 0o444;
         file_attr.st_nlink = 1;
 
-        Arc::new(Heartbeat {
+        Heartbeat {
             root_attr,
             file_attr,
             ttl,
@@ -73,33 +67,33 @@ fn main() -> Result<()> {
                 filename: generate_filename(),
                 nlookup: 0,
             }),
-        })
+        }
     };
 
-    // Spawn a task that beats the heart.
-    std::thread::spawn({
-        let fs = fs.clone();
-        let conn = conn.clone();
-        let notifier = if !no_notify {
-            Some(session.clone())
-        } else {
-            None
-        };
-        move || -> Result<()> {
-            fs.heartbeat(&conn, notifier)?;
-            Ok(())
-        }
-    });
-
-    while let Some(req) = session.next_request(&*conn)? {
-        let fs = fs.clone();
-        let session = session.clone();
-        let conn = conn.clone();
-        std::thread::spawn(move || -> Result<()> {
-            fs.handle_request(&session, &conn, &req)?;
-            Ok(())
+    std::thread::scope(|scope| -> anyhow::Result<()> {
+        // Spawn a task that beats the heart.
+        scope.spawn({
+            let fs = &fs;
+            let conn = &conn;
+            let notifier = if !no_notify { Some(&session) } else { None };
+            move || -> Result<()> {
+                fs.heartbeat(conn, notifier)?;
+                Ok(())
+            }
         });
-    }
+
+        while let Some(req) = session.next_request(&conn)? {
+            let fs = &fs;
+            let session = &session;
+            let conn = &conn;
+            scope.spawn(move || -> Result<()> {
+                fs.handle_request(session, conn, &req)?;
+                Ok(())
+            });
+        }
+
+        Ok(())
+    })?;
 
     fusermount.unmount()?;
 
@@ -125,7 +119,7 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    fn heartbeat(&self, conn: &Connection, notifier: Option<Arc<Session>>) -> Result<()> {
+    fn heartbeat(&self, conn: &Connection, notifier: Option<&Session>) -> Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
         let _enter = span.enter();
 
@@ -139,7 +133,7 @@ impl Heartbeat {
             let old_filename = mem::replace(&mut current.filename, new_filename);
 
             match notifier {
-                Some(ref notifier) if current.nlookup > 0 => {
+                Some(notifier) if current.nlookup > 0 => {
                     tracing::info!("send notify_inval_entry");
                     notifier.notify_inval_entry(conn, ROOT_INO, old_filename.as_ref())?;
                 }

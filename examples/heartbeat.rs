@@ -20,7 +20,7 @@ use std::{
     io::{self, prelude::*},
     mem,
     path::PathBuf,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Mutex},
     time::Duration,
 };
 
@@ -45,101 +45,102 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
-    let conn = Arc::new(Connection::from(conn));
-    let session = Session::init(&*conn, KernelConfig::default()).map(Arc::new)?;
+    let conn = Connection::from(conn);
+    let session = Session::init(&conn, KernelConfig::default())?;
 
-    let heartbeat = Arc::new(Heartbeat::now());
+    let heartbeat = Heartbeat::now();
 
-    // Spawn a task that beats the heart.
-    std::thread::spawn({
-        let heartbeat = heartbeat.clone();
-        let session = session.clone();
-        let conn = conn.clone();
-        let notifier = if !no_notify {
-            Some(session.clone())
-        } else {
-            None
-        };
-        move || -> Result<()> {
-            loop {
-                tracing::info!("heartbeat");
+    std::thread::scope(|scope| -> anyhow::Result<()> {
+        // Spawn a task that beats the heart.
+        scope.spawn({
+            let heartbeat = &heartbeat;
+            let session = &session;
+            let conn = &conn;
+            move || -> Result<()> {
+                loop {
+                    tracing::info!("heartbeat");
 
-                heartbeat.update_content();
+                    heartbeat.update_content();
 
-                if let Some(ref notifier) = notifier {
-                    match notify_kind {
-                        NotifyKind::Store => heartbeat.notify_store(&conn, notifier)?,
-                        NotifyKind::Invalidate => heartbeat.notify_inval_inode(&conn, notifier)?,
-                    }
-                }
-
-                std::thread::sleep(Duration::from_secs(update_interval));
-            }
-        }
-    });
-
-    // Run the filesystem daemon on the foreground.
-    while let Some(req) = session.next_request(&*conn)? {
-        let heartbeat = heartbeat.clone();
-        let session = session.clone();
-        let conn = conn.clone();
-
-        std::thread::spawn(move || -> Result<()> {
-            let span = tracing::debug_span!("handle request", unique = req.unique());
-            let _enter = span.enter();
-
-            let op = req.operation()?;
-            tracing::debug!(?op);
-
-            match op {
-                Operation::Getattr(op) => match op.ino() {
-                    ROOT_INO => {
-                        let inner = heartbeat.inner.lock().unwrap();
-                        let mut out = AttrOut::default();
-                        fill_attr(out.attr(), &inner.attr);
-                        session.reply(&*conn, &req, out)?;
-                    }
-                    _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
-                },
-                Operation::Open(op) => match op.ino() {
-                    ROOT_INO => {
-                        let mut out = OpenOut::default();
-                        out.keep_cache(true);
-                        session.reply(&*conn, &req, out)?;
-                    }
-                    _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
-                },
-                Operation::Read(op) => match op.ino() {
-                    ROOT_INO => {
-                        let inner = heartbeat.inner.lock().unwrap();
-
-                        let offset = op.offset() as usize;
-                        if offset >= inner.content.len() {
-                            session.reply(&*conn, &req, ())?;
-                        } else {
-                            let size = op.size() as usize;
-                            let data = &inner.content.as_bytes()[offset..];
-                            let data = &data[..std::cmp::min(data.len(), size)];
-                            session.reply(&*conn, &req, data)?;
+                    if !no_notify {
+                        match notify_kind {
+                            NotifyKind::Store => heartbeat.notify_store(conn, session)?,
+                            NotifyKind::Invalidate => {
+                                heartbeat.notify_inval_inode(conn, session)?
+                            }
                         }
                     }
-                    _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
-                },
-                Operation::NotifyReply(op) => {
-                    let mut retrieves = heartbeat.retrieves.lock().unwrap();
-                    if let Some(tx) = retrieves.remove(&op.unique()) {
-                        let mut buf = vec![0u8; op.size() as usize];
-                        (&req).read_exact(&mut buf)?;
-                        tx.send(buf).unwrap();
+
+                    std::thread::sleep(Duration::from_secs(update_interval));
+                }
+            }
+        });
+
+        // Run the filesystem daemon on the foreground.
+        while let Some(req) = session.next_request(&conn)? {
+            let heartbeat = &heartbeat;
+            let session = &session;
+            let conn = &conn;
+
+            scope.spawn(move || -> Result<()> {
+                let span = tracing::debug_span!("handle request", unique = req.unique());
+                let _enter = span.enter();
+
+                let op = req.operation()?;
+                tracing::debug!(?op);
+
+                match op {
+                    Operation::Getattr(op) => match op.ino() {
+                        ROOT_INO => {
+                            let inner = heartbeat.inner.lock().unwrap();
+                            let mut out = AttrOut::default();
+                            fill_attr(out.attr(), &inner.attr);
+                            session.reply(conn, &req, out)?;
+                        }
+                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
+                    },
+                    Operation::Open(op) => match op.ino() {
+                        ROOT_INO => {
+                            let mut out = OpenOut::default();
+                            out.keep_cache(true);
+                            session.reply(conn, &req, out)?;
+                        }
+                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
+                    },
+                    Operation::Read(op) => match op.ino() {
+                        ROOT_INO => {
+                            let inner = heartbeat.inner.lock().unwrap();
+
+                            let offset = op.offset() as usize;
+                            if offset >= inner.content.len() {
+                                session.reply(conn, &req, ())?;
+                            } else {
+                                let size = op.size() as usize;
+                                let data = &inner.content.as_bytes()[offset..];
+                                let data = &data[..std::cmp::min(data.len(), size)];
+                                session.reply(conn, &req, data)?;
+                            }
+                        }
+                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
+                    },
+                    Operation::NotifyReply(op) => {
+                        let mut retrieves = heartbeat.retrieves.lock().unwrap();
+                        if let Some(tx) = retrieves.remove(&op.unique()) {
+                            let mut buf = vec![0u8; op.size() as usize];
+                            (&req).read_exact(&mut buf)?;
+                            tx.send(buf).unwrap();
+                        }
                     }
+
+                    _ => session.reply_error(conn, &req, libc::ENOSYS)?,
                 }
 
-                _ => session.reply_error(&*conn, &req, libc::ENOSYS)?,
-            }
+                Ok(())
+            });
+        }
 
-            Ok(())
-        });
-    }
+        Ok(())
+    })?;
 
     fusermount.unmount()?;
 
