@@ -77,7 +77,7 @@ fn main() -> Result<()> {
             let conn = &conn;
             let notifier = if !no_notify { Some(&session) } else { None };
             move || -> Result<()> {
-                fs.heartbeat(&conn, notifier)?;
+                fs.heartbeat(conn, notifier)?;
                 Ok(())
             }
         });
@@ -87,7 +87,7 @@ fn main() -> Result<()> {
             let session = &session;
             let conn = &conn;
             scope.spawn(move || -> Result<()> {
-                fs.handle_request(&session, &conn, &req)?;
+                fs.handle_request(session, conn, &req)?;
                 Ok(())
             });
         }
@@ -133,7 +133,7 @@ impl Heartbeat {
             let old_filename = mem::replace(&mut current.filename, new_filename);
 
             match notifier {
-                Some(ref notifier) if current.nlookup > 0 => {
+                Some(notifier) if current.nlookup > 0 => {
                     tracing::info!("send notify_inval_entry");
                     notifier.notify_inval_entry(conn, ROOT_INO, old_filename.as_ref())?;
                 }

@@ -64,9 +64,9 @@ fn main() -> Result<()> {
 
                     if !no_notify {
                         match notify_kind {
-                            NotifyKind::Store => heartbeat.notify_store(&conn, session)?,
+                            NotifyKind::Store => heartbeat.notify_store(conn, session)?,
                             NotifyKind::Invalidate => {
-                                heartbeat.notify_inval_inode(&conn, session)?
+                                heartbeat.notify_inval_inode(conn, session)?
                             }
                         }
                     }
@@ -95,17 +95,17 @@ fn main() -> Result<()> {
                             let inner = heartbeat.inner.lock().unwrap();
                             let mut out = AttrOut::default();
                             fill_attr(out.attr(), &inner.attr);
-                            session.reply(&*conn, &req, out)?;
+                            session.reply(conn, &req, out)?;
                         }
-                        _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
+                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
                     },
                     Operation::Open(op) => match op.ino() {
                         ROOT_INO => {
                             let mut out = OpenOut::default();
                             out.keep_cache(true);
-                            session.reply(&*conn, &req, out)?;
+                            session.reply(conn, &req, out)?;
                         }
-                        _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
+                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
                     },
                     Operation::Read(op) => match op.ino() {
                         ROOT_INO => {
@@ -113,15 +113,15 @@ fn main() -> Result<()> {
 
                             let offset = op.offset() as usize;
                             if offset >= inner.content.len() {
-                                session.reply(&*conn, &req, ())?;
+                                session.reply(conn, &req, ())?;
                             } else {
                                 let size = op.size() as usize;
                                 let data = &inner.content.as_bytes()[offset..];
                                 let data = &data[..std::cmp::min(data.len(), size)];
-                                session.reply(&*conn, &req, data)?;
+                                session.reply(conn, &req, data)?;
                             }
                         }
-                        _ => session.reply_error(&*conn, &req, libc::ENOENT)?,
+                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
                     },
                     Operation::NotifyReply(op) => {
                         let mut retrieves = heartbeat.retrieves.lock().unwrap();
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
                         }
                     }
 
-                    _ => session.reply_error(&*conn, &req, libc::ENOSYS)?,
+                    _ => session.reply_error(conn, &req, libc::ENOSYS)?,
                 }
 
                 Ok(())

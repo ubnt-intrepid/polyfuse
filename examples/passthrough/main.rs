@@ -192,7 +192,7 @@ impl<'fs> Passthrough<'fs> {
 
             Operation::Open(op) => try_reply!(self.do_open(&op)),
             Operation::Read(op) => try_reply!(self.do_read(&op)),
-            Operation::Write(op) => try_reply!(self.do_write(&op, &req)),
+            Operation::Write(op) => try_reply!(self.do_write(&op, req)),
             Operation::Flush(op) => try_reply!(self.do_flush(&op)),
             Operation::Fsync(op) => try_reply!(self.do_fsync(&op)),
             Operation::Flock(op) => try_reply!(self.do_flock(&op)),
@@ -206,7 +206,7 @@ impl<'fs> Passthrough<'fs> {
 
             Operation::Statfs(op) => try_reply!(self.do_statfs(&op)),
 
-            _ => self.session.reply_error(self.conn, &req, libc::ENOSYS)?,
+            _ => self.session.reply_error(self.conn, req, libc::ENOSYS)?,
         }
 
         Ok(())
