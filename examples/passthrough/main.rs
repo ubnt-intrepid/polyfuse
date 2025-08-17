@@ -57,115 +57,26 @@ fn main() -> Result<()> {
             ..Default::default()
         },
     )?;
-    let conn = Arc::new(Connection::from(conn));
+    let conn = Connection::from(conn);
 
     // TODO: splice read/write
-    let session = Session::init(&*conn, {
+    let session = Session::init(&conn, {
         let mut config = KernelConfig::default();
         config.flags |= KernelFlags::EXPORT_SUPPORT;
         config.flags |= KernelFlags::FLOCK_LOCKS;
         config.flags |= KernelFlags::WRITEBACK_CACHE;
         config
-    })
-    .map(Arc::new)?;
+    })?;
 
-    let fs = Arc::new(Passthrough::new(source, timeout)?);
+    let fs = Passthrough::new(source, timeout, &session, &conn)?;
 
-    while let Some(req) = session.next_request(&*conn)? {
-        let fs = fs.clone();
-        let session = session.clone();
-        let conn = conn.clone();
-
-        std::thread::spawn(move || -> Result<()> {
-            let span = tracing::debug_span!("handle_request", unique = req.unique());
-            let _enter = span.enter();
-
-            let op = req.operation()?;
-            tracing::debug!(?op);
-
-            macro_rules! try_reply {
-                ($e:expr) => {
-                    match $e {
-                        Ok(data) => {
-                            tracing::debug!(?data);
-                            session.reply(&*conn, &req, data)?;
-                        }
-                        Err(err) => {
-                            let errno = io_to_errno(err);
-                            tracing::debug!(errno = errno);
-                            session.reply_error(&*conn, &req, errno)?;
-                        }
-                    }
-                };
-            }
-
-            match op {
-                Operation::Lookup(op) => try_reply!(fs.do_lookup(op.parent(), op.name())),
-                Operation::Forget(forgets) => {
-                    for forget in forgets.as_ref() {
-                        fs.forget_one(forget.ino(), forget.nlookup());
-                    }
-                }
-                Operation::Getattr(op) => try_reply!(fs.do_getattr(&op)),
-                Operation::Setattr(op) => try_reply!(fs.do_setattr(&op)),
-                Operation::Readlink(op) => try_reply!(fs.do_readlink(&op)),
-                Operation::Link(op) => try_reply!(fs.do_link(&op)),
-
-                Operation::Mknod(op) => {
-                    try_reply!(fs.make_node(
-                        op.parent(),
-                        op.name(),
-                        op.mode(),
-                        Some(op.rdev()),
-                        None
-                    ))
-                }
-                Operation::Mkdir(op) => try_reply!(fs.make_node(
-                    op.parent(),
-                    op.name(),
-                    libc::S_IFDIR | op.mode(),
-                    None,
-                    None
-                )),
-                Operation::Symlink(op) => try_reply!(fs.make_node(
-                    op.parent(),
-                    op.name(),
-                    libc::S_IFLNK,
-                    None,
-                    Some(op.link())
-                )),
-
-                Operation::Unlink(op) => try_reply!(fs.do_unlink(&op)),
-                Operation::Rmdir(op) => try_reply!(fs.do_rmdir(&op)),
-                Operation::Rename(op) => try_reply!(fs.do_rename(&op)),
-
-                Operation::Opendir(op) => try_reply!(fs.do_opendir(&op)),
-                Operation::Readdir(op) => try_reply!(fs.do_readdir(&op)),
-                Operation::Fsyncdir(op) => try_reply!(fs.do_fsyncdir(&op)),
-                Operation::Releasedir(op) => try_reply!(fs.do_releasedir(&op)),
-
-                Operation::Open(op) => try_reply!(fs.do_open(&op)),
-                Operation::Read(op) => try_reply!(fs.do_read(&op)),
-                Operation::Write(op) => try_reply!(fs.do_write(&op, &req)),
-                Operation::Flush(op) => try_reply!(fs.do_flush(&op)),
-                Operation::Fsync(op) => try_reply!(fs.do_fsync(&op)),
-                Operation::Flock(op) => try_reply!(fs.do_flock(&op)),
-                Operation::Fallocate(op) => try_reply!(fs.do_fallocate(&op)),
-                Operation::Release(op) => try_reply!(fs.do_release(&op)),
-
-                Operation::Getxattr(op) => try_reply!(fs.do_getxattr(&op)),
-                Operation::Listxattr(op) => try_reply!(fs.do_listxattr(&op)),
-                Operation::Setxattr(op) => try_reply!(fs.do_setxattr(&op)),
-                Operation::Removexattr(op) => try_reply!(fs.do_removexattr(&op)),
-
-                Operation::Statfs(op) => try_reply!(fs.do_statfs(&op)),
-
-                _ => session.reply_error(&*conn, &req, libc::ENOSYS)?,
-            }
-
-            Ok(())
-        });
-    }
+    std::thread::scope(|scope| -> anyhow::Result<()> {
+        while let Some(req) = session.next_request(&conn)? {
+            let fs = &fs;
+            scope.spawn(move || fs.handle_request(&req));
+        }
+        Ok(())
+    })?;
 
     fusermount.unmount()?;
 
@@ -175,15 +86,22 @@ fn main() -> Result<()> {
 type Ino = u64;
 type SrcId = (u64, libc::dev_t);
 
-struct Passthrough {
+struct Passthrough<'fs> {
+    session: &'fs Session,
+    conn: &'fs Connection,
     inodes: Mutex<INodeTable>,
     opened_dirs: HandlePool<Mutex<ReadDir>>,
     opened_files: HandlePool<Mutex<File>>,
     timeout: Option<Duration>,
 }
 
-impl Passthrough {
-    fn new(source: PathBuf, timeout: Option<Duration>) -> io::Result<Self> {
+impl<'fs> Passthrough<'fs> {
+    fn new(
+        source: PathBuf,
+        timeout: Option<Duration>,
+        session: &'fs Session,
+        conn: &'fs Connection,
+    ) -> io::Result<Self> {
         let source = source.canonicalize()?;
         tracing::debug!("source={:?}", source);
         let fd = FileDesc::open(&source, libc::O_PATH)?;
@@ -201,11 +119,97 @@ impl Passthrough {
         });
 
         Ok(Self {
+            session,
+            conn,
             inodes: Mutex::new(inodes),
             opened_dirs: HandlePool::default(),
             opened_files: HandlePool::default(),
             timeout,
         })
+    }
+
+    fn handle_request(&self, req: &Request) -> anyhow::Result<()> {
+        let span = tracing::debug_span!("handle_request", unique = req.unique());
+        let _enter = span.enter();
+
+        let op = req.operation()?;
+        tracing::debug!(?op);
+
+        macro_rules! try_reply {
+            ($e:expr) => {
+                match $e {
+                    Ok(data) => {
+                        tracing::debug!("send reply(size={})", polyfuse::bytes::Bytes::size(&data));
+                        self.session.reply(self.conn, &req, data)?;
+                    }
+                    Err(err) => {
+                        let errno = io_to_errno(err);
+                        tracing::debug!("send reply(errno={})", errno);
+                        self.session.reply_error(self.conn, &req, errno)?;
+                    }
+                }
+            };
+        }
+
+        match op {
+            Operation::Lookup(op) => try_reply!(self.do_lookup(op.parent(), op.name())),
+            Operation::Forget(forgets) => {
+                for forget in forgets.as_ref() {
+                    self.forget_one(forget.ino(), forget.nlookup());
+                }
+            }
+            Operation::Getattr(op) => try_reply!(self.do_getattr(&op)),
+            Operation::Setattr(op) => try_reply!(self.do_setattr(&op)),
+            Operation::Readlink(op) => try_reply!(self.do_readlink(&op)),
+            Operation::Link(op) => try_reply!(self.do_link(&op)),
+
+            Operation::Mknod(op) => {
+                try_reply!(self.make_node(op.parent(), op.name(), op.mode(), Some(op.rdev()), None))
+            }
+            Operation::Mkdir(op) => try_reply!(self.make_node(
+                op.parent(),
+                op.name(),
+                libc::S_IFDIR | op.mode(),
+                None,
+                None
+            )),
+            Operation::Symlink(op) => try_reply!(self.make_node(
+                op.parent(),
+                op.name(),
+                libc::S_IFLNK,
+                None,
+                Some(op.link())
+            )),
+
+            Operation::Unlink(op) => try_reply!(self.do_unlink(&op)),
+            Operation::Rmdir(op) => try_reply!(self.do_rmdir(&op)),
+            Operation::Rename(op) => try_reply!(self.do_rename(&op)),
+
+            Operation::Opendir(op) => try_reply!(self.do_opendir(&op)),
+            Operation::Readdir(op) => try_reply!(self.do_readdir(&op)),
+            Operation::Fsyncdir(op) => try_reply!(self.do_fsyncdir(&op)),
+            Operation::Releasedir(op) => try_reply!(self.do_releasedir(&op)),
+
+            Operation::Open(op) => try_reply!(self.do_open(&op)),
+            Operation::Read(op) => try_reply!(self.do_read(&op)),
+            Operation::Write(op) => try_reply!(self.do_write(&op, &req)),
+            Operation::Flush(op) => try_reply!(self.do_flush(&op)),
+            Operation::Fsync(op) => try_reply!(self.do_fsync(&op)),
+            Operation::Flock(op) => try_reply!(self.do_flock(&op)),
+            Operation::Fallocate(op) => try_reply!(self.do_fallocate(&op)),
+            Operation::Release(op) => try_reply!(self.do_release(&op)),
+
+            Operation::Getxattr(op) => try_reply!(self.do_getxattr(&op)),
+            Operation::Listxattr(op) => try_reply!(self.do_listxattr(&op)),
+            Operation::Setxattr(op) => try_reply!(self.do_setxattr(&op)),
+            Operation::Removexattr(op) => try_reply!(self.do_removexattr(&op)),
+
+            Operation::Statfs(op) => try_reply!(self.do_statfs(&op)),
+
+            _ => self.session.reply_error(self.conn, &req, libc::ENOSYS)?,
+        }
+
+        Ok(())
     }
 
     fn make_entry_param(&self, ino: u64, attr: libc::stat) -> EntryOut {
