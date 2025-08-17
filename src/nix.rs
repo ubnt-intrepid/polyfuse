@@ -77,6 +77,12 @@ impl PipeReader {
         Self(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
+    pub fn remaining_bytes(&self) -> io::Result<usize> {
+        let mut nbytes: c_int = 0;
+        syscall! { ioctl(self.0.as_raw_fd(), libc::FIONREAD, std::ptr::addr_of_mut!(nbytes)) };
+        Ok(nbytes as usize)
+    }
+
     /// Splice the specified amount of bytes from the pipe buffer to `fd`.
     #[cfg(target_os = "linux")]
     pub fn splice_to(

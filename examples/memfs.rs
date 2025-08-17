@@ -38,7 +38,8 @@ fn main() -> Result<()> {
 
     let mut fs = MemFS::new(&session, &mut conn);
 
-    while let Some(req) = session.next_request(&mut fs.conn)? {
+    let mut req = session.new_request_buffer()?;
+    while session.read_request(&mut fs.conn, &mut req)? {
         let span = tracing::debug_span!("handle_request", unique = req.unique());
         let _enter = span.enter();
 
