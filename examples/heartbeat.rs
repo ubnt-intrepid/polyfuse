@@ -77,66 +77,59 @@ fn main() -> Result<()> {
         });
 
         // Run the filesystem daemon on the foreground.
-        while let Some(req) = session.next_request(&conn)? {
-            let heartbeat = &heartbeat;
-            let session = &session;
-            let conn = &conn;
+        let mut req = session.new_request_buffer()?;
+        while session.read_request(&conn, &mut req)? {
+            let span = tracing::debug_span!("handle request", unique = req.unique());
+            let _enter = span.enter();
 
-            scope.spawn(move || -> Result<()> {
-                let span = tracing::debug_span!("handle request", unique = req.unique());
-                let _enter = span.enter();
+            let op = req.operation()?;
+            tracing::debug!(?op);
 
-                let op = req.operation()?;
-                tracing::debug!(?op);
+            match op {
+                Operation::Getattr(op) => match op.ino() {
+                    ROOT_INO => {
+                        let inner = heartbeat.inner.lock().unwrap();
+                        let mut out = AttrOut::default();
+                        fill_attr(out.attr(), &inner.attr);
+                        session.reply(&conn, &req, out)?;
+                    }
+                    _ => session.reply_error(&conn, &req, libc::ENOENT)?,
+                },
+                Operation::Open(op) => match op.ino() {
+                    ROOT_INO => {
+                        let mut out = OpenOut::default();
+                        out.keep_cache(true);
+                        session.reply(&conn, &req, out)?;
+                    }
+                    _ => session.reply_error(&conn, &req, libc::ENOENT)?,
+                },
+                Operation::Read(op) => match op.ino() {
+                    ROOT_INO => {
+                        let inner = heartbeat.inner.lock().unwrap();
 
-                match op {
-                    Operation::Getattr(op) => match op.ino() {
-                        ROOT_INO => {
-                            let inner = heartbeat.inner.lock().unwrap();
-                            let mut out = AttrOut::default();
-                            fill_attr(out.attr(), &inner.attr);
-                            session.reply(conn, &req, out)?;
-                        }
-                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
-                    },
-                    Operation::Open(op) => match op.ino() {
-                        ROOT_INO => {
-                            let mut out = OpenOut::default();
-                            out.keep_cache(true);
-                            session.reply(conn, &req, out)?;
-                        }
-                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
-                    },
-                    Operation::Read(op) => match op.ino() {
-                        ROOT_INO => {
-                            let inner = heartbeat.inner.lock().unwrap();
-
-                            let offset = op.offset() as usize;
-                            if offset >= inner.content.len() {
-                                session.reply(conn, &req, ())?;
-                            } else {
-                                let size = op.size() as usize;
-                                let data = &inner.content.as_bytes()[offset..];
-                                let data = &data[..std::cmp::min(data.len(), size)];
-                                session.reply(conn, &req, data)?;
-                            }
-                        }
-                        _ => session.reply_error(conn, &req, libc::ENOENT)?,
-                    },
-                    Operation::NotifyReply(op) => {
-                        let mut retrieves = heartbeat.retrieves.lock().unwrap();
-                        if let Some(tx) = retrieves.remove(&op.unique()) {
-                            let mut buf = vec![0u8; op.size() as usize];
-                            (&req).read_exact(&mut buf)?;
-                            tx.send(buf).unwrap();
+                        let offset = op.offset() as usize;
+                        if offset >= inner.content.len() {
+                            session.reply(&conn, &req, ())?;
+                        } else {
+                            let size = op.size() as usize;
+                            let data = &inner.content.as_bytes()[offset..];
+                            let data = &data[..std::cmp::min(data.len(), size)];
+                            session.reply(&conn, &req, data)?;
                         }
                     }
-
-                    _ => session.reply_error(conn, &req, libc::ENOSYS)?,
+                    _ => session.reply_error(&conn, &req, libc::ENOENT)?,
+                },
+                Operation::NotifyReply(op) => {
+                    let mut retrieves = heartbeat.retrieves.lock().unwrap();
+                    if let Some(tx) = retrieves.remove(&op.unique()) {
+                        let mut buf = vec![0u8; op.size() as usize];
+                        (&req).read_exact(&mut buf)?;
+                        tx.send(buf).unwrap();
+                    }
                 }
 
-                Ok(())
-            });
+                _ => session.reply_error(&conn, &req, libc::ENOSYS)?,
+            }
         }
 
         Ok(())

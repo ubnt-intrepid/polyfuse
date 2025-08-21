@@ -82,14 +82,9 @@ fn main() -> Result<()> {
             }
         });
 
-        while let Some(req) = session.next_request(&conn)? {
-            let fs = &fs;
-            let session = &session;
-            let conn = &conn;
-            scope.spawn(move || -> Result<()> {
-                fs.handle_request(session, conn, &req)?;
-                Ok(())
-            });
+        let mut req = session.new_request_buffer()?;
+        while session.read_request(&conn, &mut req)? {
+            fs.handle_request(&session, &conn, &req)?;
         }
 
         Ok(())
