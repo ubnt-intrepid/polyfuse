@@ -36,11 +36,11 @@ fn main() -> Result<()> {
     let conn = Connection::from(conn);
     let session = Session::init(&conn, Default::default())?;
 
-    let fs = PollFS::new(&session, &conn, wakeup_interval);
+    let fs = PollFS::new(wakeup_interval);
 
     std::thread::scope(|scope| -> anyhow::Result<()> {
         while let Some(req) = session.next_request(&conn)? {
-            fs.handle_request(&req, scope)?;
+            fs.handle_request(&session, &conn, &req, scope)?;
         }
         Ok(())
     })?;
@@ -50,28 +50,25 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-struct PollFS<'env> {
-    session: &'env Session,
-    conn: &'env Connection,
+struct PollFS {
     handles: DashMap<u64, Arc<FileHandle>>,
     next_fh: AtomicU64,
-
     wakeup_interval: Duration,
 }
 
-impl<'env> PollFS<'env> {
-    fn new(session: &'env Session, conn: &'env Connection, wakeup_interval: Duration) -> Self {
+impl PollFS {
+    fn new(wakeup_interval: Duration) -> Self {
         Self {
-            session,
-            conn,
             handles: DashMap::new(),
             next_fh: AtomicU64::new(0),
             wakeup_interval,
         }
     }
 
-    fn handle_request<'scope>(
+    fn handle_request<'env, 'scope>(
         &self,
+        session: &'env Session,
+        conn: &'env Connection,
         req: &Request,
         scope: &'scope Scope<'scope, 'env>,
     ) -> Result<()> {
@@ -83,22 +80,22 @@ impl<'env> PollFS<'env> {
 
         match op {
             Operation::Getattr(..) => {
-                let mut out = AttrOut::default();
-                out.attr().ino(1);
-                out.attr().nlink(1);
-                out.attr().mode(libc::S_IFREG | 0o444);
-                out.attr().uid(unsafe { libc::getuid() });
-                out.attr().gid(unsafe { libc::getgid() });
-                out.ttl(Duration::from_secs(u64::max_value() / 2));
-
-                self.session.reply(self.conn, req, out)?;
+                session.reply(conn, req, {
+                    let mut out = AttrOut::default();
+                    out.attr().ino(1);
+                    out.attr().nlink(1);
+                    out.attr().mode(libc::S_IFREG | 0o444);
+                    out.attr().uid(unsafe { libc::getuid() });
+                    out.attr().gid(unsafe { libc::getgid() });
+                    out.ttl(Duration::from_secs(u64::max_value() / 2));
+                    out
+                })?;
             }
 
             Operation::Open(op) => {
                 if op.flags() as i32 & libc::O_ACCMODE != libc::O_RDONLY {
-                    return self
-                        .session
-                        .reply_error(self.conn, req, libc::EACCES)
+                    return session
+                        .reply_error(conn, req, libc::EACCES)
                         .map_err(Into::into);
                 }
 
@@ -114,9 +111,7 @@ impl<'env> PollFS<'env> {
                 tracing::info!("spawn reading task");
                 scope.spawn({
                     let handle = Arc::downgrade(&handle);
-                    let session = self.session;
                     let wakeup_interval = self.wakeup_interval;
-                    let conn = self.conn;
 
                     move || -> Result<()> {
                         let span = tracing::debug_span!("reading_task", fh=?fh);
@@ -146,21 +141,21 @@ impl<'env> PollFS<'env> {
 
                 self.handles.insert(fh, handle);
 
-                let mut out = OpenOut::default();
-                out.fh(fh);
-                out.direct_io(true);
-                out.nonseekable(true);
-
-                self.session.reply(self.conn, req, out)?;
+                session.reply(conn, req, {
+                    let mut out = OpenOut::default();
+                    out.fh(fh);
+                    out.direct_io(true);
+                    out.nonseekable(true);
+                    out
+                })?;
             }
 
             Operation::Read(op) => {
                 let handle = match self.handles.get(&op.fh()) {
                     Some(h) => h,
                     None => {
-                        return self
-                            .session
-                            .reply_error(self.conn, req, libc::EINVAL)
+                        return session
+                            .reply_error(conn, req, libc::EINVAL)
                             .map_err(Into::into)
                     }
                 };
@@ -169,9 +164,8 @@ impl<'env> PollFS<'env> {
                 if handle.is_nonblock {
                     if !state.is_ready {
                         tracing::info!("send EAGAIN immediately");
-                        return self
-                            .session
-                            .reply_error(self.conn, req, libc::EAGAIN)
+                        return session
+                            .reply_error(conn, req, libc::EAGAIN)
                             .map_err(Into::into);
                     }
                 } else {
@@ -190,20 +184,15 @@ impl<'env> PollFS<'env> {
                 let bufsize = op.size() as usize;
                 let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-                self.session.reply(
-                    self.conn,
-                    req,
-                    &content[..std::cmp::min(content.len(), bufsize)],
-                )?;
+                session.reply(conn, req, &content[..std::cmp::min(content.len(), bufsize)])?;
             }
 
             Operation::Poll(op) => {
                 let handle = match self.handles.get(&op.fh()) {
                     Some(h) => h,
                     None => {
-                        return self
-                            .session
-                            .reply_error(self.conn, req, libc::EINVAL)
+                        return session
+                            .reply_error(conn, req, libc::EINVAL)
                             .map_err(Into::into)
                     }
                 };
@@ -219,15 +208,15 @@ impl<'env> PollFS<'env> {
                     state.kh = Some(kh);
                 }
 
-                self.session.reply(self.conn, req, out)?;
+                session.reply(conn, req, out)?;
             }
 
             Operation::Release(op) => {
                 drop(self.handles.remove(&op.fh()));
-                self.session.reply(self.conn, req, ())?;
+                session.reply(conn, req, ())?;
             }
 
-            _ => self.session.reply_error(self.conn, req, libc::ENOSYS)?,
+            _ => session.reply_error(conn, req, libc::ENOSYS)?,
         }
 
         Ok(())
