@@ -2,14 +2,15 @@
 #![deny(clippy::unimplemented)]
 
 use polyfuse::{
-    mount::{mount, MountOptions},
+    fs::{self, Filesystem},
+    mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut},
-    Connection, KernelConfig, Operation, Session,
+    KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use std::{io, os::unix::prelude::*, path::PathBuf, time::Duration};
+use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const ROOT_INO: u64 = 1;
@@ -25,56 +26,14 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
-    let mut conn = Connection::from(conn);
-    let session = Session::init(&mut conn, KernelConfig::default())?;
-
-    let fs = Hello::new();
-
-    let mut req = session.new_request_buffer()?;
-    while session.read_request(&mut conn, &mut req)? {
-        let op = req.operation()?;
-        let mut req = Request {
-            session: &session,
-            request: &req,
-            conn: &mut conn,
-        };
-        match op {
-            Operation::Lookup(op) => fs.lookup(&mut req, op)?,
-            Operation::Getattr(op) => fs.getattr(&mut req, op)?,
-            Operation::Read(op) => fs.read(&mut req, op)?,
-            Operation::Readdir(op) => fs.readdir(&mut req, op)?,
-            Operation::Opendir(op) => fs.opendir(&mut req, op)?,
-            unhandled_op => {
-                tracing::warn!("Missing handler mapping for {:?} operation", unhandled_op);
-                req.reply_error(libc::ENOSYS)?
-            }
-        }
-    }
-
-    fusermount.unmount()?;
+    polyfuse::fs::run(
+        Hello::new(),
+        mountpoint,
+        MountOptions::default(),
+        KernelConfig::default(),
+    )?;
 
     Ok(())
-}
-
-struct Request<'req> {
-    session: &'req Session,
-    conn: &'req mut Connection,
-    request: &'req polyfuse::Request,
-}
-
-impl Request<'_> {
-    fn reply<T>(&mut self, arg: T) -> io::Result<()>
-    where
-        T: polyfuse::bytes::Bytes,
-    {
-        self.session.reply(&mut *self.conn, self.request, arg)
-    }
-
-    fn reply_error(&mut self, errno: i32) -> io::Result<()> {
-        self.session
-            .reply_error(&mut *self.conn, self.request, errno)
-    }
 }
 
 struct Hello {
@@ -132,7 +91,16 @@ impl Hello {
         attr.gid(self.gid);
     }
 
-    fn lookup(&self, req: &mut Request<'_>, op: op::Lookup<'_>) -> io::Result<()> {
+    fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
+        self.entries.iter().enumerate().map(|(i, ent)| {
+            let offset = (i + 1) as u64;
+            (offset, ent)
+        })
+    }
+}
+
+impl Filesystem for Hello {
+    fn lookup(&self, cx: fs::Context<'_>, op: op::Lookup<'_>) -> fs::Result {
         match op.parent() {
             ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -140,31 +108,31 @@ impl Hello {
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                req.reply(out)
+                cx.reply(out)
             }
-            _ => req.reply_error(libc::ENOENT),
+            _ => Err(libc::ENOENT.into()),
         }
     }
 
-    fn getattr(&self, req: &mut Request<'_>, op: op::Getattr<'_>) -> io::Result<()> {
+    fn getattr(&self, cx: fs::Context<'_>, op: op::Getattr<'_>) -> fs::Result {
         let fill_attr = match op.ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
-            _ => return req.reply_error(libc::ENOENT),
+            _ => return Err(libc::ENOENT.into()),
         };
 
         let mut out = AttrOut::default();
         fill_attr(self, out.attr());
         out.ttl(TTL);
 
-        req.reply(out)
+        cx.reply(out)
     }
 
-    fn read(&self, req: &mut Request<'_>, op: op::Read<'_>) -> io::Result<()> {
+    fn read(&self, cx: fs::Context<'_>, op: op::Read<'_>) -> fs::Result {
         match op.ino() {
             HELLO_INO => (),
-            ROOT_INO => return req.reply_error(libc::EISDIR),
-            _ => return req.reply_error(libc::ENOENT),
+            ROOT_INO => return Err(libc::EISDIR.into()),
+            _ => return Err(libc::ENOENT.into()),
         }
 
         let mut data: &[u8] = &[];
@@ -176,25 +144,18 @@ impl Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        req.reply(data)
+        cx.reply(data)
     }
 
-    fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
-        self.entries.iter().enumerate().map(|(i, ent)| {
-            let offset = (i + 1) as u64;
-            (offset, ent)
-        })
-    }
-
-    fn opendir(&self, req: &mut Request<'_>, op: op::Opendir<'_>) -> io::Result<()> {
+    fn opendir(&self, cx: fs::Context<'_>, op: op::Opendir<'_>) -> fs::Result {
         let mut out = OpenOut::default();
         out.fh(op.ino());
-        req.reply(out)
+        cx.reply(out)
     }
 
-    fn readdir(&self, req: &mut Request<'_>, op: op::Readdir<'_>) -> io::Result<()> {
+    fn readdir(&self, cx: fs::Context<'_>, op: op::Readdir<'_>) -> fs::Result {
         if op.ino() != ROOT_INO {
-            return req.reply_error(libc::ENOTDIR);
+            return Err(libc::ENOTDIR.into());
         }
 
         let mut out = ReaddirOut::new(op.size() as usize);
@@ -211,6 +172,6 @@ impl Hello {
             }
         }
 
-        req.reply(out)
+        cx.reply(out)
     }
 }

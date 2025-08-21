@@ -1,25 +1,26 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![warn(clippy::unimplemented, clippy::todo)]
 
-mod fs;
+mod nix;
 
+use libc::{EINVAL, ENOENT, ENOSYS, ENOTSUP, EOPNOTSUPP, S_IFDIR, S_IFLNK};
 use polyfuse::{
-    mount::{mount, MountOptions},
+    fs::{self, Filesystem},
+    mount::MountOptions,
     op,
     reply::{
         AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
-    Connection, KernelConfig, KernelFlags, Operation, Request, Session,
+    KernelConfig, KernelFlags,
 };
 
+use crate::nix::{FileDesc, ReadDir};
 use anyhow::{ensure, Context as _, Result};
-use either::Either;
 use pico_args::Arguments;
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
-    ffi::{OsStr, OsString},
-    fmt::Debug,
+    ffi::OsStr,
     fs::{File, OpenOptions},
     io::{self, prelude::*},
     os::unix::prelude::*,
@@ -27,8 +28,6 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-
-use crate::fs::{FileDesc, ReadDir};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -49,36 +48,20 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let (conn, fusermount) = mount(
-        mountpoint,
-        MountOptions {
-            default_permissions: true,
-            fsname: Some("passthrough".into()),
-            ..Default::default()
-        },
-    )?;
-    let conn = Connection::from(conn);
+    let mountopts = MountOptions {
+        default_permissions: true,
+        fsname: Some("passthrough".into()),
+        ..Default::default()
+    };
 
-    // TODO: splice read/write
-    let session = Session::init(&conn, {
-        let mut config = KernelConfig::default();
-        config.flags |= KernelFlags::EXPORT_SUPPORT;
-        config.flags |= KernelFlags::FLOCK_LOCKS;
-        config.flags |= KernelFlags::WRITEBACK_CACHE;
-        config
-    })?;
+    let mut config = KernelConfig::default();
+    config.flags |= KernelFlags::EXPORT_SUPPORT;
+    config.flags |= KernelFlags::FLOCK_LOCKS;
+    config.flags |= KernelFlags::WRITEBACK_CACHE;
 
-    let fs = Passthrough::new(source, timeout, &session, &conn)?;
+    let fs = Passthrough::new(source, timeout)?;
 
-    std::thread::scope(|scope| -> anyhow::Result<()> {
-        while let Some(req) = session.next_request(&conn)? {
-            let fs = &fs;
-            scope.spawn(move || fs.handle_request(&req));
-        }
-        Ok(())
-    })?;
-
-    fusermount.unmount()?;
+    polyfuse::fs::run(fs, mountpoint, mountopts, config)?;
 
     Ok(())
 }
@@ -86,22 +69,15 @@ fn main() -> Result<()> {
 type Ino = u64;
 type SrcId = (u64, libc::dev_t);
 
-struct Passthrough<'fs> {
-    session: &'fs Session,
-    conn: &'fs Connection,
+struct Passthrough {
     inodes: Mutex<INodeTable>,
     opened_dirs: HandlePool<Mutex<ReadDir>>,
     opened_files: HandlePool<Mutex<File>>,
     timeout: Option<Duration>,
 }
 
-impl<'fs> Passthrough<'fs> {
-    fn new(
-        source: PathBuf,
-        timeout: Option<Duration>,
-        session: &'fs Session,
-        conn: &'fs Connection,
-    ) -> io::Result<Self> {
+impl Passthrough {
+    fn new(source: PathBuf, timeout: Option<Duration>) -> io::Result<Self> {
         let source = source.canonicalize()?;
         tracing::debug!("source={:?}", source);
         let fd = FileDesc::open(&source, libc::O_PATH)?;
@@ -119,97 +95,11 @@ impl<'fs> Passthrough<'fs> {
         });
 
         Ok(Self {
-            session,
-            conn,
             inodes: Mutex::new(inodes),
             opened_dirs: HandlePool::default(),
             opened_files: HandlePool::default(),
             timeout,
         })
-    }
-
-    fn handle_request(&self, req: &Request) -> anyhow::Result<()> {
-        let span = tracing::debug_span!("handle_request", unique = req.unique());
-        let _enter = span.enter();
-
-        let op = req.operation()?;
-        tracing::debug!(?op);
-
-        macro_rules! try_reply {
-            ($e:expr) => {
-                match $e {
-                    Ok(data) => {
-                        tracing::debug!("send reply(size={})", polyfuse::bytes::Bytes::size(&data));
-                        self.session.reply(self.conn, &req, data)?;
-                    }
-                    Err(err) => {
-                        let errno = io_to_errno(err);
-                        tracing::debug!("send reply(errno={})", errno);
-                        self.session.reply_error(self.conn, &req, errno)?;
-                    }
-                }
-            };
-        }
-
-        match op {
-            Operation::Lookup(op) => try_reply!(self.do_lookup(op.parent(), op.name())),
-            Operation::Forget(forgets) => {
-                for forget in forgets.as_ref() {
-                    self.forget_one(forget.ino(), forget.nlookup());
-                }
-            }
-            Operation::Getattr(op) => try_reply!(self.do_getattr(&op)),
-            Operation::Setattr(op) => try_reply!(self.do_setattr(&op)),
-            Operation::Readlink(op) => try_reply!(self.do_readlink(&op)),
-            Operation::Link(op) => try_reply!(self.do_link(&op)),
-
-            Operation::Mknod(op) => {
-                try_reply!(self.make_node(op.parent(), op.name(), op.mode(), Some(op.rdev()), None))
-            }
-            Operation::Mkdir(op) => try_reply!(self.make_node(
-                op.parent(),
-                op.name(),
-                libc::S_IFDIR | op.mode(),
-                None,
-                None
-            )),
-            Operation::Symlink(op) => try_reply!(self.make_node(
-                op.parent(),
-                op.name(),
-                libc::S_IFLNK,
-                None,
-                Some(op.link())
-            )),
-
-            Operation::Unlink(op) => try_reply!(self.do_unlink(&op)),
-            Operation::Rmdir(op) => try_reply!(self.do_rmdir(&op)),
-            Operation::Rename(op) => try_reply!(self.do_rename(&op)),
-
-            Operation::Opendir(op) => try_reply!(self.do_opendir(&op)),
-            Operation::Readdir(op) => try_reply!(self.do_readdir(&op)),
-            Operation::Fsyncdir(op) => try_reply!(self.do_fsyncdir(&op)),
-            Operation::Releasedir(op) => try_reply!(self.do_releasedir(&op)),
-
-            Operation::Open(op) => try_reply!(self.do_open(&op)),
-            Operation::Read(op) => try_reply!(self.do_read(&op)),
-            Operation::Write(op) => try_reply!(self.do_write(&op, req)),
-            Operation::Flush(op) => try_reply!(self.do_flush(&op)),
-            Operation::Fsync(op) => try_reply!(self.do_fsync(&op)),
-            Operation::Flock(op) => try_reply!(self.do_flock(&op)),
-            Operation::Fallocate(op) => try_reply!(self.do_fallocate(&op)),
-            Operation::Release(op) => try_reply!(self.do_release(&op)),
-
-            Operation::Getxattr(op) => try_reply!(self.do_getxattr(&op)),
-            Operation::Listxattr(op) => try_reply!(self.do_listxattr(&op)),
-            Operation::Setxattr(op) => try_reply!(self.do_setxattr(&op)),
-            Operation::Removexattr(op) => try_reply!(self.do_removexattr(&op)),
-
-            Operation::Statfs(op) => try_reply!(self.do_statfs(&op)),
-
-            _ => self.session.reply_error(self.conn, req, libc::ENOSYS)?,
-        }
-
-        Ok(())
     }
 
     fn make_entry_param(&self, ino: u64, attr: libc::stat) -> EntryOut {
@@ -223,11 +113,11 @@ impl<'fs> Passthrough<'fs> {
         reply
     }
 
-    fn do_lookup(&self, parent: Ino, name: &OsStr) -> io::Result<EntryOut> {
+    fn do_lookup(&self, parent: u64, name: &OsStr) -> fs::Result<EntryOut> {
         let mut inodes = self.inodes.lock().unwrap();
         let inodes = &mut *inodes;
 
-        let parent = inodes.get(parent).ok_or_else(no_entry)?;
+        let parent = inodes.get(parent).ok_or(ENOENT)?;
         let parent = parent.lock().unwrap();
 
         let fd = parent.fd.openat(name, libc::O_PATH | libc::O_NOFOLLOW)?;
@@ -265,27 +155,67 @@ impl<'fs> Passthrough<'fs> {
         Ok(self.make_entry_param(ino, stat))
     }
 
-    fn forget_one(&self, ino: Ino, nlookup: u64) {
+    fn make_node(
+        &self,
+        parent: Ino,
+        name: &OsStr,
+        mode: u32,
+        rdev: Option<u32>,
+        link: Option<&OsStr>,
+    ) -> fs::Result<EntryOut> {
+        {
+            let inodes = self.inodes.lock().unwrap();
+            let parent = inodes.get(parent).ok_or(ENOENT)?;
+            let parent = parent.lock().unwrap();
+
+            match mode & libc::S_IFMT {
+                libc::S_IFDIR => {
+                    parent.fd.mkdirat(name, mode)?;
+                }
+                libc::S_IFLNK => {
+                    let link = link.expect("missing 'link'");
+                    parent.fd.symlinkat(name, link)?;
+                }
+                _ => {
+                    parent
+                        .fd
+                        .mknodat(name, mode, rdev.unwrap_or(0) as libc::dev_t)?;
+                }
+            }
+        }
+        self.do_lookup(parent, name)
+    }
+}
+
+impl Filesystem for Passthrough {
+    fn lookup(&self, cx: fs::Context<'_>, op: op::Lookup<'_>) -> fs::Result {
+        let out = self.do_lookup(op.parent(), op.name())?;
+        cx.reply(out)
+    }
+
+    fn forget(&self, forgets: &[op::Forget]) {
         let mut inodes = self.inodes.lock().unwrap();
 
-        if let Entry::Occupied(mut entry) = inodes.map.entry(ino) {
-            let refcount = {
-                let mut inode = entry.get_mut().lock().unwrap();
-                inode.refcount = inode.refcount.saturating_sub(nlookup);
-                inode.refcount
-            };
+        for forget in forgets {
+            if let Entry::Occupied(mut entry) = inodes.map.entry(forget.ino()) {
+                let refcount = {
+                    let mut inode = entry.get_mut().lock().unwrap();
+                    inode.refcount = inode.refcount.saturating_sub(forget.nlookup());
+                    inode.refcount
+                };
 
-            if refcount == 0 {
-                tracing::debug!("remove ino={}", entry.key());
-                drop(entry.remove());
+                if refcount == 0 {
+                    tracing::debug!("remove ino={}", entry.key());
+                    drop(entry.remove());
+                }
             }
         }
     }
 
-    fn do_getattr(&self, op: &op::Getattr<'_>) -> io::Result<AttrOut> {
+    fn getattr(&self, cx: fs::Context<'_>, op: op::Getattr<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
 
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
         let stat = inode.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
@@ -296,18 +226,18 @@ impl<'fs> Passthrough<'fs> {
             out.ttl(timeout);
         };
 
-        Ok(out)
+        cx.reply(out)
     }
 
     #[allow(clippy::cognitive_complexity)]
-    fn do_setattr(&self, op: &op::Setattr<'_>) -> io::Result<AttrOut> {
+    fn setattr(&self, cx: fs::Context<'_>, op: op::Setattr<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
         let fd = &inode.fd;
 
         let mut file = if let Some(fh) = op.fh() {
-            Some(self.opened_files.get(fh).ok_or_else(no_entry)?)
+            Some(self.opened_files.get(fh).ok_or(ENOENT)?)
         } else {
             None
         };
@@ -316,9 +246,9 @@ impl<'fs> Passthrough<'fs> {
         // chmod
         if let Some(mode) = op.mode() {
             if let Some(file) = file.as_mut() {
-                fs::fchmod(&**file, mode)?;
+                nix::fchmod(&**file, mode)?;
             } else {
-                fs::chmod(fd.procname(), mode)?;
+                nix::chmod(fd.procname(), mode)?;
             }
         }
 
@@ -333,9 +263,9 @@ impl<'fs> Passthrough<'fs> {
         // truncate
         if let Some(size) = op.size() {
             if let Some(file) = file.as_mut() {
-                fs::ftruncate(&**file, size as libc::off_t)?;
+                nix::ftruncate(&**file, size as libc::off_t)?;
             } else {
-                fs::truncate(fd.procname(), size as libc::off_t)?;
+                nix::truncate(fd.procname(), size as libc::off_t)?;
             }
         }
 
@@ -361,7 +291,7 @@ impl<'fs> Passthrough<'fs> {
             (atime, mtime) => {
                 let tv = [make_timespec(atime), make_timespec(mtime)];
                 if let Some(file) = file.as_mut() {
-                    fs::futimens(&**file, tv)?;
+                    nix::futimens(&**file, tv)?;
                 } else if inode.is_symlink {
                     // According to libfuse/examples/passthrough_hp.cc, it does not work on
                     // the current kernels, but may in the future.
@@ -371,7 +301,7 @@ impl<'fs> Passthrough<'fs> {
                             _ => err,
                         })?;
                 } else {
-                    fs::utimens(fd.procname(), tv)?;
+                    nix::utimens(fd.procname(), tv)?;
                 }
             }
         }
@@ -385,23 +315,24 @@ impl<'fs> Passthrough<'fs> {
             out.ttl(timeout);
         };
 
-        Ok(out)
+        cx.reply(out)
     }
 
-    fn do_readlink(&self, op: &op::Readlink<'_>) -> io::Result<OsString> {
+    fn readlink(&self, cx: fs::Context<'_>, op: op::Readlink<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
-        inode.fd.readlinkat("")
+        let link = inode.fd.readlinkat("")?;
+        cx.reply(link)
     }
 
-    fn do_link(&self, op: &op::Link<'_>) -> io::Result<EntryOut> {
+    fn link(&self, cx: fs::Context<'_>, op: op::Link<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
 
-        let source = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let source = inodes.get(op.ino()).ok_or(ENOENT)?;
         let mut source = source.lock().unwrap();
 
-        let parent = inodes.get(op.newparent()).ok_or_else(no_entry)?;
+        let parent = inodes.get(op.newparent()).ok_or(ENOENT)?;
         let parent = parent.lock().unwrap();
 
         if source.is_symlink {
@@ -416,7 +347,7 @@ impl<'fs> Passthrough<'fs> {
                     _ => err,
                 })?;
         } else {
-            fs::link(
+            nix::link(
                 source.fd.procname(),
                 &parent.fd,
                 op.newname(),
@@ -429,66 +360,50 @@ impl<'fs> Passthrough<'fs> {
 
         source.refcount += 1;
 
-        Ok(entry)
+        cx.reply(entry)
     }
 
-    fn make_node(
-        &self,
-        parent: Ino,
-        name: &OsStr,
-        mode: u32,
-        rdev: Option<u32>,
-        link: Option<&OsStr>,
-    ) -> io::Result<EntryOut> {
-        {
-            let inodes = self.inodes.lock().unwrap();
-            let parent = inodes.get(parent).ok_or_else(no_entry)?;
-            let parent = parent.lock().unwrap();
-
-            match mode & libc::S_IFMT {
-                libc::S_IFDIR => {
-                    parent.fd.mkdirat(name, mode)?;
-                }
-                libc::S_IFLNK => {
-                    let link = link.expect("missing 'link'");
-                    parent.fd.symlinkat(name, link)?;
-                }
-                _ => {
-                    parent
-                        .fd
-                        .mknodat(name, mode, rdev.unwrap_or(0) as libc::dev_t)?;
-                }
-            }
-        }
-        self.do_lookup(parent, name)
+    fn mknod(&self, cx: fs::Context<'_>, op: op::Mknod<'_>) -> fs::Result {
+        let out = self.make_node(op.parent(), op.name(), op.mode(), Some(op.rdev()), None)?;
+        cx.reply(out)
     }
 
-    fn do_unlink(&self, op: &op::Unlink<'_>) -> io::Result<()> {
+    fn mkdir(&self, cx: fs::Context<'_>, op: op::Mkdir<'_>) -> fs::Result {
+        let out = self.make_node(op.parent(), op.name(), S_IFDIR | op.mode(), None, None)?;
+        cx.reply(out)
+    }
+
+    fn symlink(&self, cx: fs::Context<'_>, op: op::Symlink<'_>) -> fs::Result {
+        let out = self.make_node(op.parent(), op.name(), S_IFLNK, None, Some(op.link()))?;
+        cx.reply(out)
+    }
+
+    fn unlink(&self, cx: fs::Context<'_>, op: op::Unlink<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
+        let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
         let parent = parent.lock().unwrap();
         parent.fd.unlinkat(op.name(), 0)?;
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_rmdir(&self, op: &op::Rmdir<'_>) -> io::Result<()> {
+    fn rmdir(&self, cx: fs::Context<'_>, op: op::Rmdir<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
+        let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
         let parent = parent.lock().unwrap();
         parent.fd.unlinkat(op.name(), libc::AT_REMOVEDIR)?;
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_rename(&self, op: &op::Rename<'_>) -> io::Result<()> {
+    fn rename(&self, cx: fs::Context<'_>, op: op::Rename<'_>) -> fs::Result {
         if op.flags() != 0 {
             // rename2 is not supported.
-            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+            return Err(EINVAL.into());
         }
 
         let inodes = self.inodes.lock().unwrap();
 
-        let parent = inodes.get(op.parent()).ok_or_else(no_entry)?;
-        let newparent = inodes.get(op.newparent()).ok_or_else(no_entry)?;
+        let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
+        let newparent = inodes.get(op.newparent()).ok_or(ENOENT)?;
 
         let parent = parent.lock().unwrap();
         if op.parent() == op.newparent() {
@@ -502,12 +417,12 @@ impl<'fs> Passthrough<'fs> {
                 .renameat(op.name(), Some(&newparent.fd), op.newname())?;
         }
 
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_opendir(&self, op: &op::Opendir<'_>) -> io::Result<OpenOut> {
+    fn opendir(&self, cx: fs::Context<'_>, op: op::Opendir<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
         let dir = inode.fd.read_dir()?;
         let fh = self.opened_dirs.insert(Mutex::new(dir));
@@ -515,12 +430,12 @@ impl<'fs> Passthrough<'fs> {
         let mut out = OpenOut::default();
         out.fh(fh);
 
-        Ok(out)
+        cx.reply(out)
     }
 
-    fn do_readdir(&self, op: &op::Readdir<'_>) -> io::Result<ReaddirOut> {
+    fn readdir(&self, cx: fs::Context<'_>, op: op::Readdir<'_>) -> fs::Result {
         if op.mode() == op::ReaddirMode::Plus {
-            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+            return Err(ENOSYS.into());
         }
 
         let read_dir = self
@@ -538,11 +453,11 @@ impl<'fs> Passthrough<'fs> {
             }
         }
 
-        Ok(out)
+        cx.reply(out)
     }
 
-    fn do_fsyncdir(&self, op: &op::Fsyncdir<'_>) -> io::Result<()> {
-        let read_dir = self.opened_dirs.get(op.fh()).ok_or_else(no_entry)?;
+    fn fsyncdir(&self, cx: fs::Context<'_>, op: op::Fsyncdir<'_>) -> fs::Result {
+        let read_dir = self.opened_dirs.get(op.fh()).ok_or(ENOENT)?;
         let read_dir = read_dir.lock().unwrap();
 
         if op.datasync() {
@@ -551,17 +466,17 @@ impl<'fs> Passthrough<'fs> {
             read_dir.sync_all()?;
         }
 
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_releasedir(&self, op: &op::Releasedir<'_>) -> io::Result<()> {
+    fn releasedir(&self, cx: fs::Context<'_>, op: op::Releasedir<'_>) -> fs::Result {
         let _dir = self.opened_dirs.remove(op.fh());
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_open(&self, op: &op::Open<'_>) -> io::Result<OpenOut> {
+    fn open(&self, cx: fs::Context<'_>, op: op::Open<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
         let mut options = OpenOptions::new();
@@ -585,11 +500,11 @@ impl<'fs> Passthrough<'fs> {
         let mut out = OpenOut::default();
         out.fh(fh);
 
-        Ok(out)
+        cx.reply(out)
     }
 
-    fn do_read(&self, op: &op::Read<'_>) -> io::Result<Vec<u8>> {
-        let file = self.opened_files.get(op.fh()).ok_or_else(no_entry)?;
+    fn read(&self, cx: fs::Context<'_>, op: op::Read<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh()).ok_or(ENOENT)?;
         let mut file = file.lock().unwrap();
         let file = &mut *file;
 
@@ -598,11 +513,11 @@ impl<'fs> Passthrough<'fs> {
         let mut buf = Vec::<u8>::with_capacity(op.size() as usize);
         file.take(op.size() as u64).read_to_end(&mut buf)?;
 
-        Ok(buf)
+        cx.reply(buf)
     }
 
-    fn do_write(&self, op: &op::Write<'_>, mut req: &Request) -> io::Result<WriteOut> {
-        let file = self.opened_files.get(op.fh()).ok_or_else(no_entry)?;
+    fn write(&self, mut cx: fs::Context<'_>, op: op::Write<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh()).ok_or(ENOENT)?;
         let mut file = file.lock().unwrap();
         let file = &mut *file;
 
@@ -616,7 +531,7 @@ impl<'fs> Passthrough<'fs> {
         // copying support in `polyfuse` and resolution of impedance mismatch
         // between `futures::io` and `tokio::io` are required.
         let mut buf = Vec::with_capacity(op.size() as usize);
-        req.read_to_end(&mut buf)?;
+        cx.read_to_end(&mut buf)?;
 
         let mut buf = &buf[..];
         let mut buf = Read::take(&mut buf, op.size() as u64);
@@ -625,20 +540,20 @@ impl<'fs> Passthrough<'fs> {
         let mut out = WriteOut::default();
         out.size(written as u32);
 
-        Ok(out)
+        cx.reply(out)
     }
 
-    fn do_flush(&self, op: &op::Flush<'_>) -> io::Result<()> {
-        let file = self.opened_files.get(op.fh()).ok_or_else(no_entry)?;
+    fn flush(&self, cx: fs::Context<'_>, op: op::Flush<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh()).ok_or(ENOENT)?;
         let file = file.lock().unwrap();
 
         file.sync_all()?;
 
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_fsync(&self, op: &op::Fsync<'_>) -> io::Result<()> {
-        let file = self.opened_files.get(op.fh()).ok_or_else(no_entry)?;
+    fn fsync(&self, cx: fs::Context<'_>, op: op::Fsync<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh()).ok_or(ENOENT)?;
         let file = file.lock().unwrap();
 
         if op.datasync() {
@@ -647,142 +562,136 @@ impl<'fs> Passthrough<'fs> {
             file.sync_all()?;
         }
 
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_flock(&self, op: &op::Flock<'_>) -> io::Result<()> {
-        let file = self.opened_files.get(op.fh()).ok_or_else(no_entry)?;
+    fn flock(&self, cx: fs::Context<'_>, op: op::Flock<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh()).ok_or(ENOENT)?;
         let file = file.lock().unwrap();
 
         let op = op.op().expect("invalid lock operation") as i32;
 
-        fs::flock(&*file, op)?;
+        nix::flock(&*file, op)?;
 
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_fallocate(&self, op: &op::Fallocate<'_>) -> io::Result<()> {
+    fn fallocate(&self, cx: fs::Context<'_>, op: op::Fallocate<'_>) -> fs::Result {
         if op.mode() != 0 {
-            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+            return Err(EOPNOTSUPP.into());
         }
 
-        let file = self.opened_files.get(op.fh()).ok_or_else(no_entry)?;
+        let file = self.opened_files.get(op.fh()).ok_or(ENOENT)?;
         let file = file.lock().unwrap();
 
-        fs::posix_fallocate(&*file, op.offset() as i64, op.length() as i64)?;
+        nix::posix_fallocate(&*file, op.offset() as i64, op.length() as i64)?;
 
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_release(&self, op: &op::Release<'_>) -> io::Result<()> {
+    fn release(&self, cx: fs::Context<'_>, op: op::Release<'_>) -> fs::Result {
         let _file = self.opened_files.remove(op.fh());
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_getxattr(
-        &self,
-        op: &op::Getxattr<'_>,
-    ) -> io::Result<impl polyfuse::bytes::Bytes + Debug> {
+    fn getxattr(&self, cx: fs::Context<'_>, op: op::Getxattr<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
         if inode.is_symlink {
             // no race-free way to getxattr on symlink.
-            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+            return Err(ENOTSUP.into());
         }
 
         match op.size() {
             0 => {
-                let size = fs::getxattr(inode.fd.procname(), op.name(), None)?;
+                let size = nix::getxattr(inode.fd.procname(), op.name(), None)?;
                 let mut out = XattrOut::default();
                 out.size(size as u32);
-                Ok(Either::Left(out))
+                cx.reply(out)
             }
             size => {
                 let mut value = vec![0u8; size as usize];
-                let n = fs::getxattr(inode.fd.procname(), op.name(), Some(&mut value[..]))?;
+                let n = nix::getxattr(inode.fd.procname(), op.name(), Some(&mut value[..]))?;
                 value.resize(n as usize, 0);
-                Ok(Either::Right(value))
+                cx.reply(value)
             }
         }
     }
 
-    fn do_listxattr(
-        &self,
-        op: &op::Listxattr<'_>,
-    ) -> io::Result<impl polyfuse::bytes::Bytes + Debug> {
+    fn listxattr(&self, cx: fs::Context<'_>, op: op::Listxattr<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
         if inode.is_symlink {
             // no race-free way to getxattr on symlink.
-            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+            return Err(ENOTSUP.into());
         }
 
         match op.size() {
             0 => {
-                let size = fs::listxattr(inode.fd.procname(), None)?;
+                let size = nix::listxattr(inode.fd.procname(), None)?;
                 let mut out = XattrOut::default();
                 out.size(size as u32);
-                Ok(Either::Left(out))
+                cx.reply(out)
             }
             size => {
                 let mut value = vec![0u8; size as usize];
-                let n = fs::listxattr(inode.fd.procname(), Some(&mut value[..]))?;
+                let n = nix::listxattr(inode.fd.procname(), Some(&mut value[..]))?;
                 value.resize(n as usize, 0);
-                Ok(Either::Right(value))
+                cx.reply(value)
             }
         }
     }
 
-    fn do_setxattr(&self, op: &op::Setxattr<'_>) -> io::Result<()> {
+    fn setxattr(&self, cx: fs::Context<'_>, op: op::Setxattr<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
         if inode.is_symlink {
             // no race-free way to getxattr on symlink.
-            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+            return Err(ENOTSUP.into());
         }
 
-        fs::setxattr(
+        nix::setxattr(
             inode.fd.procname(),
             op.name(),
             op.value(),
             op.flags() as libc::c_int,
         )?;
 
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_removexattr(&self, op: &op::Removexattr<'_>) -> io::Result<()> {
+    fn removexattr(&self, cx: fs::Context<'_>, op: op::Removexattr<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
         if inode.is_symlink {
             // no race-free way to getxattr on symlink.
-            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+            return Err(ENOTSUP.into());
         }
 
-        fs::removexattr(inode.fd.procname(), op.name())?;
+        nix::removexattr(inode.fd.procname(), op.name())?;
 
-        Ok(())
+        cx.reply(())
     }
 
-    fn do_statfs(&self, op: &op::Statfs<'_>) -> io::Result<StatfsOut> {
+    fn statfs(&self, cx: fs::Context<'_>, op: op::Statfs<'_>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
-        let inode = inodes.get(op.ino()).ok_or_else(no_entry)?;
+        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
-        let st = fs::fstatvfs(&inode.fd)?;
+        let st = nix::fstatvfs(&inode.fd)?;
 
         let mut out = StatfsOut::default();
         fill_statfs(out.statfs(), &st);
 
-        Ok(out)
+        cx.reply(out)
     }
 }
 
@@ -894,14 +803,4 @@ impl VacantEntry<'_> {
         self.table.src_to_ino.insert(src_id, self.ino);
         self.table.next_ino += 1;
     }
-}
-
-#[inline]
-fn no_entry() -> io::Error {
-    io::Error::from_raw_os_error(libc::ENOENT)
-}
-
-#[inline]
-fn io_to_errno(err: io::Error) -> i32 {
-    err.raw_os_error().unwrap_or(libc::EIO)
 }
