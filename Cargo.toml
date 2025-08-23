@@ -21,6 +21,7 @@ exclude = [
 bitflags = "2.9.1"
 either = "1"
 libc = "0.2"
+num_cpus = "1.17"
 polyfuse-kernel = { version = ">=0.2.1", path = "crates/polyfuse-kernel" }
 thiserror = "2"
 tracing = "0.1"

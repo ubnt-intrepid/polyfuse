@@ -5,7 +5,7 @@ use crate::{
     Connection, KernelConfig, Operation, Request, Session,
 };
 use libc::ENOSYS;
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, thread};
 
 pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
@@ -122,87 +122,104 @@ pub fn run<T>(
     config: KernelConfig,
 ) -> io::Result<()>
 where
-    T: Filesystem,
+    T: Filesystem + Sync,
 {
-    let span = tracing::debug_span!("run_singlethread");
+    let span = tracing::debug_span!("polyfuse::fs::run");
     let _enter = span.enter();
 
     let (conn, fusermount) = crate::mount::mount(mountpoint, mountopts)?;
-    let mut conn = Connection::from(conn);
-    let session = Session::init(&mut conn, config)?;
-    let mut req = session.new_request_buffer()?;
+    let conn = Connection::from(conn);
+    let session = Session::init(&conn, config)?;
 
-    while session.read_request(&mut conn, &mut req)? {
-        let span = tracing::debug_span!("handle_request", unique = req.unique());
-        let _enter = span.enter();
+    // MEMO: 'env
+    let fs = &fs;
+    let session = &session;
 
-        let op = req
-            .operation()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-        tracing::debug!(?op);
+    thread::scope(|scope| -> io::Result<()> {
+        // TODO: on_init
+        for _i in 0..num_cpus::get() {
+            let conn = conn.try_ioc_clone()?;
+            let mut req = session.new_request_buffer()?;
+            scope.spawn(move || -> io::Result<()> {
+                while session.read_request(&conn, &mut req)? {
+                    let span = tracing::debug_span!("handle_request", unique = req.unique());
+                    let _enter = span.enter();
 
-        let cx = Context {
-            session: &session,
-            conn: &conn,
-            req: &req,
-        };
+                    let op = req
+                        .operation()
+                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                    tracing::debug!(?op);
 
-        let res = match op {
-            Operation::Lookup(op) => fs.lookup(cx, op),
-            Operation::Getattr(op) => fs.getattr(cx, op),
-            Operation::Setattr(op) => fs.setattr(cx, op),
-            Operation::Readlink(op) => fs.readlink(cx, op),
-            Operation::Symlink(op) => fs.symlink(cx, op),
-            Operation::Mknod(op) => fs.mknod(cx, op),
-            Operation::Mkdir(op) => fs.mkdir(cx, op),
-            Operation::Unlink(op) => fs.unlink(cx, op),
-            Operation::Rmdir(op) => fs.rmdir(cx, op),
-            Operation::Rename(op) => fs.rename(cx, op),
-            Operation::Link(op) => fs.link(cx, op),
-            Operation::Open(op) => fs.open(cx, op),
-            Operation::Read(op) => fs.read(cx, op),
-            Operation::Write(op) => fs.write(cx, op),
-            Operation::Release(op) => fs.release(cx, op),
-            Operation::Statfs(op) => fs.statfs(cx, op),
-            Operation::Fsync(op) => fs.fsync(cx, op),
-            Operation::Setxattr(op) => fs.setxattr(cx, op),
-            Operation::Getxattr(op) => fs.getxattr(cx, op),
-            Operation::Listxattr(op) => fs.listxattr(cx, op),
-            Operation::Removexattr(op) => fs.removexattr(cx, op),
-            Operation::Flush(op) => fs.flush(cx, op),
-            Operation::Opendir(op) => fs.opendir(cx, op),
-            Operation::Readdir(op) => fs.readdir(cx, op),
-            Operation::Releasedir(op) => fs.releasedir(cx, op),
-            Operation::Fsyncdir(op) => fs.fsyncdir(cx, op),
-            Operation::Getlk(op) => fs.getlk(cx, op),
-            Operation::Setlk(op) => fs.setlk(cx, op),
-            Operation::Flock(op) => fs.flock(cx, op),
-            Operation::Access(op) => fs.access(cx, op),
-            Operation::Create(op) => fs.create(cx, op),
-            Operation::Bmap(op) => fs.bmap(cx, op),
-            Operation::Fallocate(op) => fs.fallocate(cx, op),
-            Operation::CopyFileRange(op) => fs.copy_file_range(cx, op),
-            Operation::Poll(op) => fs.poll(cx, op),
-            Operation::Forget(forgets) => {
-                fs.forget(forgets.as_ref());
-                continue;
-            }
-            Operation::Interrupt(op) => {
-                tracing::warn!("interrupt: {:?}", op);
-                continue;
-            }
-            Operation::NotifyReply(op) => {
-                tracing::warn!("notify_reply: {:?}", op);
-                continue;
-            }
-        };
+                    let cx = Context {
+                        session: &session,
+                        conn: &conn,
+                        req: &req,
+                    };
 
-        match res {
-            Err(Error::Reply(err)) => return Err(err),
-            Err(Error::Code(code)) => session.reply_error(&conn, &req, code)?,
-            Ok(..) => (),
+                    let res = match op {
+                        Operation::Lookup(op) => fs.lookup(cx, op),
+                        Operation::Getattr(op) => fs.getattr(cx, op),
+                        Operation::Setattr(op) => fs.setattr(cx, op),
+                        Operation::Readlink(op) => fs.readlink(cx, op),
+                        Operation::Symlink(op) => fs.symlink(cx, op),
+                        Operation::Mknod(op) => fs.mknod(cx, op),
+                        Operation::Mkdir(op) => fs.mkdir(cx, op),
+                        Operation::Unlink(op) => fs.unlink(cx, op),
+                        Operation::Rmdir(op) => fs.rmdir(cx, op),
+                        Operation::Rename(op) => fs.rename(cx, op),
+                        Operation::Link(op) => fs.link(cx, op),
+                        Operation::Open(op) => fs.open(cx, op),
+                        Operation::Read(op) => fs.read(cx, op),
+                        Operation::Write(op) => fs.write(cx, op),
+                        Operation::Release(op) => fs.release(cx, op),
+                        Operation::Statfs(op) => fs.statfs(cx, op),
+                        Operation::Fsync(op) => fs.fsync(cx, op),
+                        Operation::Setxattr(op) => fs.setxattr(cx, op),
+                        Operation::Getxattr(op) => fs.getxattr(cx, op),
+                        Operation::Listxattr(op) => fs.listxattr(cx, op),
+                        Operation::Removexattr(op) => fs.removexattr(cx, op),
+                        Operation::Flush(op) => fs.flush(cx, op),
+                        Operation::Opendir(op) => fs.opendir(cx, op),
+                        Operation::Readdir(op) => fs.readdir(cx, op),
+                        Operation::Releasedir(op) => fs.releasedir(cx, op),
+                        Operation::Fsyncdir(op) => fs.fsyncdir(cx, op),
+                        Operation::Getlk(op) => fs.getlk(cx, op),
+                        Operation::Setlk(op) => fs.setlk(cx, op),
+                        Operation::Flock(op) => fs.flock(cx, op),
+                        Operation::Access(op) => fs.access(cx, op),
+                        Operation::Create(op) => fs.create(cx, op),
+                        Operation::Bmap(op) => fs.bmap(cx, op),
+                        Operation::Fallocate(op) => fs.fallocate(cx, op),
+                        Operation::CopyFileRange(op) => fs.copy_file_range(cx, op),
+                        Operation::Poll(op) => fs.poll(cx, op),
+                        Operation::Forget(forgets) => {
+                            fs.forget(forgets.as_ref());
+                            continue;
+                        }
+                        Operation::Interrupt(op) => {
+                            tracing::warn!("interrupt: {:?}", op);
+                            continue;
+                        }
+                        Operation::NotifyReply(op) => {
+                            tracing::warn!("notify_reply: {:?}", op);
+                            continue;
+                        }
+                    };
+
+                    match res {
+                        Err(Error::Reply(err)) => return Err(err),
+                        Err(Error::Code(code)) => session.reply_error(&conn, &req, code)?,
+                        Ok(..) => (),
+                    }
+                }
+                Ok(())
+            });
         }
-    }
+
+        // TODO: on_destroy
+
+        Ok(())
+    })?;
 
     fusermount.unmount()?;
 
