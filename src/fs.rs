@@ -5,7 +5,7 @@ use crate::{
     Connection, KernelConfig, Operation, Request, Session,
 };
 use libc::ENOSYS;
-use std::{io, path::PathBuf, thread};
+use std::{ffi::OsStr, io, path::PathBuf, thread};
 
 pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
@@ -80,6 +80,16 @@ pub trait Filesystem {
 
     #[allow(unused_variables)]
     fn forget(&self, forgets: &[Forget]) {}
+
+    #[allow(unused_variables)]
+    fn init<'scope, 'env>(&'env self, cx: InitContext<'scope, 'env>) -> io::Result<()> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn notify_reply(&self, cx: Context<'_>, op: op::NotifyReply<'_>) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -115,6 +125,51 @@ impl io::Read for Context<'_> {
     }
 }
 
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct InitContext<'scope, 'env: 'scope> {
+    session: &'env Session,
+    conn: &'env Connection,
+    scope: &'scope thread::Scope<'scope, 'env>,
+}
+
+impl<'scope, 'env: 'scope> InitContext<'scope, 'env> {
+    pub fn spawn<F, T>(&self, f: F)
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        let _ = self.scope.spawn(f);
+    }
+
+    pub fn notify_inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+        self.session.notify_inval_inode(self.conn, ino, off, len)
+    }
+
+    pub fn notify_inval_entry(&self, parent: u64, name: &OsStr) -> io::Result<()> {
+        self.session.notify_inval_entry(self.conn, parent, name)
+    }
+
+    pub fn notify_delete(&self, parent: u64, child: u64, name: &OsStr) -> io::Result<()> {
+        self.session.notify_delete(self.conn, parent, child, name)
+    }
+
+    pub fn notify_store<B>(&self, ino: u64, offset: u64, data: B) -> io::Result<()>
+    where
+        B: Bytes,
+    {
+        self.session.notify_store(self.conn, ino, offset, data)
+    }
+
+    pub fn notify_retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
+        self.session.notify_retrieve(self.conn, ino, offset, size)
+    }
+
+    pub fn notify_poll_wakeup(&self, kh: u64) -> io::Result<()> {
+        self.session.notify_poll_wakeup(self.conn, kh)
+    }
+}
+
 pub fn run<T>(
     fs: T,
     mountpoint: PathBuf,
@@ -134,9 +189,15 @@ where
     // MEMO: 'env
     let fs = &fs;
     let session = &session;
+    let conn = &conn;
 
     thread::scope(|scope| -> io::Result<()> {
-        // TODO: on_init
+        fs.init(InitContext {
+            session,
+            conn,
+            scope,
+        })?;
+
         for _i in 0..num_cpus::get() {
             let conn = conn.try_ioc_clone()?;
             let mut req = session.new_request_buffer()?;
@@ -192,16 +253,16 @@ where
                         Operation::Fallocate(op) => fs.fallocate(cx, op),
                         Operation::CopyFileRange(op) => fs.copy_file_range(cx, op),
                         Operation::Poll(op) => fs.poll(cx, op),
+                        Operation::NotifyReply(op) => {
+                            fs.notify_reply(cx, op)?;
+                            continue;
+                        }
                         Operation::Forget(forgets) => {
                             fs.forget(forgets.as_ref());
                             continue;
                         }
                         Operation::Interrupt(op) => {
                             tracing::warn!("interrupt: {:?}", op);
-                            continue;
-                        }
-                        Operation::NotifyReply(op) => {
-                            tracing::warn!("notify_reply: {:?}", op);
                             continue;
                         }
                     };
