@@ -100,22 +100,26 @@ impl Hello {
 }
 
 impl Filesystem for Hello {
-    fn lookup(&self, cx: fs::Context<'_>, op: op::Lookup<'_>) -> fs::Result {
-        match op.parent() {
-            ROOT_INO if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
+    fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+        match req.arg().parent() {
+            ROOT_INO if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
                 self.fill_hello_attr(out.attr());
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
-                cx.reply(out)
+                req.reply(out)
             }
             _ => Err(libc::ENOENT.into()),
         }
     }
 
-    fn getattr(&self, cx: fs::Context<'_>, op: op::Getattr<'_>) -> fs::Result {
-        let fill_attr = match op.ino() {
+    fn getattr(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Getattr<'_>>,
+    ) -> fs::Result {
+        let fill_attr = match req.arg().ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
             _ => return Err(libc::ENOENT.into()),
@@ -125,11 +129,11 @@ impl Filesystem for Hello {
         fill_attr(self, out.attr());
         out.ttl(TTL);
 
-        cx.reply(out)
+        req.reply(out)
     }
 
-    fn read(&self, cx: fs::Context<'_>, op: op::Read<'_>) -> fs::Result {
-        match op.ino() {
+    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+        match req.arg().ino() {
             HELLO_INO => (),
             ROOT_INO => return Err(libc::EISDIR.into()),
             _ => return Err(libc::ENOENT.into()),
@@ -137,30 +141,38 @@ impl Filesystem for Hello {
 
         let mut data: &[u8] = &[];
 
-        let offset = op.offset() as usize;
+        let offset = req.arg().offset() as usize;
         if offset < HELLO_CONTENT.len() {
-            let size = op.size() as usize;
+            let size = req.arg().size() as usize;
             data = &HELLO_CONTENT[offset..];
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        cx.reply(data)
+        req.reply(data)
     }
 
-    fn opendir(&self, cx: fs::Context<'_>, op: op::Opendir<'_>) -> fs::Result {
+    fn opendir(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Opendir<'_>>,
+    ) -> fs::Result {
         let mut out = OpenOut::default();
-        out.fh(op.ino());
-        cx.reply(out)
+        out.fh(req.arg().ino());
+        req.reply(out)
     }
 
-    fn readdir(&self, cx: fs::Context<'_>, op: op::Readdir<'_>) -> fs::Result {
-        if op.ino() != ROOT_INO {
+    fn readdir(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Readdir<'_>>,
+    ) -> fs::Result {
+        if req.arg().ino() != ROOT_INO {
             return Err(libc::ENOTDIR.into());
         }
 
-        let mut out = ReaddirOut::new(op.size() as usize);
+        let mut out = ReaddirOut::new(req.arg().size() as usize);
 
-        for (i, entry) in self.dir_entries().skip(op.offset() as usize) {
+        for (i, entry) in self.dir_entries().skip(req.arg().offset() as usize) {
             let full = out.entry(
                 entry.name.as_ref(), //
                 entry.ino,
@@ -172,6 +184,6 @@ impl Filesystem for Hello {
             }
         }
 
-        cx.reply(out)
+        req.reply(out)
     }
 }

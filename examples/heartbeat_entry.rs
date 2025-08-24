@@ -7,7 +7,6 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented, clippy::todo)]
 
-use libc::{EISDIR, ENOENT, ENOTDIR};
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
@@ -18,6 +17,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
+use libc::{EISDIR, ENOENT, ENOTDIR};
 use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
 
 const ROOT_INO: u64 = 1;
@@ -100,7 +100,7 @@ impl Heartbeat {
         }
     }
 
-    fn heartbeat(&self, cx: fs::InitContext<'_, '_>) -> Result<()> {
+    fn heartbeat(&self, notifier: &fs::Notifier<'_>) -> Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = !self.no_notify);
         let _enter = span.enter();
 
@@ -115,7 +115,7 @@ impl Heartbeat {
 
             if !self.no_notify && current.nlookup > 0 {
                 tracing::info!("send notify_inval_entry");
-                cx.notify_inval_entry(ROOT_INO, old_filename.as_ref())?;
+                notifier.inval_entry(ROOT_INO, old_filename.as_ref())?;
             }
 
             drop(current);
@@ -126,43 +126,42 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    fn init<'scope, 'env>(&'env self, cx: fs::InitContext<'scope, 'env>) -> io::Result<()> {
-        cx.spawn({
-            let cx = cx.clone();
-            move || -> Result<()> {
-                self.heartbeat(cx)?;
-                Ok(())
-            }
+    fn init<'scope, 'env>(&'env self, cx: fs::Context<'scope, 'env>) -> io::Result<()> {
+        let fs::Context {
+            scope, notifier, ..
+        } = cx;
+        scope.spawn(move || -> Result<()> {
+            self.heartbeat(&notifier)?;
+            Ok(())
         });
         Ok(())
     }
 
-    fn lookup(&self, cx: fs::Context<'_>, op: op::Lookup<'_>) -> fs::Result {
-        match op.parent() {
-            ROOT_INO => {
-                let mut current = self.current.lock().unwrap();
+    fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+        if req.arg().parent() != ROOT_INO {
+            Err(ENOTDIR)?;
+        }
 
-                if op.name().as_bytes() == current.filename.as_bytes() {
-                    let mut out = EntryOut::default();
-                    out.ino(self.file_attr.st_ino);
-                    fill_attr(out.attr(), &self.file_attr);
-                    out.ttl_entry(self.ttl);
-                    out.ttl_attr(self.ttl);
+        let mut current = self.current.lock().unwrap();
 
-                    let res = cx.reply(out)?;
+        if req.arg().name().as_bytes() == current.filename.as_bytes() {
+            let mut out = EntryOut::default();
+            out.ino(self.file_attr.st_ino);
+            fill_attr(out.attr(), &self.file_attr);
+            out.ttl_entry(self.ttl);
+            out.ttl_attr(self.ttl);
 
-                    current.nlookup += 1;
+            let res = req.reply(out)?;
 
-                    Ok(res)
-                } else {
-                    Err(ENOENT)?
-                }
-            }
-            _ => Err(ENOTDIR)?,
+            current.nlookup += 1;
+
+            Ok(res)
+        } else {
+            Err(ENOENT)?
         }
     }
 
-    fn forget(&self, forgets: &[op::Forget]) {
+    fn forget(&self, _: fs::Context<'_, '_>, forgets: &[op::Forget]) {
         let mut current = self.current.lock().unwrap();
         for forget in forgets.as_ref() {
             if forget.ino() == FILE_INO {
@@ -171,8 +170,12 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn getattr(&self, cx: fs::Context<'_>, op: op::Getattr<'_>) -> fs::Result {
-        let attr = match op.ino() {
+    fn getattr(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Getattr<'_>>,
+    ) -> fs::Result {
+        let attr = match req.arg().ino() {
             ROOT_INO => &self.root_attr,
             FILE_INO => &self.file_attr,
             _ => Err(ENOENT)?,
@@ -182,32 +185,34 @@ impl Filesystem for Heartbeat {
         fill_attr(out.attr(), attr);
         out.ttl(self.ttl);
 
-        cx.reply(out)
+        req.reply(out)
     }
 
-    fn read(&self, cx: fs::Context<'_>, op: op::Read<'_>) -> fs::Result {
-        match op.ino() {
+    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+        match req.arg().ino() {
             ROOT_INO => Err(EISDIR)?,
-            FILE_INO => cx.reply(()),
+            FILE_INO => req.reply(()),
             _ => Err(ENOENT)?,
         }
     }
 
-    fn readdir(&self, cx: fs::Context<'_>, op: op::Readdir<'_>) -> fs::Result {
-        match op.ino() {
-            ROOT_INO => {
-                if op.offset() == 0 {
-                    let current = self.current.lock().unwrap();
-
-                    let mut out = ReaddirOut::new(op.size() as usize);
-                    out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
-                    cx.reply(out)
-                } else {
-                    cx.reply(())
-                }
-            }
-            _ => Err(ENOTDIR)?,
+    fn readdir(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Readdir<'_>>,
+    ) -> fs::Result {
+        if req.arg().ino() != ROOT_INO {
+            Err(ENOTDIR)?;
         }
+        if req.arg().offset() > 0 {
+            return req.reply(());
+        }
+
+        let current = self.current.lock().unwrap();
+
+        let mut out = ReaddirOut::new(req.arg().size() as usize);
+        out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
+        req.reply(out)
     }
 }
 

@@ -2,9 +2,9 @@ use crate::{
     bytes::Bytes,
     mount::MountOptions,
     op::{self, Forget},
-    Connection, KernelConfig, Operation, Request, Session,
+    Connection, KernelConfig, Operation, Session,
 };
-use libc::ENOSYS;
+use libc::{EIO, ENOSYS};
 use std::{ffi::OsStr, io, path::PathBuf, thread};
 
 pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
@@ -26,14 +26,14 @@ impl From<i32> for Error {
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Self::Code(err.raw_os_error().unwrap_or(libc::EIO))
+        Self::Code(err.raw_os_error().unwrap_or(EIO))
     }
 }
 
 macro_rules! define_ops {
     ($( $name:ident: $Arg:ident ),*$(,)*) => {$(
         #[allow(unused_variables)]
-        fn $name(&self, cx: Context<'_>, op: op::$Arg<'_>) -> Result {
+        fn $name<'scope, 'env, 'req>(&'env self, cx: Context<'scope, 'env>, req: Request<'req, op::$Arg<'req>>) -> Result {
             Err(Error::Code(ENOSYS))
         }
     )*};
@@ -79,31 +79,95 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
-    fn forget(&self, forgets: &[Forget]) {}
+    fn forget<'scope, 'env>(&'env self, cx: Context<'scope, 'env>, forgets: &[Forget]) {}
 
     #[allow(unused_variables)]
-    fn init<'scope, 'env>(&'env self, cx: InitContext<'scope, 'env>) -> io::Result<()> {
+    fn init<'scope, 'env>(&'env self, cx: Context<'scope, 'env>) -> io::Result<()> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn notify_reply(&self, cx: Context<'_>, op: op::NotifyReply<'_>) -> io::Result<()> {
+    fn notify_reply<'scope, 'env, 'req>(
+        &'env self,
+        cx: Context<'scope, 'env>,
+        req: Request<'req, op::NotifyReply<'req>>,
+    ) -> io::Result<()> {
         Ok(())
     }
 }
 
+#[non_exhaustive]
+pub struct Context<'scope, 'env: 'scope> {
+    pub notifier: Notifier<'env>,
+    pub scope: &'scope thread::Scope<'scope, 'env>,
+}
+
+#[derive(Clone)]
+pub struct Notifier<'env> {
+    session: &'env Session,
+    conn: &'env Connection,
+}
+
+impl Notifier<'_> {
+    pub fn inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+        self.session.notify_inval_inode(self.conn, ino, off, len)
+    }
+
+    pub fn inval_entry(&self, parent: u64, name: &OsStr) -> io::Result<()> {
+        self.session.notify_inval_entry(self.conn, parent, name)
+    }
+
+    pub fn delete(&self, parent: u64, child: u64, name: &OsStr) -> io::Result<()> {
+        self.session.notify_delete(self.conn, parent, child, name)
+    }
+
+    pub fn store<B>(&self, ino: u64, offset: u64, data: B) -> io::Result<()>
+    where
+        B: Bytes,
+    {
+        self.session.notify_store(self.conn, ino, offset, data)
+    }
+
+    pub fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
+        self.session.notify_retrieve(self.conn, ino, offset, size)
+    }
+
+    pub fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
+        self.session.notify_poll_wakeup(self.conn, kh)
+    }
+}
+
+/// The ZST to ensure that the filesystem responds to a FUSE request exactly once.
 #[derive(Debug)]
 pub struct Replied {
     _private: (),
 }
 
-pub struct Context<'req> {
+/// The context for a single FUSE request used by the filesystem.
+pub struct Request<'req, T: 'req> {
     session: &'req Session,
     conn: &'req Connection,
-    req: &'req Request,
+    req: &'req crate::session::Request,
+    arg: T,
 }
 
-impl Context<'_> {
+impl<T> Request<'_, T> {
+    pub fn uid(&self) -> u32 {
+        self.req.uid()
+    }
+
+    pub fn gid(&self) -> u32 {
+        self.req.gid()
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.req.pid()
+    }
+
+    pub fn arg(&self) -> &T {
+        &self.arg
+    }
+
     pub fn reply<B>(self, arg: B) -> Result
     where
         B: Bytes,
@@ -115,7 +179,7 @@ impl Context<'_> {
     }
 }
 
-impl io::Read for Context<'_> {
+impl io::Read for Request<'_, op::Write<'_>> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.req.read(buf)
     }
@@ -125,48 +189,13 @@ impl io::Read for Context<'_> {
     }
 }
 
-#[derive(Clone)]
-#[non_exhaustive]
-pub struct InitContext<'scope, 'env: 'scope> {
-    session: &'env Session,
-    conn: &'env Connection,
-    scope: &'scope thread::Scope<'scope, 'env>,
-}
-
-impl<'scope, 'env: 'scope> InitContext<'scope, 'env> {
-    pub fn spawn<F, T>(&self, f: F)
-    where
-        F: FnOnce() -> T + Send + 'scope,
-        T: Send + 'scope,
-    {
-        let _ = self.scope.spawn(f);
+impl io::Read for Request<'_, op::NotifyReply<'_>> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.req.read(buf)
     }
 
-    pub fn notify_inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
-        self.session.notify_inval_inode(self.conn, ino, off, len)
-    }
-
-    pub fn notify_inval_entry(&self, parent: u64, name: &OsStr) -> io::Result<()> {
-        self.session.notify_inval_entry(self.conn, parent, name)
-    }
-
-    pub fn notify_delete(&self, parent: u64, child: u64, name: &OsStr) -> io::Result<()> {
-        self.session.notify_delete(self.conn, parent, child, name)
-    }
-
-    pub fn notify_store<B>(&self, ino: u64, offset: u64, data: B) -> io::Result<()>
-    where
-        B: Bytes,
-    {
-        self.session.notify_store(self.conn, ino, offset, data)
-    }
-
-    pub fn notify_retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
-        self.session.notify_retrieve(self.conn, ino, offset, size)
-    }
-
-    pub fn notify_poll_wakeup(&self, kh: u64) -> io::Result<()> {
-        self.session.notify_poll_wakeup(self.conn, kh)
+    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+        self.req.read_vectored(bufs)
     }
 }
 
@@ -192,17 +221,16 @@ where
     let conn = &conn;
 
     thread::scope(|scope| -> io::Result<()> {
-        fs.init(InitContext {
-            session,
-            conn,
+        fs.init(Context {
+            notifier: Notifier { session, conn },
             scope,
         })?;
 
         for _i in 0..num_cpus::get() {
-            let conn = conn.try_ioc_clone()?;
+            let worker_conn = conn.try_ioc_clone()?;
             let mut req = session.new_request_buffer()?;
             scope.spawn(move || -> io::Result<()> {
-                while session.read_request(&conn, &mut req)? {
+                while session.read_request(&worker_conn, &mut req)? {
                     let span = tracing::debug_span!("handle_request", unique = req.unique());
                     let _enter = span.enter();
 
@@ -212,53 +240,63 @@ where
                     tracing::debug!(?op);
 
                     let cx = Context {
-                        session: &session,
-                        conn: &conn,
-                        req: &req,
+                        notifier: Notifier { session, conn },
+                        scope,
                     };
 
+                    macro_rules! req {
+                        ($arg:expr) => {
+                            Request {
+                                session,
+                                conn: &worker_conn,
+                                req: &req,
+                                arg: $arg,
+                            }
+                        };
+                    }
+
                     let res = match op {
-                        Operation::Lookup(op) => fs.lookup(cx, op),
-                        Operation::Getattr(op) => fs.getattr(cx, op),
-                        Operation::Setattr(op) => fs.setattr(cx, op),
-                        Operation::Readlink(op) => fs.readlink(cx, op),
-                        Operation::Symlink(op) => fs.symlink(cx, op),
-                        Operation::Mknod(op) => fs.mknod(cx, op),
-                        Operation::Mkdir(op) => fs.mkdir(cx, op),
-                        Operation::Unlink(op) => fs.unlink(cx, op),
-                        Operation::Rmdir(op) => fs.rmdir(cx, op),
-                        Operation::Rename(op) => fs.rename(cx, op),
-                        Operation::Link(op) => fs.link(cx, op),
-                        Operation::Open(op) => fs.open(cx, op),
-                        Operation::Read(op) => fs.read(cx, op),
-                        Operation::Write(op) => fs.write(cx, op),
-                        Operation::Release(op) => fs.release(cx, op),
-                        Operation::Statfs(op) => fs.statfs(cx, op),
-                        Operation::Fsync(op) => fs.fsync(cx, op),
-                        Operation::Setxattr(op) => fs.setxattr(cx, op),
-                        Operation::Getxattr(op) => fs.getxattr(cx, op),
-                        Operation::Listxattr(op) => fs.listxattr(cx, op),
-                        Operation::Removexattr(op) => fs.removexattr(cx, op),
-                        Operation::Flush(op) => fs.flush(cx, op),
-                        Operation::Opendir(op) => fs.opendir(cx, op),
-                        Operation::Readdir(op) => fs.readdir(cx, op),
-                        Operation::Releasedir(op) => fs.releasedir(cx, op),
-                        Operation::Fsyncdir(op) => fs.fsyncdir(cx, op),
-                        Operation::Getlk(op) => fs.getlk(cx, op),
-                        Operation::Setlk(op) => fs.setlk(cx, op),
-                        Operation::Flock(op) => fs.flock(cx, op),
-                        Operation::Access(op) => fs.access(cx, op),
-                        Operation::Create(op) => fs.create(cx, op),
-                        Operation::Bmap(op) => fs.bmap(cx, op),
-                        Operation::Fallocate(op) => fs.fallocate(cx, op),
-                        Operation::CopyFileRange(op) => fs.copy_file_range(cx, op),
-                        Operation::Poll(op) => fs.poll(cx, op),
+                        Operation::Lookup(op) => fs.lookup(cx, req!(op)),
+                        Operation::Getattr(op) => fs.getattr(cx, req!(op)),
+                        Operation::Setattr(op) => fs.setattr(cx, req!(op)),
+                        Operation::Readlink(op) => fs.readlink(cx, req!(op)),
+                        Operation::Symlink(op) => fs.symlink(cx, req!(op)),
+                        Operation::Mknod(op) => fs.mknod(cx, req!(op)),
+                        Operation::Mkdir(op) => fs.mkdir(cx, req!(op)),
+                        Operation::Unlink(op) => fs.unlink(cx, req!(op)),
+                        Operation::Rmdir(op) => fs.rmdir(cx, req!(op)),
+                        Operation::Rename(op) => fs.rename(cx, req!(op)),
+                        Operation::Link(op) => fs.link(cx, req!(op)),
+                        Operation::Open(op) => fs.open(cx, req!(op)),
+                        Operation::Read(op) => fs.read(cx, req!(op)),
+                        Operation::Write(op) => fs.write(cx, req!(op)),
+                        Operation::Release(op) => fs.release(cx, req!(op)),
+                        Operation::Statfs(op) => fs.statfs(cx, req!(op)),
+                        Operation::Fsync(op) => fs.fsync(cx, req!(op)),
+                        Operation::Setxattr(op) => fs.setxattr(cx, req!(op)),
+                        Operation::Getxattr(op) => fs.getxattr(cx, req!(op)),
+                        Operation::Listxattr(op) => fs.listxattr(cx, req!(op)),
+                        Operation::Removexattr(op) => fs.removexattr(cx, req!(op)),
+                        Operation::Flush(op) => fs.flush(cx, req!(op)),
+                        Operation::Opendir(op) => fs.opendir(cx, req!(op)),
+                        Operation::Readdir(op) => fs.readdir(cx, req!(op)),
+                        Operation::Releasedir(op) => fs.releasedir(cx, req!(op)),
+                        Operation::Fsyncdir(op) => fs.fsyncdir(cx, req!(op)),
+                        Operation::Getlk(op) => fs.getlk(cx, req!(op)),
+                        Operation::Setlk(op) => fs.setlk(cx, req!(op)),
+                        Operation::Flock(op) => fs.flock(cx, req!(op)),
+                        Operation::Access(op) => fs.access(cx, req!(op)),
+                        Operation::Create(op) => fs.create(cx, req!(op)),
+                        Operation::Bmap(op) => fs.bmap(cx, req!(op)),
+                        Operation::Fallocate(op) => fs.fallocate(cx, req!(op)),
+                        Operation::CopyFileRange(op) => fs.copy_file_range(cx, req!(op)),
+                        Operation::Poll(op) => fs.poll(cx, req!(op)),
                         Operation::NotifyReply(op) => {
-                            fs.notify_reply(cx, op)?;
+                            fs.notify_reply(cx, req!(op))?;
                             continue;
                         }
                         Operation::Forget(forgets) => {
-                            fs.forget(forgets.as_ref());
+                            fs.forget(cx, forgets.as_ref());
                             continue;
                         }
                         Operation::Interrupt(op) => {
@@ -269,7 +307,7 @@ where
 
                     match res {
                         Err(Error::Reply(err)) => return Err(err),
-                        Err(Error::Code(code)) => session.reply_error(&conn, &req, code)?,
+                        Err(Error::Code(code)) => session.reply_error(&worker_conn, &req, code)?,
                         Ok(..) => (),
                     }
                 }

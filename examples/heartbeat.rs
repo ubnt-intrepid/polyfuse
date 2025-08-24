@@ -106,21 +106,21 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    fn notify(&self, cx: &fs::InitContext<'_, '_>) -> io::Result<()> {
+    fn notify(&self, notifier: &fs::Notifier<'_>) -> io::Result<()> {
         match self.kind {
             Some(NotifyKind::Store) => {
                 let inner = &*self.inner.lock().unwrap();
                 let content = &inner.content;
 
                 tracing::info!("send notify_store(data={:?})", content);
-                cx.notify_store(ROOT_INO, 0, content)?;
+                notifier.store(ROOT_INO, 0, content)?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
                 let data = {
                     // FIXME: choose appropriate atomic ordering.
-                    let unique = cx.notify_retrieve(ROOT_INO, 0, 1024)?;
+                    let unique = notifier.retrieve(ROOT_INO, 0, 1024)?;
                     let (tx, rx) = mpsc::channel();
                     self.retrieves.lock().unwrap().insert(unique, tx);
                     rx.recv().unwrap()
@@ -134,7 +134,7 @@ impl Heartbeat {
 
             Some(NotifyKind::Invalidate) => {
                 tracing::info!("send notify_invalidate_inode");
-                cx.notify_inval_inode(ROOT_INO, 0, 0)?;
+                notifier.inval_inode(ROOT_INO, 0, 0)?;
             }
 
             None => { /* do nothing */ }
@@ -144,69 +144,72 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    fn init<'scope, 'env>(&'env self, cx: fs::InitContext<'scope, 'env>) -> io::Result<()> {
+    fn init<'scope, 'env>(&'env self, cx: fs::Context<'scope, 'env>) -> io::Result<()> {
+        let fs::Context {
+            notifier, scope, ..
+        } = cx;
         // Spawn a task that beats the heart.
-        cx.spawn({
-            let cx = cx.clone();
-            move || -> Result<()> {
-                loop {
-                    tracing::info!("heartbeat");
-                    self.update_content();
-                    self.notify(&cx)?;
-                    std::thread::sleep(self.update_interval);
-                }
+        scope.spawn(move || -> Result<()> {
+            loop {
+                tracing::info!("heartbeat");
+                self.update_content();
+                self.notify(&notifier)?;
+                std::thread::sleep(self.update_interval);
             }
         });
         Ok(())
     }
 
-    fn getattr(&self, cx: fs::Context<'_>, op: op::Getattr<'_>) -> fs::Result {
-        match op.ino() {
-            ROOT_INO => {
-                let inner = self.inner.lock().unwrap();
-                let mut out = AttrOut::default();
-                fill_attr(out.attr(), &inner.attr);
-                cx.reply(out)
-            }
-            _ => Err(ENOENT)?,
+    fn getattr(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Getattr<'_>>,
+    ) -> fs::Result {
+        if req.arg().ino() != ROOT_INO {
+            Err(ENOENT)?;
         }
+        let inner = self.inner.lock().unwrap();
+        let mut out = AttrOut::default();
+        fill_attr(out.attr(), &inner.attr);
+        req.reply(out)
     }
 
-    fn open(&self, cx: fs::Context<'_>, op: op::Open<'_>) -> fs::Result {
-        match op.ino() {
-            ROOT_INO => {
-                let mut out = OpenOut::default();
-                out.keep_cache(true);
-                cx.reply(out)
-            }
-            _ => Err(ENOENT)?,
+    fn open(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
+        if req.arg().ino() != ROOT_INO {
+            Err(ENOENT)?;
         }
+        let mut out = OpenOut::default();
+        out.keep_cache(true);
+        req.reply(out)
     }
 
-    fn read(&self, cx: fs::Context<'_>, op: polyfuse::op::Read<'_>) -> fs::Result {
-        match op.ino() {
-            ROOT_INO => {
-                let inner = self.inner.lock().unwrap();
-
-                let offset = op.offset() as usize;
-                if offset >= inner.content.len() {
-                    cx.reply(())
-                } else {
-                    let size = op.size() as usize;
-                    let data = &inner.content.as_bytes()[offset..];
-                    let data = &data[..std::cmp::min(data.len(), size)];
-                    cx.reply(data)
-                }
-            }
-            _ => Err(ENOENT)?,
+    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+        if req.arg().ino() != ROOT_INO {
+            Err(ENOENT)?
         }
+
+        let inner = self.inner.lock().unwrap();
+
+        let offset = req.arg().offset() as usize;
+        if offset >= inner.content.len() {
+            return req.reply(());
+        }
+
+        let size = req.arg().size() as usize;
+        let data = &inner.content.as_bytes()[offset..];
+        let data = &data[..std::cmp::min(data.len(), size)];
+        req.reply(data)
     }
 
-    fn notify_reply(&self, mut cx: fs::Context<'_>, op: op::NotifyReply<'_>) -> io::Result<()> {
+    fn notify_reply(
+        &self,
+        _: fs::Context<'_, '_>,
+        mut req: fs::Request<'_, op::NotifyReply<'_>>,
+    ) -> io::Result<()> {
         let mut retrieves = self.retrieves.lock().unwrap();
-        if let Some(tx) = retrieves.remove(&op.unique()) {
-            let mut buf = vec![0u8; op.size() as usize];
-            cx.read_exact(&mut buf)?;
+        if let Some(tx) = retrieves.remove(&req.arg().unique()) {
+            let mut buf = vec![0u8; req.arg().size() as usize];
+            req.read_exact(&mut buf)?;
             tx.send(buf).unwrap();
         }
         Ok(())
