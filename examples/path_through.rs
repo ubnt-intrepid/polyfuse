@@ -11,7 +11,6 @@
 // This example is inteded to be used as a templete for implementing
 // the path based filesystems such as libfuse's highlevel API.
 
-use libc::{EINVAL, ENOENT, ENOSYS, ERANGE};
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
@@ -21,6 +20,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
+use libc::{EINVAL, ENOENT, ENOSYS, ERANGE};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},

@@ -33,7 +33,7 @@ impl From<io::Error> for Error {
 macro_rules! define_ops {
     ($( $name:ident: $Arg:ident ),*$(,)*) => {$(
         #[allow(unused_variables)]
-        fn $name<'scope, 'env, 'req>(&'env self, cx: Context<'scope, 'env>, req: Request<'req, op::$Arg<'req>>) -> Result {
+        fn $name<'env, 'req>(&'env self, cx: Context<'_, 'env>, req: Request<'req, op::$Arg<'req>>) -> Result {
             Err(Error::Code(ENOSYS))
         }
     )*};
@@ -79,17 +79,17 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
-    fn forget<'scope, 'env>(&'env self, cx: Context<'scope, 'env>, forgets: &[Forget]) {}
+    fn forget<'env>(&'env self, cx: Context<'_, 'env>, forgets: &[Forget]) {}
 
     #[allow(unused_variables)]
-    fn init<'scope, 'env>(&'env self, cx: Context<'scope, 'env>) -> io::Result<()> {
+    fn init<'env>(&'env self, cx: Context<'_, 'env>) -> io::Result<()> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn notify_reply<'scope, 'env, 'req>(
+    fn notify_reply<'env, 'req>(
         &'env self,
-        cx: Context<'scope, 'env>,
+        cx: Context<'_, 'env>,
         req: Request<'req, op::NotifyReply<'req>>,
     ) -> io::Result<()> {
         Ok(())

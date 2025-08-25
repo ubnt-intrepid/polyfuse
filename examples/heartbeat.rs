@@ -144,7 +144,7 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    fn init<'scope, 'env>(&'env self, cx: fs::Context<'scope, 'env>) -> io::Result<()> {
+    fn init<'env>(&'env self, cx: fs::Context<'_, 'env>) -> io::Result<()> {
         let fs::Context {
             notifier, scope, ..
         } = cx;
@@ -160,11 +160,7 @@ impl Filesystem for Heartbeat {
         Ok(())
     }
 
-    fn getattr(
-        &self,
-        _: fs::Context<'_, '_>,
-        req: fs::Request<'_, op::Getattr<'_>>,
-    ) -> fs::Result {
+    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         if req.arg().ino() != ROOT_INO {
             Err(ENOENT)?;
         }

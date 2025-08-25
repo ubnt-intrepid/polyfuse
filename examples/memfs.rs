@@ -1,7 +1,6 @@
 #![allow(clippy::unnecessary_mut_passed, clippy::rc_buffer)]
 #![deny(clippy::unimplemented)]
 
-use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP, ERANGE};
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
@@ -12,6 +11,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
+use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP, ERANGE};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap, RandomState},

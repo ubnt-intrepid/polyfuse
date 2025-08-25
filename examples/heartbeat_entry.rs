@@ -126,7 +126,7 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    fn init<'scope, 'env>(&'env self, cx: fs::Context<'scope, 'env>) -> io::Result<()> {
+    fn init<'env>(&'env self, cx: fs::Context<'_, 'env>) -> io::Result<()> {
         let fs::Context {
             scope, notifier, ..
         } = cx;
@@ -163,18 +163,14 @@ impl Filesystem for Heartbeat {
 
     fn forget(&self, _: fs::Context<'_, '_>, forgets: &[op::Forget]) {
         let mut current = self.current.lock().unwrap();
-        for forget in forgets.as_ref() {
+        for forget in forgets {
             if forget.ino() == FILE_INO {
                 current.nlookup -= forget.nlookup();
             }
         }
     }
 
-    fn getattr(
-        &self,
-        _: fs::Context<'_, '_>,
-        req: fs::Request<'_, op::Getattr<'_>>,
-    ) -> fs::Result {
+    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let attr = match req.arg().ino() {
             ROOT_INO => &self.root_attr,
             FILE_INO => &self.file_attr,
@@ -196,11 +192,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn readdir(
-        &self,
-        _: fs::Context<'_, '_>,
-        req: fs::Request<'_, op::Readdir<'_>>,
-    ) -> fs::Result {
+    fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
         if req.arg().ino() != ROOT_INO {
             Err(ENOTDIR)?;
         }

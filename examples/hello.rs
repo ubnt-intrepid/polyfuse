@@ -114,11 +114,7 @@ impl Filesystem for Hello {
         }
     }
 
-    fn getattr(
-        &self,
-        _: fs::Context<'_, '_>,
-        req: fs::Request<'_, op::Getattr<'_>>,
-    ) -> fs::Result {
+    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let fill_attr = match req.arg().ino() {
             ROOT_INO => Self::fill_root_attr,
             HELLO_INO => Self::fill_hello_attr,
@@ -151,21 +147,13 @@ impl Filesystem for Hello {
         req.reply(data)
     }
 
-    fn opendir(
-        &self,
-        _: fs::Context<'_, '_>,
-        req: fs::Request<'_, op::Opendir<'_>>,
-    ) -> fs::Result {
+    fn opendir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
         let mut out = OpenOut::default();
         out.fh(req.arg().ino());
         req.reply(out)
     }
 
-    fn readdir(
-        &self,
-        _: fs::Context<'_, '_>,
-        req: fs::Request<'_, op::Readdir<'_>>,
-    ) -> fs::Result {
+    fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
         if req.arg().ino() != ROOT_INO {
             return Err(libc::ENOTDIR.into());
         }
