@@ -17,13 +17,13 @@ use polyfuse::{
 
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
+use dashmap::DashMap;
 use libc::ENOENT;
 use std::{
-    collections::HashMap,
     io::{self, prelude::*},
     mem,
     path::PathBuf,
-    sync::{mpsc, Mutex},
+    sync::Mutex,
     time::Duration,
 };
 
@@ -72,7 +72,7 @@ impl std::str::FromStr for NotifyKind {
 
 struct Heartbeat {
     inner: Mutex<Inner>,
-    retrieves: Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>,
+    retrieves: DashMap<u64, String>,
     kind: Option<NotifyKind>,
     update_interval: Duration,
 }
@@ -93,7 +93,7 @@ impl Heartbeat {
 
         Self {
             inner: Mutex::new(Inner { content, attr }),
-            retrieves: Mutex::default(),
+            retrieves: DashMap::new(),
             kind,
             update_interval,
         }
@@ -110,26 +110,16 @@ impl Heartbeat {
         match self.kind {
             Some(NotifyKind::Store) => {
                 let inner = &*self.inner.lock().unwrap();
-                let content = &inner.content;
+                let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
-                notifier.store(ROOT_INO, 0, content)?;
+                notifier.store(ROOT_INO, 0, &content)?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
-                let data = {
-                    // FIXME: choose appropriate atomic ordering.
-                    let unique = notifier.retrieve(ROOT_INO, 0, 1024)?;
-                    let (tx, rx) = mpsc::channel();
-                    self.retrieves.lock().unwrap().insert(unique, tx);
-                    rx.recv().unwrap()
-                };
-                tracing::info!("--> content={:?}", data);
-
-                if data[..content.len()] != *content.as_bytes() {
-                    tracing::error!("mismatched data");
-                }
+                let unique = notifier.retrieve(ROOT_INO, 0, 1024)?;
+                self.retrieves.insert(unique, content);
             }
 
             Some(NotifyKind::Invalidate) => {
@@ -145,15 +135,12 @@ impl Heartbeat {
 
 impl Filesystem for Heartbeat {
     fn init<'env>(&'env self, cx: fs::Context<'_, 'env>) -> io::Result<()> {
-        let fs::Context {
-            notifier, scope, ..
-        } = cx;
         // Spawn a task that beats the heart.
-        scope.spawn(move || -> Result<()> {
+        cx.scope.spawn(move || -> Result<()> {
             loop {
                 tracing::info!("heartbeat");
                 self.update_content();
-                self.notify(&notifier)?;
+                self.notify(&cx.notifier)?;
                 std::thread::sleep(self.update_interval);
             }
         });
@@ -202,11 +189,15 @@ impl Filesystem for Heartbeat {
         _: fs::Context<'_, '_>,
         mut req: fs::Request<'_, op::NotifyReply<'_>>,
     ) -> io::Result<()> {
-        let mut retrieves = self.retrieves.lock().unwrap();
-        if let Some(tx) = retrieves.remove(&req.arg().unique()) {
-            let mut buf = vec![0u8; req.arg().size() as usize];
-            req.read_exact(&mut buf)?;
-            tx.send(buf).unwrap();
+        if let Some((_, original)) = self.retrieves.remove(&req.arg().unique()) {
+            let mut data = vec![0u8; req.arg().size() as usize];
+            req.read_exact(&mut data)?;
+
+            if data[..original.len()] == *original.as_bytes() {
+                tracing::info!("matched data");
+            } else {
+                tracing::error!("mismatched data");
+            }
         }
         Ok(())
     }
