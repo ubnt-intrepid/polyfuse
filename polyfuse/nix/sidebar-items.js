@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["pipe","read","readv","write","writev"],"struct":["PipeReader","PipeWriter","SpliceFlags"]};
