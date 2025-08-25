@@ -8,14 +8,17 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 
 use polyfuse::{
-    mount::{mount, MountOptions},
+    fs::{self, Filesystem},
+    mount::MountOptions,
+    op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    Connection, KernelConfig, Operation, Request, Session,
+    KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
-use std::{mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
+use libc::{EISDIR, ENOENT, ENOTDIR};
+use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
 
 const ROOT_INO: u64 = 1;
 const FILE_INO: u64 = 2;
@@ -43,54 +46,12 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let (conn, fusermount) = mount(mountpoint, MountOptions::default())?;
-    let conn = Connection::from(conn);
-    let session = Session::init(&conn, KernelConfig::default())?;
-
-    let fs = {
-        let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
-        root_attr.st_ino = ROOT_INO;
-        root_attr.st_mode = libc::S_IFDIR | 0o555;
-        root_attr.st_nlink = 1;
-
-        let mut file_attr = unsafe { mem::zeroed::<libc::stat>() };
-        file_attr.st_ino = FILE_INO;
-        file_attr.st_mode = libc::S_IFREG | 0o444;
-        file_attr.st_nlink = 1;
-
-        Heartbeat {
-            root_attr,
-            file_attr,
-            ttl,
-            update_interval,
-            current: Mutex::new(CurrentFile {
-                filename: generate_filename(),
-                nlookup: 0,
-            }),
-        }
-    };
-
-    std::thread::scope(|scope| -> anyhow::Result<()> {
-        // Spawn a task that beats the heart.
-        scope.spawn({
-            let fs = &fs;
-            let conn = &conn;
-            let notifier = if !no_notify { Some(&session) } else { None };
-            move || -> Result<()> {
-                fs.heartbeat(conn, notifier)?;
-                Ok(())
-            }
-        });
-
-        let mut req = session.new_request_buffer()?;
-        while session.read_request(&conn, &mut req)? {
-            fs.handle_request(&session, &conn, &req)?;
-        }
-
-        Ok(())
-    })?;
-
-    fusermount.unmount()?;
+    polyfuse::fs::run(
+        Heartbeat::new(ttl, update_interval, no_notify),
+        mountpoint,
+        MountOptions::default(),
+        KernelConfig::default(),
+    )?;
 
     Ok(())
 }
@@ -105,6 +66,7 @@ struct Heartbeat {
     ttl: Duration,
     update_interval: Duration,
     current: Mutex<CurrentFile>,
+    no_notify: bool,
 }
 
 #[derive(Debug)]
@@ -114,8 +76,32 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    fn heartbeat(&self, conn: &Connection, notifier: Option<&Session>) -> Result<()> {
-        let span = tracing::debug_span!("heartbeat", notify = notifier.is_some());
+    fn new(ttl: Duration, update_interval: Duration, no_notify: bool) -> Self {
+        let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
+        root_attr.st_ino = ROOT_INO;
+        root_attr.st_mode = libc::S_IFDIR | 0o555;
+        root_attr.st_nlink = 1;
+
+        let mut file_attr = unsafe { mem::zeroed::<libc::stat>() };
+        file_attr.st_ino = FILE_INO;
+        file_attr.st_mode = libc::S_IFREG | 0o444;
+        file_attr.st_nlink = 1;
+
+        Self {
+            root_attr,
+            file_attr,
+            ttl,
+            update_interval,
+            current: Mutex::new(CurrentFile {
+                filename: generate_filename(),
+                nlookup: 0,
+            }),
+            no_notify,
+        }
+    }
+
+    fn heartbeat(&self, notifier: &fs::Notifier<'_>) -> Result<()> {
+        let span = tracing::debug_span!("heartbeat", notify = !self.no_notify);
         let _enter = span.enter();
 
         loop {
@@ -127,12 +113,9 @@ impl Heartbeat {
             tracing::debug!(?new_filename);
             let old_filename = mem::replace(&mut current.filename, new_filename);
 
-            match notifier {
-                Some(notifier) if current.nlookup > 0 => {
-                    tracing::info!("send notify_inval_entry");
-                    notifier.notify_inval_entry(conn, ROOT_INO, old_filename.as_ref())?;
-                }
-                _ => (),
+            if !self.no_notify && current.nlookup > 0 {
+                tracing::info!("send notify_inval_entry");
+                notifier.inval_entry(ROOT_INO, old_filename.as_ref())?;
             }
 
             drop(current);
@@ -140,88 +123,88 @@ impl Heartbeat {
             std::thread::sleep(self.update_interval);
         }
     }
+}
 
-    fn handle_request(&self, session: &Session, conn: &Connection, req: &Request) -> Result<()> {
-        let span = tracing::debug_span!("handle_request", unique = req.unique());
-        let _enter = span.enter();
+impl Filesystem for Heartbeat {
+    fn init<'env>(&'env self, cx: fs::Context<'_, 'env>) -> io::Result<()> {
+        let fs::Context {
+            scope, notifier, ..
+        } = cx;
+        scope.spawn(move || -> Result<()> {
+            self.heartbeat(&notifier)?;
+            Ok(())
+        });
+        Ok(())
+    }
 
-        let op = req.operation()?;
-        tracing::debug!(?op);
-
-        match op {
-            Operation::Lookup(op) => match op.parent() {
-                ROOT_INO => {
-                    let mut current = self.current.lock().unwrap();
-
-                    if op.name().as_bytes() == current.filename.as_bytes() {
-                        let mut out = EntryOut::default();
-                        out.ino(self.file_attr.st_ino);
-                        fill_attr(out.attr(), &self.file_attr);
-                        out.ttl_entry(self.ttl);
-                        out.ttl_attr(self.ttl);
-
-                        session.reply(conn, req, out)?;
-
-                        current.nlookup += 1;
-                    } else {
-                        session.reply_error(conn, req, libc::ENOENT)?;
-                    }
-                }
-                _ => session.reply_error(conn, req, libc::ENOTDIR)?,
-            },
-
-            Operation::Forget(forgets) => {
-                let mut current = self.current.lock().unwrap();
-                for forget in forgets.as_ref() {
-                    if forget.ino() == FILE_INO {
-                        current.nlookup -= forget.nlookup();
-                    }
-                }
-            }
-
-            Operation::Getattr(op) => {
-                let attr = match op.ino() {
-                    ROOT_INO => &self.root_attr,
-                    FILE_INO => &self.file_attr,
-                    _ => {
-                        return session
-                            .reply_error(conn, req, libc::ENOENT)
-                            .map_err(Into::into)
-                    }
-                };
-
-                let mut out = AttrOut::default();
-                fill_attr(out.attr(), attr);
-                out.ttl(self.ttl);
-
-                session.reply(conn, req, out)?;
-            }
-
-            Operation::Read(op) => match op.ino() {
-                ROOT_INO => session.reply_error(conn, req, libc::EISDIR)?,
-                FILE_INO => session.reply(conn, req, ())?,
-                _ => session.reply_error(conn, req, libc::ENOENT)?,
-            },
-
-            Operation::Readdir(op) => match op.ino() {
-                ROOT_INO => {
-                    if op.offset() == 0 {
-                        let current = self.current.lock().unwrap();
-
-                        let mut out = ReaddirOut::new(op.size() as usize);
-                        out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
-                        session.reply(conn, req, out)?;
-                    } else {
-                        session.reply(conn, req, ())?;
-                    }
-                }
-                _ => session.reply_error(conn, req, libc::ENOTDIR)?,
-            },
-
-            _ => session.reply_error(conn, req, libc::ENOSYS)?,
+    fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+        if req.arg().parent() != ROOT_INO {
+            Err(ENOTDIR)?;
         }
 
-        Ok(())
+        let mut current = self.current.lock().unwrap();
+
+        if req.arg().name().as_bytes() == current.filename.as_bytes() {
+            let mut out = EntryOut::default();
+            out.ino(self.file_attr.st_ino);
+            fill_attr(out.attr(), &self.file_attr);
+            out.ttl_entry(self.ttl);
+            out.ttl_attr(self.ttl);
+
+            let res = req.reply(out)?;
+
+            current.nlookup += 1;
+
+            Ok(res)
+        } else {
+            Err(ENOENT)?
+        }
+    }
+
+    fn forget(&self, _: fs::Context<'_, '_>, forgets: &[op::Forget]) {
+        let mut current = self.current.lock().unwrap();
+        for forget in forgets {
+            if forget.ino() == FILE_INO {
+                current.nlookup -= forget.nlookup();
+            }
+        }
+    }
+
+    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+        let attr = match req.arg().ino() {
+            ROOT_INO => &self.root_attr,
+            FILE_INO => &self.file_attr,
+            _ => Err(ENOENT)?,
+        };
+
+        let mut out = AttrOut::default();
+        fill_attr(out.attr(), attr);
+        out.ttl(self.ttl);
+
+        req.reply(out)
+    }
+
+    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+        match req.arg().ino() {
+            ROOT_INO => Err(EISDIR)?,
+            FILE_INO => req.reply(()),
+            _ => Err(ENOENT)?,
+        }
+    }
+
+    fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+        if req.arg().ino() != ROOT_INO {
+            Err(ENOTDIR)?;
+        }
+        if req.arg().offset() > 0 {
+            return req.reply(());
+        }
+
+        let current = self.current.lock().unwrap();
+
+        let mut out = ReaddirOut::new(req.arg().size() as usize);
+        out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
+        req.reply(out)
     }
 }
 

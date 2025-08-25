@@ -10,6 +10,7 @@ mod session;
 
 pub mod bytes;
 pub mod conn;
+pub mod fs;
 pub mod mount;
 pub mod op;
 pub mod reply;
