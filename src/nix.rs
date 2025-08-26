@@ -63,10 +63,20 @@ pub fn writev(fd: BorrowedFd<'_>, bufs: &[io::IoSlice<'_>]) -> io::Result<usize>
 }
 
 // FIXME: replace with std::io::pipe
-pub fn pipe() -> io::Result<(PipeReader, PipeWriter)> {
+pub fn pipe() -> io::Result<Pipe> {
     let mut fds = [0; 2];
     syscall! { pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
-    Ok((PipeReader::new(fds[0]), PipeWriter::new(fds[1])))
+    Ok(Pipe {
+        reader: PipeReader::new(fds[0]),
+        writer: PipeWriter::new(fds[1]),
+    })
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Pipe {
+    pub reader: PipeReader,
+    pub writer: PipeWriter,
 }
 
 #[derive(Debug)]

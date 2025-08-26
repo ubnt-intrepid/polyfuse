@@ -1,6 +1,6 @@
 use crate::{
     conn::SpliceRead,
-    nix::{PipeReader, PipeWriter},
+    nix::{pipe, Pipe},
     Operation,
 };
 use libc::{EINTR, ENODEV, ENOENT};
@@ -14,23 +14,20 @@ use zerocopy::IntoBytes as _;
 /// Context about an incoming FUSE request.
 pub struct Request {
     header: fuse_in_header,
-    opcode: Option<fuse_opcode>,
     arg: Vec<u8>,
-    pipe_reader: PipeReader,
-    pipe_writer: PipeWriter,
     bufsize: usize,
+    opcode: Option<fuse_opcode>,
+    pipe: Pipe,
 }
 
 impl Request {
     pub(crate) fn new(bufsize: usize) -> io::Result<Self> {
-        let (pipe_reader, pipe_writer) = crate::nix::pipe()?;
         Ok(Self {
             header: fuse_in_header::default(),
-            opcode: None,
-            arg: Vec::with_capacity(bufsize - mem::size_of::<fuse_in_header>()),
-            pipe_reader,
-            pipe_writer,
+            arg: vec![0; bufsize - mem::size_of::<fuse_in_header>()],
             bufsize,
+            opcode: None,
+            pipe: pipe()?,
         })
     }
 
@@ -64,21 +61,22 @@ impl Request {
     }
 
     pub(crate) fn clear(&mut self) -> io::Result<()> {
-        if self.pipe_reader.remaining_bytes()? > 0 {
+        self.header = fuse_in_header::default();
+        self.arg
+            .resize(self.bufsize - mem::size_of::<fuse_in_header>(), 0);
+        if self.pipe.reader.remaining_bytes()? > 0 {
             tracing::warn!(
                 "The remaining data of request(unique={}) is destroyed",
                 self.unique()
             );
-            let (reader, writer) = crate::nix::pipe()?;
-            self.pipe_reader = reader;
-            self.pipe_writer = writer;
+            self.pipe = pipe()?;
         }
         self.opcode = None;
         Ok(())
     }
 
     pub(crate) fn opcode(&self) -> fuse_opcode {
-        self.opcode.expect("This request buffer is not used")
+        self.opcode.expect("The request has not been received yet")
     }
 
     pub(crate) fn try_receive<T>(&mut self, mut conn: T) -> Result<(), ReceiveError>
@@ -86,7 +84,7 @@ impl Request {
         T: SpliceRead,
     {
         let len = conn
-            .splice_read(&self.pipe_writer, self.bufsize)
+            .splice_read(&self.pipe.writer, self.bufsize)
             .map_err(|err| {
                 // ref: https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/fuse_lowlevel.c#L2865
                 match err.raw_os_error() {
@@ -102,7 +100,7 @@ impl Request {
             ))?
         }
 
-        self.pipe_reader.read_exact(self.header.as_mut_bytes())?;
+        self.pipe.reader.read_exact(self.header.as_mut_bytes())?;
         if len != self.header.len as usize {
             Err(ReceiveError::invalid_data(
                 "The value in_header.len is mismatched to the result of splice(2)",
@@ -123,7 +121,7 @@ impl Request {
             _ => self.header.len as usize - mem::size_of::<fuse_in_header>(),
         };
         self.arg.resize(arglen, 0);
-        self.pipe_reader.read_exact(&mut self.arg[..])?;
+        self.pipe.reader.read_exact(&mut self.arg[..])?;
 
         Ok(())
     }
@@ -167,10 +165,10 @@ impl io::Read for Request {
 
 impl io::Read for &Request {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.pipe_reader).read(buf)
+        (&self.pipe.reader).read(buf)
     }
 
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        (&self.pipe_reader).read_vectored(bufs)
+        (&self.pipe.reader).read_vectored(bufs)
     }
 }
