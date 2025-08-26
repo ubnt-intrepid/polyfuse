@@ -1,17 +1,15 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
     conn::SpliceRead,
-    nix::{PipeReader, PipeWriter},
-    op::Operation,
+    request::{ReceiveError, Request},
 };
+use libc::ENOSYS;
 use polyfuse_kernel::*;
 use std::{
     cmp,
     convert::{TryFrom, TryInto as _},
     ffi::OsStr,
-    fmt,
-    io::{self, prelude::*, IoSliceMut},
-    mem,
+    fmt, io, mem,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use zerocopy::IntoBytes as _;
@@ -392,21 +390,11 @@ impl Session {
     }
 
     #[inline]
-    pub fn request_buffer_size(&self) -> usize {
-        mem::size_of::<fuse_in_header>()
-            + mem::size_of::<fuse_write_in>()
-            + self.config.max_write as usize
-    }
-
     pub fn new_request_buffer(&self) -> io::Result<Request> {
-        let (pipe_reader, pipe_writer) = crate::nix::pipe()?;
-        Ok(Request {
-            header: fuse_in_header::default(),
-            opcode: None,
-            arg: Vec::with_capacity(self.request_buffer_size() - mem::size_of::<fuse_in_header>()),
-            pipe_reader,
-            pipe_writer,
-        })
+        let bufsize = mem::size_of::<fuse_in_header>()
+            + mem::size_of::<fuse_write_in>()
+            + self.config.max_write as usize;
+        Request::new(bufsize)
     }
 
     /// Read an incoming FUSE request from the kernel.
@@ -426,96 +414,73 @@ impl Session {
     where
         T: SpliceRead + io::Write,
     {
-        if request.pipe_reader.remaining_bytes()? > 0 {
-            tracing::warn!(
-                "The remaining data of request(unique={}) is destroyed",
-                request.unique()
-            );
-            let (reader, writer) = crate::nix::pipe()?;
-            request.pipe_reader = reader;
-            request.pipe_writer = writer;
-        }
+        request.clear()?;
 
         loop {
-            match conn.splice_read(&request.pipe_writer, self.request_buffer_size()) {
-                Ok(len) if len < mem::size_of::<fuse_in_header>() => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "dequeued request message is too short",
-                    ));
+            match request.try_receive(&mut conn) {
+                Err(ReceiveError::Disconnected) => {
+                    tracing::debug!("The connection is disconnected");
+                    return Ok(false);
+                }
+                Err(ReceiveError::Interrupted) => {
+                    tracing::debug!("The read operation is interrupted");
+                    request.clear()?; // パイプにデータが残っている可能性があるのでクリアしておく
+                    continue;
+                }
+                Err(ReceiveError::UnrecognizedOpcode(code)) => {
+                    tracing::warn!(
+                        "The opcode `{}' is not recgonized by the current version of polyfuse.",
+                        code
+                    );
+                    write_reply(&mut conn, request.unique(), ENOSYS, ())?;
+                    request.clear()?;
+                    continue;
+                }
+                Err(ReceiveError::Fatal(err)) => {
+                    if err.kind() != io::ErrorKind::WouldBlock {
+                        tracing::error!("failed to receive the FUSE request: {}", err);
+                    }
+                    return Err(err);
                 }
 
-                Ok(len) => {
-                    let header = &mut request.header;
-                    request.pipe_reader.read_exact(header.as_mut_bytes())?;
+                Ok(()) => {}
+            }
 
-                    if len != header.len as usize {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "The value in_header.len is mismatched to the result of splice(2)",
-                        ));
-                    }
-
-                    let arglen = match fuse_opcode::try_from(header.opcode) {
-                        Ok(fuse_opcode::FUSE_WRITE) | Ok(fuse_opcode::FUSE_NOTIFY_REPLY) => {
-                            mem::size_of::<fuse_write_in>()
-                        }
-                        _ => header.len as usize - mem::size_of::<fuse_in_header>(),
-                    };
-                    request.arg.resize(arglen, 0);
-                    request.pipe_reader.read_exact(&mut request.arg[..])?;
-
-                    match fuse_opcode::try_from(header.opcode) {
-                        Ok(fuse_opcode::FUSE_INIT) => {
-                            // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
-                            tracing::error!("unexpected FUSE_INIT request received");
-                            continue;
-                        }
-
-                        Ok(fuse_opcode::FUSE_DESTROY) => {
-                            // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
-                            tracing::debug!("FUSE_DESTROY received");
-                            self.exit();
-                            return Ok(false);
-                        }
-
-                        Ok(fuse_opcode::FUSE_IOCTL)
-                        | Ok(fuse_opcode::FUSE_LSEEK)
-                        | Ok(fuse_opcode::CUSE_INIT)
-                        | Err(..) => {
-                            tracing::warn!(
-                                "unsupported opcode (unique={}, opcode={})",
-                                header.unique,
-                                header.opcode
-                            );
-                            write_reply(&mut conn, header.unique, libc::ENOSYS, ())?;
-                            continue;
-                        }
-
-                        Ok(opcode) => {
-                            // FIXME: impl fmt::Debug for fuse_opcode
-                            tracing::debug!(
-                                "Got a request (unique={}, opcode={})",
-                                header.unique,
-                                header.opcode
-                            );
-                            request.opcode = Some(opcode);
-                            break Ok(true);
-                        }
-                    }
+            match request.opcode() {
+                fuse_opcode::FUSE_INIT => {
+                    // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
+                    tracing::error!("unexpected FUSE_INIT request received");
+                    request.clear()?;
+                    continue;
                 }
 
-                Err(err) => match err.raw_os_error() {
-                    Some(libc::ENODEV) => {
-                        tracing::debug!("ENODEV");
-                        return Ok(false);
-                    }
-                    Some(libc::ENOENT) => {
-                        tracing::debug!("ENOENT");
-                        continue;
-                    }
-                    _ => return Err(err),
-                },
+                fuse_opcode::FUSE_DESTROY => {
+                    // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
+                    tracing::debug!("FUSE_DESTROY received");
+                    self.exit();
+                    return Ok(false);
+                }
+
+                fuse_opcode::FUSE_IOCTL | fuse_opcode::FUSE_LSEEK | fuse_opcode::CUSE_INIT => {
+                    tracing::warn!(
+                        "unsupported opcode (unique={}, opcode={})",
+                        request.unique(),
+                        request.opcode() as u32
+                    );
+                    write_reply(&mut conn, request.unique(), ENOSYS, ())?;
+                    request.clear()?;
+                    continue;
+                }
+
+                opcode => {
+                    // FIXME: impl fmt::Debug for fuse_opcode
+                    tracing::debug!(
+                        "Got a request (unique={}, opcode={})",
+                        request.unique(),
+                        opcode as u32
+                    );
+                    break Ok(true);
+                }
             }
         }
     }
@@ -653,69 +618,6 @@ impl Session {
     }
 }
 
-/// Context about an incoming FUSE request.
-pub struct Request {
-    header: fuse_in_header,
-    opcode: Option<fuse_opcode>,
-    arg: Vec<u8>,
-    pipe_reader: PipeReader,
-    pipe_writer: PipeWriter,
-}
-
-impl Request {
-    /// Return the unique ID of the request.
-    #[inline]
-    pub fn unique(&self) -> u64 {
-        self.header.unique
-    }
-
-    /// Return the user ID of the calling process.
-    #[inline]
-    pub fn uid(&self) -> u32 {
-        self.header.uid
-    }
-
-    /// Return the group ID of the calling process.
-    #[inline]
-    pub fn gid(&self) -> u32 {
-        self.header.gid
-    }
-
-    /// Return the process ID of the calling process.
-    #[inline]
-    pub fn pid(&self) -> u32 {
-        self.header.pid
-    }
-
-    /// Decode the argument of this request.
-    pub fn operation(&self) -> Result<Operation<'_>, crate::op::Error> {
-        Operation::decode(
-            &self.header,
-            self.opcode.expect("request is not initialized"),
-            &self.arg[..],
-        )
-    }
-}
-
-impl io::Read for Request {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&*self).read(buf)
-    }
-    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        (&*self).read_vectored(bufs)
-    }
-}
-
-impl io::Read for &Request {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.pipe_reader).read(buf)
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        (&self.pipe_reader).read_vectored(bufs)
-    }
-}
-
 fn write_reply<W, T>(writer: W, unique: u64, error: i32, arg: T) -> io::Result<()>
 where
     W: io::Write,
@@ -778,7 +680,7 @@ mod tests {
             self.reader.read(buf)
         }
 
-        fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
             self.reader.read_vectored(bufs)
         }
     }

@@ -147,7 +147,7 @@ pub struct Replied {
 pub struct Request<'req, T: 'req> {
     session: &'req Session,
     conn: &'req Connection,
-    req: &'req crate::session::Request,
+    req: &'req crate::request::Request,
     arg: T,
 }
 
