@@ -414,9 +414,9 @@ impl Session {
     where
         T: SpliceRead + io::Write,
     {
-        request.clear()?;
-
         loop {
+            request.clear()?; // パイプにデータが残っている可能性があるのでクリアしておく
+
             match request.try_receive(&mut conn) {
                 Err(ReceiveError::Disconnected) => {
                     tracing::debug!("The connection is disconnected");
@@ -424,7 +424,6 @@ impl Session {
                 }
                 Err(ReceiveError::Interrupted) => {
                     tracing::debug!("The read operation is interrupted");
-                    request.clear()?; // パイプにデータが残っている可能性があるのでクリアしておく
                     continue;
                 }
                 Err(ReceiveError::UnrecognizedOpcode(code)) => {
@@ -433,7 +432,6 @@ impl Session {
                         code
                     );
                     write_reply(&mut conn, request.unique(), ENOSYS, ())?;
-                    request.clear()?;
                     continue;
                 }
                 Err(ReceiveError::Fatal(err)) => {
@@ -450,7 +448,6 @@ impl Session {
                 fuse_opcode::FUSE_INIT => {
                     // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
                     tracing::error!("unexpected FUSE_INIT request received");
-                    request.clear()?;
                     continue;
                 }
 
@@ -468,7 +465,6 @@ impl Session {
                         request.opcode() as u32
                     );
                     write_reply(&mut conn, request.unique(), ENOSYS, ())?;
-                    request.clear()?;
                     continue;
                 }
 
