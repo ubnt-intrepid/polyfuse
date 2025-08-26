@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
     conn::SpliceRead,
-    request::{ReceiveError, Request},
+    request::{ReceiveError, RequestBuffer},
 };
 use libc::ENOSYS;
 use polyfuse_kernel::*;
@@ -390,34 +390,34 @@ impl Session {
     }
 
     #[inline]
-    pub fn new_request_buffer(&self) -> io::Result<Request> {
+    pub fn new_request_buffer(&self) -> io::Result<RequestBuffer> {
         let bufsize = mem::size_of::<fuse_in_header>()
             + mem::size_of::<fuse_write_in>()
             + self.config.max_write as usize;
-        Request::new(bufsize)
+        RequestBuffer::new(bufsize)
     }
 
     /// Read an incoming FUSE request from the kernel.
-    pub fn next_request<T>(&self, conn: T) -> io::Result<Option<Request>>
+    pub fn next_request<T>(&self, conn: T) -> io::Result<Option<RequestBuffer>>
     where
         T: SpliceRead + io::Write,
     {
-        let mut request = self.new_request_buffer()?;
-        if self.read_request(conn, &mut request)? {
-            Ok(Some(request))
+        let mut buf = self.new_request_buffer()?;
+        if self.read_request(conn, &mut buf)? {
+            Ok(Some(buf))
         } else {
             Ok(None)
         }
     }
 
-    pub fn read_request<T>(&self, mut conn: T, request: &mut Request) -> io::Result<bool>
+    pub fn read_request<T>(&self, mut conn: T, buf: &mut RequestBuffer) -> io::Result<bool>
     where
         T: SpliceRead + io::Write,
     {
         loop {
-            request.clear()?; // パイプにデータが残っている可能性があるのでクリアしておく
+            buf.clear()?; // パイプにデータが残っている可能性があるのでクリアしておく
 
-            match request.try_receive(&mut conn) {
+            match buf.try_receive(&mut conn) {
                 Err(ReceiveError::Disconnected) => {
                     tracing::debug!("The connection is disconnected");
                     return Ok(false);
@@ -431,7 +431,7 @@ impl Session {
                         "The opcode `{}' is not recgonized by the current version of polyfuse.",
                         code
                     );
-                    write_reply(&mut conn, request.unique(), ENOSYS, ())?;
+                    write_reply(&mut conn, buf.unique(), ENOSYS, ())?;
                     continue;
                 }
                 Err(ReceiveError::Fatal(err)) => {
@@ -444,7 +444,7 @@ impl Session {
                 Ok(()) => {}
             }
 
-            match request.opcode() {
+            match buf.opcode() {
                 fuse_opcode::FUSE_INIT => {
                     // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
                     tracing::error!("unexpected FUSE_INIT request received");
@@ -461,10 +461,10 @@ impl Session {
                 fuse_opcode::FUSE_IOCTL | fuse_opcode::FUSE_LSEEK | fuse_opcode::CUSE_INIT => {
                     tracing::warn!(
                         "unsupported opcode (unique={}, opcode={})",
-                        request.unique(),
-                        request.opcode() as u32
+                        buf.unique(),
+                        buf.opcode() as u32
                     );
-                    write_reply(&mut conn, request.unique(), ENOSYS, ())?;
+                    write_reply(&mut conn, buf.unique(), ENOSYS, ())?;
                     continue;
                 }
 
@@ -472,7 +472,7 @@ impl Session {
                     // FIXME: impl fmt::Debug for fuse_opcode
                     tracing::debug!(
                         "Got a request (unique={}, opcode={})",
-                        request.unique(),
+                        buf.unique(),
                         opcode as u32
                     );
                     break Ok(true);
@@ -481,7 +481,7 @@ impl Session {
         }
     }
 
-    pub fn reply<T, B>(&self, conn: T, req: &Request, arg: B) -> io::Result<()>
+    pub fn reply<T, B>(&self, conn: T, req: &RequestBuffer, arg: B) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
@@ -489,7 +489,7 @@ impl Session {
         write_reply(conn, req.unique(), 0, arg)
     }
 
-    pub fn reply_error<T>(&self, conn: T, req: &Request, code: i32) -> io::Result<()>
+    pub fn reply_error<T>(&self, conn: T, req: &RequestBuffer, code: i32) -> io::Result<()>
     where
         T: io::Write,
     {

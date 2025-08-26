@@ -11,22 +11,20 @@ use std::{
 };
 use zerocopy::IntoBytes as _;
 
-/// Context about an incoming FUSE request.
-pub struct Request {
+/// The buffer to store a processing FUSE request received from the kernel driver.
+pub struct RequestBuffer {
     header: fuse_in_header,
     arg: Vec<u8>,
     bufsize: usize,
-    opcode: Option<fuse_opcode>,
     pipe: Pipe,
 }
 
-impl Request {
+impl RequestBuffer {
     pub(crate) fn new(bufsize: usize) -> io::Result<Self> {
         Ok(Self {
             header: fuse_in_header::default(),
             arg: vec![0; bufsize - mem::size_of::<fuse_in_header>()],
             bufsize,
-            opcode: None,
             pipe: pipe()?,
         })
     }
@@ -61,7 +59,7 @@ impl Request {
     }
 
     pub(crate) fn clear(&mut self) -> io::Result<()> {
-        self.header = fuse_in_header::default();
+        self.header = fuse_in_header::default(); // opcode=0 means that the buffer is not valid.
         self.arg
             .resize(self.bufsize - mem::size_of::<fuse_in_header>(), 0);
         if self.pipe.reader.remaining_bytes()? > 0 {
@@ -71,12 +69,14 @@ impl Request {
             );
             self.pipe = pipe()?;
         }
-        self.opcode = None;
         Ok(())
     }
 
     pub(crate) fn opcode(&self) -> fuse_opcode {
-        self.opcode.expect("The request has not been received yet")
+        self.header
+            .opcode
+            .try_into()
+            .expect("The request has not been received yet")
     }
 
     pub(crate) fn try_receive<T>(&mut self, mut conn: T) -> Result<(), ReceiveError>
@@ -107,18 +107,12 @@ impl Request {
             ))?
         }
 
-        let opcode = self
-            .header
-            .opcode
-            .try_into()
-            .map_err(|_| ReceiveError::UnrecognizedOpcode(self.header.opcode))?;
-        self.opcode = Some(opcode);
-
-        let arglen = match self.opcode {
-            Some(fuse_opcode::FUSE_WRITE) | Some(fuse_opcode::FUSE_NOTIFY_REPLY) => {
+        let arglen = match fuse_opcode::try_from(self.header.opcode) {
+            Ok(fuse_opcode::FUSE_WRITE) | Ok(fuse_opcode::FUSE_NOTIFY_REPLY) => {
                 mem::size_of::<fuse_write_in>()
             }
-            _ => self.header.len as usize - mem::size_of::<fuse_in_header>(),
+            Ok(..) => self.header.len as usize - mem::size_of::<fuse_in_header>(),
+            Err(..) => Err(ReceiveError::UnrecognizedOpcode(self.header.opcode))?,
         };
         self.arg.resize(arglen, 0);
         self.pipe.reader.read_exact(&mut self.arg[..])?;
@@ -154,7 +148,7 @@ impl ReceiveError {
     }
 }
 
-impl io::Read for Request {
+impl io::Read for RequestBuffer {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (&*self).read(buf)
     }
@@ -163,7 +157,7 @@ impl io::Read for Request {
     }
 }
 
-impl io::Read for &Request {
+impl io::Read for &RequestBuffer {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (&self.pipe.reader).read(buf)
     }

@@ -2,7 +2,7 @@ use polyfuse::{
     mount::{mount, MountOptions},
     op,
     reply::AttrOut,
-    Connection, KernelConfig, Operation, Request, Session,
+    Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -26,15 +26,15 @@ fn main() -> Result<()> {
     let session = Session::init(&mut conn, KernelConfig::default())?;
 
     // Receive an incoming FUSE request from the kernel.
-    let mut req = session.new_request_buffer()?;
-    while session.read_request(&mut conn, &mut req)? {
-        match req.operation()? {
+    let mut buf = session.new_request_buffer()?;
+    while session.read_request(&mut conn, &mut buf)? {
+        match buf.operation()? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&session, &mut conn, &req, op)?,
-            Operation::Read(op) => read(&session, &mut conn, &req, op)?,
+            Operation::Getattr(op) => getattr(&session, &mut conn, &buf, op)?,
+            Operation::Read(op) => read(&session, &mut conn, &buf, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => session.reply_error(&mut conn, &req, libc::ENOSYS)?,
+            _ => session.reply_error(&mut conn, &buf, libc::ENOSYS)?,
         };
     }
 
@@ -46,7 +46,7 @@ fn main() -> Result<()> {
 fn getattr(
     session: &Session,
     conn: &mut Connection,
-    req: &Request,
+    req: &RequestBuffer,
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
     if op.ino() != 1 {
@@ -68,7 +68,7 @@ fn getattr(
 fn read(
     session: &Session,
     conn: &mut Connection,
-    req: &Request,
+    req: &RequestBuffer,
     op: op::Read<'_>,
 ) -> io::Result<()> {
     if op.ino() != 1 {
