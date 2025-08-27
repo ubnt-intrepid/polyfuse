@@ -2,7 +2,7 @@ use crate::{
     bytes::Bytes,
     mount::MountOptions,
     op::{self, Forget},
-    Connection, KernelConfig, Operation, Session,
+    Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 use libc::{EIO, ENOSYS};
 use std::{ffi::OsStr, io, path::PathBuf, thread};
@@ -147,21 +147,21 @@ pub struct Replied {
 pub struct Request<'req, T: 'req> {
     session: &'req Session,
     conn: &'req Connection,
-    req: &'req crate::session::Request,
+    buf: &'req RequestBuffer,
     arg: T,
 }
 
 impl<T> Request<'_, T> {
     pub fn uid(&self) -> u32 {
-        self.req.uid()
+        self.buf.uid()
     }
 
     pub fn gid(&self) -> u32 {
-        self.req.gid()
+        self.buf.gid()
     }
 
     pub fn pid(&self) -> u32 {
-        self.req.pid()
+        self.buf.pid()
     }
 
     pub fn arg(&self) -> &T {
@@ -173,7 +173,7 @@ impl<T> Request<'_, T> {
         B: Bytes,
     {
         self.session
-            .reply(self.conn, self.req, arg)
+            .reply(self.conn, self.buf, arg)
             .map_err(Error::Reply)?;
         Ok(Replied { _private: () })
     }
@@ -181,21 +181,21 @@ impl<T> Request<'_, T> {
 
 impl io::Read for Request<'_, op::Write<'_>> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.req.read(buf)
+        self.buf.read(buf)
     }
 
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        self.req.read_vectored(bufs)
+        self.buf.read_vectored(bufs)
     }
 }
 
 impl io::Read for Request<'_, op::NotifyReply<'_>> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.req.read(buf)
+        self.buf.read(buf)
     }
 
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        self.req.read_vectored(bufs)
+        self.buf.read_vectored(bufs)
     }
 }
 
@@ -228,13 +228,13 @@ where
 
         for _i in 0..num_cpus::get() {
             let worker_conn = conn.try_ioc_clone()?;
-            let mut req = session.new_request_buffer()?;
+            let mut buf = session.new_request_buffer()?;
             scope.spawn(move || -> io::Result<()> {
-                while session.read_request(&worker_conn, &mut req)? {
-                    let span = tracing::debug_span!("handle_request", unique = req.unique());
+                while session.read_request(&worker_conn, &mut buf)? {
+                    let span = tracing::debug_span!("handle_request", unique = buf.unique());
                     let _enter = span.enter();
 
-                    let op = req
+                    let op = buf
                         .operation()
                         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
                     tracing::debug!(?op);
@@ -249,7 +249,7 @@ where
                             Request {
                                 session,
                                 conn: &worker_conn,
-                                req: &req,
+                                buf: &buf,
                                 arg: $arg,
                             }
                         };
@@ -307,7 +307,7 @@ where
 
                     match res {
                         Err(Error::Reply(err)) => return Err(err),
-                        Err(Error::Code(code)) => session.reply_error(&worker_conn, &req, code)?,
+                        Err(Error::Code(code)) => session.reply_error(&worker_conn, &buf, code)?,
                         Ok(..) => (),
                     }
                 }

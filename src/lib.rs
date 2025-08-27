@@ -6,6 +6,7 @@
 #[macro_use]
 pub mod nix;
 
+mod request;
 mod session;
 
 pub mod bytes;
@@ -18,5 +19,6 @@ pub mod reply;
 pub use crate::{
     conn::Connection,
     op::Operation,
-    session::{KernelConfig, KernelFlags, Request, Session},
+    request::RequestBuffer,
+    session::{KernelConfig, KernelFlags, Session},
 };
