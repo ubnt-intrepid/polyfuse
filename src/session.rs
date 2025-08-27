@@ -428,7 +428,7 @@ impl Session {
                 }
                 Err(ReceiveError::UnrecognizedOpcode(code)) => {
                     tracing::warn!(
-                        "The opcode `{}' is not recgonized by the current version of polyfuse.",
+                        "The opcode `{}' is not recognized by the current version of polyfuse.",
                         code
                     );
                     write_reply(&mut conn, buf.unique(), ENOSYS, ())?;
