@@ -4,16 +4,31 @@ use crate::{
     Operation,
 };
 use libc::{EINTR, ENODEV, ENOENT};
-use polyfuse_kernel::{fuse_in_header, fuse_opcode, fuse_write_in};
+use polyfuse_kernel::{fuse_in_header, fuse_opcode, fuse_write_in, FUSE_MIN_READ_BUFFER};
 use std::{
     io::{self, prelude::*},
     mem,
 };
 use zerocopy::IntoBytes as _;
 
+// MEMO: FUSE_MIN_READ_BUFFER に到達する or 超える可能性のある opcode の一覧 (要調査)
+// * FUSE_BATCH_FORGET
+//    - read buffer ギリギリまで fuse_forget_one を詰めようとする
+//    - 超えることはないが、場合によっては大量にメモリコピーが発生する可能性がある
+// * FUSE_WRITE / FUSE_NOTIFY_REPLY
+//    - これらは当然あり得る
+// * FUSE_SETXATTR
+//    - name については XATTR_NAME_MAX=256 で制限されているので良い
+//    - value 側が非常に大きくなる可能性がある
+// * その他
+//   - 基本的には NAME_MAX=256, PATH_MAX=4096 による制限があるので、8096 bytes に到達することはないはず
+
 /// The buffer to store a processing FUSE request received from the kernel driver.
 pub struct RequestBuffer {
     header: fuse_in_header,
+    // MEMO:
+    // * 再アロケートされる可能性があるので Vec<u8> で持つ
+    // * デフォルトの system allocator を使用している限りは alignment の心配をする必要は基本的はないはず (malloc依存)
     arg: Vec<u8>,
     bufsize: usize,
     pipe: Pipe,
@@ -23,7 +38,9 @@ impl RequestBuffer {
     pub(crate) fn new(bufsize: usize) -> io::Result<Self> {
         Ok(Self {
             header: fuse_in_header::default(),
-            arg: vec![0; bufsize - mem::size_of::<fuse_in_header>()],
+            arg: Vec::with_capacity(
+                FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>(),
+            ),
             bufsize,
             pipe: pipe()?,
         })
@@ -60,8 +77,7 @@ impl RequestBuffer {
 
     pub(crate) fn clear(&mut self) -> io::Result<()> {
         self.header = fuse_in_header::default(); // opcode=0 means that the buffer is not valid.
-        self.arg
-            .resize(self.bufsize - mem::size_of::<fuse_in_header>(), 0);
+        self.arg.truncate(0);
         if self.pipe.reader.remaining_bytes()? > 0 {
             tracing::warn!(
                 "The remaining data of request(unique={}) is destroyed",
@@ -114,7 +130,7 @@ impl RequestBuffer {
             Ok(..) => self.header.len as usize - mem::size_of::<fuse_in_header>(),
             Err(..) => Err(ReceiveError::UnrecognizedOpcode(self.header.opcode))?,
         };
-        self.arg.resize(arglen, 0);
+        self.arg.resize(arglen, 0); // MEMO: FUSE_SETXATTR において、非常に大きいサイズの値が設定されたときに再アロケートされる可能性がある
         self.pipe.reader.read_exact(&mut self.arg[..])?;
 
         Ok(())
