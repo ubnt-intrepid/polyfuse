@@ -146,7 +146,7 @@ pub enum ReceiveError {
     Interrupted,
 
     #[error(
-        "The opcode `{}' is not recognized by the current version of `polfyfuse`",
+        "The opcode `{}' is not recognized by the current version of `polyfuse`",
         _0
     )]
     UnrecognizedOpcode(u32),
