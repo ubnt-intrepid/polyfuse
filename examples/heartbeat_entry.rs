@@ -127,11 +127,8 @@ impl Heartbeat {
 
 impl Filesystem for Heartbeat {
     fn init<'env>(&'env self, cx: fs::Context<'_, 'env>) -> io::Result<()> {
-        let fs::Context {
-            scope, notifier, ..
-        } = cx;
-        scope.spawn(move || -> Result<()> {
-            self.heartbeat(&notifier)?;
+        cx.spawner.spawn(move || -> Result<()> {
+            self.heartbeat(&cx.notifier)?;
             Ok(())
         });
         Ok(())
