@@ -153,6 +153,14 @@ bitflags::bitflags! {
         ///
         /// See the documentation of `no_open_support` for details.
         const NO_OPENDIR_SUPPORT = FUSE_NO_OPENDIR_SUPPORT;
+
+        /// Specify whether the kernel supports for splice reading.
+        ///
+        /// When this flag is enabled, the system call `splice(2)` is used
+        /// to read requests from the kernel, and the request data is
+        /// temporarily transferred to the pipe buffer before being copied
+        /// to user space.
+        const SPLICE_READ = FUSE_SPLICE_READ;
     }
 }
 
@@ -166,6 +174,7 @@ impl Default for KernelFlags {
             | Self::ATOMIC_O_TRUNC
             | Self::NO_OPEN_SUPPORT
             | Self::NO_OPENDIR_SUPPORT
+            | Self::SPLICE_READ
     }
 }
 
@@ -310,14 +319,6 @@ impl Session {
                 config.max_pages = 0;
             }
 
-            if init_in.flags & FUSE_SPLICE_READ == 0 {
-                // FIXME: SPLICE_READ が無効化されている場合、readv(2) にフォールバックする
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "The flag `SPLICE_READ` is not available",
-                ));
-            }
-
             tracing::debug!("INIT request:");
             tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
             tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
@@ -344,7 +345,7 @@ impl Session {
                 minor,
                 max_readahead: config.max_readahead,
                 // * the flag `FUSE_BIG_WRITE` was superseded by `max_write`
-                flags: config.flags.bits() | additional_flags | FUSE_BIG_WRITES | FUSE_SPLICE_READ,
+                flags: config.flags.bits() | additional_flags | FUSE_BIG_WRITES,
                 max_background: config.max_background,
                 time_gran: config.time_gran,
                 congestion_threshold: config.congestion_threshold,
@@ -394,7 +395,12 @@ impl Session {
         let bufsize = mem::size_of::<fuse_in_header>()
             + mem::size_of::<fuse_write_in>()
             + self.config.max_write as usize;
-        RequestBuffer::new(bufsize)
+
+        if self.config.flags.contains(KernelFlags::SPLICE_READ) {
+            RequestBuffer::new_splice(bufsize)
+        } else {
+            RequestBuffer::new_fallback(bufsize)
+        }
     }
 
     /// Read an incoming FUSE request from the kernel.
@@ -715,7 +721,7 @@ mod tests {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 40,
-            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES | FUSE_SPLICE_READ,
+            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
         };
 
         let mut input = Vec::with_capacity(input_len);
@@ -756,10 +762,7 @@ mod tests {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 40,
-            flags: KernelFlags::default().bits()
-                | FUSE_MAX_PAGES
-                | FUSE_BIG_WRITES
-                | FUSE_SPLICE_READ,
+            flags: KernelFlags::default().bits() | FUSE_MAX_PAGES | FUSE_BIG_WRITES,
             max_background: 0,
             congestion_threshold: 0,
             max_write: DEFAULT_MAX_WRITE,

@@ -750,7 +750,12 @@ impl Filesystem for MemFS {
         req.reply(content)
     }
 
-    fn write(&self, _: fs::Context<'_, '_>, mut req: fs::Request<'_, op::Write<'_>>) -> fs::Result {
+    fn write(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Write<'_>>,
+        mut data: fs::Data<'_>,
+    ) -> fs::Result {
         let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
 
         let content = inode.as_file_mut().ok_or(EINVAL)?;
@@ -760,7 +765,7 @@ impl Filesystem for MemFS {
 
         content.resize(std::cmp::max(content.len(), offset + size), 0);
 
-        req.read_exact(&mut content[offset..offset + size])?;
+        data.read_exact(&mut content[offset..offset + size])?;
 
         inode.attr.st_size = (offset + size) as libc::off_t;
 

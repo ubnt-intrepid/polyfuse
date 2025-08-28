@@ -30,8 +30,8 @@ fn main() -> Result<()> {
     while session.read_request(&mut conn, &mut buf)? {
         match buf.operation()? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&session, &mut conn, &buf, op)?,
-            Operation::Read(op) => read(&session, &mut conn, &buf, op)?,
+            (Operation::Getattr(op), ..) => getattr(&session, &mut conn, &buf, op)?,
+            (Operation::Read(op), ..) => read(&session, &mut conn, &buf, op)?,
 
             // Or annotate that the operation is not supported.
             _ => session.reply_error(&mut conn, &buf, libc::ENOSYS)?,

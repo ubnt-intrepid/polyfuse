@@ -375,12 +375,17 @@ impl Filesystem for PathThrough {
         req.reply(buf)
     }
 
-    fn write(&self, _: fs::Context<'_, '_>, mut req: fs::Request<'_, op::Write<'_>>) -> fs::Result {
+    fn write(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Write<'_>>,
+        data: fs::Data<'_>,
+    ) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let file = Slab::get_mut(files, req.arg().fh() as usize).ok_or(EINVAL)?;
         let offset = req.arg().offset();
         let size = req.arg().size();
-        let written = file.write(BufReader::new(&mut req).take(size as u64), offset)?;
+        let written = file.write(BufReader::new(data).take(size as u64), offset)?;
 
         let mut out = WriteOut::default();
         out.size(written as u32);

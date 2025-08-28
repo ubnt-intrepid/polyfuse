@@ -187,11 +187,15 @@ impl Filesystem for Heartbeat {
     fn notify_reply(
         &self,
         _: fs::Context<'_, '_>,
-        mut req: fs::Request<'_, op::NotifyReply<'_>>,
+        req: fs::Request<'_, op::NotifyReply<'_>>,
+        mut data: fs::Data<'_>,
     ) -> io::Result<()> {
         if let Some((_, original)) = self.retrieves.remove(&req.arg().unique()) {
-            let mut data = vec![0u8; req.arg().size() as usize];
-            req.read_exact(&mut data)?;
+            let data = {
+                let mut buf = vec![0u8; req.arg().size() as usize];
+                data.read_exact(&mut buf)?;
+                buf
+            };
 
             if data[..original.len()] == *original.as_bytes() {
                 tracing::info!("matched data");
