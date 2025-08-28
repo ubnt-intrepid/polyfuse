@@ -3,7 +3,6 @@
 
 mod nix;
 
-use libc::{EINVAL, ENOENT, ENOSYS, ENOTSUP, EOPNOTSUPP, S_IFDIR, S_IFLNK};
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
@@ -16,6 +15,7 @@ use polyfuse::{
 
 use crate::nix::{FileDesc, ReadDir};
 use anyhow::{ensure, Context as _, Result};
+use libc::{EINVAL, ENOENT, ENOSYS, ENOTSUP, EOPNOTSUPP, S_IFDIR, S_IFLNK};
 use pico_args::Arguments;
 use slab::Slab;
 use std::{
@@ -546,7 +546,12 @@ impl Filesystem for Passthrough {
         req.reply(buf)
     }
 
-    fn write(&self, _: fs::Context<'_, '_>, mut req: fs::Request<'_, op::Write<'_>>) -> fs::Result {
+    fn write(
+        &self,
+        _: fs::Context<'_, '_>,
+        req: fs::Request<'_, op::Write<'_>>,
+        mut data: fs::Data<'_>,
+    ) -> fs::Result {
         let file = self.opened_files.get(req.arg().fh()).ok_or(ENOENT)?;
         let mut file = file.lock().unwrap();
         let file = &mut *file;
@@ -561,7 +566,7 @@ impl Filesystem for Passthrough {
         // copying support in `polyfuse` and resolution of impedance mismatch
         // between `futures::io` and `tokio::io` are required.
         let mut buf = Vec::with_capacity(req.arg().size() as usize);
-        req.read_to_end(&mut buf)?;
+        data.read_to_end(&mut buf)?;
 
         let mut buf = &buf[..];
         let mut buf = Read::take(&mut buf, req.arg().size() as u64);

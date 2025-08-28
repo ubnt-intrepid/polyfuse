@@ -2,6 +2,7 @@ use crate::{
     bytes::Bytes,
     mount::MountOptions,
     op::{self, Forget},
+    request::RemainingData,
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 use libc::{EIO, ENOSYS};
@@ -54,7 +55,6 @@ pub trait Filesystem {
         link: Link,
         open: Open,
         read: Read,
-        write: Write,
         release: Release,
         statfs: Statfs,
         fsync: Fsync,
@@ -79,6 +79,16 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
+    fn write<'env, 'req>(
+        &'env self,
+        cx: Context<'_, 'env>,
+        req: Request<'req, op::Write<'req>>,
+        data: Data<'req>,
+    ) -> Result {
+        Err(Error::Code(ENOSYS))
+    }
+
+    #[allow(unused_variables)]
     fn forget<'env>(&'env self, cx: Context<'_, 'env>, forgets: &[Forget]) {}
 
     #[allow(unused_variables)]
@@ -91,6 +101,7 @@ pub trait Filesystem {
         &'env self,
         cx: Context<'_, 'env>,
         req: Request<'req, op::NotifyReply<'req>>,
+        data: Data<'req>,
     ) -> io::Result<()> {
         Ok(())
     }
@@ -179,23 +190,17 @@ impl<T> Request<'_, T> {
     }
 }
 
-impl io::Read for Request<'_, op::Write<'_>> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.buf.read(buf)
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        self.buf.read_vectored(bufs)
-    }
+pub struct Data<'req> {
+    inner: RemainingData<'req>,
 }
 
-impl io::Read for Request<'_, op::NotifyReply<'_>> {
+impl io::Read for Data<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.buf.read(buf)
+        self.inner.read(buf)
     }
 
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        self.buf.read_vectored(bufs)
+        self.inner.read_vectored(bufs)
     }
 }
 
@@ -234,7 +239,7 @@ where
                     let span = tracing::debug_span!("handle_request", unique = buf.unique());
                     let _enter = span.enter();
 
-                    let op = buf
+                    let (op, data) = buf
                         .operation()
                         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
                     tracing::debug!(?op);
@@ -269,7 +274,6 @@ where
                         Operation::Link(op) => fs.link(cx, req!(op)),
                         Operation::Open(op) => fs.open(cx, req!(op)),
                         Operation::Read(op) => fs.read(cx, req!(op)),
-                        Operation::Write(op) => fs.write(cx, req!(op)),
                         Operation::Release(op) => fs.release(cx, req!(op)),
                         Operation::Statfs(op) => fs.statfs(cx, req!(op)),
                         Operation::Fsync(op) => fs.fsync(cx, req!(op)),
@@ -291,8 +295,9 @@ where
                         Operation::Fallocate(op) => fs.fallocate(cx, req!(op)),
                         Operation::CopyFileRange(op) => fs.copy_file_range(cx, req!(op)),
                         Operation::Poll(op) => fs.poll(cx, req!(op)),
+                        Operation::Write(op) => fs.write(cx, req!(op), Data { inner: data }),
                         Operation::NotifyReply(op) => {
-                            fs.notify_reply(cx, req!(op))?;
+                            fs.notify_reply(cx, req!(op), Data { inner: data })?;
                             continue;
                         }
                         Operation::Forget(forgets) => {
