@@ -485,19 +485,19 @@ impl Session {
         }
     }
 
-    pub fn reply<T, B>(&self, conn: T, req: &RequestBuffer, arg: B) -> io::Result<()>
+    /// Send a reply message of completed request to the kernel.
+    ///
+    /// Note that the instance of `conn` must be the same as the one used
+    /// when the corresponding request was received via `read_request`.
+    /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
+    /// the corresponding kernel processing will be isolated, and the process
+    /// that issued the associated syscall may enter a deadlock state.
+    pub fn send_reply<T, B>(&self, conn: T, unique: u64, error: i32, arg: B) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
     {
-        write_reply(conn, req.unique(), 0, arg)
-    }
-
-    pub fn reply_error<T>(&self, conn: T, req: &RequestBuffer, code: i32) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        write_reply(conn, req.unique(), code, ())
+        write_reply(conn, unique, error, arg)
     }
 
     /// Send a notification message to the kernel.

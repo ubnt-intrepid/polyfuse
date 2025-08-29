@@ -206,7 +206,7 @@ impl<T> Request<'_, T> {
         B: Bytes,
     {
         self.session
-            .reply(self.conn, self.buf, arg)
+            .send_reply(self.conn, self.buf.unique(), 0, arg)
             .map_err(|err| match err.raw_os_error() {
                 Some(ENOENT) => Error::Cancelled, // missing in processing queue
                 _ => Error::Reply(err),
@@ -388,7 +388,10 @@ where
         match result {
             Ok(..) | Err(Error::Cancelled) => {}
             Err(Error::Reply(err)) => return Err(err),
-            Err(Error::Code(code)) => self.session.reply_error(&self.conn, &self.buf, code)?,
+            Err(Error::Code(errno)) => {
+                self.session
+                    .send_reply(&self.conn, self.buf.unique(), errno, ())?
+            }
         }
 
         Ok(())
