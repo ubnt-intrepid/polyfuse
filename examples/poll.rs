@@ -93,7 +93,7 @@ impl Filesystem for PollFS {
         });
 
         tracing::info!("spawn reading task");
-        cx.scope.spawn({
+        cx.spawner.spawn({
             let handle = Arc::downgrade(&handle);
             let wakeup_interval = self.wakeup_interval;
 

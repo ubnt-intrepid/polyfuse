@@ -136,7 +136,7 @@ impl Heartbeat {
 impl Filesystem for Heartbeat {
     fn init<'env>(&'env self, cx: fs::Context<'_, 'env>) -> io::Result<()> {
         // Spawn a task that beats the heart.
-        cx.scope.spawn(move || -> Result<()> {
+        cx.spawner.spawn(move || -> Result<()> {
             loop {
                 tracing::info!("heartbeat");
                 self.update_content();

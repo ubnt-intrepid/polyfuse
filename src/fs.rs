@@ -5,13 +5,16 @@ use crate::{
     request::RemainingData,
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
-use libc::{EIO, ENOSYS};
+use libc::{EIO, ENOENT, ENOSYS};
 use std::{ffi::OsStr, io, path::PathBuf, thread};
 
 pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("The request has already been cancelled by the kernel")]
+    Cancelled,
+
     #[error("error during reply: {}", _0)]
     Reply(#[source] io::Error),
 
@@ -107,10 +110,12 @@ pub trait Filesystem {
     }
 }
 
+pub type Spawner<'scope, 'env> = &'scope thread::Scope<'scope, 'env>;
+
 #[non_exhaustive]
 pub struct Context<'scope, 'env: 'scope> {
     pub notifier: Notifier<'env>,
-    pub scope: &'scope thread::Scope<'scope, 'env>,
+    pub spawner: Spawner<'scope, 'env>,
 }
 
 #[derive(Clone)]
@@ -185,7 +190,10 @@ impl<T> Request<'_, T> {
     {
         self.session
             .reply(self.conn, self.buf, arg)
-            .map_err(Error::Reply)?;
+            .map_err(|err| match err.raw_os_error() {
+                Some(ENOENT) => Error::Cancelled, // missing in processing queue
+                _ => Error::Reply(err),
+            })?;
         Ok(Replied { _private: () })
     }
 }
@@ -220,104 +228,29 @@ where
     let conn = Connection::from(conn);
     let session = Session::init(&conn, config)?;
 
-    // MEMO: 'env
-    let fs = &fs;
-    let session = &session;
-    let conn = &conn;
+    let num_workers = num_cpus::get();
 
-    thread::scope(|scope| -> io::Result<()> {
+    thread::scope(|spawner| -> io::Result<()> {
         fs.init(Context {
-            notifier: Notifier { session, conn },
-            scope,
+            notifier: Notifier {
+                session: &session,
+                conn: &conn,
+            },
+            spawner,
         })?;
 
-        for _i in 0..num_cpus::get() {
-            let worker_conn = conn.try_ioc_clone()?;
-            let mut buf = session.new_request_buffer()?;
-            scope.spawn(move || -> io::Result<()> {
-                while session.read_request(&worker_conn, &mut buf)? {
-                    let span = tracing::debug_span!("handle_request", unique = buf.unique());
-                    let _enter = span.enter();
-
-                    let (op, data) = buf
-                        .operation()
-                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-                    tracing::debug!(?op);
-
-                    let cx = Context {
-                        notifier: Notifier { session, conn },
-                        scope,
-                    };
-
-                    macro_rules! req {
-                        ($arg:expr) => {
-                            Request {
-                                session,
-                                conn: &worker_conn,
-                                buf: &buf,
-                                arg: $arg,
-                            }
-                        };
-                    }
-
-                    let res = match op {
-                        Operation::Lookup(op) => fs.lookup(cx, req!(op)),
-                        Operation::Getattr(op) => fs.getattr(cx, req!(op)),
-                        Operation::Setattr(op) => fs.setattr(cx, req!(op)),
-                        Operation::Readlink(op) => fs.readlink(cx, req!(op)),
-                        Operation::Symlink(op) => fs.symlink(cx, req!(op)),
-                        Operation::Mknod(op) => fs.mknod(cx, req!(op)),
-                        Operation::Mkdir(op) => fs.mkdir(cx, req!(op)),
-                        Operation::Unlink(op) => fs.unlink(cx, req!(op)),
-                        Operation::Rmdir(op) => fs.rmdir(cx, req!(op)),
-                        Operation::Rename(op) => fs.rename(cx, req!(op)),
-                        Operation::Link(op) => fs.link(cx, req!(op)),
-                        Operation::Open(op) => fs.open(cx, req!(op)),
-                        Operation::Read(op) => fs.read(cx, req!(op)),
-                        Operation::Release(op) => fs.release(cx, req!(op)),
-                        Operation::Statfs(op) => fs.statfs(cx, req!(op)),
-                        Operation::Fsync(op) => fs.fsync(cx, req!(op)),
-                        Operation::Setxattr(op) => fs.setxattr(cx, req!(op)),
-                        Operation::Getxattr(op) => fs.getxattr(cx, req!(op)),
-                        Operation::Listxattr(op) => fs.listxattr(cx, req!(op)),
-                        Operation::Removexattr(op) => fs.removexattr(cx, req!(op)),
-                        Operation::Flush(op) => fs.flush(cx, req!(op)),
-                        Operation::Opendir(op) => fs.opendir(cx, req!(op)),
-                        Operation::Readdir(op) => fs.readdir(cx, req!(op)),
-                        Operation::Releasedir(op) => fs.releasedir(cx, req!(op)),
-                        Operation::Fsyncdir(op) => fs.fsyncdir(cx, req!(op)),
-                        Operation::Getlk(op) => fs.getlk(cx, req!(op)),
-                        Operation::Setlk(op) => fs.setlk(cx, req!(op)),
-                        Operation::Flock(op) => fs.flock(cx, req!(op)),
-                        Operation::Access(op) => fs.access(cx, req!(op)),
-                        Operation::Create(op) => fs.create(cx, req!(op)),
-                        Operation::Bmap(op) => fs.bmap(cx, req!(op)),
-                        Operation::Fallocate(op) => fs.fallocate(cx, req!(op)),
-                        Operation::CopyFileRange(op) => fs.copy_file_range(cx, req!(op)),
-                        Operation::Poll(op) => fs.poll(cx, req!(op)),
-                        Operation::Write(op) => fs.write(cx, req!(op), Data { inner: data }),
-                        Operation::NotifyReply(op) => {
-                            fs.notify_reply(cx, req!(op), Data { inner: data })?;
-                            continue;
-                        }
-                        Operation::Forget(forgets) => {
-                            fs.forget(cx, forgets.as_ref());
-                            continue;
-                        }
-                        Operation::Interrupt(op) => {
-                            tracing::warn!("interrupt: {:?}", op);
-                            continue;
-                        }
-                    };
-
-                    match res {
-                        Err(Error::Reply(err)) => return Err(err),
-                        Err(Error::Code(code)) => session.reply_error(&worker_conn, &buf, code)?,
-                        Ok(..) => (),
-                    }
-                }
-                Ok(())
-            });
+        for _i in 0..num_workers {
+            let worker = Worker {
+                fs: &fs,
+                session: &session,
+                notifier: Notifier {
+                    session: &session,
+                    conn: &conn,
+                },
+                conn: conn.try_ioc_clone()?,
+                buf: session.new_request_buffer()?,
+            };
+            spawner.spawn(move || worker.run(spawner));
         }
 
         // TODO: on_destroy
@@ -328,4 +261,115 @@ where
     fusermount.unmount()?;
 
     Ok(())
+}
+
+struct Worker<'env, T> {
+    fs: &'env T,
+    session: &'env Session,
+    notifier: Notifier<'env>,
+    conn: Connection,
+    buf: RequestBuffer,
+}
+
+impl<'env, T> Worker<'env, T>
+where
+    T: Filesystem,
+{
+    fn run<'scope>(mut self, spawner: Spawner<'scope, 'env>) -> io::Result<()>
+    where
+        'env: 'scope,
+    {
+        while self.session.read_request(&self.conn, &mut self.buf)? {
+            self.handle_request(spawner)?;
+        }
+        Ok(())
+    }
+
+    fn req<Arg>(&self, arg: Arg) -> Request<'_, Arg> {
+        Request {
+            session: self.session,
+            conn: &self.conn,
+            buf: &self.buf,
+            arg,
+        }
+    }
+
+    fn handle_request<'scope>(&mut self, spawner: Spawner<'scope, 'env>) -> io::Result<()>
+    where
+        'env: 'scope,
+    {
+        let span = tracing::debug_span!("handle_request", unique = self.buf.unique());
+        let _enter = span.enter();
+
+        let (op, data) = self
+            .buf
+            .operation()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        tracing::debug!(?op);
+
+        let cx = Context {
+            notifier: self.notifier.clone(),
+            spawner,
+        };
+
+        let result = match op {
+            Operation::Lookup(op) => self.fs.lookup(cx, self.req(op)),
+            Operation::Getattr(op) => self.fs.getattr(cx, self.req(op)),
+            Operation::Setattr(op) => self.fs.setattr(cx, self.req(op)),
+            Operation::Readlink(op) => self.fs.readlink(cx, self.req(op)),
+            Operation::Symlink(op) => self.fs.symlink(cx, self.req(op)),
+            Operation::Mknod(op) => self.fs.mknod(cx, self.req(op)),
+            Operation::Mkdir(op) => self.fs.mkdir(cx, self.req(op)),
+            Operation::Unlink(op) => self.fs.unlink(cx, self.req(op)),
+            Operation::Rmdir(op) => self.fs.rmdir(cx, self.req(op)),
+            Operation::Rename(op) => self.fs.rename(cx, self.req(op)),
+            Operation::Link(op) => self.fs.link(cx, self.req(op)),
+            Operation::Open(op) => self.fs.open(cx, self.req(op)),
+            Operation::Read(op) => self.fs.read(cx, self.req(op)),
+            Operation::Release(op) => self.fs.release(cx, self.req(op)),
+            Operation::Statfs(op) => self.fs.statfs(cx, self.req(op)),
+            Operation::Fsync(op) => self.fs.fsync(cx, self.req(op)),
+            Operation::Setxattr(op) => self.fs.setxattr(cx, self.req(op)),
+            Operation::Getxattr(op) => self.fs.getxattr(cx, self.req(op)),
+            Operation::Listxattr(op) => self.fs.listxattr(cx, self.req(op)),
+            Operation::Removexattr(op) => self.fs.removexattr(cx, self.req(op)),
+            Operation::Flush(op) => self.fs.flush(cx, self.req(op)),
+            Operation::Opendir(op) => self.fs.opendir(cx, self.req(op)),
+            Operation::Readdir(op) => self.fs.readdir(cx, self.req(op)),
+            Operation::Releasedir(op) => self.fs.releasedir(cx, self.req(op)),
+            Operation::Fsyncdir(op) => self.fs.fsyncdir(cx, self.req(op)),
+            Operation::Getlk(op) => self.fs.getlk(cx, self.req(op)),
+            Operation::Setlk(op) => self.fs.setlk(cx, self.req(op)),
+            Operation::Flock(op) => self.fs.flock(cx, self.req(op)),
+            Operation::Access(op) => self.fs.access(cx, self.req(op)),
+            Operation::Create(op) => self.fs.create(cx, self.req(op)),
+            Operation::Bmap(op) => self.fs.bmap(cx, self.req(op)),
+            Operation::Fallocate(op) => self.fs.fallocate(cx, self.req(op)),
+            Operation::CopyFileRange(op) => self.fs.copy_file_range(cx, self.req(op)),
+            Operation::Poll(op) => self.fs.poll(cx, self.req(op)),
+            Operation::Write(op) => self.fs.write(cx, self.req(op), Data { inner: data }),
+            Operation::NotifyReply(op) => {
+                self.fs
+                    .notify_reply(cx, self.req(op), Data { inner: data })?;
+                return Ok(());
+            }
+            Operation::Forget(forgets) => {
+                self.fs.forget(cx, forgets.as_ref());
+                return Ok(());
+            }
+            Operation::Interrupt(op) => {
+                tracing::warn!("interrupted(unique={})", op.unique());
+                // TODO: handle interrupt requests.
+                Err(ENOSYS.into())
+            }
+        };
+
+        match result {
+            Ok(..) | Err(Error::Cancelled) => {}
+            Err(Error::Reply(err)) => return Err(err),
+            Err(Error::Code(code)) => self.session.reply_error(&self.conn, &self.buf, code)?,
+        }
+
+        Ok(())
+    }
 }
