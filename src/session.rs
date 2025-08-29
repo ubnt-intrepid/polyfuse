@@ -1,16 +1,16 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
     conn::SpliceRead,
+    notify::Notify,
     request::{ReceiveError, RequestBuffer},
 };
-use libc::ENOSYS;
+use libc::{ENODEV, ENOSYS};
 use polyfuse_kernel::*;
 use std::{
     cmp,
     convert::{TryFrom, TryInto as _},
-    ffi::OsStr,
     fmt, io, mem,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use zerocopy::IntoBytes as _;
 
@@ -186,7 +186,6 @@ pub struct Session {
     major: u32,
     minor: u32,
     exited: AtomicBool,
-    notify_unique: AtomicU64,
 }
 
 impl fmt::Debug for Session {
@@ -361,7 +360,6 @@ impl Session {
                 major,
                 minor,
                 exited: AtomicBool::new(false),
-                notify_unique: AtomicU64::new(0),
             });
         }
     }
@@ -502,121 +500,33 @@ impl Session {
         write_reply(conn, req.unique(), code, ())
     }
 
-    /// Notify the cache invalidation about an inode to the kernel.
-    pub fn notify_inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
+    /// Send a notification message to the kernel.
+    pub fn send_notify<T, N>(&self, conn: T, notify: N) -> io::Result<()>
     where
         T: io::Write,
+        N: Notify,
     {
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
-            POD(fuse_notify_inval_inode_out { ino, off, len }),
-        )
-    }
+        let arg = notify.bytes();
 
-    /// Notify the invalidation about a directory entry to the kernel.
-    pub fn notify_inval_entry<T>(&self, conn: T, parent: u64, name: &OsStr) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        let namelen = name.len().try_into().expect("provided name is too long");
+        let len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .expect("Argument size is too large");
 
-        write_notify(
+        crate::bytes::write_bytes(
             conn,
-            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
             (
-                POD(fuse_notify_inval_entry_out {
-                    parent,
-                    namelen,
-                    padding: 0,
+                POD(fuse_out_header {
+                    len,
+                    error: N::NOTIFY_CODE as i32,
+                    unique: 0, // unique=0 indicates that the message is a notification.
                 }),
-                (name, b"\0".as_slice()),
+                arg,
             ),
         )
-    }
-
-    /// Notify the invalidation about a directory entry to the kernel.
-    ///
-    /// The role of this notification is similar to `notify_inval_entry`.
-    /// Additionally, when the provided `child` inode matches the inode
-    /// in the dentry cache, the inotify will inform the deletion to
-    /// watchers if exists.
-    pub fn notify_delete<T>(&self, conn: T, parent: u64, child: u64, name: &OsStr) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        let namelen = name.len().try_into().expect("provided name is too long");
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_DELETE,
-            (
-                POD(fuse_notify_delete_out {
-                    parent,
-                    child,
-                    namelen,
-                    padding: 0,
-                }),
-                (name, b"\0".as_ref()),
-            ),
-        )
-    }
-
-    /// Push the data in an inode for updating the kernel cache.
-    pub fn notify_store<T, B>(&self, conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
-    where
-        T: io::Write,
-        B: Bytes,
-    {
-        let size = data.size().try_into().expect("provided data is too large");
-
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_STORE,
-            (
-                POD(fuse_notify_store_out {
-                    nodeid: ino,
-                    offset,
-                    size,
-                    padding: 0,
-                }),
-                data,
-            ),
-        )
-    }
-
-    /// Retrieve data in an inode from the kernel cache.
-    pub fn notify_retrieve<T>(&self, conn: T, ino: u64, offset: u64, size: u32) -> io::Result<u64>
-    where
-        T: io::Write,
-    {
-        // FIXME: choose appropriate memory ordering.
-        let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
-
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
-            POD(fuse_notify_retrieve_out {
-                nodeid: ino,
-                offset,
-                size,
-                notify_unique,
-                padding: 0,
-            }),
-        )?;
-
-        Ok(notify_unique)
-    }
-
-    /// Send I/O readiness to the kernel.
-    pub fn notify_poll_wakeup<T>(&self, conn: T, kh: u64) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_POLL,
-            POD(fuse_notify_poll_wakeup_out { kh }),
-        )
+        .or_else(|err| match err.raw_os_error() {
+            Some(ENODEV) => Ok(()), // 切断済みであれば無視
+            _ => Err(err),
+        })
     }
 }
 
@@ -636,28 +546,6 @@ where
                 len,
                 error: -error,
                 unique,
-            }),
-            arg,
-        ),
-    )
-}
-
-fn write_notify<W, T>(writer: W, code: fuse_notify_code, arg: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    let len = (mem::size_of::<fuse_out_header>() + arg.size())
-        .try_into()
-        .expect("Argument size is too large");
-
-    crate::bytes::write_bytes(
-        writer,
-        (
-            POD(fuse_out_header {
-                len,
-                error: code as i32,
-                unique: 0,
             }),
             arg,
         ),
