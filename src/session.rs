@@ -4,7 +4,7 @@ use crate::{
     notify::Notify,
     request::{ReceiveError, RequestBuffer},
 };
-use libc::{ENODEV, ENOSYS};
+use libc::{ENODEV, ENOSYS, EPROTO};
 use polyfuse_kernel::*;
 use std::{
     cmp,
@@ -332,7 +332,7 @@ impl Session {
                     minor: FUSE_KERNEL_MINOR_VERSION,
                     ..Default::default()
                 };
-                write_reply(&mut conn, header_in.unique, 0, args.as_bytes())?;
+                self.send_reply(&mut conn, header_in.unique, 0, args.as_bytes())?;
                 continue;
             }
 
@@ -346,7 +346,7 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                write_reply(&mut conn, header_in.unique, libc::EPROTO, ())?;
+                self.send_reply(&mut conn, header_in.unique, EPROTO, ())?;
                 continue;
             }
 
@@ -427,7 +427,7 @@ impl Session {
                 padding: 0,
                 unused: [0; 8],
             };
-            write_reply(&mut conn, header_in.unique, 0, init_out.as_bytes())?;
+            self.send_reply(&mut conn, header_in.unique, 0, init_out.as_bytes())?;
 
             *self.state.get_mut() = Self::RUNNING;
 
@@ -463,7 +463,7 @@ impl Session {
                         "The opcode `{}' is not recognized by the current version of polyfuse.",
                         code
                     );
-                    write_reply(&mut conn, buf.unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, buf.unique(), ENOSYS, ())?;
                     continue;
                 }
                 Err(ReceiveError::Fatal(err)) => {
@@ -496,7 +496,7 @@ impl Session {
                         buf.unique(),
                         buf.opcode() as u32
                     );
-                    write_reply(&mut conn, buf.unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, buf.unique(), ENOSYS, ())?;
                     continue;
                 }
 
@@ -513,6 +513,18 @@ impl Session {
         }
     }
 
+    fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
+        match err.raw_os_error() {
+            Some(ENODEV) => {
+                // 切断済みであれば無視
+                tracing::debug!("disconnected");
+                self.exit();
+                Ok(())
+            }
+            _ => Err(err),
+        }
+    }
+
     /// Send a reply message of completed request to the kernel.
     ///
     /// Note that the instance of `conn` must be the same as the one used
@@ -525,7 +537,22 @@ impl Session {
         T: io::Write,
         B: Bytes,
     {
-        write_reply(conn, unique, error, arg)
+        let len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .expect("Argument size is too large");
+
+        crate::bytes::write_bytes(
+            conn,
+            (
+                POD(fuse_out_header {
+                    len,
+                    error: -error,
+                    unique,
+                }),
+                arg,
+            ),
+        )
+        .or_else(|err| self.handle_reply_error(err))
     }
 
     /// Send a notification message to the kernel.
@@ -551,39 +578,51 @@ impl Session {
                 arg,
             ),
         )
-        .or_else(|err| match err.raw_os_error() {
-            Some(ENODEV) => Ok(()), // 切断済みであれば無視
-            _ => Err(err),
-        })
+        .or_else(|err| self.handle_reply_error(err))
     }
-}
-
-fn write_reply<W, T>(writer: W, unique: u64, error: i32, arg: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    let len = (mem::size_of::<fuse_out_header>() + arg.size())
-        .try_into()
-        .expect("Argument size is too large");
-
-    crate::bytes::write_bytes(
-        writer,
-        (
-            POD(fuse_out_header {
-                len,
-                error: -error,
-                unique,
-            }),
-            arg,
-        ),
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::mem;
+
+    #[test]
+    fn proto_version_smoketest() {
+        let ver1 = ProtocolVersion {
+            major: 7,
+            minor: 31,
+        };
+        assert_eq!(ver1.major(), 7);
+        assert_eq!(ver1.minor(), 31);
+        assert_eq!(ver1, ver1);
+
+        let ver2 = ProtocolVersion {
+            major: 6,
+            minor: 99,
+        };
+        assert!(ver1 > ver2);
+
+        let ver3 = ProtocolVersion {
+            major: 7,
+            minor: 99,
+        };
+        assert!(ver1 < ver3);
+
+        let ver4 = ProtocolVersion { major: 8, minor: 0 };
+        assert!(ver1 < ver4);
+    }
+
+    #[test]
+    fn kernel_config_smoketest() {
+        let config = KernelConfig::default();
+        assert_eq!(
+            config.request_buffer_size(),
+            config.max_write as usize
+                + mem::size_of::<fuse_in_header>()
+                + mem::size_of::<fuse_write_in>()
+        );
+    }
 
     struct Unite<R, W> {
         reader: R,
@@ -735,9 +774,10 @@ mod tests {
     }
 
     #[test]
-    fn send_msg_empty() {
+    fn send_reply_empty() {
+        let session = Session::new();
         let mut buf = vec![0u8; 0];
-        write_reply(&mut buf, 42, -4, ()).unwrap();
+        session.send_reply(&mut buf, 42, -4, ()).unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -748,9 +788,10 @@ mod tests {
     }
 
     #[test]
-    fn send_msg_single_data() {
+    fn send_reply_single_data() {
+        let session = Session::default();
         let mut buf = vec![0u8; 0];
-        write_reply(&mut buf, 42, 0, "hello").unwrap();
+        session.send_reply(&mut buf, 42, 0, "hello").unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -763,6 +804,7 @@ mod tests {
 
     #[test]
     fn send_msg_chunked_data() {
+        let session = Session::default();
         let payload: &[&[u8]] = &[
             "hello, ".as_ref(), //
             "this ".as_ref(),
@@ -770,7 +812,7 @@ mod tests {
             "message.".as_ref(),
         ];
         let mut buf = vec![0u8; 0];
-        write_reply(&mut buf, 26, 0, payload).unwrap();
+        session.send_reply(&mut buf, 26, 0, payload).unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
