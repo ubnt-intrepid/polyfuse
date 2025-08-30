@@ -8,7 +8,6 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, StatfsOut, WriteOut, XattrOut},
-    types::{FileAttr, Statfs},
     KernelConfig, KernelFlags,
 };
 
@@ -104,7 +103,7 @@ impl Passthrough {
     fn make_entry_param(&self, ino: u64, attr: libc::stat) -> EntryOut {
         let mut reply = EntryOut::default();
         reply.ino(ino);
-        fill_attr(reply.attr(), &attr);
+        *reply.attr() = attr.into();
         if let Some(timeout) = self.timeout {
             reply.ttl_entry(timeout);
             reply.ttl_attr(timeout);
@@ -220,7 +219,7 @@ impl Filesystem for Passthrough {
         let stat = inode.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &stat);
+        *out.attr() = stat.into();
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         };
@@ -309,7 +308,7 @@ impl Filesystem for Passthrough {
         let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &stat);
+        *out.attr() = stat.into();
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         };
@@ -743,36 +742,10 @@ impl Filesystem for Passthrough {
         let st = nix::fstatvfs(&inode.fd)?;
 
         let mut out = StatfsOut::default();
-        fill_statfs(out.statfs(), &st);
+        *out.statfs() = st.into();
 
         req.reply(out)
     }
-}
-
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(st.st_ino);
-    attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
-    attr.rdev(st.st_rdev as u32);
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
-}
-
-fn fill_statfs(statfs: &mut Statfs, st: &libc::statvfs) {
-    statfs.bsize(st.f_bsize as u32);
-    statfs.frsize(st.f_frsize as u32);
-    statfs.blocks(st.f_blocks);
-    statfs.bfree(st.f_bfree);
-    statfs.bavail(st.f_bavail);
-    statfs.files(st.f_files);
-    statfs.ffree(st.f_ffree);
-    statfs.namelen(st.f_namemax as u32);
 }
 
 // ==== HandlePool ====

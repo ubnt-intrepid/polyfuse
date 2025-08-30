@@ -6,7 +6,6 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut, XattrOut},
-    types::FileAttr,
     KernelConfig,
 };
 
@@ -305,7 +304,7 @@ impl MemFS {
 
         let mut out = EntryOut::default();
         out.ino(inode_entry.ino());
-        fill_attr(out.attr(), &inode.attr);
+        *out.attr() = inode.attr.into();
         out.ttl_entry(self.ttl);
 
         map_entry.insert(inode_entry.ino());
@@ -357,7 +356,7 @@ impl Filesystem for MemFS {
 
         let mut out = EntryOut::default();
         out.ino(child_ino);
-        fill_attr(out.attr(), &child.attr);
+        *out.attr() = child.attr.into();
         out.ttl_entry(self.ttl);
 
         req.reply(out)
@@ -380,7 +379,7 @@ impl Filesystem for MemFS {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &inode.attr);
+        *out.attr() = inode.attr.into();
         out.ttl(self.ttl);
 
         req.reply(out)
@@ -426,7 +425,7 @@ impl Filesystem for MemFS {
         }
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &inode.attr);
+        *out.attr() = inode.attr.into();
         out.ttl(self.ttl);
 
         req.reply(out)
@@ -569,7 +568,7 @@ impl Filesystem for MemFS {
 
         let mut out = EntryOut::default();
         out.ino(req.arg().ino());
-        fill_attr(out.attr(), &inode.attr);
+        *out.attr() = inode.attr.into();
         out.ttl_entry(self.ttl);
 
         req.reply(out)
@@ -775,19 +774,4 @@ impl Filesystem for MemFS {
 
         req.reply(out)
     }
-}
-
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(st.st_ino);
-    attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
-    attr.rdev(st.st_rdev as u32);
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
 }

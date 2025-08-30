@@ -75,21 +75,25 @@ impl Hello {
         }
     }
 
-    fn fill_root_attr(&self, attr: &mut FileAttr) {
+    fn root_attr(&self) -> FileAttr {
+        let mut attr = FileAttr::default();
         attr.ino(ROOT_INO);
         attr.mode(libc::S_IFDIR | 0o555);
         attr.nlink(2);
         attr.uid(self.uid);
         attr.gid(self.gid);
+        attr
     }
 
-    fn fill_hello_attr(&self, attr: &mut FileAttr) {
+    fn hello_attr(&self) -> FileAttr {
+        let mut attr = FileAttr::default();
         attr.ino(HELLO_INO);
         attr.size(HELLO_CONTENT.len() as u64);
         attr.mode(libc::S_IFREG | 0o444);
         attr.nlink(1);
         attr.uid(self.uid);
         attr.gid(self.gid);
+        attr
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -105,7 +109,7 @@ impl Filesystem for Hello {
         match req.arg().parent() {
             ROOT_INO if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
-                self.fill_hello_attr(out.attr());
+                *out.attr() = self.hello_attr();
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
@@ -116,14 +120,14 @@ impl Filesystem for Hello {
     }
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
-        let fill_attr = match req.arg().ino() {
-            ROOT_INO => Self::fill_root_attr,
-            HELLO_INO => Self::fill_hello_attr,
+        let attr = match req.arg().ino() {
+            ROOT_INO => self.root_attr(),
+            HELLO_INO => self.hello_attr(),
             _ => return Err(libc::ENOENT.into()),
         };
 
         let mut out = AttrOut::default();
-        fill_attr(self, out.attr());
+        *out.attr() = attr;
         out.ttl(TTL);
 
         req.reply(out)

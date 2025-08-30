@@ -1,8 +1,8 @@
-use std::time::Duration;
-
 use polyfuse_kernel::{fuse_attr, fuse_file_lock, fuse_kstatfs};
+use std::{fs::Metadata, os::unix::prelude::*, time::Duration};
 
 /// Attributes about a file.
+#[derive(Default)]
 #[repr(transparent)]
 pub struct FileAttr {
     attr: fuse_attr,
@@ -90,6 +90,69 @@ impl FileAttr {
     }
 }
 
+impl From<libc::stat> for FileAttr {
+    #[inline]
+    fn from(st: libc::stat) -> Self {
+        Self::from(&st)
+    }
+}
+
+impl From<&libc::stat> for FileAttr {
+    fn from(st: &libc::stat) -> Self {
+        Self {
+            attr: fuse_attr {
+                ino: st.st_ino,
+                size: st.st_size.try_into().unwrap(),
+                blocks: st.st_blocks.try_into().unwrap(),
+                atime: st.st_atime.try_into().unwrap(),
+                mtime: st.st_mtime.try_into().unwrap(),
+                ctime: st.st_ctime.try_into().unwrap(),
+                atimensec: st.st_atime_nsec.try_into().unwrap(),
+                mtimensec: st.st_mtime_nsec.try_into().unwrap(),
+                ctimensec: st.st_ctime_nsec.try_into().unwrap(),
+                mode: st.st_mode,
+                nlink: st.st_nlink.try_into().unwrap(),
+                uid: st.st_uid,
+                gid: st.st_gid,
+                rdev: st.st_rdev.try_into().unwrap(),
+                blksize: st.st_blksize.try_into().unwrap(),
+                padding: 0,
+            },
+        }
+    }
+}
+
+impl From<Metadata> for FileAttr {
+    fn from(metadata: Metadata) -> Self {
+        Self::from(&metadata)
+    }
+}
+
+impl From<&Metadata> for FileAttr {
+    fn from(metadata: &Metadata) -> Self {
+        Self {
+            attr: fuse_attr {
+                ino: metadata.ino(),
+                size: metadata.size(),
+                blocks: metadata.blocks(),
+                atime: metadata.atime().try_into().unwrap(),
+                mtime: metadata.mtime().try_into().unwrap(),
+                ctime: metadata.ctime().try_into().unwrap(),
+                atimensec: metadata.atime_nsec().try_into().unwrap(),
+                mtimensec: metadata.mtime_nsec().try_into().unwrap(),
+                ctimensec: metadata.ctime_nsec().try_into().unwrap(),
+                mode: metadata.mode(),
+                nlink: metadata.nlink().try_into().unwrap(),
+                uid: metadata.uid(),
+                gid: metadata.gid(),
+                rdev: metadata.rdev().try_into().unwrap(),
+                blksize: metadata.blksize().try_into().unwrap(),
+                padding: 0,
+            },
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Statfs {
     st: fuse_kstatfs,
@@ -139,6 +202,31 @@ impl Statfs {
     /// Set the maximum length of file names.
     pub fn namelen(&mut self, namelen: u32) {
         self.st.namelen = namelen;
+    }
+}
+
+impl From<libc::statvfs> for Statfs {
+    fn from(st: libc::statvfs) -> Self {
+        Self::from(&st)
+    }
+}
+
+impl From<&libc::statvfs> for Statfs {
+    fn from(st: &libc::statvfs) -> Self {
+        Self {
+            st: fuse_kstatfs {
+                blocks: st.f_blocks,
+                bfree: st.f_bfree,
+                bavail: st.f_bavail,
+                files: st.f_files,
+                ffree: st.f_ffree,
+                bsize: st.f_bsize.try_into().unwrap(),
+                namelen: st.f_namemax.try_into().unwrap(),
+                frsize: st.f_frsize.try_into().unwrap(),
+                padding: 0,
+                spare: [0; 6],
+            },
+        }
     }
 }
 

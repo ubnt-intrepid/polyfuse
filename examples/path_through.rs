@@ -16,7 +16,6 @@ use polyfuse::{
     mount::MountOptions,
     op::{self, Forget},
     reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut},
-    types::FileAttr,
     KernelConfig,
 };
 
@@ -26,12 +25,11 @@ use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::OsString,
-    fs::{File, Metadata, OpenOptions, ReadDir},
+    fs::{File, OpenOptions, ReadDir},
     io::{self, prelude::*, BufRead, BufReader},
     os::unix::prelude::*,
     path::{Path, PathBuf},
     sync::Mutex,
-    time::Duration,
 };
 
 fn main() -> Result<()> {
@@ -147,7 +145,7 @@ impl Filesystem for PathThrough {
         let metadata = std::fs::symlink_metadata(self.source.join(&path))?;
 
         let mut out = EntryOut::default();
-        fill_attr(&metadata, out.attr());
+        *out.attr() = metadata.into();
 
         match inodes.get_by_path_mut(&path) {
             Some(inode) => {
@@ -193,7 +191,7 @@ impl Filesystem for PathThrough {
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
         let mut out = AttrOut::default();
-        fill_attr(&metadata, out.attr());
+        *out.attr() = metadata.into();
 
         req.reply(out)
     }
@@ -235,7 +233,7 @@ impl Filesystem for PathThrough {
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
         let mut out = AttrOut::default();
-        fill_attr(&metadata, out.attr());
+        *out.attr() = metadata.into();
 
         req.reply(out)
     }
@@ -471,28 +469,4 @@ impl FileHandle {
         }
         Ok(())
     }
-}
-
-fn fill_attr(metadata: &Metadata, attr: &mut FileAttr) {
-    attr.ino(metadata.ino());
-    attr.size(metadata.size());
-    attr.mode(metadata.mode());
-    attr.nlink(metadata.nlink() as u32);
-    attr.uid(metadata.uid());
-    attr.gid(metadata.gid());
-    attr.rdev(metadata.rdev() as u32);
-    attr.blksize(metadata.blksize() as u32);
-    attr.blocks(metadata.blocks());
-    attr.atime(Duration::new(
-        metadata.atime() as u64,
-        metadata.atime_nsec() as u32,
-    ));
-    attr.mtime(Duration::new(
-        metadata.mtime() as u64,
-        metadata.mtime_nsec() as u32,
-    ));
-    attr.ctime(Duration::new(
-        metadata.ctime() as u64,
-        metadata.ctime_nsec() as u32,
-    ));
 }
