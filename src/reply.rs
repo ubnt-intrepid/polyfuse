@@ -36,10 +36,11 @@ impl Bytes for EntryOut {
 }
 
 impl EntryOut {
-    /// Return the object to fill attribute values about this entry.
+    /// Set the attribute values about this entry.
     #[inline]
-    pub fn attr(&mut self) -> &mut FileAttr {
-        FileAttr::from_attr_mut(&mut self.out.attr)
+    pub fn attr(&mut self, attr: impl Into<FileAttr>) -> &mut Self {
+        self.out.attr = attr.into().into_inner();
+        self
     }
 
     /// Set the inode number of this entry.
@@ -49,8 +50,9 @@ impl EntryOut {
     /// but the *zeroed* entries also have the ability to specify the lifetime
     /// of the entry cache by using the `ttl_entry` parameter.
     #[inline]
-    pub fn ino(&mut self, ino: u64) {
+    pub fn ino(&mut self, ino: u64) -> &mut Self {
         self.out.nodeid = ino;
+        self
     }
 
     /// Set the generation of this entry.
@@ -59,8 +61,9 @@ impl EntryOut {
     /// when the filesystem reuse inode numbers.  That is, the operations
     /// must ensure that the pair of entry's inode number and generation
     /// are unique for the lifetime of the filesystem.
-    pub fn generation(&mut self, generation: u64) {
+    pub fn generation(&mut self, generation: u64) -> &mut Self {
         self.out.generation = generation;
+        self
     }
 
     /// Set the validity timeout for inode attributes.
@@ -68,9 +71,10 @@ impl EntryOut {
     /// The operations should set this value to very large
     /// when the changes of inode attributes are caused
     /// only by FUSE requests.
-    pub fn ttl_attr(&mut self, ttl: Duration) {
+    pub fn ttl_attr(&mut self, ttl: Duration) -> &mut Self {
         self.out.attr_valid = ttl.as_secs();
         self.out.attr_valid_nsec = ttl.subsec_nanos();
+        self
     }
 
     /// Set the validity timeout for the name.
@@ -78,13 +82,13 @@ impl EntryOut {
     /// The operations should set this value to very large
     /// when the changes/deletions of directory entries are
     /// caused only by FUSE requests.
-    pub fn ttl_entry(&mut self, ttl: Duration) {
+    pub fn ttl_entry(&mut self, ttl: Duration) -> &mut Self {
         self.out.entry_valid = ttl.as_secs();
         self.out.entry_valid_nsec = ttl.subsec_nanos();
+        self
     }
 }
 
-#[derive(Default)]
 pub struct AttrOut {
     out: fuse_attr_out,
 }
@@ -97,16 +101,23 @@ impl fmt::Debug for AttrOut {
 }
 
 impl AttrOut {
-    /// Return the object to fill attribute values.
     #[inline]
-    pub fn attr(&mut self) -> &mut FileAttr {
-        FileAttr::from_attr_mut(&mut self.out.attr)
+    pub fn new(attr: impl Into<FileAttr>) -> Self {
+        Self {
+            out: fuse_attr_out {
+                attr_valid: 0,
+                attr_valid_nsec: 0,
+                dummy: 0,
+                attr: attr.into().into_inner(),
+            },
+        }
     }
 
     /// Set the validity timeout for this attribute.
-    pub fn ttl(&mut self, ttl: Duration) {
+    pub fn ttl(&mut self, ttl: Duration) -> &mut Self {
         self.out.attr_valid = ttl.as_secs();
         self.out.attr_valid_nsec = ttl.subsec_nanos();
+        self
     }
 }
 
@@ -127,7 +138,6 @@ impl Bytes for AttrOut {
     }
 }
 
-#[derive(Default)]
 pub struct OpenOut {
     out: fuse_open_out,
 }
@@ -157,9 +167,14 @@ impl Bytes for OpenOut {
 }
 
 impl OpenOut {
-    /// Set the handle of opened file.
-    pub fn fh(&mut self, fh: u64) {
-        self.out.fh = fh;
+    pub const fn new(fh: u64) -> Self {
+        Self {
+            out: fuse_open_out {
+                fh,
+                open_flags: 0,
+                padding: 0,
+            },
+        }
     }
 
     #[inline]
@@ -172,30 +187,33 @@ impl OpenOut {
     }
 
     /// Indicates that the direct I/O is used on this file.
-    pub fn direct_io(&mut self, enabled: bool) {
+    pub fn direct_io(&mut self, enabled: bool) -> &mut Self {
         self.set_flag(FOPEN_DIRECT_IO, enabled);
+        self
     }
 
     /// Indicates that the currently cached file data in the kernel
     /// need not be invalidated.
-    pub fn keep_cache(&mut self, enabled: bool) {
+    pub fn keep_cache(&mut self, enabled: bool) -> &mut Self {
         self.set_flag(FOPEN_KEEP_CACHE, enabled);
+        self
     }
 
     /// Indicates that the opened file is not seekable.
-    pub fn nonseekable(&mut self, enabled: bool) {
+    pub fn nonseekable(&mut self, enabled: bool) -> &mut Self {
         self.set_flag(FOPEN_NONSEEKABLE, enabled);
+        self
     }
 
     /// Enable caching of entries returned by `readdir`.
     ///
     /// This flag is meaningful only for `opendir` operations.
-    pub fn cache_dir(&mut self, enabled: bool) {
+    pub fn cache_dir(&mut self, enabled: bool) -> &mut Self {
         self.set_flag(FOPEN_CACHE_DIR, enabled);
+        self
     }
 }
 
-#[derive(Default)]
 pub struct WriteOut {
     out: fuse_write_out,
 }
@@ -225,12 +243,13 @@ impl Bytes for WriteOut {
 }
 
 impl WriteOut {
-    pub fn size(&mut self, size: u32) {
-        self.out.size = size;
+    pub const fn new(size: u32) -> Self {
+        Self {
+            out: fuse_write_out { size, padding: 0 },
+        }
     }
 }
 
-#[derive(Default)]
 pub struct StatfsOut {
     out: fuse_statfs_out,
 }
@@ -260,9 +279,12 @@ impl Bytes for StatfsOut {
 }
 
 impl StatfsOut {
-    /// Return the object to fill the filesystem statistics.
-    pub fn statfs(&mut self) -> &mut Statfs {
-        Statfs::from_kstatfs_mut(&mut self.out.st)
+    pub fn new(st: impl Into<Statfs>) -> Self {
+        Self {
+            out: fuse_statfs_out {
+                st: st.into().into_inner(),
+            },
+        }
     }
 }
 
@@ -296,12 +318,13 @@ impl Bytes for XattrOut {
 }
 
 impl XattrOut {
-    pub fn size(&mut self, size: u32) {
-        self.out.size = size;
+    pub const fn new(size: u32) -> Self {
+        Self {
+            out: fuse_getxattr_out { size, padding: 0 },
+        }
     }
 }
 
-#[derive(Default)]
 pub struct LkOut {
     out: fuse_lk_out,
 }
@@ -331,12 +354,15 @@ impl Bytes for LkOut {
 }
 
 impl LkOut {
-    pub fn file_lock(&mut self) -> &mut FileLock {
-        FileLock::from_file_lock_mut(&mut self.out.lk)
+    pub fn new(lk: impl Into<FileLock>) -> Self {
+        Self {
+            out: fuse_lk_out {
+                lk: lk.into().into_inner(),
+            },
+        }
     }
 }
 
-#[derive(Default)]
 pub struct BmapOut {
     out: fuse_bmap_out,
 }
@@ -366,12 +392,13 @@ impl Bytes for BmapOut {
 }
 
 impl BmapOut {
-    pub fn block(&mut self, block: u64) {
-        self.out.block = block;
+    pub const fn new(block: u64) -> Self {
+        Self {
+            out: fuse_bmap_out { block },
+        }
     }
 }
 
-#[derive(Default)]
 pub struct PollOut {
     out: fuse_poll_out,
 }
@@ -401,8 +428,13 @@ impl Bytes for PollOut {
 }
 
 impl PollOut {
-    pub fn revents(&mut self, revents: u32) {
-        self.out.revents = revents;
+    pub const fn new(revents: u32) -> Self {
+        Self {
+            out: fuse_poll_out {
+                revents,
+                padding: 0,
+            },
+        }
     }
 }
 

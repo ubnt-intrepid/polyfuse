@@ -109,7 +109,7 @@ impl Filesystem for Hello {
         match req.arg().parent() {
             ROOT_INO if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
-                *out.attr() = self.hello_attr();
+                out.attr(self.hello_attr());
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
@@ -126,11 +126,7 @@ impl Filesystem for Hello {
             _ => return Err(libc::ENOENT.into()),
         };
 
-        let mut out = AttrOut::default();
-        *out.attr() = attr;
-        out.ttl(TTL);
-
-        req.reply(out)
+        req.reply(AttrOut::new(attr).ttl(TTL))
     }
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
@@ -153,9 +149,8 @@ impl Filesystem for Hello {
     }
 
     fn opendir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
-        let mut out = OpenOut::default();
-        out.fh(req.arg().ino());
-        req.reply(out)
+        let fh = req.arg().ino();
+        req.reply(OpenOut::new(fh))
     }
 
     fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {

@@ -304,7 +304,7 @@ impl MemFS {
 
         let mut out = EntryOut::default();
         out.ino(inode_entry.ino());
-        *out.attr() = inode.attr.into();
+        out.attr(&inode.attr);
         out.ttl_entry(self.ttl);
 
         map_entry.insert(inode_entry.ino());
@@ -354,12 +354,12 @@ impl Filesystem for MemFS {
             .expect("should not be panic here");
         child.refcount += 1;
 
-        let mut out = EntryOut::default();
-        out.ino(child_ino);
-        *out.attr() = child.attr.into();
-        out.ttl_entry(self.ttl);
-
-        req.reply(out)
+        req.reply(
+            EntryOut::default()
+                .ino(child_ino)
+                .attr(&child.attr)
+                .ttl_entry(self.ttl),
+        )
     }
 
     fn forget(&self, _: fs::Context<'_, '_>, forgets: &[op::Forget]) {
@@ -377,12 +377,7 @@ impl Filesystem for MemFS {
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
-
-        let mut out = AttrOut::default();
-        *out.attr() = inode.attr.into();
-        out.ttl(self.ttl);
-
-        req.reply(out)
+        req.reply(AttrOut::new(&inode.attr).ttl(self.ttl))
     }
 
     fn setattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Setattr<'_>>) -> fs::Result {
@@ -424,11 +419,7 @@ impl Filesystem for MemFS {
             inode.attr.st_ctime_nsec = ctime.subsec_nanos() as u64 as i64;
         }
 
-        let mut out = AttrOut::default();
-        *out.attr() = inode.attr.into();
-        out.ttl(self.ttl);
-
-        req.reply(out)
+        req.reply(AttrOut::new(&inode.attr).ttl(self.ttl))
     }
 
     fn readlink(
@@ -454,10 +445,7 @@ impl Filesystem for MemFS {
             offset: AtomicUsize::new(0),
         });
 
-        let mut out = OpenOut::default();
-        out.fh(key as u64);
-
-        req.reply(out)
+        req.reply(OpenOut::new(key as u64))
     }
 
     fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
@@ -566,12 +554,13 @@ impl Filesystem for MemFS {
             }
         }
 
-        let mut out = EntryOut::default();
-        out.ino(req.arg().ino());
-        *out.attr() = inode.attr.into();
-        out.ttl_entry(self.ttl);
-
-        req.reply(out)
+        let ino = req.arg().ino();
+        req.reply(
+            EntryOut::default()
+                .ino(ino)
+                .attr(&inode.attr)
+                .ttl_entry(self.ttl),
+        )
     }
 
     fn unlink(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Unlink<'_>>) -> fs::Result {
@@ -636,11 +625,7 @@ impl Filesystem for MemFS {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let value = inode.xattrs.get(req.arg().name()).ok_or(ENODATA)?;
         match req.arg().size() {
-            0 => {
-                let mut out = XattrOut::default();
-                out.size(value.len() as u32);
-                req.reply(out)
-            }
+            0 => req.reply(XattrOut::new(value.len() as u32)),
             size => {
                 if value.len() as u32 > size {
                     return Err(ERANGE.into());
@@ -696,9 +681,7 @@ impl Filesystem for MemFS {
         match req.arg().size() {
             0 => {
                 let total_len = inode.xattrs.keys().map(|name| name.len() as u32 + 1).sum();
-                let mut out = XattrOut::default();
-                out.size(total_len);
-                req.reply(out)
+                req.reply(XattrOut::new(total_len))
             }
 
             size => {
@@ -769,9 +752,7 @@ impl Filesystem for MemFS {
 
         inode.attr.st_size = (offset + size) as libc::off_t;
 
-        let mut out = WriteOut::default();
-        out.size(req.arg().size());
-
-        req.reply(out)
+        let size = req.arg().size();
+        req.reply(WriteOut::new(size))
     }
 }

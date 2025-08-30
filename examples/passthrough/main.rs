@@ -103,7 +103,7 @@ impl Passthrough {
     fn make_entry_param(&self, ino: u64, attr: libc::stat) -> EntryOut {
         let mut reply = EntryOut::default();
         reply.ino(ino);
-        *reply.attr() = attr.into();
+        reply.attr(attr);
         if let Some(timeout) = self.timeout {
             reply.ttl_entry(timeout);
             reply.ttl_attr(timeout);
@@ -218,11 +218,10 @@ impl Filesystem for Passthrough {
 
         let stat = inode.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
 
-        let mut out = AttrOut::default();
-        *out.attr() = stat.into();
+        let mut out = AttrOut::new(&stat);
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
-        };
+        }
 
         req.reply(out)
     }
@@ -307,8 +306,7 @@ impl Filesystem for Passthrough {
         // finally, acquiring the latest metadata from the source filesystem.
         let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
 
-        let mut out = AttrOut::default();
-        *out.attr() = stat.into();
+        let mut out = AttrOut::new(&stat);
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         };
@@ -447,10 +445,7 @@ impl Filesystem for Passthrough {
         let dir = inode.fd.read_dir()?;
         let fh = self.opened_dirs.insert(Mutex::new(dir));
 
-        let mut out = OpenOut::default();
-        out.fh(fh);
-
-        req.reply(out)
+        req.reply(OpenOut::new(fh))
     }
 
     fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
@@ -525,10 +520,7 @@ impl Filesystem for Passthrough {
         let file = options.open(inode.fd.procname())?;
         let fh = self.opened_files.insert(Mutex::new(file));
 
-        let mut out = OpenOut::default();
-        out.fh(fh);
-
-        req.reply(out)
+        req.reply(OpenOut::new(fh))
     }
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
@@ -570,10 +562,7 @@ impl Filesystem for Passthrough {
         let mut buf = Read::take(&mut buf, req.arg().size() as u64);
         let written = std::io::copy(&mut buf, &mut *file)?;
 
-        let mut out = WriteOut::default();
-        out.size(written as u32);
-
-        req.reply(out)
+        req.reply(WriteOut::new(written as u32))
     }
 
     fn flush(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Flush<'_>>) -> fs::Result {
@@ -648,9 +637,7 @@ impl Filesystem for Passthrough {
         match req.arg().size() {
             0 => {
                 let size = nix::getxattr(inode.fd.procname(), req.arg().name(), None)?;
-                let mut out = XattrOut::default();
-                out.size(size as u32);
-                req.reply(out)
+                req.reply(XattrOut::new(size as u32))
             }
             size => {
                 let mut value = vec![0u8; size as usize];
@@ -678,9 +665,7 @@ impl Filesystem for Passthrough {
         match req.arg().size() {
             0 => {
                 let size = nix::listxattr(inode.fd.procname(), None)?;
-                let mut out = XattrOut::default();
-                out.size(size as u32);
-                req.reply(out)
+                req.reply(XattrOut::new(size as u32))
             }
             size => {
                 let mut value = vec![0u8; size as usize];
@@ -741,10 +726,7 @@ impl Filesystem for Passthrough {
 
         let st = nix::fstatvfs(&inode.fd)?;
 
-        let mut out = StatfsOut::default();
-        *out.statfs() = st.into();
-
-        req.reply(out)
+        req.reply(StatfsOut::new(st))
     }
 }
 

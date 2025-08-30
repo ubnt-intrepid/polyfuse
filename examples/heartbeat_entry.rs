@@ -142,13 +142,13 @@ impl Filesystem for Heartbeat {
         let mut current = self.current.lock().unwrap();
 
         if req.arg().name().as_bytes() == current.filename.as_bytes() {
-            let mut out = EntryOut::default();
-            out.ino(self.file_attr.st_ino);
-            *out.attr() = self.file_attr.into();
-            out.ttl_entry(self.ttl);
-            out.ttl_attr(self.ttl);
-
-            let res = req.reply(out)?;
+            let res = req.reply(
+                EntryOut::default()
+                    .ino(self.file_attr.st_ino)
+                    .attr(&self.file_attr)
+                    .ttl_entry(self.ttl)
+                    .ttl_attr(self.ttl),
+            )?;
 
             current.nlookup += 1;
 
@@ -174,11 +174,7 @@ impl Filesystem for Heartbeat {
             _ => Err(ENOENT)?,
         };
 
-        let mut out = AttrOut::default();
-        *out.attr() = attr.into();
-        out.ttl(self.ttl);
-
-        req.reply(out)
+        req.reply(AttrOut::new(attr).ttl(self.ttl))
     }
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {

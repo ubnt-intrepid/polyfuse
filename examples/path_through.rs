@@ -145,7 +145,7 @@ impl Filesystem for PathThrough {
         let metadata = std::fs::symlink_metadata(self.source.join(&path))?;
 
         let mut out = EntryOut::default();
-        *out.attr() = metadata.into();
+        out.attr(metadata);
 
         match inodes.get_by_path_mut(&path) {
             Some(inode) => {
@@ -190,10 +190,7 @@ impl Filesystem for PathThrough {
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
-        let mut out = AttrOut::default();
-        *out.attr() = metadata.into();
-
-        req.reply(out)
+        req.reply(AttrOut::new(metadata))
     }
 
     fn setattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Setattr<'_>>) -> fs::Result {
@@ -232,10 +229,7 @@ impl Filesystem for PathThrough {
 
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
-        let mut out = AttrOut::default();
-        *out.attr() = metadata.into();
-
-        req.reply(out)
+        req.reply(AttrOut::new(metadata))
     }
 
     fn readlink(
@@ -260,10 +254,7 @@ impl Filesystem for PathThrough {
             offset: 1,
         }) as u64;
 
-        let mut out = OpenOut::default();
-        out.fh(fh);
-
-        req.reply(out)
+        req.reply(OpenOut::new(fh))
     }
 
     fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
@@ -361,10 +352,7 @@ impl Filesystem for PathThrough {
             file: options.open(self.source.join(&inode.path))?,
         }) as u64;
 
-        let mut out = OpenOut::default();
-        out.fh(fh);
-
-        req.reply(out)
+        req.reply(OpenOut::new(fh))
     }
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
@@ -386,9 +374,7 @@ impl Filesystem for PathThrough {
         let size = req.arg().size();
         let written = file.write(BufReader::new(data).take(size as u64), offset)?;
 
-        let mut out = WriteOut::default();
-        out.size(written as u32);
-        req.reply(out)
+        req.reply(WriteOut::new(written as u32))
     }
 
     fn flush(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Flush<'_>>) -> fs::Result {

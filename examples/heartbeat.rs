@@ -152,18 +152,17 @@ impl Filesystem for Heartbeat {
             Err(ENOENT)?;
         }
         let inner = self.inner.lock().unwrap();
-        let mut out = AttrOut::default();
-        *out.attr() = inner.attr.into();
-        req.reply(out)
+        req.reply(AttrOut::new(&inner.attr))
     }
 
     fn open(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
         if req.arg().ino() != ROOT_INO {
             Err(ENOENT)?;
         }
-        let mut out = OpenOut::default();
-        out.keep_cache(true);
-        req.reply(out)
+        req.reply(
+            OpenOut::new(0) //
+                .keep_cache(true),
+        )
     }
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {

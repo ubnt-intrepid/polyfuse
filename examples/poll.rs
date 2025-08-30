@@ -2,11 +2,12 @@ use polyfuse::{
     fs::{self, Filesystem},
     op,
     reply::{AttrOut, OpenOut, PollOut},
+    types::FileAttr,
 };
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use libc::{EACCES, EAGAIN, EINVAL};
+use libc::{EACCES, EAGAIN, EINVAL, POLLIN};
 use std::{
     path::PathBuf,
     sync::{
@@ -64,14 +65,13 @@ impl Filesystem for PollFS {
         _: fs::Context<'_, 'env>,
         req: fs::Request<'req, op::Getattr<'req>>,
     ) -> fs::Result {
-        let mut out = AttrOut::default();
-        out.attr().ino(1);
-        out.attr().nlink(1);
-        out.attr().mode(libc::S_IFREG | 0o444);
-        out.attr().uid(unsafe { libc::getuid() });
-        out.attr().gid(unsafe { libc::getgid() });
-        out.ttl(Duration::from_secs(u64::max_value() / 2));
-        req.reply(out)
+        let mut attr = FileAttr::default();
+        attr.ino(1);
+        attr.nlink(1);
+        attr.mode(libc::S_IFREG | 0o444);
+        attr.uid(unsafe { libc::getuid() });
+        attr.gid(unsafe { libc::getgid() });
+        req.reply(AttrOut::new(attr).ttl(Duration::from_secs(u64::max_value() / 2)))
     }
 
     fn open<'env, 'req>(
@@ -125,13 +125,11 @@ impl Filesystem for PollFS {
 
         self.handles.insert(fh, handle);
 
-        req.reply({
-            let mut out = OpenOut::default();
-            out.fh(fh);
-            out.direct_io(true);
-            out.nonseekable(true);
-            out
-        })
+        req.reply(
+            OpenOut::new(fh) //
+                .direct_io(true)
+                .nonseekable(true),
+        )
     }
 
     fn read<'env, 'req>(
@@ -173,17 +171,17 @@ impl Filesystem for PollFS {
         let handle = &*self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
         let state = &mut *handle.state.lock().unwrap();
 
-        let mut out = PollOut::default();
+        let mut revents = 0;
 
         if state.is_ready {
             tracing::info!("file is ready to read");
-            out.revents(req.arg().events() & libc::POLLIN as u32);
+            revents = req.arg().events() & POLLIN as u32;
         } else if let Some(kh) = req.arg().kh() {
             tracing::info!("register the poll handle for notification: kh={}", kh);
             state.kh = Some(kh);
         }
 
-        req.reply(out)
+        req.reply(PollOut::new(revents))
     }
 
     fn release<'env, 'req>(
