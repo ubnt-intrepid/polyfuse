@@ -5,7 +5,7 @@ use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, EntryOut, OpenOut, ReaddirOut},
+    reply::{AttrOut, EntryOut, ReaddirOut},
     types::FileAttr,
     KernelConfig,
 };
@@ -146,11 +146,6 @@ impl Filesystem for Hello {
         }
 
         req.reply(data)
-    }
-
-    fn opendir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
-        let fh = req.arg().ino();
-        req.reply(OpenOut::new(fh))
     }
 
     fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
