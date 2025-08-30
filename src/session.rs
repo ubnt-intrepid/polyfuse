@@ -441,8 +441,8 @@ impl Session {
         self.state.store(Self::EXITED, Ordering::SeqCst)
     }
 
-    /// Read an incoming FUSE request from the kernel.
-    pub fn read_request<T>(&self, mut conn: T, buf: &mut RequestBuffer) -> io::Result<bool>
+    /// Receive an incoming FUSE request from the kernel.
+    pub fn recv_request<T>(&self, mut conn: T, buf: &mut RequestBuffer) -> io::Result<bool>
     where
         T: SpliceRead + io::Write,
     {

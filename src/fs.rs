@@ -306,7 +306,7 @@ where
     where
         'env: 'scope,
     {
-        while self.session.read_request(&self.conn, &mut self.buf)? {
+        while self.session.recv_request(&self.conn, &mut self.buf)? {
             self.handle_request(spawner)?;
         }
         Ok(())

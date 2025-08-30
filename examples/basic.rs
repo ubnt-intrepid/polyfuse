@@ -30,7 +30,7 @@ fn main() -> Result<()> {
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = RequestBuffer::new_fallback(config.request_buffer_size())?;
-    while session.read_request(&mut conn, &mut buf)? {
+    while session.recv_request(&mut conn, &mut buf)? {
         match buf.operation()? {
             // Dispatch your callbacks to the supported operations...
             (Operation::Getattr(op), ..) => getattr(&session, &mut conn, &buf, op)?,
