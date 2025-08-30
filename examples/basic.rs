@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     session.init(&mut conn, &mut config)?;
 
     // Receive an incoming FUSE request from the kernel.
-    let mut buf = session.new_request_buffer()?;
+    let mut buf = RequestBuffer::new_fallback(config.request_buffer_size())?;
     while session.read_request(&mut conn, &mut buf)? {
         match buf.operation()? {
             // Dispatch your callbacks to the supported operations...

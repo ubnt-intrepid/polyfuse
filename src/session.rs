@@ -116,6 +116,12 @@ pub struct KernelConfig {
 
 impl Default for KernelConfig {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KernelConfig {
+    pub const fn new() -> Self {
         Self {
             protocol_version: ProtocolVersion {
                 major: FUSE_KERNEL_VERSION,
@@ -127,8 +133,12 @@ impl Default for KernelConfig {
             max_write: DEFAULT_MAX_WRITE,
             max_pages: 0, // read only
             time_gran: 1,
-            flags: KernelFlags::default(),
+            flags: KernelFlags::new(),
         }
+    }
+
+    pub fn request_buffer_size(&self) -> usize {
+        mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>() + self.max_write as usize
     }
 }
 
@@ -208,15 +218,23 @@ bitflags::bitflags! {
 
 impl Default for KernelFlags {
     fn default() -> Self {
-        Self::ASYNC_READ
-            | Self::PARALLEL_DIROPS
-            | Self::AUTO_INVAL_DATA
-            | Self::HANDLE_KILLPRIV
-            | Self::ASYNC_DIO
-            | Self::ATOMIC_O_TRUNC
-            | Self::NO_OPEN_SUPPORT
-            | Self::NO_OPENDIR_SUPPORT
-            | Self::SPLICE_READ
+        Self::new()
+    }
+}
+
+impl KernelFlags {
+    pub const fn new() -> Self {
+        Self::from_bits_truncate(
+            FUSE_ASYNC_READ
+                | FUSE_PARALLEL_DIROPS
+                | FUSE_AUTO_INVAL_DATA
+                | FUSE_HANDLE_KILLPRIV
+                | FUSE_ASYNC_DIO
+                | FUSE_ATOMIC_O_TRUNC
+                | FUSE_NO_OPEN_SUPPORT
+                | FUSE_NO_OPENDIR_SUPPORT
+                | FUSE_SPLICE_READ,
+        )
     }
 }
 
@@ -226,8 +244,6 @@ impl Default for KernelFlags {
 #[derive(Debug)]
 pub struct Session {
     state: AtomicU32,
-    max_write: u32,
-    flags: KernelFlags,
 }
 
 impl Drop for Session {
@@ -251,8 +267,6 @@ impl Session {
     pub const fn new() -> Self {
         Self {
             state: AtomicU32::new(Self::UNINIT),
-            max_write: 0,
-            flags: KernelFlags::empty(),
         }
     }
 
@@ -415,8 +429,6 @@ impl Session {
             };
             write_reply(&mut conn, header_in.unique, 0, init_out.as_bytes())?;
 
-            self.max_write = config.max_write;
-            self.flags = config.flags;
             *self.state.get_mut() = Self::RUNNING;
 
             return Ok(());
@@ -424,28 +436,9 @@ impl Session {
     }
 
     #[inline]
-    pub fn exited(&self) -> bool {
-        // FIXME: choose appropriate atomic ordering.
-        self.state.load(Ordering::SeqCst) == Self::EXITED
-    }
-
-    #[inline]
     fn exit(&self) {
         // FIXME: choose appropriate atomic ordering.
         self.state.store(Self::EXITED, Ordering::SeqCst)
-    }
-
-    #[inline]
-    pub fn new_request_buffer(&self) -> io::Result<RequestBuffer> {
-        let bufsize = mem::size_of::<fuse_in_header>()
-            + mem::size_of::<fuse_write_in>()
-            + self.max_write as usize;
-
-        if self.flags.contains(KernelFlags::SPLICE_READ) {
-            RequestBuffer::new_splice(bufsize)
-        } else {
-            RequestBuffer::new_fallback(bufsize)
-        }
     }
 
     /// Read an incoming FUSE request from the kernel.

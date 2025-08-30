@@ -1,10 +1,11 @@
 use crate::{
     bytes::Bytes,
+    conn::Connection,
     mount::MountOptions,
     notify,
-    op::{self, Forget},
-    request::RemainingData,
-    Connection, KernelConfig, Operation, RequestBuffer, Session,
+    op::{self, Forget, Operation},
+    request::{RemainingData, RequestBuffer},
+    session::{KernelConfig, KernelFlags, Session},
 };
 use libc::{EIO, ENOENT, ENOSYS};
 use std::{
@@ -270,7 +271,11 @@ where
                     notify_unique: &notify_unique,
                 },
                 conn: conn.try_ioc_clone()?,
-                buf: session.new_request_buffer()?,
+                buf: if config.flags.contains(KernelFlags::SPLICE_READ) {
+                    RequestBuffer::new_splice(config.request_buffer_size())?
+                } else {
+                    RequestBuffer::new_fallback(config.request_buffer_size())?
+                },
             };
             spawner.spawn(move || worker.run(spawner));
         }
