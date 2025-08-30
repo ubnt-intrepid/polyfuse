@@ -1,16 +1,16 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
     conn::SpliceRead,
+    notify::Notify,
     request::{ReceiveError, RequestBuffer},
 };
-use libc::ENOSYS;
+use libc::{ENODEV, ENOSYS, EPROTO};
 use polyfuse_kernel::*;
 use std::{
     cmp,
     convert::{TryFrom, TryInto as _},
-    ffi::OsStr,
-    fmt, io, mem,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    io, mem,
+    sync::atomic::{AtomicU32, Ordering},
 };
 use zerocopy::IntoBytes as _;
 
@@ -31,10 +31,48 @@ fn pagesize() -> usize {
 
 // ==== KernelConfig ====
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct ProtocolVersion {
+    major: u32,
+    minor: u32,
+}
+
+impl ProtocolVersion {
+    pub const fn major(&self) -> u32 {
+        self.major
+    }
+
+    pub const fn minor(&self) -> u32 {
+        self.minor
+    }
+}
+
+impl PartialOrd for ProtocolVersion {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ProtocolVersion {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        match Ord::cmp(&self.major, &other.major) {
+            cmp::Ordering::Equal => Ord::cmp(&self.minor, &other.minor),
+            cmp => cmp,
+        }
+    }
+}
+
 /// Parameters for setting up the connection with FUSE driver
 /// and the kernel side behavior.
 #[non_exhaustive]
 pub struct KernelConfig {
+    /// The protocol version.
+    ///
+    /// This field is automatically updated in `Session::init`.
+    pub protocol_version: ProtocolVersion,
+
     /// Set the maximum readahead.
     pub max_readahead: u32,
 
@@ -78,15 +116,29 @@ pub struct KernelConfig {
 
 impl Default for KernelConfig {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KernelConfig {
+    pub const fn new() -> Self {
         Self {
+            protocol_version: ProtocolVersion {
+                major: FUSE_KERNEL_VERSION,
+                minor: FUSE_KERNEL_MINOR_VERSION,
+            },
             max_readahead: u32::MAX,
             max_background: 0,
             congestion_threshold: 0,
             max_write: DEFAULT_MAX_WRITE,
             max_pages: 0, // read only
             time_gran: 1,
-            flags: KernelFlags::default(),
+            flags: KernelFlags::new(),
         }
+    }
+
+    pub fn request_buffer_size(&self) -> usize {
+        mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>() + self.max_write as usize
     }
 }
 
@@ -166,33 +218,32 @@ bitflags::bitflags! {
 
 impl Default for KernelFlags {
     fn default() -> Self {
-        Self::ASYNC_READ
-            | Self::PARALLEL_DIROPS
-            | Self::AUTO_INVAL_DATA
-            | Self::HANDLE_KILLPRIV
-            | Self::ASYNC_DIO
-            | Self::ATOMIC_O_TRUNC
-            | Self::NO_OPEN_SUPPORT
-            | Self::NO_OPENDIR_SUPPORT
-            | Self::SPLICE_READ
+        Self::new()
+    }
+}
+
+impl KernelFlags {
+    pub const fn new() -> Self {
+        Self::from_bits_truncate(
+            FUSE_ASYNC_READ
+                | FUSE_PARALLEL_DIROPS
+                | FUSE_AUTO_INVAL_DATA
+                | FUSE_HANDLE_KILLPRIV
+                | FUSE_ASYNC_DIO
+                | FUSE_ATOMIC_O_TRUNC
+                | FUSE_NO_OPEN_SUPPORT
+                | FUSE_NO_OPENDIR_SUPPORT
+                | FUSE_SPLICE_READ,
+        )
     }
 }
 
 // ==== Session ====
 
 /// The object containing the contextrual information about a FUSE session.
+#[derive(Debug)]
 pub struct Session {
-    config: KernelConfig,
-    major: u32,
-    minor: u32,
-    exited: AtomicBool,
-    notify_unique: AtomicU64,
-}
-
-impl fmt::Debug for Session {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Session").finish()
-    }
+    state: AtomicU32,
 }
 
 impl Drop for Session {
@@ -201,13 +252,35 @@ impl Drop for Session {
     }
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
+    const UNINIT: u32 = 0;
+    const RUNNING: u32 = 1;
+    const EXITED: u32 = 2;
+
+    /// Create new instance of `Session`.
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicU32::new(Self::UNINIT),
+        }
+    }
+
     /// Initialize a FUSE session by communicating with the kernel driver over
     /// the established channel.
-    pub fn init<T>(mut conn: T, mut config: KernelConfig) -> io::Result<Self>
+    pub fn init<T>(&mut self, mut conn: T, config: &mut KernelConfig) -> io::Result<()>
     where
         T: io::Read + io::Write,
     {
+        if *self.state.get_mut() != Self::UNINIT {
+            tracing::warn!("The session has already been initialized.");
+            return Ok(());
+        }
+
         let mut header_in = fuse_in_header::default();
         let mut arg_in =
             vec![0u8; FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>()];
@@ -259,7 +332,7 @@ impl Session {
                     minor: FUSE_KERNEL_MINOR_VERSION,
                     ..Default::default()
                 };
-                write_reply(&mut conn, header_in.unique, 0, args.as_bytes())?;
+                self.send_reply(&mut conn, header_in.unique, 0, args.as_bytes())?;
                 continue;
             }
 
@@ -273,7 +346,7 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                write_reply(&mut conn, header_in.unique, libc::EPROTO, ())?;
+                self.send_reply(&mut conn, header_in.unique, EPROTO, ())?;
                 continue;
             }
 
@@ -354,69 +427,22 @@ impl Session {
                 padding: 0,
                 unused: [0; 8],
             };
-            write_reply(&mut conn, header_in.unique, 0, init_out.as_bytes())?;
+            self.send_reply(&mut conn, header_in.unique, 0, init_out.as_bytes())?;
 
-            return Ok(Self {
-                config,
-                major,
-                minor,
-                exited: AtomicBool::new(false),
-                notify_unique: AtomicU64::new(0),
-            });
+            *self.state.get_mut() = Self::RUNNING;
+
+            return Ok(());
         }
-    }
-
-    #[inline]
-    pub fn exited(&self) -> bool {
-        // FIXME: choose appropriate atomic ordering.
-        self.exited.load(Ordering::SeqCst)
     }
 
     #[inline]
     fn exit(&self) {
         // FIXME: choose appropriate atomic ordering.
-        self.exited.store(true, Ordering::SeqCst)
+        self.state.store(Self::EXITED, Ordering::SeqCst)
     }
 
-    /// Return the ABI version number of the FUSE wire protocol used in this session.
-    #[inline]
-    pub fn protocol_version(&self) -> (u32, u32) {
-        (self.major, self.minor)
-    }
-
-    /// Return the configuration after negotiating with the kernel via the FUSE_INIT request.
-    #[inline]
-    pub fn config(&self) -> &KernelConfig {
-        &self.config
-    }
-
-    #[inline]
-    pub fn new_request_buffer(&self) -> io::Result<RequestBuffer> {
-        let bufsize = mem::size_of::<fuse_in_header>()
-            + mem::size_of::<fuse_write_in>()
-            + self.config.max_write as usize;
-
-        if self.config.flags.contains(KernelFlags::SPLICE_READ) {
-            RequestBuffer::new_splice(bufsize)
-        } else {
-            RequestBuffer::new_fallback(bufsize)
-        }
-    }
-
-    /// Read an incoming FUSE request from the kernel.
-    pub fn next_request<T>(&self, conn: T) -> io::Result<Option<RequestBuffer>>
-    where
-        T: SpliceRead + io::Write,
-    {
-        let mut buf = self.new_request_buffer()?;
-        if self.read_request(conn, &mut buf)? {
-            Ok(Some(buf))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn read_request<T>(&self, mut conn: T, buf: &mut RequestBuffer) -> io::Result<bool>
+    /// Receive an incoming FUSE request from the kernel.
+    pub fn recv_request<T>(&self, mut conn: T, buf: &mut RequestBuffer) -> io::Result<bool>
     where
         T: SpliceRead + io::Write,
     {
@@ -437,7 +463,7 @@ impl Session {
                         "The opcode `{}' is not recognized by the current version of polyfuse.",
                         code
                     );
-                    write_reply(&mut conn, buf.unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, buf.unique(), ENOSYS, ())?;
                     continue;
                 }
                 Err(ReceiveError::Fatal(err)) => {
@@ -470,7 +496,7 @@ impl Session {
                         buf.unique(),
                         buf.opcode() as u32
                     );
-                    write_reply(&mut conn, buf.unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, buf.unique(), ENOSYS, ())?;
                     continue;
                 }
 
@@ -487,187 +513,116 @@ impl Session {
         }
     }
 
-    pub fn reply<T, B>(&self, conn: T, req: &RequestBuffer, arg: B) -> io::Result<()>
-    where
-        T: io::Write,
-        B: Bytes,
-    {
-        write_reply(conn, req.unique(), 0, arg)
+    fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
+        match err.raw_os_error() {
+            Some(ENODEV) => {
+                // 切断済みであれば無視
+                tracing::debug!("disconnected");
+                self.exit();
+                Ok(())
+            }
+            _ => Err(err),
+        }
     }
 
-    pub fn reply_error<T>(&self, conn: T, req: &RequestBuffer, code: i32) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        write_reply(conn, req.unique(), code, ())
-    }
-
-    /// Notify the cache invalidation about an inode to the kernel.
-    pub fn notify_inval_inode<T>(&self, conn: T, ino: u64, off: i64, len: i64) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
-            POD(fuse_notify_inval_inode_out { ino, off, len }),
-        )
-    }
-
-    /// Notify the invalidation about a directory entry to the kernel.
-    pub fn notify_inval_entry<T>(&self, conn: T, parent: u64, name: &OsStr) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        let namelen = name.len().try_into().expect("provided name is too long");
-
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
-            (
-                POD(fuse_notify_inval_entry_out {
-                    parent,
-                    namelen,
-                    padding: 0,
-                }),
-                (name, b"\0".as_slice()),
-            ),
-        )
-    }
-
-    /// Notify the invalidation about a directory entry to the kernel.
+    /// Send a reply message of completed request to the kernel.
     ///
-    /// The role of this notification is similar to `notify_inval_entry`.
-    /// Additionally, when the provided `child` inode matches the inode
-    /// in the dentry cache, the inotify will inform the deletion to
-    /// watchers if exists.
-    pub fn notify_delete<T>(&self, conn: T, parent: u64, child: u64, name: &OsStr) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        let namelen = name.len().try_into().expect("provided name is too long");
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_DELETE,
-            (
-                POD(fuse_notify_delete_out {
-                    parent,
-                    child,
-                    namelen,
-                    padding: 0,
-                }),
-                (name, b"\0".as_ref()),
-            ),
-        )
-    }
-
-    /// Push the data in an inode for updating the kernel cache.
-    pub fn notify_store<T, B>(&self, conn: T, ino: u64, offset: u64, data: B) -> io::Result<()>
+    /// Note that the instance of `conn` must be the same as the one used
+    /// when the corresponding request was received via `read_request`.
+    /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
+    /// the corresponding kernel processing will be isolated, and the process
+    /// that issued the associated syscall may enter a deadlock state.
+    pub fn send_reply<T, B>(&self, conn: T, unique: u64, error: i32, arg: B) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
     {
-        let size = data.size().try_into().expect("provided data is too large");
+        let len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .expect("Argument size is too large");
 
-        write_notify(
+        crate::bytes::write_bytes(
             conn,
-            fuse_notify_code::FUSE_NOTIFY_STORE,
             (
-                POD(fuse_notify_store_out {
-                    nodeid: ino,
-                    offset,
-                    size,
-                    padding: 0,
+                POD(fuse_out_header {
+                    len,
+                    error: -error,
+                    unique,
                 }),
-                data,
+                arg,
             ),
         )
+        .or_else(|err| self.handle_reply_error(err))
     }
 
-    /// Retrieve data in an inode from the kernel cache.
-    pub fn notify_retrieve<T>(&self, conn: T, ino: u64, offset: u64, size: u32) -> io::Result<u64>
+    /// Send a notification message to the kernel.
+    pub fn send_notify<T, N>(&self, conn: T, notify: N) -> io::Result<()>
     where
         T: io::Write,
+        N: Notify,
     {
-        // FIXME: choose appropriate memory ordering.
-        let notify_unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
+        let arg = notify.bytes();
 
-        write_notify(
+        let len = (mem::size_of::<fuse_out_header>() + arg.size())
+            .try_into()
+            .expect("Argument size is too large");
+
+        crate::bytes::write_bytes(
             conn,
-            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
-            POD(fuse_notify_retrieve_out {
-                nodeid: ino,
-                offset,
-                size,
-                notify_unique,
-                padding: 0,
-            }),
-        )?;
-
-        Ok(notify_unique)
-    }
-
-    /// Send I/O readiness to the kernel.
-    pub fn notify_poll_wakeup<T>(&self, conn: T, kh: u64) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        write_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_POLL,
-            POD(fuse_notify_poll_wakeup_out { kh }),
+            (
+                POD(fuse_out_header {
+                    len,
+                    error: N::NOTIFY_CODE as i32,
+                    unique: 0, // unique=0 indicates that the message is a notification.
+                }),
+                arg,
+            ),
         )
+        .or_else(|err| self.handle_reply_error(err))
     }
-}
-
-fn write_reply<W, T>(writer: W, unique: u64, error: i32, arg: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    let len = (mem::size_of::<fuse_out_header>() + arg.size())
-        .try_into()
-        .expect("Argument size is too large");
-
-    crate::bytes::write_bytes(
-        writer,
-        (
-            POD(fuse_out_header {
-                len,
-                error: -error,
-                unique,
-            }),
-            arg,
-        ),
-    )
-}
-
-fn write_notify<W, T>(writer: W, code: fuse_notify_code, arg: T) -> io::Result<()>
-where
-    W: io::Write,
-    T: Bytes,
-{
-    let len = (mem::size_of::<fuse_out_header>() + arg.size())
-        .try_into()
-        .expect("Argument size is too large");
-
-    crate::bytes::write_bytes(
-        writer,
-        (
-            POD(fuse_out_header {
-                len,
-                error: code as i32,
-                unique: 0,
-            }),
-            arg,
-        ),
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::mem;
+
+    #[test]
+    fn proto_version_smoketest() {
+        let ver1 = ProtocolVersion {
+            major: 7,
+            minor: 31,
+        };
+        assert_eq!(ver1.major(), 7);
+        assert_eq!(ver1.minor(), 31);
+        assert_eq!(ver1, ver1);
+
+        let ver2 = ProtocolVersion {
+            major: 6,
+            minor: 99,
+        };
+        assert!(ver1 > ver2);
+
+        let ver3 = ProtocolVersion {
+            major: 7,
+            minor: 99,
+        };
+        assert!(ver1 < ver3);
+
+        let ver4 = ProtocolVersion { major: 8, minor: 0 };
+        assert!(ver1 < ver4);
+    }
+
+    #[test]
+    fn kernel_config_smoketest() {
+        let config = KernelConfig::default();
+        assert_eq!(
+            config.request_buffer_size(),
+            config.max_write as usize
+                + mem::size_of::<fuse_in_header>()
+                + mem::size_of::<fuse_write_in>()
+        );
+    }
 
     struct Unite<R, W> {
         reader: R,
@@ -731,26 +686,34 @@ mod tests {
 
         let mut output = Vec::<u8>::new();
 
-        let session = Session::init(
-            Unite {
-                reader: &input[..],
-                writer: &mut output,
-            },
-            KernelConfig::default(),
-        )
-        .expect("initialization failed");
+        let mut session = Session::new();
+        let mut config = KernelConfig::default();
+        session
+            .init(
+                Unite {
+                    reader: &input[..],
+                    writer: &mut output,
+                },
+                &mut config,
+            )
+            .expect("initialization failed");
 
         let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(pagesize() as u32) as u16;
 
-        assert_eq!(session.major, FUSE_KERNEL_VERSION);
-        assert_eq!(session.minor, FUSE_KERNEL_MINOR_VERSION);
-        assert_eq!(session.config.max_readahead, 40);
-        assert_eq!(session.config.max_background, 0);
-        assert_eq!(session.config.congestion_threshold, 0);
-        assert_eq!(session.config.max_write, DEFAULT_MAX_WRITE);
-        assert_eq!(session.config.max_pages, expected_max_pages);
-        assert_eq!(session.config.time_gran, 1);
-        assert_eq!(session.config.flags, KernelFlags::default());
+        assert_eq!(
+            config.protocol_version,
+            ProtocolVersion {
+                major: FUSE_KERNEL_VERSION,
+                minor: FUSE_KERNEL_MINOR_VERSION
+            }
+        );
+        assert_eq!(config.max_readahead, 40);
+        assert_eq!(config.max_background, 0);
+        assert_eq!(config.congestion_threshold, 0);
+        assert_eq!(config.max_write, DEFAULT_MAX_WRITE);
+        assert_eq!(config.max_pages, expected_max_pages);
+        assert_eq!(config.time_gran, 1);
+        assert_eq!(config.flags, KernelFlags::default());
 
         let output_len = mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>();
         let out_header = fuse_out_header {
@@ -811,9 +774,10 @@ mod tests {
     }
 
     #[test]
-    fn send_msg_empty() {
+    fn send_reply_empty() {
+        let session = Session::new();
         let mut buf = vec![0u8; 0];
-        write_reply(&mut buf, 42, -4, ()).unwrap();
+        session.send_reply(&mut buf, 42, -4, ()).unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -824,9 +788,10 @@ mod tests {
     }
 
     #[test]
-    fn send_msg_single_data() {
+    fn send_reply_single_data() {
+        let session = Session::default();
         let mut buf = vec![0u8; 0];
-        write_reply(&mut buf, 42, 0, "hello").unwrap();
+        session.send_reply(&mut buf, 42, 0, "hello").unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -839,6 +804,7 @@ mod tests {
 
     #[test]
     fn send_msg_chunked_data() {
+        let session = Session::default();
         let payload: &[&[u8]] = &[
             "hello, ".as_ref(), //
             "this ".as_ref(),
@@ -846,7 +812,7 @@ mod tests {
             "message.".as_ref(),
         ];
         let mut buf = vec![0u8; 0];
-        write_reply(&mut buf, 26, 0, payload).unwrap();
+        session.send_reply(&mut buf, 26, 0, payload).unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(

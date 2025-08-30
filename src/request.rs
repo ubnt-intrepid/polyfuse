@@ -47,7 +47,7 @@ enum ReadMode {
 }
 
 impl RequestBuffer {
-    pub(crate) fn new_splice(bufsize: usize) -> io::Result<Self> {
+    pub fn new_splice(bufsize: usize) -> io::Result<Self> {
         Ok(Self {
             header: fuse_in_header::default(),
             opcode: None,
@@ -64,7 +64,7 @@ impl RequestBuffer {
         })
     }
 
-    pub(crate) fn new_fallback(bufsize: usize) -> io::Result<Self> {
+    pub fn new_fallback(bufsize: usize) -> io::Result<Self> {
         Ok(Self {
             header: fuse_in_header::default(),
             opcode: None,

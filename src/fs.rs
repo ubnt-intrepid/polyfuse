@@ -1,12 +1,20 @@
 use crate::{
     bytes::Bytes,
+    conn::Connection,
     mount::MountOptions,
-    op::{self, Forget},
-    request::RemainingData,
-    Connection, KernelConfig, Operation, RequestBuffer, Session,
+    notify,
+    op::{self, Forget, Operation},
+    request::{RemainingData, RequestBuffer},
+    session::{KernelConfig, KernelFlags, Session},
 };
 use libc::{EIO, ENOENT, ENOSYS};
-use std::{ffi::OsStr, io, path::PathBuf, thread};
+use std::{
+    ffi::OsStr,
+    io,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+};
 
 pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
@@ -122,34 +130,44 @@ pub struct Context<'scope, 'env: 'scope> {
 pub struct Notifier<'env> {
     session: &'env Session,
     conn: &'env Connection,
+    notify_unique: &'env AtomicU64,
 }
 
 impl Notifier<'_> {
+    fn send<T>(&self, notify: T) -> io::Result<()>
+    where
+        T: notify::Notify,
+    {
+        self.session.send_notify(self.conn, notify)
+    }
+
     pub fn inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
-        self.session.notify_inval_inode(self.conn, ino, off, len)
+        self.send(notify::InvalNode::new(ino, off, len))
     }
 
     pub fn inval_entry(&self, parent: u64, name: &OsStr) -> io::Result<()> {
-        self.session.notify_inval_entry(self.conn, parent, name)
+        self.send(notify::InvalEntry::new(parent, name))
     }
 
     pub fn delete(&self, parent: u64, child: u64, name: &OsStr) -> io::Result<()> {
-        self.session.notify_delete(self.conn, parent, child, name)
+        self.send(notify::Delete::new(parent, child, name))
     }
 
     pub fn store<B>(&self, ino: u64, offset: u64, data: B) -> io::Result<()>
     where
         B: Bytes,
     {
-        self.session.notify_store(self.conn, ino, offset, data)
+        self.send(notify::Store::new(ino, offset, data))
     }
 
     pub fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
-        self.session.notify_retrieve(self.conn, ino, offset, size)
+        let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
+        self.send(notify::Retrieve::new(unique, ino, offset, size))?;
+        Ok(unique)
     }
 
     pub fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
-        self.session.notify_poll_wakeup(self.conn, kh)
+        self.send(notify::PollWakeup::new(kh))
     }
 }
 
@@ -189,7 +207,7 @@ impl<T> Request<'_, T> {
         B: Bytes,
     {
         self.session
-            .reply(self.conn, self.buf, arg)
+            .send_reply(self.conn, self.buf.unique(), 0, arg)
             .map_err(|err| match err.raw_os_error() {
                 Some(ENOENT) => Error::Cancelled, // missing in processing queue
                 _ => Error::Reply(err),
@@ -216,7 +234,7 @@ pub fn run<T>(
     fs: T,
     mountpoint: PathBuf,
     mountopts: MountOptions,
-    config: KernelConfig,
+    mut config: KernelConfig,
 ) -> io::Result<()>
 where
     T: Filesystem + Sync,
@@ -226,15 +244,19 @@ where
 
     let (conn, fusermount) = crate::mount::mount(mountpoint, mountopts)?;
     let conn = Connection::from(conn);
-    let session = Session::init(&conn, config)?;
+    let mut session = Session::new();
+    session.init(&conn, &mut config)?;
 
     let num_workers = num_cpus::get();
+
+    let notify_unique = AtomicU64::new(0);
 
     thread::scope(|spawner| -> io::Result<()> {
         fs.init(Context {
             notifier: Notifier {
                 session: &session,
                 conn: &conn,
+                notify_unique: &notify_unique,
             },
             spawner,
         })?;
@@ -246,9 +268,14 @@ where
                 notifier: Notifier {
                     session: &session,
                     conn: &conn,
+                    notify_unique: &notify_unique,
                 },
                 conn: conn.try_ioc_clone()?,
-                buf: session.new_request_buffer()?,
+                buf: if config.flags.contains(KernelFlags::SPLICE_READ) {
+                    RequestBuffer::new_splice(config.request_buffer_size())?
+                } else {
+                    RequestBuffer::new_fallback(config.request_buffer_size())?
+                },
             };
             spawner.spawn(move || worker.run(spawner));
         }
@@ -279,7 +306,7 @@ where
     where
         'env: 'scope,
     {
-        while self.session.read_request(&self.conn, &mut self.buf)? {
+        while self.session.recv_request(&self.conn, &mut self.buf)? {
             self.handle_request(spawner)?;
         }
         Ok(())
@@ -367,7 +394,10 @@ where
         match result {
             Ok(..) | Err(Error::Cancelled) => {}
             Err(Error::Reply(err)) => return Err(err),
-            Err(Error::Code(code)) => self.session.reply_error(&self.conn, &self.buf, code)?,
+            Err(Error::Code(errno)) => {
+                self.session
+                    .send_reply(&self.conn, self.buf.unique(), errno, ())?
+            }
         }
 
         Ok(())

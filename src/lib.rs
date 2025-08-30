@@ -13,6 +13,7 @@ pub mod bytes;
 pub mod conn;
 pub mod fs;
 pub mod mount;
+pub mod notify;
 pub mod op;
 pub mod reply;
 
@@ -20,5 +21,5 @@ pub use crate::{
     conn::Connection,
     op::Operation,
     request::{RemainingData, RequestBuffer},
-    session::{KernelConfig, KernelFlags, Session},
+    session::{KernelConfig, KernelFlags, ProtocolVersion, Session},
 };

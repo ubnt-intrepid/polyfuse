@@ -6,6 +6,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
+use libc::{ENOENT, ENOSYS};
 use std::{io, path::PathBuf, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
@@ -23,18 +24,20 @@ fn main() -> Result<()> {
     let mut conn = Connection::from(devfd);
 
     // Initialize the FUSE session.
-    let session = Session::init(&mut conn, KernelConfig::default())?;
+    let mut session = Session::new();
+    let mut config = KernelConfig::default();
+    session.init(&mut conn, &mut config)?;
 
     // Receive an incoming FUSE request from the kernel.
-    let mut buf = session.new_request_buffer()?;
-    while session.read_request(&mut conn, &mut buf)? {
+    let mut buf = RequestBuffer::new_fallback(config.request_buffer_size())?;
+    while session.recv_request(&mut conn, &mut buf)? {
         match buf.operation()? {
             // Dispatch your callbacks to the supported operations...
             (Operation::Getattr(op), ..) => getattr(&session, &mut conn, &buf, op)?,
             (Operation::Read(op), ..) => read(&session, &mut conn, &buf, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => session.reply_error(&mut conn, &buf, libc::ENOSYS)?,
+            _ => session.send_reply(&mut conn, buf.unique(), ENOSYS, ())?,
         };
     }
 
@@ -50,7 +53,7 @@ fn getattr(
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
     if op.ino() != 1 {
-        return session.reply_error(conn, req, libc::ENOENT);
+        return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 
     let mut out = AttrOut::default();
@@ -62,7 +65,7 @@ fn getattr(
     out.attr().gid(unsafe { libc::getgid() });
     out.ttl(Duration::from_secs(1));
 
-    session.reply(conn, req, out)
+    session.send_reply(conn, req.unique(), 0, out)
 }
 
 fn read(
@@ -72,7 +75,7 @@ fn read(
     op: op::Read<'_>,
 ) -> io::Result<()> {
     if op.ino() != 1 {
-        return session.reply_error(conn, req, libc::ENOENT);
+        return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 
     let mut data: &[u8] = &[];
@@ -84,5 +87,5 @@ fn read(
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    session.reply(conn, req, data)
+    session.send_reply(conn, req.unique(), 0, data)
 }
