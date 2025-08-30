@@ -5,7 +5,8 @@ use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    types::FileAttr,
     KernelConfig,
 };
 

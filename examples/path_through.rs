@@ -15,7 +15,8 @@ use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op::{self, Forget},
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
+    reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut},
+    types::FileAttr,
     KernelConfig,
 };
 
