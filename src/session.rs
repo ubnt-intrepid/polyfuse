@@ -402,18 +402,6 @@ impl Session {
     }
 
     /// Read an incoming FUSE request from the kernel.
-    pub fn next_request<T>(&self, conn: T) -> io::Result<Option<RequestBuffer>>
-    where
-        T: SpliceRead + io::Write,
-    {
-        let mut buf = self.new_request_buffer()?;
-        if self.read_request(conn, &mut buf)? {
-            Ok(Some(buf))
-        } else {
-            Ok(None)
-        }
-    }
-
     pub fn read_request<T>(&self, mut conn: T, buf: &mut RequestBuffer) -> io::Result<bool>
     where
         T: SpliceRead + io::Write,
