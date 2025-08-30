@@ -21,5 +21,5 @@ pub use crate::{
     conn::Connection,
     op::Operation,
     request::{RemainingData, RequestBuffer},
-    session::{KernelConfig, KernelFlags, Session},
+    session::{KernelConfig, KernelFlags, ProtocolVersion, Session},
 };

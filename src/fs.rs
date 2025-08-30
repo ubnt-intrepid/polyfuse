@@ -233,7 +233,7 @@ pub fn run<T>(
     fs: T,
     mountpoint: PathBuf,
     mountopts: MountOptions,
-    config: KernelConfig,
+    mut config: KernelConfig,
 ) -> io::Result<()>
 where
     T: Filesystem + Sync,
@@ -243,7 +243,8 @@ where
 
     let (conn, fusermount) = crate::mount::mount(mountpoint, mountopts)?;
     let conn = Connection::from(conn);
-    let session = Session::init(&conn, config)?;
+    let mut session = Session::new();
+    session.init(&conn, &mut config)?;
 
     let num_workers = num_cpus::get();
 

@@ -9,8 +9,8 @@ use polyfuse_kernel::*;
 use std::{
     cmp,
     convert::{TryFrom, TryInto as _},
-    fmt, io, mem,
-    sync::atomic::{AtomicBool, Ordering},
+    io, mem,
+    sync::atomic::{AtomicU32, Ordering},
 };
 use zerocopy::IntoBytes as _;
 
@@ -31,10 +31,48 @@ fn pagesize() -> usize {
 
 // ==== KernelConfig ====
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct ProtocolVersion {
+    major: u32,
+    minor: u32,
+}
+
+impl ProtocolVersion {
+    pub const fn major(&self) -> u32 {
+        self.major
+    }
+
+    pub const fn minor(&self) -> u32 {
+        self.minor
+    }
+}
+
+impl PartialOrd for ProtocolVersion {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ProtocolVersion {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        match Ord::cmp(&self.major, &other.major) {
+            cmp::Ordering::Equal => Ord::cmp(&self.minor, &other.minor),
+            cmp => cmp,
+        }
+    }
+}
+
 /// Parameters for setting up the connection with FUSE driver
 /// and the kernel side behavior.
 #[non_exhaustive]
 pub struct KernelConfig {
+    /// The protocol version.
+    ///
+    /// This field is automatically updated in `Session::init`.
+    pub protocol_version: ProtocolVersion,
+
     /// Set the maximum readahead.
     pub max_readahead: u32,
 
@@ -79,6 +117,10 @@ pub struct KernelConfig {
 impl Default for KernelConfig {
     fn default() -> Self {
         Self {
+            protocol_version: ProtocolVersion {
+                major: FUSE_KERNEL_VERSION,
+                minor: FUSE_KERNEL_MINOR_VERSION,
+            },
             max_readahead: u32::MAX,
             max_background: 0,
             congestion_threshold: 0,
@@ -181,17 +223,11 @@ impl Default for KernelFlags {
 // ==== Session ====
 
 /// The object containing the contextrual information about a FUSE session.
+#[derive(Debug)]
 pub struct Session {
-    config: KernelConfig,
-    major: u32,
-    minor: u32,
-    exited: AtomicBool,
-}
-
-impl fmt::Debug for Session {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Session").finish()
-    }
+    state: AtomicU32,
+    max_write: u32,
+    flags: KernelFlags,
 }
 
 impl Drop for Session {
@@ -200,13 +236,37 @@ impl Drop for Session {
     }
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
+    const UNINIT: u32 = 0;
+    const RUNNING: u32 = 1;
+    const EXITED: u32 = 2;
+
+    /// Create new instance of `Session`.
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicU32::new(Self::UNINIT),
+            max_write: 0,
+            flags: KernelFlags::empty(),
+        }
+    }
+
     /// Initialize a FUSE session by communicating with the kernel driver over
     /// the established channel.
-    pub fn init<T>(mut conn: T, mut config: KernelConfig) -> io::Result<Self>
+    pub fn init<T>(&mut self, mut conn: T, config: &mut KernelConfig) -> io::Result<()>
     where
         T: io::Read + io::Write,
     {
+        if *self.state.get_mut() != Self::UNINIT {
+            tracing::warn!("The session has already been initialized.");
+            return Ok(());
+        }
+
         let mut header_in = fuse_in_header::default();
         let mut arg_in =
             vec![0u8; FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>()];
@@ -355,46 +415,33 @@ impl Session {
             };
             write_reply(&mut conn, header_in.unique, 0, init_out.as_bytes())?;
 
-            return Ok(Self {
-                config,
-                major,
-                minor,
-                exited: AtomicBool::new(false),
-            });
+            self.max_write = config.max_write;
+            self.flags = config.flags;
+            *self.state.get_mut() = Self::RUNNING;
+
+            return Ok(());
         }
     }
 
     #[inline]
     pub fn exited(&self) -> bool {
         // FIXME: choose appropriate atomic ordering.
-        self.exited.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) == Self::EXITED
     }
 
     #[inline]
     fn exit(&self) {
         // FIXME: choose appropriate atomic ordering.
-        self.exited.store(true, Ordering::SeqCst)
-    }
-
-    /// Return the ABI version number of the FUSE wire protocol used in this session.
-    #[inline]
-    pub fn protocol_version(&self) -> (u32, u32) {
-        (self.major, self.minor)
-    }
-
-    /// Return the configuration after negotiating with the kernel via the FUSE_INIT request.
-    #[inline]
-    pub fn config(&self) -> &KernelConfig {
-        &self.config
+        self.state.store(Self::EXITED, Ordering::SeqCst)
     }
 
     #[inline]
     pub fn new_request_buffer(&self) -> io::Result<RequestBuffer> {
         let bufsize = mem::size_of::<fuse_in_header>()
             + mem::size_of::<fuse_write_in>()
-            + self.config.max_write as usize;
+            + self.max_write as usize;
 
-        if self.config.flags.contains(KernelFlags::SPLICE_READ) {
+        if self.flags.contains(KernelFlags::SPLICE_READ) {
             RequestBuffer::new_splice(bufsize)
         } else {
             RequestBuffer::new_fallback(bufsize)
@@ -607,26 +654,34 @@ mod tests {
 
         let mut output = Vec::<u8>::new();
 
-        let session = Session::init(
-            Unite {
-                reader: &input[..],
-                writer: &mut output,
-            },
-            KernelConfig::default(),
-        )
-        .expect("initialization failed");
+        let mut session = Session::new();
+        let mut config = KernelConfig::default();
+        session
+            .init(
+                Unite {
+                    reader: &input[..],
+                    writer: &mut output,
+                },
+                &mut config,
+            )
+            .expect("initialization failed");
 
         let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(pagesize() as u32) as u16;
 
-        assert_eq!(session.major, FUSE_KERNEL_VERSION);
-        assert_eq!(session.minor, FUSE_KERNEL_MINOR_VERSION);
-        assert_eq!(session.config.max_readahead, 40);
-        assert_eq!(session.config.max_background, 0);
-        assert_eq!(session.config.congestion_threshold, 0);
-        assert_eq!(session.config.max_write, DEFAULT_MAX_WRITE);
-        assert_eq!(session.config.max_pages, expected_max_pages);
-        assert_eq!(session.config.time_gran, 1);
-        assert_eq!(session.config.flags, KernelFlags::default());
+        assert_eq!(
+            config.protocol_version,
+            ProtocolVersion {
+                major: FUSE_KERNEL_VERSION,
+                minor: FUSE_KERNEL_MINOR_VERSION
+            }
+        );
+        assert_eq!(config.max_readahead, 40);
+        assert_eq!(config.max_background, 0);
+        assert_eq!(config.congestion_threshold, 0);
+        assert_eq!(config.max_write, DEFAULT_MAX_WRITE);
+        assert_eq!(config.max_pages, expected_max_pages);
+        assert_eq!(config.time_gran, 1);
+        assert_eq!(config.flags, KernelFlags::default());
 
         let output_len = mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>();
         let out_header = fuse_out_header {

@@ -24,7 +24,9 @@ fn main() -> Result<()> {
     let mut conn = Connection::from(devfd);
 
     // Initialize the FUSE session.
-    let session = Session::init(&mut conn, KernelConfig::default())?;
+    let mut session = Session::new();
+    let mut config = KernelConfig::default();
+    session.init(&mut conn, &mut config)?;
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = session.new_request_buffer()?;
