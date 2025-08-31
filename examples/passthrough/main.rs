@@ -218,7 +218,7 @@ impl Filesystem for Passthrough {
 
         let stat = inode.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
 
-        let mut out = AttrOut::new(&stat);
+        let mut out = AttrOut::new(stat);
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         }
@@ -306,7 +306,7 @@ impl Filesystem for Passthrough {
         // finally, acquiring the latest metadata from the source filesystem.
         let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
 
-        let mut out = AttrOut::new(&stat);
+        let mut out = AttrOut::new(stat);
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         };

@@ -1,263 +1,446 @@
-use polyfuse_kernel::{fuse_attr, fuse_file_lock, fuse_kstatfs};
 use std::{fs::Metadata, os::unix::prelude::*, time::Duration};
 
-/// Attributes about a file.
-#[derive(Default)]
-#[repr(transparent)]
-pub struct FileAttr {
-    inner: fuse_attr,
+pub const ROOT_INO: Ino = 1;
+
+pub type Ino = u64;
+pub type FileMode = u32;
+pub type Uid = u32;
+pub type Gid = u32;
+pub type Pid = u32;
+pub type LockType = u32;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub struct DeviceID {
+    pub major: u32,
+    pub minor: u32,
 }
 
-impl FileAttr {
-    #[inline]
-    pub(crate) const fn into_inner(self) -> fuse_attr {
-        self.inner
+impl DeviceID {
+    pub const fn to_userspace_dev_t(self) -> u64 {
+        libc::makedev(self.major, self.minor)
     }
 
-    /// Set the inode number.
-    #[inline]
-    pub fn ino(&mut self, ino: u64) {
-        self.inner.ino = ino;
-    }
-
-    /// Set the size of content.
-    #[inline]
-    pub fn size(&mut self, size: u64) {
-        self.inner.size = size;
-    }
-
-    /// Set the permission of the inode.
-    #[inline]
-    pub fn mode(&mut self, mode: u32) {
-        self.inner.mode = mode;
-    }
-
-    /// Set the number of hard links.
-    #[inline]
-    pub fn nlink(&mut self, nlink: u32) {
-        self.inner.nlink = nlink;
-    }
-
-    /// Set the user ID.
-    #[inline]
-    pub fn uid(&mut self, uid: u32) {
-        self.inner.uid = uid;
-    }
-
-    /// Set the group ID.
-    #[inline]
-    pub fn gid(&mut self, gid: u32) {
-        self.inner.gid = gid;
-    }
-
-    /// Set the device ID.
-    #[inline]
-    pub fn rdev(&mut self, rdev: u32) {
-        self.inner.rdev = rdev;
-    }
-
-    /// Set the block size.
-    #[inline]
-    pub fn blksize(&mut self, blksize: u32) {
-        self.inner.blksize = blksize;
-    }
-
-    /// Set the number of allocated blocks.
-    #[inline]
-    pub fn blocks(&mut self, blocks: u64) {
-        self.inner.blocks = blocks;
-    }
-
-    /// Set the last accessed time.
-    #[inline]
-    pub fn atime(&mut self, atime: Duration) {
-        self.inner.atime = atime.as_secs();
-        self.inner.atimensec = atime.subsec_nanos();
-    }
-
-    /// Set the last modification time.
-    #[inline]
-    pub fn mtime(&mut self, mtime: Duration) {
-        self.inner.mtime = mtime.as_secs();
-        self.inner.mtimensec = mtime.subsec_nanos();
-    }
-
-    /// Set the last created time.
-    #[inline]
-    pub fn ctime(&mut self, ctime: Duration) {
-        self.inner.ctime = ctime.as_secs();
-        self.inner.ctimensec = ctime.subsec_nanos();
+    pub const fn to_kernel_dev_t(self) -> u32 {
+        debug_assert!(self.major < 0x1000, "invalid DeviceID.major");
+        debug_assert!(self.minor < 0x100000, "invalid DeviceID.minor");
+        (self.major << 20) | (self.minor & 0x000f_ffff)
     }
 }
 
-impl From<libc::stat> for FileAttr {
-    #[inline]
-    fn from(st: libc::stat) -> Self {
-        Self::from(&st)
-    }
+/// The collection of attributes corresponding to an inode entries.
+///
+/// This trait is the abstraction of both `fuse_attr` and `fuse_statx`.
+pub trait FileAttr {
+    /// Return the inode number.
+    fn ino(&self) -> Ino;
+
+    /// Return the size of content.
+    fn size(&self) -> u64;
+
+    /// Return the permission of the inode.
+    fn mode(&self) -> FileMode;
+
+    /// Return the number of hard links.
+    fn nlink(&self) -> u32;
+
+    /// Return the user ID.
+    fn uid(&self) -> Uid;
+
+    /// Return the group ID.
+    fn gid(&self) -> Gid;
+
+    /// Return the device ID.
+    fn rdev(&self) -> DeviceID;
+
+    /// Return the block size.
+    fn blksize(&self) -> u32;
+
+    /// Return the number of allocated blocks.
+    fn blocks(&self) -> u64;
+
+    /// Return the last accessed time.
+    fn atime(&self) -> Duration;
+
+    /// Return the last modification time.
+    fn mtime(&self) -> Duration;
+
+    /// Return the last created time.
+    fn ctime(&self) -> Duration;
 }
 
-impl From<&libc::stat> for FileAttr {
-    fn from(st: &libc::stat) -> Self {
-        Self {
-            inner: fuse_attr {
-                ino: st.st_ino,
-                size: st.st_size.try_into().unwrap(),
-                blocks: st.st_blocks.try_into().unwrap(),
-                atime: st.st_atime.try_into().unwrap(),
-                mtime: st.st_mtime.try_into().unwrap(),
-                ctime: st.st_ctime.try_into().unwrap(),
-                atimensec: st.st_atime_nsec.try_into().unwrap(),
-                mtimensec: st.st_mtime_nsec.try_into().unwrap(),
-                ctimensec: st.st_ctime_nsec.try_into().unwrap(),
-                mode: st.st_mode,
-                nlink: st.st_nlink.try_into().unwrap(),
-                uid: st.st_uid,
-                gid: st.st_gid,
-                rdev: st.st_rdev.try_into().unwrap(),
-                blksize: st.st_blksize.try_into().unwrap(),
-                padding: 0,
-            },
+macro_rules! impl_file_attr_fields {
+    (@all $( $name:ident => $ret:ty, )*) => {$(
+        #[inline]
+        fn $name(&self) -> $ret {
+            (**self).$name()
+        }
+    )*};
+    () => {
+        impl_file_attr_fields!(@all
+            ino => Ino,
+            size => u64,
+            mode => FileMode,
+            nlink => u32,
+            uid => Uid,
+            gid => Gid,
+            rdev => DeviceID,
+            blksize => u32,
+            blocks => u64,
+            atime => Duration,
+            mtime => Duration,
+            ctime => Duration,
+        );
+    };
+}
+
+impl<T: ?Sized> FileAttr for &T
+where
+    T: FileAttr,
+{
+    impl_file_attr_fields!();
+}
+
+impl<T: ?Sized> FileAttr for &mut T
+where
+    T: FileAttr,
+{
+    impl_file_attr_fields!();
+}
+
+impl<T: ?Sized> FileAttr for Box<T>
+where
+    T: FileAttr,
+{
+    impl_file_attr_fields!();
+}
+
+impl<T: ?Sized> FileAttr for std::rc::Rc<T>
+where
+    T: FileAttr,
+{
+    impl_file_attr_fields!();
+}
+
+impl<T: ?Sized> FileAttr for std::sync::Arc<T>
+where
+    T: FileAttr,
+{
+    impl_file_attr_fields!();
+}
+
+impl FileAttr for libc::stat {
+    fn ino(&self) -> Ino {
+        self.st_ino
+    }
+
+    fn size(&self) -> u64 {
+        self.st_size as _
+    }
+
+    fn mode(&self) -> FileMode {
+        self.st_mode
+    }
+
+    fn nlink(&self) -> u32 {
+        self.st_nlink.try_into().expect("st_nlink")
+    }
+
+    fn uid(&self) -> Uid {
+        self.st_uid
+    }
+
+    fn gid(&self) -> Gid {
+        self.st_gid
+    }
+
+    fn rdev(&self) -> DeviceID {
+        DeviceID {
+            major: libc::major(self.st_rdev),
+            minor: libc::minor(self.st_rdev),
         }
     }
-}
 
-impl From<Metadata> for FileAttr {
-    fn from(metadata: Metadata) -> Self {
-        Self::from(&metadata)
+    fn blksize(&self) -> u32 {
+        self.st_blksize.try_into().expect("st_blksize")
+    }
+
+    fn blocks(&self) -> u64 {
+        self.st_blocks as _
+    }
+
+    fn atime(&self) -> Duration {
+        Duration::new(
+            self.st_atime as _,
+            self.st_atime_nsec.try_into().expect("st_atime_nsec"),
+        )
+    }
+
+    fn mtime(&self) -> Duration {
+        Duration::new(
+            self.st_mtime as _,
+            self.st_mtime_nsec.try_into().expect("st_mtime_nsec"),
+        )
+    }
+
+    fn ctime(&self) -> Duration {
+        Duration::new(
+            self.st_ctime as _,
+            self.st_ctime_nsec.try_into().expect("st_ctime_nsec"),
+        )
     }
 }
 
-impl From<&Metadata> for FileAttr {
-    fn from(metadata: &Metadata) -> Self {
-        Self {
-            inner: fuse_attr {
-                ino: metadata.ino(),
-                size: metadata.size(),
-                blocks: metadata.blocks(),
-                atime: metadata.atime().try_into().unwrap(),
-                mtime: metadata.mtime().try_into().unwrap(),
-                ctime: metadata.ctime().try_into().unwrap(),
-                atimensec: metadata.atime_nsec().try_into().unwrap(),
-                mtimensec: metadata.mtime_nsec().try_into().unwrap(),
-                ctimensec: metadata.ctime_nsec().try_into().unwrap(),
-                mode: metadata.mode(),
-                nlink: metadata.nlink().try_into().unwrap(),
-                uid: metadata.uid(),
-                gid: metadata.gid(),
-                rdev: metadata.rdev().try_into().unwrap(),
-                blksize: metadata.blksize().try_into().unwrap(),
-                padding: 0,
-            },
+impl FileAttr for Metadata {
+    fn ino(&self) -> Ino {
+        MetadataExt::ino(self)
+    }
+
+    fn size(&self) -> u64 {
+        MetadataExt::size(self) as _
+    }
+
+    fn mode(&self) -> FileMode {
+        MetadataExt::mode(self)
+    }
+
+    fn nlink(&self) -> u32 {
+        MetadataExt::nlink(self).try_into().expect("metadata.nlink")
+    }
+
+    fn uid(&self) -> Uid {
+        MetadataExt::uid(self)
+    }
+
+    fn gid(&self) -> Gid {
+        MetadataExt::gid(self)
+    }
+
+    fn rdev(&self) -> DeviceID {
+        DeviceID {
+            major: libc::major(MetadataExt::rdev(self)),
+            minor: libc::minor(MetadataExt::rdev(self)),
         }
     }
-}
 
-#[derive(Default)]
-pub struct Statfs {
-    inner: fuse_kstatfs,
-}
-
-impl Statfs {
-    #[inline]
-    pub(crate) const fn into_inner(self) -> fuse_kstatfs {
-        self.inner
+    fn blksize(&self) -> u32 {
+        MetadataExt::blksize(self)
+            .try_into()
+            .expect("metadata.blksize")
     }
 
-    /// Set the block size.
-    pub fn bsize(&mut self, bsize: u32) {
-        self.inner.bsize = bsize;
+    fn blocks(&self) -> u64 {
+        MetadataExt::blocks(self)
     }
 
-    /// Set the fragment size.
-    pub fn frsize(&mut self, frsize: u32) {
-        self.inner.frsize = frsize;
+    fn atime(&self) -> Duration {
+        Duration::new(
+            MetadataExt::atime(self) as _,
+            MetadataExt::atime_nsec(self) as _,
+        )
     }
 
-    /// Set the number of blocks in the filesystem.
-    pub fn blocks(&mut self, blocks: u64) {
-        self.inner.blocks = blocks;
+    fn mtime(&self) -> Duration {
+        Duration::new(
+            MetadataExt::atime(self) as _,
+            MetadataExt::atime_nsec(self) as _,
+        )
     }
 
-    /// Set the number of free blocks.
-    pub fn bfree(&mut self, bfree: u64) {
-        self.inner.bfree = bfree;
-    }
-
-    /// Set the number of free blocks for non-priviledge users.
-    pub fn bavail(&mut self, bavail: u64) {
-        self.inner.bavail = bavail;
-    }
-
-    /// Set the number of inodes.
-    pub fn files(&mut self, files: u64) {
-        self.inner.files = files;
-    }
-
-    /// Set the number of free inodes.
-    pub fn ffree(&mut self, ffree: u64) {
-        self.inner.ffree = ffree;
-    }
-
-    /// Set the maximum length of file names.
-    pub fn namelen(&mut self, namelen: u32) {
-        self.inner.namelen = namelen;
+    fn ctime(&self) -> Duration {
+        Duration::new(
+            MetadataExt::atime(self) as _,
+            MetadataExt::atime_nsec(self) as _,
+        )
     }
 }
 
-impl From<libc::statvfs> for Statfs {
-    fn from(st: libc::statvfs) -> Self {
-        Self::from(&st)
-    }
+pub trait FsStatistics {
+    /// Return the block size.
+    fn bsize(&self) -> u32;
+
+    /// Return the fragment size.
+    fn frsize(&self) -> u32;
+
+    /// Return the number of blocks in the filesystem.
+    fn blocks(&self) -> u64;
+
+    /// Return the number of free blocks.
+    fn bfree(&self) -> u64;
+
+    /// Return the number of free blocks for non-priviledge users.
+    fn bavail(&self) -> u64;
+
+    /// Return the number of inodes.
+    fn files(&self) -> u64;
+
+    /// Return the number of free inodes.
+    fn ffree(&self) -> u64;
+
+    /// Return the maximum length of file names.
+    fn namelen(&self) -> u32;
 }
 
-impl From<&libc::statvfs> for Statfs {
-    fn from(st: &libc::statvfs) -> Self {
-        Self {
-            inner: fuse_kstatfs {
-                blocks: st.f_blocks,
-                bfree: st.f_bfree,
-                bavail: st.f_bavail,
-                files: st.f_files,
-                ffree: st.f_ffree,
-                bsize: st.f_bsize.try_into().unwrap(),
-                namelen: st.f_namemax.try_into().unwrap(),
-                frsize: st.f_frsize.try_into().unwrap(),
-                padding: 0,
-                spare: [0; 6],
-            },
+macro_rules! impl_fs_statistics_fields {
+    (@all $( $name:ident => $ret:ty, )*) => {$(
+        #[inline]
+        fn $name(&self) -> $ret {
+            (**self).$name()
         }
-    }
+    )*};
+    () => {
+        impl_fs_statistics_fields!(@all
+            bsize => u32,
+            frsize => u32,
+            blocks => u64,
+            bfree => u64,
+            bavail => u64,
+            files => u64,
+            ffree => u64,
+            namelen => u32,
+        );
+    };
 }
 
-#[repr(transparent)]
-pub struct FileLock {
-    inner: fuse_file_lock,
+impl<T: ?Sized> FsStatistics for &T
+where
+    T: FsStatistics,
+{
+    impl_fs_statistics_fields!();
 }
 
-impl FileLock {
+impl<T: ?Sized> FsStatistics for &mut T
+where
+    T: FsStatistics,
+{
+    impl_fs_statistics_fields!();
+}
+
+impl<T: ?Sized> FsStatistics for Box<T>
+where
+    T: FsStatistics,
+{
+    impl_fs_statistics_fields!();
+}
+
+impl<T: ?Sized> FsStatistics for std::rc::Rc<T>
+where
+    T: FsStatistics,
+{
+    impl_fs_statistics_fields!();
+}
+
+impl<T: ?Sized> FsStatistics for std::sync::Arc<T>
+where
+    T: FsStatistics,
+{
+    impl_fs_statistics_fields!();
+}
+
+impl FsStatistics for libc::statvfs {
     #[inline]
-    pub(crate) fn into_inner(self) -> fuse_file_lock {
-        self.inner
+    fn bsize(&self) -> u32 {
+        self.f_bsize.try_into().expect("bsize")
     }
 
-    /// Set the type of this lock.
-    pub fn typ(&mut self, typ: u32) {
-        self.inner.typ = typ;
+    #[inline]
+    fn frsize(&self) -> u32 {
+        self.f_frsize.try_into().expect("frsize")
     }
 
-    /// Set the starting offset to be locked.
-    pub fn start(&mut self, start: u64) {
-        self.inner.start = start;
+    #[inline]
+    fn blocks(&self) -> u64 {
+        self.f_blocks
     }
 
-    /// Set the ending offset to be locked.
-    pub fn end(&mut self, end: u64) {
-        self.inner.end = end;
+    #[inline]
+    fn bfree(&self) -> u64 {
+        self.f_bfree
     }
 
-    /// Set the process ID.
-    pub fn pid(&mut self, pid: u32) {
-        self.inner.pid = pid;
+    #[inline]
+    fn bavail(&self) -> u64 {
+        self.f_bavail
     }
+
+    #[inline]
+    fn files(&self) -> u64 {
+        self.f_files
+    }
+
+    #[inline]
+    fn ffree(&self) -> u64 {
+        self.f_ffree
+    }
+
+    #[inline]
+    fn namelen(&self) -> u32 {
+        self.f_namemax.try_into().expect("f_namemax")
+    }
+}
+
+pub trait FileLock {
+    /// Return the type of this lock.
+    fn typ(&self) -> LockType;
+
+    /// Return the starting offset to be locked.
+    fn start(&self) -> u64;
+
+    /// Return the ending offset to be locked.
+    fn end(&self) -> u64;
+
+    /// Return the process ID.
+    fn pid(&self) -> Pid;
+}
+
+macro_rules! impl_file_lock_fields {
+    (@all $( $name:ident => $ret:ty, )*) => {$(
+        #[inline]
+        fn $name(&self) -> $ret {
+            (**self).$name()
+        }
+    )*};
+    () => {
+        impl_file_lock_fields!(@all
+            typ => LockType,
+            start => u64,
+            end => u64,
+            pid => Pid,
+        );
+    };
+}
+
+impl<T: ?Sized> FileLock for &T
+where
+    T: FileLock,
+{
+    impl_file_lock_fields!();
+}
+
+impl<T: ?Sized> FileLock for &mut T
+where
+    T: FileLock,
+{
+    impl_file_lock_fields!();
+}
+
+impl<T: ?Sized> FileLock for Box<T>
+where
+    T: FileLock,
+{
+    impl_file_lock_fields!();
+}
+
+impl<T: ?Sized> FileLock for std::rc::Rc<T>
+where
+    T: FileLock,
+{
+    impl_file_lock_fields!();
+}
+
+impl<T: ?Sized> FileLock for std::sync::Arc<T>
+where
+    T: FileLock,
+{
+    impl_file_lock_fields!();
 }

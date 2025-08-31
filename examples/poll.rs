@@ -2,13 +2,13 @@ use polyfuse::{
     fs::{self, Filesystem},
     op,
     reply::{AttrOut, OpenOut, PollOut},
-    types::FileAttr,
 };
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use libc::{EACCES, EAGAIN, EINVAL, POLLIN};
+use libc::{getgid, getuid, EACCES, EAGAIN, EINVAL, POLLIN, S_IFREG};
 use std::{
+    mem,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -65,13 +65,13 @@ impl Filesystem for PollFS {
         _: fs::Context<'_, 'env>,
         req: fs::Request<'req, op::Getattr<'req>>,
     ) -> fs::Result {
-        let mut attr = FileAttr::default();
-        attr.ino(1);
-        attr.nlink(1);
-        attr.mode(libc::S_IFREG | 0o444);
-        attr.uid(unsafe { libc::getuid() });
-        attr.gid(unsafe { libc::getgid() });
-        req.reply(AttrOut::new(attr).ttl(Duration::from_secs(u64::max_value() / 2)))
+        let mut st = unsafe { mem::zeroed::<libc::stat>() };
+        st.st_ino = 1;
+        st.st_nlink = 1;
+        st.st_mode = S_IFREG | 0o444;
+        st.st_uid = unsafe { getuid() };
+        st.st_gid = unsafe { getgid() };
+        req.reply(AttrOut::new(st).ttl(Duration::from_secs(u64::max_value() / 2)))
     }
 
     fn open<'env, 'req>(

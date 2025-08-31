@@ -145,7 +145,7 @@ impl Filesystem for Heartbeat {
             let res = req.reply(
                 EntryOut::default()
                     .ino(self.file_attr.st_ino)
-                    .attr(&self.file_attr)
+                    .attr(self.file_attr)
                     .ttl_entry(self.ttl)
                     .ttl_attr(self.ttl),
             )?;

@@ -6,12 +6,12 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, ReaddirOut},
-    types::FileAttr,
     KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
+use libc::{getgid, getuid, DT_DIR, DT_REG, EISDIR, ENOENT, S_IFDIR, S_IFREG};
+use std::{mem, os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const ROOT_INO: u64 = 1;
@@ -55,45 +55,45 @@ impl Hello {
         entries.push(DirEntry {
             name: ".",
             ino: ROOT_INO,
-            typ: libc::DT_DIR as u32,
+            typ: DT_DIR as u32,
         });
         entries.push(DirEntry {
             name: "..",
             ino: ROOT_INO,
-            typ: libc::DT_DIR as u32,
+            typ: DT_DIR as u32,
         });
         entries.push(DirEntry {
             name: HELLO_FILENAME,
             ino: HELLO_INO,
-            typ: libc::DT_REG as u32,
+            typ: DT_REG as u32,
         });
 
         Self {
             entries,
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
+            uid: unsafe { getuid() },
+            gid: unsafe { getgid() },
         }
     }
 
-    fn root_attr(&self) -> FileAttr {
-        let mut attr = FileAttr::default();
-        attr.ino(ROOT_INO);
-        attr.mode(libc::S_IFDIR | 0o555);
-        attr.nlink(2);
-        attr.uid(self.uid);
-        attr.gid(self.gid);
-        attr
+    fn root_attr(&self) -> libc::stat {
+        let mut st = unsafe { mem::zeroed::<libc::stat>() };
+        st.st_ino = ROOT_INO;
+        st.st_mode = S_IFDIR | 0o555;
+        st.st_nlink = 2; // ".", ".."
+        st.st_uid = self.uid;
+        st.st_gid = self.gid;
+        st
     }
 
-    fn hello_attr(&self) -> FileAttr {
-        let mut attr = FileAttr::default();
-        attr.ino(HELLO_INO);
-        attr.size(HELLO_CONTENT.len() as u64);
-        attr.mode(libc::S_IFREG | 0o444);
-        attr.nlink(1);
-        attr.uid(self.uid);
-        attr.gid(self.gid);
-        attr
+    fn hello_attr(&self) -> libc::stat {
+        let mut st = unsafe { mem::zeroed::<libc::stat>() };
+        st.st_ino = HELLO_INO;
+        st.st_size = HELLO_CONTENT.len() as _;
+        st.st_mode = S_IFREG | 0o444;
+        st.st_nlink = 1;
+        st.st_uid = self.uid;
+        st.st_gid = self.gid;
+        st
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -115,7 +115,7 @@ impl Filesystem for Hello {
                 out.ttl_entry(TTL);
                 req.reply(out)
             }
-            _ => Err(libc::ENOENT.into()),
+            _ => Err(ENOENT.into()),
         }
     }
 
@@ -123,7 +123,7 @@ impl Filesystem for Hello {
         let attr = match req.arg().ino() {
             ROOT_INO => self.root_attr(),
             HELLO_INO => self.hello_attr(),
-            _ => return Err(libc::ENOENT.into()),
+            _ => Err(ENOENT)?,
         };
 
         req.reply(AttrOut::new(attr).ttl(TTL))
@@ -132,8 +132,8 @@ impl Filesystem for Hello {
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         match req.arg().ino() {
             HELLO_INO => (),
-            ROOT_INO => return Err(libc::EISDIR.into()),
-            _ => return Err(libc::ENOENT.into()),
+            ROOT_INO => Err(EISDIR)?,
+            _ => Err(ENOENT)?,
         }
 
         let mut data: &[u8] = &[];

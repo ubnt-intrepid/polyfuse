@@ -2,13 +2,12 @@ use polyfuse::{
     mount::{mount, MountOptions},
     op,
     reply::AttrOut,
-    types::FileAttr,
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{ENOENT, ENOSYS};
-use std::{io, path::PathBuf, time::Duration};
+use libc::{ENOENT, ENOSYS, S_IFREG};
+use std::{io, mem, path::PathBuf, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
 
@@ -57,19 +56,19 @@ fn getattr(
         return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 
-    let mut attr = FileAttr::default();
-    attr.ino(1);
-    attr.mode(libc::S_IFREG | 0o444);
-    attr.size(CONTENT.len() as u64);
-    attr.nlink(1);
-    attr.uid(unsafe { libc::getuid() });
-    attr.gid(unsafe { libc::getgid() });
+    let mut st = unsafe { mem::zeroed::<libc::stat>() };
+    st.st_ino = 1;
+    st.st_mode = S_IFREG | 0o444;
+    st.st_size = CONTENT.len() as _;
+    st.st_nlink = 1;
+    st.st_uid = unsafe { libc::getuid() };
+    st.st_gid = unsafe { libc::getgid() };
 
     session.send_reply(
         conn,
         req.unique(),
         0,
-        AttrOut::new(attr).ttl(Duration::from_secs(1)),
+        AttrOut::new(st).ttl(Duration::from_secs(1)),
     )
 }
 

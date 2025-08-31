@@ -304,7 +304,7 @@ impl MemFS {
 
         let mut out = EntryOut::default();
         out.ino(inode_entry.ino());
-        out.attr(&inode.attr);
+        out.attr(inode.attr);
         out.ttl_entry(self.ttl);
 
         map_entry.insert(inode_entry.ino());
@@ -357,7 +357,7 @@ impl Filesystem for MemFS {
         req.reply(
             EntryOut::default()
                 .ino(child_ino)
-                .attr(&child.attr)
+                .attr(child.attr)
                 .ttl_entry(self.ttl),
         )
     }
@@ -377,7 +377,7 @@ impl Filesystem for MemFS {
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
-        req.reply(AttrOut::new(&inode.attr).ttl(self.ttl))
+        req.reply(AttrOut::new(inode.attr).ttl(self.ttl))
     }
 
     fn setattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Setattr<'_>>) -> fs::Result {
@@ -419,7 +419,7 @@ impl Filesystem for MemFS {
             inode.attr.st_ctime_nsec = ctime.subsec_nanos() as u64 as i64;
         }
 
-        req.reply(AttrOut::new(&inode.attr).ttl(self.ttl))
+        req.reply(AttrOut::new(inode.attr).ttl(self.ttl))
     }
 
     fn readlink(
@@ -558,7 +558,7 @@ impl Filesystem for MemFS {
         req.reply(
             EntryOut::default()
                 .ino(ino)
-                .attr(&inode.attr)
+                .attr(inode.attr)
                 .ttl_entry(self.ttl),
         )
     }

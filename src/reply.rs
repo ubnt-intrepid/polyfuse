@@ -1,10 +1,34 @@
 use crate::{
     bytes::{Bytes, FillBytes},
-    types::{FileAttr, FileLock, Statfs},
+    types::{FileAttr, FileLock, FsStatistics},
 };
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::IntoBytes as _;
+
+fn to_fuse_attr(attr: impl FileAttr) -> fuse_attr {
+    let atime = attr.atime();
+    let mtime = attr.mtime();
+    let ctime = attr.ctime();
+    fuse_attr {
+        ino: attr.ino(),
+        size: attr.size(),
+        mode: attr.mode(),
+        nlink: attr.nlink(),
+        uid: attr.uid(),
+        gid: attr.gid(),
+        rdev: attr.rdev().to_kernel_dev_t(),
+        blksize: attr.blksize(),
+        blocks: attr.blocks(),
+        atime: atime.as_secs(),
+        atimensec: atime.subsec_nanos(),
+        mtime: mtime.as_secs(),
+        mtimensec: mtime.subsec_nanos(),
+        ctime: ctime.as_secs(),
+        ctimensec: ctime.subsec_nanos(),
+        padding: 0,
+    }
+}
 
 #[derive(Default)]
 pub struct EntryOut {
@@ -38,8 +62,8 @@ impl Bytes for EntryOut {
 impl EntryOut {
     /// Set the attribute values about this entry.
     #[inline]
-    pub fn attr(&mut self, attr: impl Into<FileAttr>) -> &mut Self {
-        self.out.attr = attr.into().into_inner();
+    pub fn attr(&mut self, attr: impl FileAttr) -> &mut Self {
+        self.out.attr = to_fuse_attr(attr);
         self
     }
 
@@ -102,13 +126,13 @@ impl fmt::Debug for AttrOut {
 
 impl AttrOut {
     #[inline]
-    pub fn new(attr: impl Into<FileAttr>) -> Self {
+    pub fn new(attr: impl FileAttr) -> Self {
         Self {
             out: fuse_attr_out {
                 attr_valid: 0,
                 attr_valid_nsec: 0,
                 dummy: 0,
-                attr: attr.into().into_inner(),
+                attr: to_fuse_attr(attr),
             },
         }
     }
@@ -279,10 +303,21 @@ impl Bytes for StatfsOut {
 }
 
 impl StatfsOut {
-    pub fn new(st: impl Into<Statfs>) -> Self {
+    pub fn new(st: impl FsStatistics) -> Self {
         Self {
             out: fuse_statfs_out {
-                st: st.into().into_inner(),
+                st: fuse_kstatfs {
+                    blocks: st.blocks(),
+                    bfree: st.bfree(),
+                    bavail: st.bavail(),
+                    files: st.files(),
+                    ffree: st.ffree(),
+                    bsize: st.bsize(),
+                    namelen: st.namelen(),
+                    frsize: st.frsize(),
+                    padding: 0,
+                    spare: [0; 6],
+                },
             },
         }
     }
@@ -354,10 +389,15 @@ impl Bytes for LkOut {
 }
 
 impl LkOut {
-    pub fn new(lk: impl Into<FileLock>) -> Self {
+    pub fn new(lk: impl FileLock) -> Self {
         Self {
             out: fuse_lk_out {
-                lk: lk.into().into_inner(),
+                lk: fuse_file_lock {
+                    start: lk.start(),
+                    end: lk.end(),
+                    typ: lk.typ(),
+                    pid: lk.pid(),
+                },
             },
         }
     }
