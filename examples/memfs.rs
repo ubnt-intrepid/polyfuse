@@ -6,6 +6,7 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    types::NodeID,
     KernelConfig,
 };
 
@@ -44,10 +45,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-type Ino = u64;
-
 struct INodeTable {
-    map: DashMap<Ino, INode, RandomState>,
+    map: DashMap<NodeID, INode, RandomState>,
     next_ino: AtomicU64,
 }
 
@@ -59,17 +58,17 @@ impl INodeTable {
         }
     }
 
-    fn get(&self, ino: Ino) -> Option<INodeRef<'_>> {
+    fn get(&self, ino: NodeID) -> Option<INodeRef<'_>> {
         self.map.get(&ino).map(|ref_| INodeRef { ref_ })
     }
 
-    fn get_mut(&self, ino: Ino) -> Option<INodeRefMut<'_>> {
+    fn get_mut(&self, ino: NodeID) -> Option<INodeRefMut<'_>> {
         self.map
             .get_mut(&ino)
             .map(|ref_mut| INodeRefMut { ref_mut })
     }
 
-    fn occupied_entry(&self, ino: Ino) -> Option<OccupiedEntry<'_>> {
+    fn occupied_entry(&self, ino: NodeID) -> Option<OccupiedEntry<'_>> {
         match self.map.entry(ino) {
             dashmap::mapref::entry::Entry::Occupied(entry) => Some(OccupiedEntry { entry }),
             dashmap::mapref::entry::Entry::Vacant(..) => None,
@@ -79,6 +78,7 @@ impl INodeTable {
     fn vacant_entry(&self) -> Option<VacantEntry<'_>> {
         // TODO: choose appropriate atomic ordering.
         let ino = self.next_ino.fetch_add(1, Ordering::SeqCst);
+        let ino = NodeID::from_raw(ino).expect("invalid nodeid");
 
         match self.map.entry(ino) {
             dashmap::mapref::entry::Entry::Occupied(..) => None,
@@ -88,7 +88,7 @@ impl INodeTable {
 }
 
 struct INodeRef<'a> {
-    ref_: dashmap::mapref::one::Ref<'a, Ino, INode>,
+    ref_: dashmap::mapref::one::Ref<'a, NodeID, INode>,
 }
 impl std::ops::Deref for INodeRef<'_> {
     type Target = INode;
@@ -100,7 +100,7 @@ impl std::ops::Deref for INodeRef<'_> {
 }
 
 struct INodeRefMut<'a> {
-    ref_mut: dashmap::mapref::one::RefMut<'a, Ino, INode>,
+    ref_mut: dashmap::mapref::one::RefMut<'a, NodeID, INode>,
 }
 impl std::ops::Deref for INodeRefMut<'_> {
     type Target = INode;
@@ -118,7 +118,7 @@ impl std::ops::DerefMut for INodeRefMut<'_> {
 }
 
 struct OccupiedEntry<'a> {
-    entry: dashmap::mapref::entry::OccupiedEntry<'a, Ino, INode>,
+    entry: dashmap::mapref::entry::OccupiedEntry<'a, NodeID, INode>,
 }
 impl<'a> OccupiedEntry<'a> {
     fn get(&self) -> &INode {
@@ -135,10 +135,10 @@ impl<'a> OccupiedEntry<'a> {
 }
 
 struct VacantEntry<'a> {
-    entry: dashmap::mapref::entry::VacantEntry<'a, Ino, INode>,
+    entry: dashmap::mapref::entry::VacantEntry<'a, NodeID, INode>,
 }
 impl<'a> VacantEntry<'a> {
-    fn ino(&self) -> Ino {
+    fn ino(&self) -> NodeID {
         *self.entry.key()
     }
 
@@ -201,13 +201,13 @@ impl INode {
 }
 
 struct Directory {
-    children: HashMap<OsString, Ino>,
-    parent: Option<Ino>,
+    children: HashMap<OsString, NodeID>,
+    parent: Option<NodeID>,
 }
 
 struct DirEntry {
     name: OsString,
-    ino: u64,
+    ino: NodeID,
     typ: u32,
     off: u64,
 }
@@ -217,9 +217,11 @@ impl Directory {
         let mut entries = Vec::with_capacity(self.children.len() + 2);
         let mut offset: u64 = 1;
 
+        let attr_ino = NodeID::from_raw(attr.st_ino).expect("invalid nodeid");
+
         entries.push(Arc::new(DirEntry {
             name: ".".into(),
-            ino: attr.st_ino,
+            ino: attr_ino,
             typ: libc::DT_DIR as u32,
             off: offset,
         }));
@@ -227,7 +229,7 @@ impl Directory {
 
         entries.push(Arc::new(DirEntry {
             name: "..".into(),
-            ino: self.parent.unwrap_or(attr.st_ino),
+            ino: self.parent.unwrap_or(attr_ino),
             typ: libc::DT_DIR as u32,
             off: offset,
         }));
@@ -285,7 +287,7 @@ impl MemFS {
         }
     }
 
-    fn make_node<F>(&self, parent: Ino, name: &OsStr, f: F) -> fs::Result<EntryOut>
+    fn make_node<F>(&self, parent: NodeID, name: &OsStr, f: F) -> fs::Result<EntryOut>
     where
         F: FnOnce(&VacantEntry<'_>) -> INode,
     {
@@ -313,7 +315,7 @@ impl MemFS {
         Ok(out)
     }
 
-    fn unlink_node(&self, parent: Ino, name: &OsStr) -> fs::Result<()> {
+    fn unlink_node(&self, parent: NodeID, name: &OsStr) -> fs::Result<()> {
         let mut parent = self.inodes.get_mut(parent).ok_or(ENOENT)?;
         let parent = parent.as_dir_mut().ok_or(ENOTDIR)?;
 
@@ -487,7 +489,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.ino();
+                attr.st_ino = entry.ino().into_raw();
                 attr.st_nlink = 1;
                 attr.st_mode = req.arg().mode();
                 attr
@@ -504,7 +506,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.ino();
+                attr.st_ino = entry.ino().into_raw();
                 attr.st_nlink = 2;
                 attr.st_mode = req.arg().mode() | libc::S_IFDIR;
                 attr
@@ -524,7 +526,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.ino();
+                attr.st_ino = entry.ino().into_raw();
                 attr.st_nlink = 1;
                 attr.st_mode = libc::S_IFLNK | 0o777;
                 attr

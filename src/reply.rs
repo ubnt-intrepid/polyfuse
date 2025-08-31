@@ -1,6 +1,6 @@
 use crate::{
     bytes::{Bytes, FillBytes},
-    types::{FileAttr, FileLock, FsStatistics},
+    types::{FileAttr, FileLock, FsStatistics, NodeID},
 };
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
@@ -11,7 +11,7 @@ fn to_fuse_attr(attr: impl FileAttr) -> fuse_attr {
     let mtime = attr.mtime();
     let ctime = attr.ctime();
     fuse_attr {
-        ino: attr.ino(),
+        ino: attr.ino().map_or(0, NodeID::into_raw),
         size: attr.size(),
         mode: attr.mode(),
         nlink: attr.nlink(),
@@ -74,8 +74,8 @@ impl EntryOut {
     /// but the *zeroed* entries also have the ability to specify the lifetime
     /// of the entry cache by using the `ttl_entry` parameter.
     #[inline]
-    pub fn ino(&mut self, ino: u64) -> &mut Self {
-        self.out.nodeid = ino;
+    pub fn ino(&mut self, ino: NodeID) -> &mut Self {
+        self.out.nodeid = ino.into_raw();
         self
     }
 
@@ -512,7 +512,7 @@ impl ReaddirOut {
         }
     }
 
-    pub fn entry(&mut self, name: &OsStr, ino: u64, typ: u32, off: u64) -> bool {
+    pub fn entry(&mut self, name: &OsStr, ino: NodeID, typ: u32, off: u64) -> bool {
         let name = name.as_bytes();
         let remaining = self.buf.capacity() - self.buf.len();
 
@@ -524,7 +524,7 @@ impl ReaddirOut {
         }
 
         let dirent = fuse_dirent {
-            ino,
+            ino: ino.into_raw(),
             off,
             namelen: name.len().try_into().expect("name length is too long"),
             typ,

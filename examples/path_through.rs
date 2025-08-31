@@ -16,6 +16,7 @@ use polyfuse::{
     mount::MountOptions,
     op::{self, Forget},
     reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut},
+    types::NodeID,
     KernelConfig,
 };
 
@@ -57,17 +58,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-type Ino = u64;
-
 struct INode {
-    ino: Ino,
+    ino: NodeID,
     path: PathBuf,
     refcount: u64,
 }
 
 struct INodeTable {
-    map: HashMap<Ino, INode>,
-    path_to_ino: HashMap<PathBuf, Ino>,
+    map: HashMap<NodeID, INode>,
+    path_to_ino: HashMap<PathBuf, NodeID>,
     next_ino: u64,
 }
 
@@ -81,11 +80,11 @@ impl INodeTable {
     }
 
     fn vacant_entry(&mut self) -> VacantEntry<'_> {
-        let ino = self.next_ino;
+        let ino = NodeID::from_raw(self.next_ino).expect("invalid NodID");
         VacantEntry { table: self, ino }
     }
 
-    fn get(&self, ino: Ino) -> Option<&INode> {
+    fn get(&self, ino: NodeID) -> Option<&INode> {
         self.map.get(&ino)
     }
 
@@ -97,7 +96,7 @@ impl INodeTable {
 
 struct VacantEntry<'a> {
     table: &'a mut INodeTable,
-    ino: Ino,
+    ino: NodeID,
 }
 
 impl VacantEntry<'_> {
@@ -122,7 +121,7 @@ impl PathThrough {
 
         let mut inodes = INodeTable::new();
         inodes.vacant_entry().insert(INode {
-            ino: 1,
+            ino: NodeID::ROOT,
             path: PathBuf::new(),
             refcount: u64::max_value() / 2,
         });
@@ -178,7 +177,7 @@ impl Filesystem for PathThrough {
                 };
 
                 if refcount == 0 {
-                    tracing::debug!("remove ino={}", entry.key());
+                    tracing::debug!("remove ino={:?}", entry.key());
                     drop(entry.remove());
                 }
             }
@@ -298,11 +297,12 @@ impl Filesystem for PathThrough {
                 libc::DT_UNKNOWN as u32
             };
 
-            let full = out.entry(&entry.file_name(), metadata.ino(), typ, dir.offset);
+            let ino = NodeID::from_raw(metadata.ino()).expect("invalid nodeid");
+            let full = out.entry(&entry.file_name(), ino, typ, dir.offset);
             if full {
                 dir.last_entry.replace(DirEntry {
                     name: entry.file_name(),
-                    ino: metadata.ino(),
+                    ino,
                     typ,
                 });
                 if !at_least_one_entry {
@@ -408,7 +408,7 @@ struct DirHandle {
 
 struct DirEntry {
     name: OsString,
-    ino: Ino,
+    ino: NodeID,
     typ: u32,
 }
 

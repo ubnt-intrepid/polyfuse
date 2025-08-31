@@ -2,6 +2,7 @@ use polyfuse::{
     fs::{self, Filesystem},
     op,
     reply::{AttrOut, OpenOut, PollOut},
+    types::PollID,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -203,5 +204,5 @@ struct FileHandle {
 #[derive(Default)]
 struct FileHandleState {
     is_ready: bool,
-    kh: Option<u64>,
+    kh: Option<PollID>,
 }

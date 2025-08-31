@@ -12,6 +12,7 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, ReaddirOut},
+    types::NodeID,
     KernelConfig,
 };
 
@@ -20,8 +21,8 @@ use chrono::Local;
 use libc::{EISDIR, ENOENT, ENOTDIR};
 use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
 
-const ROOT_INO: u64 = 1;
-const FILE_INO: u64 = 2;
+const ROOT_INO: NodeID = NodeID::ROOT;
+const FILE_INO: NodeID = unsafe { NodeID::from_raw_unchecked(2) };
 
 const DEFAULT_TTL: Duration = Duration::from_secs(0);
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
@@ -78,12 +79,12 @@ struct CurrentFile {
 impl Heartbeat {
     fn new(ttl: Duration, update_interval: Duration, no_notify: bool) -> Self {
         let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
-        root_attr.st_ino = ROOT_INO;
+        root_attr.st_ino = ROOT_INO.into_raw();
         root_attr.st_mode = libc::S_IFDIR | 0o555;
         root_attr.st_nlink = 1;
 
         let mut file_attr = unsafe { mem::zeroed::<libc::stat>() };
-        file_attr.st_ino = FILE_INO;
+        file_attr.st_ino = FILE_INO.into_raw();
         file_attr.st_mode = libc::S_IFREG | 0o444;
         file_attr.st_nlink = 1;
 
@@ -135,16 +136,17 @@ impl Filesystem for Heartbeat {
     }
 
     fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
-        if req.arg().parent() != ROOT_INO {
+        if req.arg().parent() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
 
         let mut current = self.current.lock().unwrap();
 
         if req.arg().name().as_bytes() == current.filename.as_bytes() {
+            let ino = NodeID::from_raw(self.file_attr.st_ino).expect("invalid nodeid");
             let res = req.reply(
                 EntryOut::default()
-                    .ino(self.file_attr.st_ino)
+                    .ino(ino)
                     .attr(self.file_attr)
                     .ttl_entry(self.ttl)
                     .ttl_attr(self.ttl),

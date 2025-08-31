@@ -8,6 +8,7 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, StatfsOut, WriteOut, XattrOut},
+    types::NodeID,
     KernelConfig, KernelFlags,
 };
 
@@ -64,7 +65,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-type Ino = u64;
 type SrcId = (u64, libc::dev_t);
 
 struct Passthrough {
@@ -757,7 +757,7 @@ impl<T> HandlePool<T> {
 // ==== INode ====
 
 struct INode {
-    ino: Ino,
+    ino: NodeID,
     src_id: SrcId,
     is_symlink: bool,
     fd: FileDesc,
@@ -767,8 +767,8 @@ struct INode {
 // ==== INodeTable ====
 
 struct INodeTable {
-    map: HashMap<Ino, Arc<Mutex<INode>>>,
-    src_to_ino: HashMap<SrcId, Ino>,
+    map: HashMap<NodeID, Arc<Mutex<INode>>>,
+    src_to_ino: HashMap<SrcId, NodeID>,
     next_ino: u64,
 }
 
@@ -781,7 +781,7 @@ impl INodeTable {
         }
     }
 
-    fn get(&self, ino: Ino) -> Option<Arc<Mutex<INode>>> {
+    fn get(&self, ino: NodeID) -> Option<Arc<Mutex<INode>>> {
         self.map.get(&ino).cloned()
     }
 
@@ -791,18 +791,18 @@ impl INodeTable {
     }
 
     fn vacant_entry(&mut self) -> VacantEntry<'_> {
-        let ino = self.next_ino;
+        let ino = NodeID::from_raw(self.next_ino).expect("invalid nodeid");
         VacantEntry { table: self, ino }
     }
 }
 
 struct VacantEntry<'a> {
     table: &'a mut INodeTable,
-    ino: Ino,
+    ino: NodeID,
 }
 
 impl VacantEntry<'_> {
-    fn ino(&self) -> Ino {
+    fn ino(&self) -> NodeID {
         self.ino
     }
 

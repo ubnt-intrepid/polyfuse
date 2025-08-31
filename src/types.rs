@@ -1,13 +1,57 @@
-use std::{fs::Metadata, os::unix::prelude::*, time::Duration};
+use std::{fmt, fs::Metadata, num::NonZeroU64, os::unix::prelude::*, time::Duration};
 
-pub const ROOT_INO: Ino = 1;
+pub type RequestID = u64;
+pub type RetrieveID = u64;
+pub type UID = u32;
+pub type GID = u32;
+pub type PID = u32;
+pub type PollID = u64;
+pub type FileHandle = u64;
 
-pub type Ino = u64;
 pub type FileMode = u32;
-pub type Uid = u32;
-pub type Gid = u32;
-pub type Pid = u32;
+pub type OpenFlags = u32;
 pub type LockType = u32;
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeID(NonZeroU64);
+
+impl NodeID {
+    pub const ROOT: Self = Self(unsafe { NonZeroU64::new_unchecked(1) });
+
+    pub const fn from_raw(value: u64) -> Option<Self> {
+        match NonZeroU64::new(value) {
+            Some(ino) => Some(Self(ino)),
+            None => None,
+        }
+    }
+
+    pub const unsafe fn from_raw_unchecked(value: u64) -> Self {
+        Self(NonZeroU64::new_unchecked(value))
+    }
+
+    pub const fn into_raw(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// The identifier for locking operations.
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct LockOwner(u64);
+
+impl fmt::Debug for LockOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LockOwner {{ .. }}")
+    }
+}
+
+impl LockOwner {
+    #[inline]
+    pub(crate) const fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
@@ -33,7 +77,7 @@ impl DeviceID {
 /// This trait is the abstraction of both `fuse_attr` and `fuse_statx`.
 pub trait FileAttr {
     /// Return the inode number.
-    fn ino(&self) -> Ino;
+    fn ino(&self) -> Option<NodeID>;
 
     /// Return the size of content.
     fn size(&self) -> u64;
@@ -45,10 +89,10 @@ pub trait FileAttr {
     fn nlink(&self) -> u32;
 
     /// Return the user ID.
-    fn uid(&self) -> Uid;
+    fn uid(&self) -> UID;
 
     /// Return the group ID.
-    fn gid(&self) -> Gid;
+    fn gid(&self) -> GID;
 
     /// Return the device ID.
     fn rdev(&self) -> DeviceID;
@@ -78,12 +122,12 @@ macro_rules! impl_file_attr_fields {
     )*};
     () => {
         impl_file_attr_fields!(@all
-            ino => Ino,
+            ino => Option<NodeID>,
             size => u64,
             mode => FileMode,
             nlink => u32,
-            uid => Uid,
-            gid => Gid,
+            uid => UID,
+            gid => GID,
             rdev => DeviceID,
             blksize => u32,
             blocks => u64,
@@ -130,8 +174,8 @@ where
 }
 
 impl FileAttr for libc::stat {
-    fn ino(&self) -> Ino {
-        self.st_ino
+    fn ino(&self) -> Option<NodeID> {
+        NodeID::from_raw(self.st_ino)
     }
 
     fn size(&self) -> u64 {
@@ -146,11 +190,11 @@ impl FileAttr for libc::stat {
         self.st_nlink.try_into().expect("st_nlink")
     }
 
-    fn uid(&self) -> Uid {
+    fn uid(&self) -> UID {
         self.st_uid
     }
 
-    fn gid(&self) -> Gid {
+    fn gid(&self) -> GID {
         self.st_gid
     }
 
@@ -192,8 +236,8 @@ impl FileAttr for libc::stat {
 }
 
 impl FileAttr for Metadata {
-    fn ino(&self) -> Ino {
-        MetadataExt::ino(self)
+    fn ino(&self) -> Option<NodeID> {
+        NodeID::from_raw(MetadataExt::ino(self))
     }
 
     fn size(&self) -> u64 {
@@ -208,11 +252,11 @@ impl FileAttr for Metadata {
         MetadataExt::nlink(self).try_into().expect("metadata.nlink")
     }
 
-    fn uid(&self) -> Uid {
+    fn uid(&self) -> UID {
         MetadataExt::uid(self)
     }
 
-    fn gid(&self) -> Gid {
+    fn gid(&self) -> GID {
         MetadataExt::gid(self)
     }
 
@@ -390,7 +434,7 @@ pub trait FileLock {
     fn end(&self) -> u64;
 
     /// Return the process ID.
-    fn pid(&self) -> Pid;
+    fn pid(&self) -> PID;
 }
 
 macro_rules! impl_file_lock_fields {
@@ -405,7 +449,7 @@ macro_rules! impl_file_lock_fields {
             typ => LockType,
             start => u64,
             end => u64,
-            pid => Pid,
+            pid => PID,
         );
     };
 }

@@ -2,6 +2,7 @@ use polyfuse::{
     mount::{mount, MountOptions},
     op,
     reply::AttrOut,
+    types::NodeID,
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 
@@ -52,12 +53,12 @@ fn getattr(
     req: &RequestBuffer,
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
-    if op.ino() != 1 {
+    if op.ino() != NodeID::ROOT {
         return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 
     let mut st = unsafe { mem::zeroed::<libc::stat>() };
-    st.st_ino = 1;
+    st.st_ino = NodeID::ROOT.into_raw();
     st.st_mode = S_IFREG | 0o444;
     st.st_size = CONTENT.len() as _;
     st.st_nlink = 1;
@@ -78,7 +79,7 @@ fn read(
     req: &RequestBuffer,
     op: op::Read<'_>,
 ) -> io::Result<()> {
-    if op.ino() != 1 {
+    if op.ino() != NodeID::ROOT {
         return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 

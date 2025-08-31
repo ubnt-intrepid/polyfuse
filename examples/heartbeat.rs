@@ -12,6 +12,7 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, OpenOut},
+    types::NodeID,
     KernelConfig,
 };
 
@@ -26,8 +27,6 @@ use std::{
     sync::Mutex,
     time::Duration,
 };
-
-const ROOT_INO: u64 = 1;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -87,7 +86,7 @@ impl Heartbeat {
         let content = Local::now().to_rfc3339();
 
         let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-        attr.st_ino = ROOT_INO;
+        attr.st_ino = NodeID::ROOT.into_raw();
         attr.st_mode = libc::S_IFREG | 0o444;
         attr.st_size = content.len() as libc::off_t;
 
@@ -113,18 +112,18 @@ impl Heartbeat {
                 let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
-                notifier.store(ROOT_INO, 0, &content)?;
+                notifier.store(NodeID::ROOT, 0, &content)?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
-                let unique = notifier.retrieve(ROOT_INO, 0, 1024)?;
+                let unique = notifier.retrieve(NodeID::ROOT, 0, 1024)?;
                 self.retrieves.insert(unique, content);
             }
 
             Some(NotifyKind::Invalidate) => {
                 tracing::info!("send notify_invalidate_inode");
-                notifier.inval_inode(ROOT_INO, 0, 0)?;
+                notifier.inval_inode(NodeID::ROOT, 0, 0)?;
             }
 
             None => { /* do nothing */ }
@@ -148,7 +147,7 @@ impl Filesystem for Heartbeat {
     }
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
-        if req.arg().ino() != ROOT_INO {
+        if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
         let inner = self.inner.lock().unwrap();
@@ -156,7 +155,7 @@ impl Filesystem for Heartbeat {
     }
 
     fn open(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
-        if req.arg().ino() != ROOT_INO {
+        if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
         req.reply(
@@ -166,7 +165,7 @@ impl Filesystem for Heartbeat {
     }
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
-        if req.arg().ino() != ROOT_INO {
+        if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?
         }
 

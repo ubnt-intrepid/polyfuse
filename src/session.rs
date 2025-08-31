@@ -3,6 +3,7 @@ use crate::{
     conn::SpliceRead,
     notify::Notify,
     request::{ReceiveError, RequestBuffer},
+    types::RequestID,
 };
 use libc::{ENODEV, ENOSYS, EPROTO};
 use polyfuse_kernel::*;
@@ -532,7 +533,7 @@ impl Session {
     /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
     /// the corresponding kernel processing will be isolated, and the process
     /// that issued the associated syscall may enter a deadlock state.
-    pub fn send_reply<T, B>(&self, conn: T, unique: u64, error: i32, arg: B) -> io::Result<()>
+    pub fn send_reply<T, B>(&self, conn: T, unique: RequestID, error: i32, arg: B) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
