@@ -44,6 +44,3 @@ members = [
   "crates/polyfuse-kernel",
   "crates/polyfuse-kernel-systest",
 ]
-exclude = [
-  "examples_disabled/*",
-]
