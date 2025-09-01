@@ -11,7 +11,10 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP, ERANGE};
+use libc::{
+    DT_DIR, DT_UNKNOWN, EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP,
+    ERANGE, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, XATTR_CREATE, XATTR_REPLACE,
+};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap, RandomState},
@@ -220,7 +223,7 @@ impl Directory {
         entries.push(Arc::new(DirEntry {
             name: ".".into(),
             ino: attr.st_ino,
-            typ: libc::DT_DIR as u32,
+            typ: DT_DIR as u32,
             off: offset,
         }));
         offset += 1;
@@ -228,7 +231,7 @@ impl Directory {
         entries.push(Arc::new(DirEntry {
             name: "..".into(),
             ino: self.parent.unwrap_or(attr.st_ino),
-            typ: libc::DT_DIR as u32,
+            typ: DT_DIR as u32,
             off: offset,
         }));
         offset += 1;
@@ -237,7 +240,7 @@ impl Directory {
             entries.push(Arc::new(DirEntry {
                 name: name.into(),
                 ino,
-                typ: libc::DT_UNKNOWN as u32,
+                typ: DT_UNKNOWN as u32,
                 off: offset,
             }));
             offset += 1;
@@ -266,7 +269,7 @@ impl MemFS {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
                 attr.st_ino = 1;
                 attr.st_nlink = 2;
-                attr.st_mode = libc::S_IFDIR | 0o755;
+                attr.st_mode = S_IFDIR | 0o755;
                 attr
             },
             xattrs: HashMap::new(),
@@ -491,8 +494,8 @@ impl Filesystem for MemFS {
     }
 
     fn mknod(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Mknod<'_>>) -> fs::Result {
-        match req.arg().mode() & libc::S_IFMT {
-            libc::S_IFREG => (),
+        match req.arg().mode() & S_IFMT {
+            S_IFREG => (),
             _ => Err(ENOTSUP)?,
         }
 
@@ -518,7 +521,7 @@ impl Filesystem for MemFS {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
                 attr.st_ino = entry.ino();
                 attr.st_nlink = 2;
-                attr.st_mode = req.arg().mode() | libc::S_IFDIR;
+                attr.st_mode = req.arg().mode() | S_IFDIR;
                 attr
             },
             xattrs: HashMap::new(),
@@ -538,7 +541,7 @@ impl Filesystem for MemFS {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
                 attr.st_ino = entry.ino();
                 attr.st_nlink = 1;
-                attr.st_mode = libc::S_IFLNK | 0o777;
+                attr.st_mode = S_IFLNK | 0o777;
                 attr
             },
             xattrs: HashMap::new(),
@@ -655,8 +658,8 @@ impl Filesystem for MemFS {
         _: fs::Context<'_, '_>,
         req: fs::Request<'_, op::Setxattr<'_>>,
     ) -> fs::Result {
-        let create = req.arg().flags() as i32 & libc::XATTR_CREATE != 0;
-        let replace = req.arg().flags() as i32 & libc::XATTR_REPLACE != 0;
+        let create = req.arg().flags() as i32 & XATTR_CREATE != 0;
+        let replace = req.arg().flags() as i32 & XATTR_REPLACE != 0;
         if create && replace {
             return Err(EINVAL.into());
         }

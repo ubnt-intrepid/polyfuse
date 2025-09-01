@@ -17,7 +17,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
-use libc::{EISDIR, ENOENT, ENOTDIR};
+use libc::{EISDIR, ENOENT, ENOTDIR, S_IFDIR, S_IFREG};
 use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
 
 const ROOT_INO: u64 = 1;
@@ -79,12 +79,12 @@ impl Heartbeat {
     fn new(ttl: Duration, update_interval: Duration, no_notify: bool) -> Self {
         let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
         root_attr.st_ino = ROOT_INO;
-        root_attr.st_mode = libc::S_IFDIR | 0o555;
+        root_attr.st_mode = S_IFDIR | 0o555;
         root_attr.st_nlink = 1;
 
         let mut file_attr = unsafe { mem::zeroed::<libc::stat>() };
         file_attr.st_ino = FILE_INO;
-        file_attr.st_mode = libc::S_IFREG | 0o444;
+        file_attr.st_mode = S_IFREG | 0o444;
         file_attr.st_nlink = 1;
 
         Self {

@@ -18,7 +18,7 @@ use polyfuse::{
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
-use libc::ENOENT;
+use libc::{ENOENT, S_IFREG};
 use std::{
     io::{self, prelude::*},
     mem,
@@ -88,7 +88,7 @@ impl Heartbeat {
 
         let mut attr = unsafe { mem::zeroed::<libc::stat>() };
         attr.st_ino = ROOT_INO;
-        attr.st_mode = libc::S_IFREG | 0o444;
+        attr.st_mode = S_IFREG | 0o444;
         attr.st_size = content.len() as libc::off_t;
 
         Self {

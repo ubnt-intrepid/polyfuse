@@ -20,7 +20,10 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{EINVAL, ENOENT, ENOSYS, ERANGE};
+use libc::{
+    DT_DIR, DT_LNK, DT_REG, DT_UNKNOWN, EINVAL, ENOENT, ENOSYS, ERANGE, O_ACCMODE, O_NOFOLLOW,
+    O_RDONLY, O_RDWR, O_WRONLY,
+};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -299,13 +302,13 @@ impl Filesystem for PathThrough {
             let metadata = entry.metadata()?;
             let file_type = metadata.file_type();
             let typ = if file_type.is_file() {
-                libc::DT_REG as u32
+                DT_REG as u32
             } else if file_type.is_dir() {
-                libc::DT_DIR as u32
+                DT_DIR as u32
             } else if file_type.is_symlink() {
-                libc::DT_LNK as u32
+                DT_LNK as u32
             } else {
-                libc::DT_UNKNOWN as u32
+                DT_UNKNOWN as u32
             };
 
             let full = out.entry(&entry.file_name(), metadata.ino(), typ, dir.offset);
@@ -343,19 +346,19 @@ impl Filesystem for PathThrough {
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
         let mut options = OpenOptions::new();
-        match req.arg().flags() as i32 & libc::O_ACCMODE {
-            libc::O_RDONLY => {
+        match req.arg().flags() as i32 & O_ACCMODE {
+            O_RDONLY => {
                 options.read(true);
             }
-            libc::O_WRONLY => {
+            O_WRONLY => {
                 options.write(true);
             }
-            libc::O_RDWR => {
+            O_RDWR => {
                 options.read(true).write(true);
             }
             _ => (),
         }
-        options.custom_flags(req.arg().flags() as i32 & !libc::O_NOFOLLOW);
+        options.custom_flags(req.arg().flags() as i32 & !O_NOFOLLOW);
 
         let files = &mut *self.files.lock().unwrap();
         let fh = files.insert(FileHandle {

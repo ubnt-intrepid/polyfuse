@@ -1,5 +1,6 @@
 //! Linux-specific filesystem operations.
 
+use libc::{AT_EMPTY_PATH, AT_FDCWD, ENAMETOOLONG, O_RDONLY, PATH_MAX};
 use std::{
     ffi::{CStr, CString, OsStr, OsString},
     io, mem,
@@ -55,7 +56,7 @@ impl FileDesc {
     pub fn open(path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
         let path = path.as_ref();
         if path.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
+            flags |= AT_EMPTY_PATH;
         }
         let c_path = CString::new(path.as_bytes())?;
         let fd = syscall!(open(c_path.as_ptr(), flags))?;
@@ -69,7 +70,7 @@ impl FileDesc {
     pub fn openat(&self, path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
         let path = path.as_ref();
         if path.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
+            flags |= AT_EMPTY_PATH;
         }
         let fd = self.as_raw_fd();
         let c_path = CString::new(path.as_bytes())?;
@@ -84,7 +85,7 @@ impl FileDesc {
     ) -> io::Result<libc::stat> {
         let path = path.as_ref();
         if path.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
+            flags |= AT_EMPTY_PATH;
         }
         let fd = self.as_raw_fd();
         let c_path = CString::new(path.as_bytes())?;
@@ -94,7 +95,7 @@ impl FileDesc {
     }
 
     pub fn read_dir(&self) -> io::Result<ReadDir> {
-        let fd = self.openat(".", libc::O_RDONLY)?;
+        let fd = self.openat(".", O_RDONLY)?;
 
         // TODO: asyncify.
         let dp = NonNull::new(unsafe { libc::fdopendir(fd.0) }) //
@@ -111,7 +112,7 @@ impl FileDesc {
         let fd = self.as_raw_fd();
         let path = path.as_ref();
         let c_path = CString::new(path.as_bytes())?;
-        let mut buf = vec![0u8; (libc::PATH_MAX + 1) as usize];
+        let mut buf = vec![0u8; (PATH_MAX + 1) as usize];
         let len = syscall!(readlinkat(
             fd,
             c_path.as_ptr(),
@@ -119,7 +120,7 @@ impl FileDesc {
             buf.len()
         ))? as usize;
         if len >= buf.len() {
-            return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+            return Err(io::Error::from_raw_os_error(ENAMETOOLONG));
         }
         unsafe {
             buf.set_len(len);
@@ -136,7 +137,7 @@ impl FileDesc {
     ) -> io::Result<()> {
         let name = name.as_ref();
         if name.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
+            flags |= AT_EMPTY_PATH;
         }
 
         let fd = self.as_raw_fd();
@@ -157,7 +158,7 @@ impl FileDesc {
     ) -> io::Result<()> {
         let name = name.as_ref();
         if name.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
+            flags |= AT_EMPTY_PATH;
         }
 
         let fd = self.as_raw_fd();
@@ -178,7 +179,7 @@ impl FileDesc {
         let name = name.as_ref();
         let newname = newname.as_ref();
         if name.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
+            flags |= AT_EMPTY_PATH;
         }
 
         let parent_fd = self.as_raw_fd();
@@ -371,7 +372,7 @@ pub fn ftruncate(fd: &impl AsRawFd, length: libc::off_t) -> io::Result<()> {
 
 pub fn utimens(path: impl AsRef<OsStr>, tv: [libc::timespec; 2]) -> io::Result<()> {
     let c_path = CString::new(path.as_ref().as_bytes())?;
-    syscall!(utimensat(libc::AT_FDCWD, c_path.as_ptr(), tv.as_ptr(), 0))?;
+    syscall!(utimensat(AT_FDCWD, c_path.as_ptr(), tv.as_ptr(), 0))?;
     Ok(())
 }
 
@@ -391,7 +392,7 @@ pub fn link(
     let c_name = CString::new(name.as_ref().as_bytes())?;
     let c_newname = CString::new(newname.as_ref().as_bytes())?;
     syscall!(linkat(
-        libc::AT_FDCWD,
+        AT_FDCWD,
         c_name.as_ptr(),
         parent_fd,
         c_newname.as_ptr(),

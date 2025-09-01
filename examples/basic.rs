@@ -6,7 +6,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{ENOENT, ENOSYS};
+use libc::{ENOENT, ENOSYS, S_IFREG};
 use std::{io, path::PathBuf, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
@@ -58,7 +58,7 @@ fn getattr(
 
     let mut out = AttrOut::default();
     out.attr().ino(1);
-    out.attr().mode(libc::S_IFREG | 0o444);
+    out.attr().mode(S_IFREG | 0o444);
     out.attr().size(CONTENT.len() as u64);
     out.attr().nlink(1);
     out.attr().uid(unsafe { libc::getuid() });

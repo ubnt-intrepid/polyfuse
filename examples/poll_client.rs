@@ -1,4 +1,5 @@
 use anyhow::Context as _;
+use libc::{AT_EMPTY_PATH, O_NONBLOCK, O_RDONLY};
 use std::{
     ffi::{CString, OsStr}, //
     io,
@@ -23,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let path: PathBuf = args.opt_free_from_str()?.context("missing path")?;
 
     let content = if is_nonblocking {
-        let mut fd = FileDesc::open(&path, libc::O_RDONLY | libc::O_NONBLOCK).await?;
+        let mut fd = FileDesc::open(&path, O_RDONLY | O_NONBLOCK).await?;
 
         let mut buf = String::new();
         fd.read_to_string(&mut buf).await?;
@@ -63,7 +64,7 @@ impl FileDesc {
     async fn open(path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
         let path = path.as_ref();
         if path.is_empty() {
-            flags |= libc::AT_EMPTY_PATH;
+            flags |= AT_EMPTY_PATH;
         }
         let c_path = CString::new(path.as_bytes())?;
 

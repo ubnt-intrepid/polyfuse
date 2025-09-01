@@ -15,7 +15,11 @@ use polyfuse::{
 
 use crate::nix::{FileDesc, ReadDir};
 use anyhow::{ensure, Context as _, Result};
-use libc::{EINVAL, ENOENT, ENOSYS, ENOTSUP, EOPNOTSUPP, S_IFDIR, S_IFLNK};
+use libc::{
+    AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, EINVAL, ENOENT, ENOSYS, ENOTSUP,
+    EOPNOTSUPP, EPERM, O_NOFOLLOW, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, S_IFDIR, S_IFLNK, S_IFMT,
+    UTIME_NOW, UTIME_OMIT,
+};
 use pico_args::Arguments;
 use slab::Slab;
 use std::{
@@ -80,8 +84,8 @@ impl Passthrough {
     fn new(source: PathBuf, timeout: Option<Duration>) -> io::Result<Self> {
         let source = source.canonicalize()?;
         tracing::debug!("source={:?}", source);
-        let fd = FileDesc::open(&source, libc::O_PATH)?;
-        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let fd = FileDesc::open(&source, O_PATH)?;
+        let stat = fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         let mut inodes = INodeTable::new();
         let entry = inodes.vacant_entry();
@@ -120,11 +124,11 @@ impl Passthrough {
         let parent = inodes.get(parent).ok_or(ENOENT)?;
         let parent = parent.lock().unwrap();
 
-        let fd = parent.fd.openat(name, libc::O_PATH | libc::O_NOFOLLOW)?;
+        let fd = parent.fd.openat(name, O_PATH | O_NOFOLLOW)?;
 
-        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let stat = fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
         let src_id = (stat.st_ino, stat.st_dev);
-        let is_symlink = stat.st_mode & libc::S_IFMT == libc::S_IFLNK;
+        let is_symlink = stat.st_mode & S_IFMT == S_IFLNK;
 
         let ino;
         match inodes.get_src(src_id) {
@@ -168,11 +172,11 @@ impl Passthrough {
             let parent = inodes.get(parent).ok_or(ENOENT)?;
             let parent = parent.lock().unwrap();
 
-            match mode & libc::S_IFMT {
-                libc::S_IFDIR => {
+            match mode & S_IFMT {
+                S_IFDIR => {
                     parent.fd.mkdirat(name, mode)?;
                 }
-                libc::S_IFLNK => {
+                S_IFLNK => {
                     let link = link.expect("missing 'link'");
                     parent.fd.symlinkat(name, link)?;
                 }
@@ -218,7 +222,7 @@ impl Filesystem for Passthrough {
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
-        let stat = inode.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let stat = inode.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         let mut out = AttrOut::default();
         fill_attr(out.attr(), &stat);
@@ -256,7 +260,7 @@ impl Filesystem for Passthrough {
         match (req.arg().uid(), req.arg().gid()) {
             (None, None) => (),
             (uid, gid) => {
-                fd.fchownat("", uid, gid, libc::AT_SYMLINK_NOFOLLOW)?;
+                fd.fchownat("", uid, gid, AT_SYMLINK_NOFOLLOW)?;
             }
         }
 
@@ -274,7 +278,7 @@ impl Filesystem for Passthrough {
             match t {
                 Some(op::SetAttrTime::Now) => libc::timespec {
                     tv_sec: 0,
-                    tv_nsec: libc::UTIME_NOW,
+                    tv_nsec: UTIME_NOW,
                 },
                 Some(op::SetAttrTime::Timespec(ts)) => libc::timespec {
                     tv_sec: ts.as_secs() as i64,
@@ -282,7 +286,7 @@ impl Filesystem for Passthrough {
                 },
                 _ => libc::timespec {
                     tv_sec: 0,
-                    tv_nsec: libc::UTIME_OMIT,
+                    tv_nsec: UTIME_OMIT,
                 },
             }
         }
@@ -295,11 +299,12 @@ impl Filesystem for Passthrough {
                 } else if inode.is_symlink {
                     // According to libfuse/examples/passthrough_hp.cc, it does not work on
                     // the current kernels, but may in the future.
-                    fd.futimensat("", tv, libc::AT_SYMLINK_NOFOLLOW)
-                        .map_err(|err| match err.raw_os_error() {
-                            Some(libc::EINVAL) => io::Error::from_raw_os_error(libc::EPERM),
+                    fd.futimensat("", tv, AT_SYMLINK_NOFOLLOW).map_err(|err| {
+                        match err.raw_os_error() {
+                            Some(EINVAL) => io::Error::from_raw_os_error(EPERM),
                             _ => err,
-                        })?;
+                        }
+                    })?;
                 } else {
                     nix::utimens(fd.procname(), tv)?;
                 }
@@ -307,7 +312,7 @@ impl Filesystem for Passthrough {
         }
 
         // finally, acquiring the latest metadata from the source filesystem.
-        let stat = fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let stat = fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         let mut out = AttrOut::default();
         fill_attr(out.attr(), &stat);
@@ -344,9 +349,9 @@ impl Filesystem for Passthrough {
                 .fd
                 .linkat("", &parent.fd, req.arg().newname(), 0)
                 .map_err(|err| match err.raw_os_error() {
-                    Some(libc::ENOENT) | Some(libc::EINVAL) => {
+                    Some(ENOENT) | Some(EINVAL) => {
                         // no race-free way to hard-link a symlink.
-                        io::Error::from_raw_os_error(libc::EOPNOTSUPP)
+                        io::Error::from_raw_os_error(EOPNOTSUPP)
                     }
                     _ => err,
                 })?;
@@ -355,11 +360,11 @@ impl Filesystem for Passthrough {
                 source.fd.procname(),
                 &parent.fd,
                 req.arg().newname(),
-                libc::AT_SYMLINK_FOLLOW,
+                AT_SYMLINK_FOLLOW,
             )?;
         }
 
-        let stat = source.fd.fstatat("", libc::AT_SYMLINK_NOFOLLOW)?;
+        let stat = source.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
         let entry = self.make_entry_param(source.ino, stat);
 
         source.refcount += 1;
@@ -412,7 +417,7 @@ impl Filesystem for Passthrough {
         let inodes = self.inodes.lock().unwrap();
         let parent = inodes.get(req.arg().parent()).ok_or(ENOENT)?;
         let parent = parent.lock().unwrap();
-        parent.fd.unlinkat(req.arg().name(), libc::AT_REMOVEDIR)?;
+        parent.fd.unlinkat(req.arg().name(), AT_REMOVEDIR)?;
         req.reply(())
     }
 
@@ -463,7 +468,7 @@ impl Filesystem for Passthrough {
         let read_dir = self
             .opened_dirs
             .get(req.arg().fh())
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
+            .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
         let read_dir = &mut *read_dir.lock().unwrap();
         read_dir.seek(req.arg().offset());
 
@@ -511,18 +516,18 @@ impl Filesystem for Passthrough {
 
         let mut options = OpenOptions::new();
         match (req.arg().flags() & 0x03) as i32 {
-            libc::O_RDONLY => {
+            O_RDONLY => {
                 options.read(true);
             }
-            libc::O_WRONLY => {
+            O_WRONLY => {
                 options.write(true);
             }
-            libc::O_RDWR => {
+            O_RDWR => {
                 options.read(true).write(true);
             }
             _ => (),
         }
-        options.custom_flags(req.arg().flags() as i32 & !libc::O_NOFOLLOW);
+        options.custom_flags(req.arg().flags() as i32 & !O_NOFOLLOW);
 
         let file = options.open(inode.fd.procname())?;
         let fh = self.opened_files.insert(Mutex::new(file));

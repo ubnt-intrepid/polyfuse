@@ -6,7 +6,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use libc::{EACCES, EAGAIN, EINVAL};
+use libc::{EACCES, EAGAIN, EINVAL, O_ACCMODE, O_NONBLOCK, O_RDONLY, POLLIN, S_IFREG};
 use std::{
     path::PathBuf,
     sync::{
@@ -59,31 +59,23 @@ impl PollFS {
 }
 
 impl Filesystem for PollFS {
-    fn getattr<'env, 'req>(
-        &'env self,
-        _: fs::Context<'_, 'env>,
-        req: fs::Request<'req, op::Getattr<'req>>,
-    ) -> fs::Result {
+    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let mut out = AttrOut::default();
         out.attr().ino(1);
         out.attr().nlink(1);
-        out.attr().mode(libc::S_IFREG | 0o444);
+        out.attr().mode(S_IFREG | 0o444);
         out.attr().uid(unsafe { libc::getuid() });
         out.attr().gid(unsafe { libc::getgid() });
         out.ttl(Duration::from_secs(u64::max_value() / 2));
         req.reply(out)
     }
 
-    fn open<'env, 'req>(
-        &'env self,
-        cx: fs::Context<'_, 'env>,
-        req: fs::Request<'req, op::Open<'req>>,
-    ) -> fs::Result {
-        if req.arg().flags() as i32 & libc::O_ACCMODE != libc::O_RDONLY {
+    fn open(&self, cx: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
+        if req.arg().flags() as i32 & O_ACCMODE != O_RDONLY {
             Err(EACCES)?;
         }
 
-        let is_nonblock = req.arg().flags() as i32 & libc::O_NONBLOCK != 0;
+        let is_nonblock = req.arg().flags() as i32 & O_NONBLOCK != 0;
 
         let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
         let handle = Arc::new(FileHandle {
@@ -134,11 +126,7 @@ impl Filesystem for PollFS {
         })
     }
 
-    fn read<'env, 'req>(
-        &'env self,
-        _: fs::Context<'_, 'env>,
-        req: fs::Request<'req, op::Read<'req>>,
-    ) -> fs::Result {
+    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         let handle = &**self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
         let mut state = handle.state.lock().unwrap();
         if handle.is_nonblock {
@@ -165,11 +153,7 @@ impl Filesystem for PollFS {
         req.reply(&content[..std::cmp::min(content.len(), bufsize)])
     }
 
-    fn poll<'env, 'req>(
-        &'env self,
-        _: fs::Context<'_, 'env>,
-        req: fs::Request<'req, op::Poll<'req>>,
-    ) -> fs::Result {
+    fn poll(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Poll<'_>>) -> fs::Result {
         let handle = &*self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
         let state = &mut *handle.state.lock().unwrap();
 
@@ -177,7 +161,7 @@ impl Filesystem for PollFS {
 
         if state.is_ready {
             tracing::info!("file is ready to read");
-            out.revents(req.arg().events() & libc::POLLIN as u32);
+            out.revents(req.arg().events() & POLLIN as u32);
         } else if let Some(kh) = req.arg().kh() {
             tracing::info!("register the poll handle for notification: kh={}", kh);
             state.kh = Some(kh);
@@ -186,11 +170,7 @@ impl Filesystem for PollFS {
         req.reply(out)
     }
 
-    fn release<'env, 'req>(
-        &'env self,
-        _: fs::Context<'_, 'env>,
-        req: fs::Request<'req, op::Release<'req>>,
-    ) -> fs::Result {
+    fn release(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Release<'_>>) -> fs::Result {
         drop(self.handles.remove(&req.arg().fh()));
         req.reply(())
     }
