@@ -17,7 +17,7 @@ use libc::{
 };
 use slab::Slab;
 use std::{
-    collections::hash_map::{Entry, HashMap, RandomState},
+    collections::hash_map::{Entry, HashMap},
     ffi::{OsStr, OsString},
     io::prelude::*,
     mem,
@@ -50,31 +50,29 @@ fn main() -> Result<()> {
 type Ino = u64;
 
 struct INodeTable {
-    map: DashMap<Ino, INode, RandomState>,
+    map: DashMap<Ino, INode>,
     next_ino: AtomicU64,
 }
 
 impl INodeTable {
     fn new() -> Self {
         Self {
-            map: DashMap::with_hasher(RandomState::new()),
+            map: DashMap::new(),
             next_ino: AtomicU64::new(1), // ino=1 is reserved by root node
         }
     }
 
     fn get(&self, ino: Ino) -> Option<INodeRef<'_>> {
-        self.map.get(&ino).map(|ref_| INodeRef { ref_ })
+        self.map.get(&ino)
     }
 
     fn get_mut(&self, ino: Ino) -> Option<INodeRefMut<'_>> {
-        self.map
-            .get_mut(&ino)
-            .map(|ref_mut| INodeRefMut { ref_mut })
+        self.map.get_mut(&ino)
     }
 
     fn occupied_entry(&self, ino: Ino) -> Option<OccupiedEntry<'_>> {
         match self.map.entry(ino) {
-            dashmap::mapref::entry::Entry::Occupied(entry) => Some(OccupiedEntry { entry }),
+            dashmap::mapref::entry::Entry::Occupied(entry) => Some(entry),
             dashmap::mapref::entry::Entry::Vacant(..) => None,
         }
     }
@@ -85,72 +83,15 @@ impl INodeTable {
 
         match self.map.entry(ino) {
             dashmap::mapref::entry::Entry::Occupied(..) => None,
-            dashmap::mapref::entry::Entry::Vacant(entry) => Some(VacantEntry { entry }),
+            dashmap::mapref::entry::Entry::Vacant(entry) => Some(entry),
         }
     }
 }
 
-struct INodeRef<'a> {
-    ref_: dashmap::mapref::one::Ref<'a, Ino, INode>,
-}
-impl std::ops::Deref for INodeRef<'_> {
-    type Target = INode;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.ref_
-    }
-}
-
-struct INodeRefMut<'a> {
-    ref_mut: dashmap::mapref::one::RefMut<'a, Ino, INode>,
-}
-impl std::ops::Deref for INodeRefMut<'_> {
-    type Target = INode;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.ref_mut
-    }
-}
-impl std::ops::DerefMut for INodeRefMut<'_> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.ref_mut
-    }
-}
-
-struct OccupiedEntry<'a> {
-    entry: dashmap::mapref::entry::OccupiedEntry<'a, Ino, INode>,
-}
-impl<'a> OccupiedEntry<'a> {
-    fn get(&self) -> &INode {
-        self.entry.get()
-    }
-
-    fn get_mut(&mut self) -> &mut INode {
-        self.entry.get_mut()
-    }
-
-    fn remove(self) -> INode {
-        self.entry.remove()
-    }
-}
-
-struct VacantEntry<'a> {
-    entry: dashmap::mapref::entry::VacantEntry<'a, Ino, INode>,
-}
-impl<'a> VacantEntry<'a> {
-    fn ino(&self) -> Ino {
-        *self.entry.key()
-    }
-
-    fn insert(self, inode: INode) -> INodeRefMut<'a> {
-        INodeRefMut {
-            ref_mut: self.entry.insert(inode),
-        }
-    }
-}
+type INodeRef<'a> = dashmap::mapref::one::Ref<'a, Ino, INode>;
+type INodeRefMut<'a> = dashmap::mapref::one::RefMut<'a, Ino, INode>;
+type OccupiedEntry<'a> = dashmap::mapref::entry::OccupiedEntry<'a, Ino, INode>;
+type VacantEntry<'a> = dashmap::mapref::entry::VacantEntry<'a, Ino, INode>;
 
 struct INode {
     attr: libc::stat,
@@ -306,11 +247,11 @@ impl MemFS {
         let inode = f(&inode_entry);
 
         let mut out = EntryOut::default();
-        out.ino(inode_entry.ino());
+        out.ino(*inode_entry.key());
         fill_attr(out.attr(), &inode.attr);
         out.ttl_entry(self.ttl);
 
-        map_entry.insert(inode_entry.ino());
+        map_entry.insert(*inode_entry.key());
         inode_entry.insert(inode);
 
         Ok(out)
@@ -502,7 +443,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.ino();
+                attr.st_ino = *entry.key();
                 attr.st_nlink = 1;
                 attr.st_mode = req.arg().mode();
                 attr
@@ -519,7 +460,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.ino();
+                attr.st_ino = *entry.key();
                 attr.st_nlink = 2;
                 attr.st_mode = req.arg().mode() | S_IFDIR;
                 attr
@@ -539,7 +480,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.ino();
+                attr.st_ino = *entry.key();
                 attr.st_nlink = 1;
                 attr.st_mode = S_IFLNK | 0o777;
                 attr
