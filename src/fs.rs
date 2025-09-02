@@ -6,6 +6,7 @@ use crate::{
     op::{self, Forget, Operation},
     request::{RemainingData, RequestBuffer},
     session::{KernelConfig, KernelFlags, Session},
+    types::{NodeID, NotifyID, PollWakeupID, GID, PID, UID},
 };
 use libc::{EIO, ENOENT, ENOSYS};
 use std::{
@@ -141,32 +142,33 @@ impl Notifier<'_> {
         self.session.send_notify(self.conn, notify)
     }
 
-    pub fn inval_inode(&self, ino: u64, off: i64, len: i64) -> io::Result<()> {
+    pub fn inval_inode(&self, ino: NodeID, off: i64, len: i64) -> io::Result<()> {
         self.send(notify::InvalNode::new(ino, off, len))
     }
 
-    pub fn inval_entry(&self, parent: u64, name: &OsStr) -> io::Result<()> {
+    pub fn inval_entry(&self, parent: NodeID, name: &OsStr) -> io::Result<()> {
         self.send(notify::InvalEntry::new(parent, name))
     }
 
-    pub fn delete(&self, parent: u64, child: u64, name: &OsStr) -> io::Result<()> {
+    pub fn delete(&self, parent: NodeID, child: NodeID, name: &OsStr) -> io::Result<()> {
         self.send(notify::Delete::new(parent, child, name))
     }
 
-    pub fn store<B>(&self, ino: u64, offset: u64, data: B) -> io::Result<()>
+    pub fn store<B>(&self, ino: NodeID, offset: u64, data: B) -> io::Result<()>
     where
         B: Bytes,
     {
         self.send(notify::Store::new(ino, offset, data))
     }
 
-    pub fn retrieve(&self, ino: u64, offset: u64, size: u32) -> io::Result<u64> {
+    pub fn retrieve(&self, ino: NodeID, offset: u64, size: u32) -> io::Result<NotifyID> {
         let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
+        let unique = NotifyID::from_raw(unique);
         self.send(notify::Retrieve::new(unique, ino, offset, size))?;
         Ok(unique)
     }
 
-    pub fn poll_wakeup(&self, kh: u64) -> io::Result<()> {
+    pub fn poll_wakeup(&self, kh: PollWakeupID) -> io::Result<()> {
         self.send(notify::PollWakeup::new(kh))
     }
 }
@@ -186,15 +188,15 @@ pub struct Request<'req, T: 'req> {
 }
 
 impl<T> Request<'_, T> {
-    pub fn uid(&self) -> u32 {
+    pub fn uid(&self) -> UID {
         self.buf.uid()
     }
 
-    pub fn gid(&self) -> u32 {
+    pub fn gid(&self) -> GID {
         self.buf.gid()
     }
 
-    pub fn pid(&self) -> u32 {
+    pub fn pid(&self) -> PID {
         self.buf.pid()
     }
 
@@ -325,7 +327,7 @@ where
     where
         'env: 'scope,
     {
-        let span = tracing::debug_span!("handle_request", unique = self.buf.unique());
+        let span = tracing::debug_span!("handle_request", unique = ?self.buf.unique());
         let _enter = span.enter();
 
         let (op, data) = self

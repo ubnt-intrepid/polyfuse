@@ -2,6 +2,7 @@ use polyfuse::{
     fs::{self, Filesystem},
     op,
     reply::{AttrOut, OpenOut, PollOut},
+    types::{FileID, NodeID, PollWakeupID, GID, UID},
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -43,7 +44,7 @@ fn main() -> Result<()> {
 }
 
 struct PollFS {
-    handles: DashMap<u64, Arc<FileHandle>>,
+    handles: DashMap<FileID, Arc<FileHandle>>,
     next_fh: AtomicU64,
     wakeup_interval: Duration,
 }
@@ -61,11 +62,11 @@ impl PollFS {
 impl Filesystem for PollFS {
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let mut out = AttrOut::default();
-        out.attr().ino(1);
+        out.attr().ino(NodeID::ROOT);
         out.attr().nlink(1);
         out.attr().mode(S_IFREG | 0o444);
-        out.attr().uid(unsafe { libc::getuid() });
-        out.attr().gid(unsafe { libc::getgid() });
+        out.attr().uid(UID::current());
+        out.attr().gid(GID::current());
         out.ttl(Duration::from_secs(u64::max_value() / 2));
         req.reply(out)
     }
@@ -115,6 +116,7 @@ impl Filesystem for PollFS {
             }
         });
 
+        let fh = FileID::from_raw(fh);
         self.handles.insert(fh, handle);
 
         req.reply({
@@ -185,5 +187,5 @@ struct FileHandle {
 #[derive(Default)]
 struct FileHandleState {
     is_ready: bool,
-    kh: Option<u64>,
+    kh: Option<PollWakeupID>,
 }

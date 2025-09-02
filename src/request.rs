@@ -1,6 +1,7 @@
 use crate::{
     conn::SpliceRead,
     nix::{Pipe, PipeReader},
+    types::{RequestID, GID, PID, UID},
     Operation,
 };
 use libc::{EINTR, ENODEV, ENOENT};
@@ -77,26 +78,26 @@ impl RequestBuffer {
 
     /// Return the unique ID of the request.
     #[inline]
-    pub fn unique(&self) -> u64 {
-        self.header.unique
+    pub fn unique(&self) -> RequestID {
+        RequestID::from_raw(self.header.unique)
     }
 
     /// Return the user ID of the calling process.
     #[inline]
-    pub fn uid(&self) -> u32 {
-        self.header.uid
+    pub fn uid(&self) -> UID {
+        UID::from_raw(self.header.uid)
     }
 
     /// Return the group ID of the calling process.
     #[inline]
-    pub fn gid(&self) -> u32 {
-        self.header.gid
+    pub fn gid(&self) -> GID {
+        GID::from_raw(self.header.gid)
     }
 
     /// Return the process ID of the calling process.
     #[inline]
-    pub fn pid(&self) -> u32 {
-        self.header.pid
+    pub fn pid(&self) -> PID {
+        PID::from_raw(self.header.pid)
     }
 
     pub(crate) fn opcode(&self) -> fuse_opcode {

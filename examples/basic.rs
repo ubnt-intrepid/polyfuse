@@ -2,6 +2,7 @@ use polyfuse::{
     mount::{mount, MountOptions},
     op,
     reply::AttrOut,
+    types::{NodeID, GID, UID},
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 
@@ -52,17 +53,17 @@ fn getattr(
     req: &RequestBuffer,
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
-    if op.ino() != 1 {
+    if op.ino() != NodeID::ROOT {
         return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 
     let mut out = AttrOut::default();
-    out.attr().ino(1);
+    out.attr().ino(NodeID::ROOT);
     out.attr().mode(S_IFREG | 0o444);
     out.attr().size(CONTENT.len() as u64);
     out.attr().nlink(1);
-    out.attr().uid(unsafe { libc::getuid() });
-    out.attr().gid(unsafe { libc::getgid() });
+    out.attr().uid(UID::current());
+    out.attr().gid(GID::current());
     out.ttl(Duration::from_secs(1));
 
     session.send_reply(conn, req.unique(), 0, out)
@@ -74,7 +75,7 @@ fn read(
     req: &RequestBuffer,
     op: op::Read<'_>,
 ) -> io::Result<()> {
-    if op.ino() != 1 {
+    if op.ino() != NodeID::ROOT {
         return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 

@@ -1,4 +1,7 @@
-use crate::bytes::{Bytes, FillBytes};
+use crate::{
+    bytes::{Bytes, FillBytes},
+    types::{FileID, NodeID, GID, PID, UID},
+};
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::IntoBytes as _;
@@ -17,8 +20,8 @@ impl FileAttr {
 
     /// Set the inode number.
     #[inline]
-    pub fn ino(&mut self, ino: u64) {
-        self.attr.ino = ino;
+    pub fn ino(&mut self, ino: NodeID) {
+        self.attr.ino = ino.into_raw();
     }
 
     /// Set the size of content.
@@ -41,14 +44,14 @@ impl FileAttr {
 
     /// Set the user ID.
     #[inline]
-    pub fn uid(&mut self, uid: u32) {
-        self.attr.uid = uid;
+    pub fn uid(&mut self, uid: UID) {
+        self.attr.uid = uid.into_raw();
     }
 
     /// Set the group ID.
     #[inline]
-    pub fn gid(&mut self, gid: u32) {
-        self.attr.gid = gid;
+    pub fn gid(&mut self, gid: GID) {
+        self.attr.gid = gid.into_raw();
     }
 
     /// Set the device ID.
@@ -134,8 +137,8 @@ impl EntryOut {
     /// but the *zeroed* entries also have the ability to specify the lifetime
     /// of the entry cache by using the `ttl_entry` parameter.
     #[inline]
-    pub fn ino(&mut self, ino: u64) {
-        self.out.nodeid = ino;
+    pub fn ino(&mut self, ino: NodeID) {
+        self.out.nodeid = ino.into_raw();
     }
 
     /// Set the generation of this entry.
@@ -243,8 +246,8 @@ impl Bytes for OpenOut {
 
 impl OpenOut {
     /// Set the handle of opened file.
-    pub fn fh(&mut self, fh: u64) {
-        self.out.fh = fh;
+    pub fn fh(&mut self, fh: FileID) {
+        self.out.fh = fh.into_raw();
     }
 
     #[inline]
@@ -500,8 +503,8 @@ impl FileLock {
     }
 
     /// Set the process ID.
-    pub fn pid(&mut self, pid: u32) {
-        self.lk.pid = pid;
+    pub fn pid(&mut self, pid: PID) {
+        self.lk.pid = pid.into_raw();
     }
 }
 
@@ -609,7 +612,7 @@ impl ReaddirOut {
         }
     }
 
-    pub fn entry(&mut self, name: &OsStr, ino: u64, typ: u32, off: u64) -> bool {
+    pub fn entry(&mut self, name: &OsStr, ino: NodeID, typ: u32, off: u64) -> bool {
         let name = name.as_bytes();
         let remaining = self.buf.capacity() - self.buf.len();
 
@@ -621,7 +624,7 @@ impl ReaddirOut {
         }
 
         let dirent = fuse_dirent {
-            ino,
+            ino: ino.into_raw(),
             off,
             namelen: name.len().try_into().expect("name length is too long"),
             typ,

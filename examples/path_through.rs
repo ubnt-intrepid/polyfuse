@@ -16,6 +16,7 @@ use polyfuse::{
     mount::MountOptions,
     op::{self, Forget},
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
+    types::{FileID, NodeID, GID, UID},
     KernelConfig,
 };
 
@@ -61,17 +62,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-type Ino = u64;
-
 struct INode {
-    ino: Ino,
+    ino: NodeID,
     path: PathBuf,
     refcount: u64,
 }
 
 struct INodeTable {
-    map: HashMap<Ino, INode>,
-    path_to_ino: HashMap<PathBuf, Ino>,
+    map: HashMap<NodeID, INode>,
+    path_to_ino: HashMap<PathBuf, NodeID>,
     next_ino: u64,
 }
 
@@ -86,10 +85,13 @@ impl INodeTable {
 
     fn vacant_entry(&mut self) -> VacantEntry<'_> {
         let ino = self.next_ino;
-        VacantEntry { table: self, ino }
+        VacantEntry {
+            table: self,
+            ino: NodeID::from_raw(ino),
+        }
     }
 
-    fn get(&self, ino: Ino) -> Option<&INode> {
+    fn get(&self, ino: NodeID) -> Option<&INode> {
         self.map.get(&ino)
     }
 
@@ -101,7 +103,7 @@ impl INodeTable {
 
 struct VacantEntry<'a> {
     table: &'a mut INodeTable,
-    ino: Ino,
+    ino: NodeID,
 }
 
 impl VacantEntry<'_> {
@@ -126,7 +128,7 @@ impl PathThrough {
 
         let mut inodes = INodeTable::new();
         inodes.vacant_entry().insert(INode {
-            ino: 1,
+            ino: NodeID::ROOT,
             path: PathBuf::new(),
             refcount: u64::max_value() / 2,
         });
@@ -203,7 +205,7 @@ impl Filesystem for PathThrough {
     fn setattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Setattr<'_>>) -> fs::Result {
         let fh = req.arg().fh().ok_or(ENOENT)?;
         let files = &mut *self.files.lock().unwrap();
-        let file = files.get(fh as usize).ok_or(EINVAL)?;
+        let file = files.get(fh.into_raw() as usize).ok_or(EINVAL)?;
 
         file.file.sync_all()?;
 
@@ -226,8 +228,8 @@ impl Filesystem for PathThrough {
         match (req.arg().uid(), req.arg().gid()) {
             (None, None) => (),
             (uid, gid) => {
-                let uid = uid.map(nix::unistd::Uid::from_raw);
-                let gid = gid.map(nix::unistd::Gid::from_raw);
+                let uid = uid.map(|id| nix::unistd::Uid::from_raw(id.into_raw()));
+                let gid = gid.map(|id| nix::unistd::Gid::from_raw(id.into_raw()));
                 nix::unistd::chown(&*path, uid, gid).map_err(|err| err as i32)?;
             }
         }
@@ -265,7 +267,7 @@ impl Filesystem for PathThrough {
         }) as u64;
 
         let mut out = OpenOut::default();
-        out.fh(fh);
+        out.fh(FileID::from_raw(fh));
 
         req.reply(out)
     }
@@ -276,7 +278,7 @@ impl Filesystem for PathThrough {
         }
 
         let dirs = &mut *self.dirs.lock().unwrap();
-        let dir = Slab::get_mut(dirs, req.arg().fh() as usize).ok_or(EINVAL)?;
+        let dir = Slab::get_mut(dirs, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
 
         let mut out = ReaddirOut::new(req.arg().size() as usize);
         let mut at_least_one_entry = false;
@@ -311,11 +313,16 @@ impl Filesystem for PathThrough {
                 DT_UNKNOWN as u32
             };
 
-            let full = out.entry(&entry.file_name(), metadata.ino(), typ, dir.offset);
+            let full = out.entry(
+                &entry.file_name(),
+                NodeID::from_raw(metadata.ino()),
+                typ,
+                dir.offset,
+            );
             if full {
                 dir.last_entry.replace(DirEntry {
                     name: entry.file_name(),
-                    ino: metadata.ino(),
+                    ino: NodeID::from_raw(metadata.ino()),
                     typ,
                 });
                 if !at_least_one_entry {
@@ -337,7 +344,7 @@ impl Filesystem for PathThrough {
         req: fs::Request<'_, op::Releasedir<'_>>,
     ) -> fs::Result {
         let dirs = &mut *self.dirs.lock().unwrap();
-        let _dir = dirs.remove(req.arg().fh() as usize);
+        let _dir = dirs.remove(req.arg().fh().into_raw() as usize);
         req.reply(())
     }
 
@@ -366,14 +373,14 @@ impl Filesystem for PathThrough {
         }) as u64;
 
         let mut out = OpenOut::default();
-        out.fh(fh);
+        out.fh(FileID::from_raw(fh));
 
         req.reply(out)
     }
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
-        let file = Slab::get_mut(files, req.arg().fh() as usize).ok_or(EINVAL)?;
+        let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         let buf = file.read(req.arg().offset(), req.arg().size() as usize)?;
         req.reply(buf)
     }
@@ -385,7 +392,7 @@ impl Filesystem for PathThrough {
         data: fs::Data<'_>,
     ) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
-        let file = Slab::get_mut(files, req.arg().fh() as usize).ok_or(EINVAL)?;
+        let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         let offset = req.arg().offset();
         let size = req.arg().size();
         let written = file.write(BufReader::new(data).take(size as u64), offset)?;
@@ -397,21 +404,21 @@ impl Filesystem for PathThrough {
 
     fn flush(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Flush<'_>>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
-        let file = Slab::get_mut(files, req.arg().fh() as usize).ok_or(EINVAL)?;
+        let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         file.fsync(false)?;
         req.reply(())
     }
 
     fn fsync(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Fsync<'_>>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
-        let file = Slab::get_mut(files, req.arg().fh() as usize).ok_or(EINVAL)?;
+        let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         file.fsync(req.arg().datasync())?;
         req.reply(())
     }
 
     fn release(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Release<'_>>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
-        let _file = files.remove(req.arg().fh() as usize);
+        let _file = files.remove(req.arg().fh().into_raw() as usize);
         req.reply(())
     }
 }
@@ -426,7 +433,7 @@ struct DirHandle {
 
 struct DirEntry {
     name: OsString,
-    ino: Ino,
+    ino: NodeID,
     typ: u32,
 }
 
@@ -476,12 +483,12 @@ impl FileHandle {
 }
 
 fn fill_attr(metadata: &Metadata, attr: &mut FileAttr) {
-    attr.ino(metadata.ino());
+    attr.ino(NodeID::from_raw(metadata.ino()));
     attr.size(metadata.size());
     attr.mode(metadata.mode());
     attr.nlink(metadata.nlink() as u32);
-    attr.uid(metadata.uid());
-    attr.gid(metadata.gid());
+    attr.uid(UID::from_raw(metadata.uid()));
+    attr.gid(GID::from_raw(metadata.gid()));
     attr.rdev(metadata.rdev() as u32);
     attr.blksize(metadata.blksize() as u32);
     attr.blocks(metadata.blocks());

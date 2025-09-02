@@ -6,6 +6,7 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    types::{FileID, NodeID, GID, UID},
     KernelConfig,
 };
 
@@ -47,10 +48,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-type Ino = u64;
-
 struct INodeTable {
-    map: DashMap<Ino, INode>,
+    map: DashMap<NodeID, INode>,
     next_ino: AtomicU64,
 }
 
@@ -62,15 +61,15 @@ impl INodeTable {
         }
     }
 
-    fn get(&self, ino: Ino) -> Option<INodeRef<'_>> {
+    fn get(&self, ino: NodeID) -> Option<INodeRef<'_>> {
         self.map.get(&ino)
     }
 
-    fn get_mut(&self, ino: Ino) -> Option<INodeRefMut<'_>> {
+    fn get_mut(&self, ino: NodeID) -> Option<INodeRefMut<'_>> {
         self.map.get_mut(&ino)
     }
 
-    fn occupied_entry(&self, ino: Ino) -> Option<OccupiedEntry<'_>> {
+    fn occupied_entry(&self, ino: NodeID) -> Option<OccupiedEntry<'_>> {
         match self.map.entry(ino) {
             dashmap::mapref::entry::Entry::Occupied(entry) => Some(entry),
             dashmap::mapref::entry::Entry::Vacant(..) => None,
@@ -81,17 +80,17 @@ impl INodeTable {
         // TODO: choose appropriate atomic ordering.
         let ino = self.next_ino.fetch_add(1, Ordering::SeqCst);
 
-        match self.map.entry(ino) {
+        match self.map.entry(NodeID::from_raw(ino)) {
             dashmap::mapref::entry::Entry::Occupied(..) => None,
             dashmap::mapref::entry::Entry::Vacant(entry) => Some(entry),
         }
     }
 }
 
-type INodeRef<'a> = dashmap::mapref::one::Ref<'a, Ino, INode>;
-type INodeRefMut<'a> = dashmap::mapref::one::RefMut<'a, Ino, INode>;
-type OccupiedEntry<'a> = dashmap::mapref::entry::OccupiedEntry<'a, Ino, INode>;
-type VacantEntry<'a> = dashmap::mapref::entry::VacantEntry<'a, Ino, INode>;
+type INodeRef<'a> = dashmap::mapref::one::Ref<'a, NodeID, INode>;
+type INodeRefMut<'a> = dashmap::mapref::one::RefMut<'a, NodeID, INode>;
+type OccupiedEntry<'a> = dashmap::mapref::entry::OccupiedEntry<'a, NodeID, INode>;
+type VacantEntry<'a> = dashmap::mapref::entry::VacantEntry<'a, NodeID, INode>;
 
 struct INode {
     attr: libc::stat,
@@ -145,13 +144,13 @@ impl INode {
 }
 
 struct Directory {
-    children: HashMap<OsString, Ino>,
-    parent: Option<Ino>,
+    children: HashMap<OsString, NodeID>,
+    parent: Option<NodeID>,
 }
 
 struct DirEntry {
     name: OsString,
-    ino: u64,
+    ino: NodeID,
     typ: u32,
     off: u64,
 }
@@ -163,7 +162,7 @@ impl Directory {
 
         entries.push(Arc::new(DirEntry {
             name: ".".into(),
-            ino: attr.st_ino,
+            ino: NodeID::from_raw(attr.st_ino),
             typ: DT_DIR as u32,
             off: offset,
         }));
@@ -171,7 +170,7 @@ impl Directory {
 
         entries.push(Arc::new(DirEntry {
             name: "..".into(),
-            ino: self.parent.unwrap_or(attr.st_ino),
+            ino: self.parent.unwrap_or(NodeID::from_raw(attr.st_ino)),
             typ: DT_DIR as u32,
             off: offset,
         }));
@@ -229,7 +228,7 @@ impl MemFS {
         }
     }
 
-    fn make_node<F>(&self, parent: Ino, name: &OsStr, f: F) -> fs::Result<EntryOut>
+    fn make_node<F>(&self, parent: NodeID, name: &OsStr, f: F) -> fs::Result<EntryOut>
     where
         F: FnOnce(&VacantEntry<'_>) -> INode,
     {
@@ -257,7 +256,7 @@ impl MemFS {
         Ok(out)
     }
 
-    fn unlink_node(&self, parent: Ino, name: &OsStr) -> fs::Result<()> {
+    fn unlink_node(&self, parent: NodeID, name: &OsStr) -> fs::Result<()> {
         let mut parent = self.inodes.get_mut(parent).ok_or(ENOENT)?;
         let parent = parent.as_dir_mut().ok_or(ENOTDIR)?;
 
@@ -345,10 +344,10 @@ impl Filesystem for MemFS {
             inode.attr.st_mode = mode;
         }
         if let Some(uid) = req.arg().uid() {
-            inode.attr.st_uid = uid;
+            inode.attr.st_uid = uid.into_raw();
         }
         if let Some(gid) = req.arg().gid() {
-            inode.attr.st_gid = gid;
+            inode.attr.st_gid = gid.into_raw();
         }
         if let Some(size) = req.arg().size() {
             inode.attr.st_size = size as libc::off_t;
@@ -399,7 +398,7 @@ impl Filesystem for MemFS {
         });
 
         let mut out = OpenOut::default();
-        out.fh(key as u64);
+        out.fh(FileID::from_raw(key as u64));
 
         req.reply(out)
     }
@@ -410,7 +409,9 @@ impl Filesystem for MemFS {
         }
 
         let dir_handles = &mut *self.dir_handles.lock().unwrap();
-        let dir = dir_handles.get(req.arg().fh() as usize).ok_or(EINVAL)?;
+        let dir = dir_handles
+            .get(req.arg().fh().into_raw() as usize)
+            .ok_or(EINVAL)?;
 
         let mut out = ReaddirOut::new(req.arg().size() as usize);
 
@@ -430,7 +431,7 @@ impl Filesystem for MemFS {
         req: fs::Request<'_, op::Releasedir<'_>>,
     ) -> fs::Result {
         let dir_handles = &mut *self.dir_handles.lock().unwrap();
-        dir_handles.remove(req.arg().fh() as usize);
+        dir_handles.remove(req.arg().fh().into_raw() as usize);
         req.reply(())
     }
 
@@ -443,7 +444,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = *entry.key();
+                attr.st_ino = entry.key().into_raw();
                 attr.st_nlink = 1;
                 attr.st_mode = req.arg().mode();
                 attr
@@ -460,7 +461,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = *entry.key();
+                attr.st_ino = entry.key().into_raw();
                 attr.st_nlink = 2;
                 attr.st_mode = req.arg().mode() | S_IFDIR;
                 attr
@@ -480,7 +481,7 @@ impl Filesystem for MemFS {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = *entry.key();
+                attr.st_ino = entry.key().into_raw();
                 attr.st_nlink = 1;
                 attr.st_mode = S_IFLNK | 0o777;
                 attr
@@ -721,12 +722,12 @@ impl Filesystem for MemFS {
 }
 
 fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(st.st_ino);
+    attr.ino(NodeID::from_raw(st.st_ino));
     attr.size(st.st_size as u64);
     attr.mode(st.st_mode);
     attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
+    attr.uid(UID::from_raw(st.st_uid));
+    attr.gid(GID::from_raw(st.st_gid));
     attr.rdev(st.st_rdev as u32);
     attr.blksize(st.st_blksize as u32);
     attr.blocks(st.st_blocks as u64);

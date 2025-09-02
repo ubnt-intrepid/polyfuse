@@ -12,6 +12,7 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
+    types::{NodeID, GID, UID},
     KernelConfig,
 };
 
@@ -20,8 +21,7 @@ use chrono::Local;
 use libc::{EISDIR, ENOENT, ENOTDIR, S_IFDIR, S_IFREG};
 use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
 
-const ROOT_INO: u64 = 1;
-const FILE_INO: u64 = 2;
+const FILE_INO: NodeID = NodeID::from_raw(2);
 
 const DEFAULT_TTL: Duration = Duration::from_secs(0);
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
@@ -78,12 +78,12 @@ struct CurrentFile {
 impl Heartbeat {
     fn new(ttl: Duration, update_interval: Duration, no_notify: bool) -> Self {
         let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
-        root_attr.st_ino = ROOT_INO;
+        root_attr.st_ino = NodeID::ROOT.into_raw();
         root_attr.st_mode = S_IFDIR | 0o555;
         root_attr.st_nlink = 1;
 
         let mut file_attr = unsafe { mem::zeroed::<libc::stat>() };
-        file_attr.st_ino = FILE_INO;
+        file_attr.st_ino = FILE_INO.into_raw();
         file_attr.st_mode = S_IFREG | 0o444;
         file_attr.st_nlink = 1;
 
@@ -115,7 +115,7 @@ impl Heartbeat {
 
             if !self.no_notify && current.nlookup > 0 {
                 tracing::info!("send notify_inval_entry");
-                notifier.inval_entry(ROOT_INO, old_filename.as_ref())?;
+                notifier.inval_entry(NodeID::ROOT, old_filename.as_ref())?;
             }
 
             drop(current);
@@ -135,7 +135,7 @@ impl Filesystem for Heartbeat {
     }
 
     fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
-        if req.arg().parent() != ROOT_INO {
+        if req.arg().parent() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
 
@@ -143,7 +143,7 @@ impl Filesystem for Heartbeat {
 
         if req.arg().name().as_bytes() == current.filename.as_bytes() {
             let mut out = EntryOut::default();
-            out.ino(self.file_attr.st_ino);
+            out.ino(NodeID::from_raw(self.file_attr.st_ino));
             fill_attr(out.attr(), &self.file_attr);
             out.ttl_entry(self.ttl);
             out.ttl_attr(self.ttl);
@@ -169,7 +169,7 @@ impl Filesystem for Heartbeat {
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let attr = match req.arg().ino() {
-            ROOT_INO => &self.root_attr,
+            NodeID::ROOT => &self.root_attr,
             FILE_INO => &self.file_attr,
             _ => Err(ENOENT)?,
         };
@@ -183,14 +183,14 @@ impl Filesystem for Heartbeat {
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         match req.arg().ino() {
-            ROOT_INO => Err(EISDIR)?,
+            NodeID::ROOT => Err(EISDIR)?,
             FILE_INO => req.reply(()),
             _ => Err(ENOENT)?,
         }
     }
 
     fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
-        if req.arg().ino() != ROOT_INO {
+        if req.arg().ino() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
         if req.arg().offset() > 0 {
@@ -206,12 +206,12 @@ impl Filesystem for Heartbeat {
 }
 
 fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(st.st_ino);
+    attr.ino(NodeID::from_raw(st.st_ino));
     attr.size(st.st_size as u64);
     attr.mode(st.st_mode);
     attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
+    attr.uid(UID::from_raw(st.st_uid));
+    attr.gid(GID::from_raw(st.st_gid));
     attr.rdev(st.st_rdev as u32);
     attr.blksize(st.st_blksize as u32);
     attr.blocks(st.st_blocks as u64);

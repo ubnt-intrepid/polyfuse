@@ -3,6 +3,7 @@ use crate::{
     conn::SpliceRead,
     notify::Notify,
     request::{ReceiveError, RequestBuffer},
+    types::RequestID,
 };
 use libc::{ENODEV, ENOSYS, EPROTO};
 use polyfuse_kernel::*;
@@ -332,7 +333,12 @@ impl Session {
                     minor: FUSE_KERNEL_MINOR_VERSION,
                     ..Default::default()
                 };
-                self.send_reply(&mut conn, header_in.unique, 0, args.as_bytes())?;
+                self.send_reply(
+                    &mut conn,
+                    RequestID::from_raw(header_in.unique),
+                    0,
+                    args.as_bytes(),
+                )?;
                 continue;
             }
 
@@ -346,7 +352,7 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                self.send_reply(&mut conn, header_in.unique, EPROTO, ())?;
+                self.send_reply(&mut conn, RequestID::from_raw(header_in.unique), EPROTO, ())?;
                 continue;
             }
 
@@ -427,7 +433,12 @@ impl Session {
                 padding: 0,
                 unused: [0; 8],
             };
-            self.send_reply(&mut conn, header_in.unique, 0, init_out.as_bytes())?;
+            self.send_reply(
+                &mut conn,
+                RequestID::from_raw(header_in.unique),
+                0,
+                init_out.as_bytes(),
+            )?;
 
             *self.state.get_mut() = Self::RUNNING;
 
@@ -532,7 +543,7 @@ impl Session {
     /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
     /// the corresponding kernel processing will be isolated, and the process
     /// that issued the associated syscall may enter a deadlock state.
-    pub fn send_reply<T, B>(&self, conn: T, unique: u64, error: i32, arg: B) -> io::Result<()>
+    pub fn send_reply<T, B>(&self, conn: T, unique: RequestID, error: i32, arg: B) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
@@ -547,7 +558,7 @@ impl Session {
                 POD(fuse_out_header {
                     len,
                     error: -error,
-                    unique,
+                    unique: unique.into_raw(),
                 }),
                 arg,
             ),
@@ -777,7 +788,9 @@ mod tests {
     fn send_reply_empty() {
         let session = Session::new();
         let mut buf = vec![0u8; 0];
-        session.send_reply(&mut buf, 42, -4, ()).unwrap();
+        session
+            .send_reply(&mut buf, RequestID::from_raw(42), -4, ())
+            .unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -791,7 +804,9 @@ mod tests {
     fn send_reply_single_data() {
         let session = Session::default();
         let mut buf = vec![0u8; 0];
-        session.send_reply(&mut buf, 42, 0, "hello").unwrap();
+        session
+            .send_reply(&mut buf, RequestID::from_raw(42), 0, "hello")
+            .unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -812,7 +827,9 @@ mod tests {
             "message.".as_ref(),
         ];
         let mut buf = vec![0u8; 0];
-        session.send_reply(&mut buf, 26, 0, payload).unwrap();
+        session
+            .send_reply(&mut buf, RequestID::from_raw(26), 0, payload)
+            .unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(

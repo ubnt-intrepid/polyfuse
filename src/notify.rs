@@ -1,6 +1,9 @@
 use std::ffi::OsStr;
 
-use crate::bytes::{Bytes, POD};
+use crate::{
+    bytes::{Bytes, POD},
+    types::{NodeID, NotifyID, PollWakeupID},
+};
 use polyfuse_kernel::{
     fuse_notify_code, fuse_notify_delete_out, fuse_notify_inval_entry_out,
     fuse_notify_inval_inode_out, fuse_notify_poll_wakeup_out, fuse_notify_retrieve_out,
@@ -18,9 +21,13 @@ pub struct InvalNode {
 }
 
 impl InvalNode {
-    pub const fn new(ino: u64, off: i64, len: i64) -> Self {
+    pub const fn new(ino: NodeID, off: i64, len: i64) -> Self {
         Self {
-            out: POD(fuse_notify_inval_inode_out { ino, off, len }),
+            out: POD(fuse_notify_inval_inode_out {
+                ino: ino.into_raw(),
+                off,
+                len,
+            }),
         }
     }
 }
@@ -40,11 +47,11 @@ pub struct InvalEntry<'a> {
 }
 
 impl<'a> InvalEntry<'a> {
-    pub fn new(parent: u64, name: &'a OsStr) -> Self {
+    pub fn new(parent: NodeID, name: &'a OsStr) -> Self {
         let namelen = name.len().try_into().expect("provided name is too long");
         Self {
             out: POD(fuse_notify_inval_entry_out {
-                parent,
+                parent: parent.into_raw(),
                 namelen,
                 padding: 0,
             }),
@@ -73,12 +80,12 @@ pub struct Delete<'a> {
 }
 
 impl<'a> Delete<'a> {
-    pub fn new(parent: u64, child: u64, name: &'a OsStr) -> Self {
+    pub fn new(parent: NodeID, child: NodeID, name: &'a OsStr) -> Self {
         let namelen = name.len().try_into().expect("provided name is too long");
         Self {
             out: POD(fuse_notify_delete_out {
-                parent,
-                child,
+                parent: parent.into_raw(),
+                child: child.into_raw(),
                 namelen,
                 padding: 0,
             }),
@@ -105,11 +112,11 @@ impl<B> Store<B>
 where
     B: Bytes,
 {
-    pub fn new(ino: u64, offset: u64, data: B) -> Self {
+    pub fn new(ino: NodeID, offset: u64, data: B) -> Self {
         let size = data.size().try_into().expect("provided data is too large");
         Self {
             out: POD(fuse_notify_store_out {
-                nodeid: ino,
+                nodeid: ino.into_raw(),
                 offset,
                 size,
                 padding: 0,
@@ -137,11 +144,11 @@ pub struct Retrieve {
 }
 
 impl Retrieve {
-    pub const fn new(unique: u64, ino: u64, offset: u64, size: u32) -> Self {
+    pub const fn new(unique: NotifyID, ino: NodeID, offset: u64, size: u32) -> Self {
         Self {
             inner: POD(fuse_notify_retrieve_out {
-                notify_unique: unique,
-                nodeid: ino,
+                notify_unique: unique.into_raw(),
+                nodeid: ino.into_raw(),
                 offset,
                 size,
                 padding: 0,
@@ -165,9 +172,9 @@ pub struct PollWakeup {
 }
 
 impl PollWakeup {
-    pub const fn new(kh: u64) -> Self {
+    pub const fn new(kh: PollWakeupID) -> Self {
         Self {
-            inner: POD(fuse_notify_poll_wakeup_out { kh }),
+            inner: POD(fuse_notify_poll_wakeup_out { kh: kh.into_raw() }),
         }
     }
 }

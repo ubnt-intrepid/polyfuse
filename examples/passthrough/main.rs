@@ -10,6 +10,7 @@ use polyfuse::{
     reply::{
         AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
+    types::{FileID, NodeID, GID, UID},
     KernelConfig, KernelFlags,
 };
 
@@ -70,7 +71,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-type Ino = u64;
 type SrcId = (u64, libc::dev_t);
 
 struct Passthrough {
@@ -89,9 +89,9 @@ impl Passthrough {
 
         let mut inodes = INodeTable::new();
         let entry = inodes.vacant_entry();
-        debug_assert_eq!(entry.ino(), 1);
+        debug_assert_eq!(entry.ino(), NodeID::ROOT);
         entry.insert(INode {
-            ino: 1,
+            ino: NodeID::ROOT,
             fd,
             refcount: u64::max_value() / 2, // the root node's cache is never removed.
             src_id: (stat.st_ino, stat.st_dev),
@@ -106,7 +106,7 @@ impl Passthrough {
         })
     }
 
-    fn make_entry_param(&self, ino: u64, attr: libc::stat) -> EntryOut {
+    fn make_entry_param(&self, ino: NodeID, attr: libc::stat) -> EntryOut {
         let mut reply = EntryOut::default();
         reply.ino(ino);
         fill_attr(reply.attr(), &attr);
@@ -117,7 +117,7 @@ impl Passthrough {
         reply
     }
 
-    fn do_lookup(&self, parent: u64, name: &OsStr) -> fs::Result<EntryOut> {
+    fn do_lookup(&self, parent: NodeID, name: &OsStr) -> fs::Result<EntryOut> {
         let mut inodes = self.inodes.lock().unwrap();
         let inodes = &mut *inodes;
 
@@ -161,7 +161,7 @@ impl Passthrough {
 
     fn make_node(
         &self,
-        parent: Ino,
+        parent: NodeID,
         name: &OsStr,
         mode: u32,
         rdev: Option<u32>,
@@ -260,7 +260,12 @@ impl Filesystem for Passthrough {
         match (req.arg().uid(), req.arg().gid()) {
             (None, None) => (),
             (uid, gid) => {
-                fd.fchownat("", uid, gid, AT_SYMLINK_NOFOLLOW)?;
+                fd.fchownat(
+                    "",
+                    uid.map(UID::into_raw),
+                    gid.map(GID::into_raw),
+                    AT_SYMLINK_NOFOLLOW,
+                )?;
             }
         }
 
@@ -475,7 +480,12 @@ impl Filesystem for Passthrough {
         let mut out = ReaddirOut::new(req.arg().size() as usize);
         for entry in read_dir {
             let entry = entry?;
-            if out.entry(&entry.name, entry.ino, entry.typ, entry.off) {
+            if out.entry(
+                &entry.name,
+                NodeID::from_raw(entry.ino),
+                entry.typ,
+                entry.off,
+            ) {
                 break;
             }
         }
@@ -756,12 +766,12 @@ impl Filesystem for Passthrough {
 }
 
 fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(st.st_ino);
+    attr.ino(NodeID::from_raw(st.st_ino));
     attr.size(st.st_size as u64);
     attr.mode(st.st_mode);
     attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
+    attr.uid(UID::from_raw(st.st_uid));
+    attr.gid(GID::from_raw(st.st_gid));
     attr.rdev(st.st_rdev as u32);
     attr.blksize(st.st_blksize as u32);
     attr.blocks(st.st_blocks as u64);
@@ -792,23 +802,23 @@ impl<T> Default for HandlePool<T> {
 }
 
 impl<T> HandlePool<T> {
-    fn get(&self, fh: u64) -> Option<Arc<T>> {
-        self.0.lock().unwrap().get(fh as usize).cloned()
+    fn get(&self, fh: FileID) -> Option<Arc<T>> {
+        self.0.lock().unwrap().get(fh.into_raw() as usize).cloned()
     }
 
-    fn remove(&self, fh: u64) -> Arc<T> {
-        self.0.lock().unwrap().remove(fh as usize)
+    fn remove(&self, fh: FileID) -> Arc<T> {
+        self.0.lock().unwrap().remove(fh.into_raw() as usize)
     }
 
-    fn insert(&self, entry: T) -> u64 {
-        self.0.lock().unwrap().insert(Arc::new(entry)) as u64
+    fn insert(&self, entry: T) -> FileID {
+        FileID::from_raw(self.0.lock().unwrap().insert(Arc::new(entry)) as u64)
     }
 }
 
 // ==== INode ====
 
 struct INode {
-    ino: Ino,
+    ino: NodeID,
     src_id: SrcId,
     is_symlink: bool,
     fd: FileDesc,
@@ -818,8 +828,8 @@ struct INode {
 // ==== INodeTable ====
 
 struct INodeTable {
-    map: HashMap<Ino, Arc<Mutex<INode>>>,
-    src_to_ino: HashMap<SrcId, Ino>,
+    map: HashMap<NodeID, Arc<Mutex<INode>>>,
+    src_to_ino: HashMap<SrcId, NodeID>,
     next_ino: u64,
 }
 
@@ -832,7 +842,7 @@ impl INodeTable {
         }
     }
 
-    fn get(&self, ino: Ino) -> Option<Arc<Mutex<INode>>> {
+    fn get(&self, ino: NodeID) -> Option<Arc<Mutex<INode>>> {
         self.map.get(&ino).cloned()
     }
 
@@ -843,17 +853,20 @@ impl INodeTable {
 
     fn vacant_entry(&mut self) -> VacantEntry<'_> {
         let ino = self.next_ino;
-        VacantEntry { table: self, ino }
+        VacantEntry {
+            table: self,
+            ino: NodeID::from_raw(ino),
+        }
     }
 }
 
 struct VacantEntry<'a> {
     table: &'a mut INodeTable,
-    ino: Ino,
+    ino: NodeID,
 }
 
 impl VacantEntry<'_> {
-    fn ino(&self) -> Ino {
+    fn ino(&self) -> NodeID {
         self.ino
     }
 
