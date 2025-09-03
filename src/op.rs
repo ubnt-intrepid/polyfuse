@@ -1,6 +1,8 @@
 use crate::{
     bytes::{DecodeError, Decoder},
-    types::{FileID, LockOwnerID, NodeID, NotifyID, PollWakeupID, RequestID, GID, PID, UID},
+    types::{
+        DeviceID, FileID, LockOwnerID, NodeID, NotifyID, PollWakeupID, RequestID, GID, PID, UID,
+    },
 };
 use polyfuse_kernel::*;
 use std::{ffi::OsStr, fmt, time::Duration};
@@ -740,8 +742,8 @@ impl<'op> Mknod<'op> {
     /// This value is meaningful only if the created node is a device file
     /// (i.e. the file type is specified either `S_IFCHR` or `S_IFBLK`).
     #[inline]
-    pub fn rdev(&self) -> u32 {
-        self.arg.rdev
+    pub fn rdev(&self) -> DeviceID {
+        DeviceID::from_kernel_dev(self.arg.rdev)
     }
 
     #[doc(hidden)] // TODO: dox

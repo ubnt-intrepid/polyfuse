@@ -1,5 +1,6 @@
 //! Common type definitions.
 
+use libc::dev_t;
 use std::fmt;
 
 macro_rules! define_id_type {
@@ -104,5 +105,68 @@ impl fmt::Debug for LockOwnerID {
 impl LockOwnerID {
     pub(crate) const fn from_raw(value: u64) -> Self {
         Self { value }
+    }
+}
+
+/// The device ID.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct DeviceID {
+    major: u32,
+    minor: u32,
+}
+
+impl DeviceID {
+    /// Create a `DeviceID` from the corresponding pair of major/minor versions.
+    ///
+    /// # Panics
+    /// In the FUSE protocol, this identifier is encoded as a 32-bit integer.
+    /// Therefore, this constructor will panic if the passed arguments is outside
+    /// of the following range:
+    /// * `major`: 12bits (0x000 - 0xFFF)
+    /// * `minor`: 20bits (0x00000 - 0xFFFFF)
+    #[inline]
+    pub const fn new(major: u32, minor: u32) -> Self {
+        const MAJOR_MAX: u32 = 0x1 << (32 - 20);
+        const MINOR_MAX: u32 = 0x1 << 20;
+        assert!(major < MAJOR_MAX, "DeviceID.major");
+        assert!(minor < MINOR_MAX, "DeviceID.minor");
+        Self { major, minor }
+    }
+
+    /// Return the major number of this ID.
+    #[inline]
+    pub const fn major(&self) -> u32 {
+        self.major
+    }
+
+    /// Return the minor number of this ID.
+    #[inline]
+    pub const fn minor(&self) -> u32 {
+        self.minor
+    }
+
+    /// Convert the value of userland `dev_t` to `DeviceID`.
+    ///
+    /// # Panics
+    /// See also the documentation of `DeviceID::new` for
+    /// the range limitations of major/minor numbers.
+    #[inline]
+    pub const fn from_userspace_dev(rdev: dev_t) -> Self {
+        Self::new(libc::major(rdev), libc::minor(rdev))
+    }
+
+    #[inline]
+    pub const fn from_kernel_dev(rdev: u32) -> Self {
+        Self::new(rdev >> 20, rdev & 0xfff)
+    }
+
+    #[inline]
+    pub const fn into_userspace_dev(self) -> dev_t {
+        libc::makedev(self.major, self.minor)
+    }
+
+    #[inline]
+    pub const fn into_kernel_dev(self) -> u32 {
+        self.major << 20 | self.minor & 0xfff
     }
 }

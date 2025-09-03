@@ -6,7 +6,7 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
-    types::{FileID, NodeID, GID, UID},
+    types::{DeviceID, FileID, NodeID, GID, UID},
     KernelConfig,
 };
 
@@ -728,7 +728,7 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.nlink(st.st_nlink as u32);
     attr.uid(UID::from_raw(st.st_uid));
     attr.gid(GID::from_raw(st.st_gid));
-    attr.rdev(st.st_rdev as u32);
+    attr.rdev(DeviceID::from_userspace_dev(st.st_rdev));
     attr.blksize(st.st_blksize as u32);
     attr.blocks(st.st_blocks as u64);
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));

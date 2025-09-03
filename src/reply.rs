@@ -1,6 +1,6 @@
 use crate::{
     bytes::{Bytes, FillBytes},
-    types::{FileID, NodeID, GID, PID, UID},
+    types::{DeviceID, FileID, NodeID, GID, PID, UID},
 };
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
@@ -56,8 +56,8 @@ impl FileAttr {
 
     /// Set the device ID.
     #[inline]
-    pub fn rdev(&mut self, rdev: u32) {
-        self.attr.rdev = rdev;
+    pub fn rdev(&mut self, rdev: DeviceID) {
+        self.attr.rdev = rdev.into_kernel_dev();
     }
 
     /// Set the block size.

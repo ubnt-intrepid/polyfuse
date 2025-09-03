@@ -10,7 +10,7 @@ use polyfuse::{
     reply::{
         AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
-    types::{FileID, NodeID, GID, UID},
+    types::{DeviceID, FileID, NodeID, GID, UID},
     KernelConfig, KernelFlags,
 };
 
@@ -164,7 +164,7 @@ impl Passthrough {
         parent: NodeID,
         name: &OsStr,
         mode: u32,
-        rdev: Option<u32>,
+        rdev: Option<DeviceID>,
         link: Option<&OsStr>,
     ) -> fs::Result<EntryOut> {
         {
@@ -183,7 +183,7 @@ impl Passthrough {
                 _ => {
                     parent
                         .fd
-                        .mknodat(name, mode, rdev.unwrap_or(0) as libc::dev_t)?;
+                        .mknodat(name, mode, rdev.map_or(0, DeviceID::into_userspace_dev))?;
                 }
             }
         }
@@ -772,7 +772,7 @@ fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.nlink(st.st_nlink as u32);
     attr.uid(UID::from_raw(st.st_uid));
     attr.gid(GID::from_raw(st.st_gid));
-    attr.rdev(st.st_rdev as u32);
+    attr.rdev(DeviceID::from_userspace_dev(st.st_rdev));
     attr.blksize(st.st_blksize as u32);
     attr.blocks(st.st_blocks as u64);
     attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
