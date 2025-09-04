@@ -619,9 +619,9 @@ impl Filesystem for Passthrough {
         let file = self.opened_files.get(req.arg().fh()).ok_or(ENOENT)?;
         let file = file.lock().unwrap();
 
-        let op = req.arg().op().expect("invalid lock operation") as i32;
+        let op = req.arg().op().expect("invalid lock operation");
 
-        nix::flock(&*file, op)?;
+        nix::flock(&*file, op.into_raw() as i32)?;
 
         req.reply(())
     }

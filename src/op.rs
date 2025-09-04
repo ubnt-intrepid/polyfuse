@@ -290,8 +290,7 @@ impl<'op> Operation<'op> {
                 if arg.lk_flags & FUSE_LK_FLOCK == 0 {
                     Ok(Operation::Setlk(Setlk { header, arg, sleep }))
                 } else {
-                    let op = convert_to_flock_op(arg.lk.typ, sleep).unwrap_or(0);
-                    Ok(Operation::Flock(Flock { header, arg, op }))
+                    Ok(Operation::Flock(Flock { header, arg, sleep }))
                 }
             }
 
@@ -329,25 +328,6 @@ impl<'op> Operation<'op> {
             _ => Err(Error::UnsupportedOpcode),
         }
     }
-}
-
-#[inline]
-fn convert_to_flock_op(lk_type: u32, sleep: bool) -> Option<u32> {
-    const F_RDLCK: u32 = libc::F_RDLCK as u32;
-    const F_WRLCK: u32 = libc::F_WRLCK as u32;
-    const F_UNLCK: u32 = libc::F_UNLCK as u32;
-
-    let mut op = match lk_type {
-        F_RDLCK => libc::LOCK_SH as u32,
-        F_WRLCK => libc::LOCK_EX as u32,
-        F_UNLCK => libc::LOCK_UN as u32,
-        _ => return None,
-    };
-
-    if !sleep {
-        op |= libc::LOCK_NB as u32;
-    }
-    Some(op)
 }
 
 /// A set of forget information removed from the kernel's internal caches.
@@ -1682,7 +1662,7 @@ impl<'op> Setlk<'op> {
 pub struct Flock<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_lk_in,
-    op: u32,
+    sleep: bool,
 }
 
 impl fmt::Debug for Flock<'_> {
@@ -1717,8 +1697,32 @@ impl<'op> Flock<'op> {
     ///
     /// [flock]: http://man7.org/linux/man-pages/man2/flock.2.html
     #[inline]
-    pub fn op(&self) -> Option<u32> {
-        Some(self.op)
+    pub fn op(&self) -> Option<FlockOp> {
+        match self.arg.lk.typ as i32 {
+            libc::F_RDLCK if self.sleep => Some(FlockOp::Shared),
+            libc::F_RDLCK => Some(FlockOp::SharedNonblock),
+            libc::F_WRLCK if self.sleep => Some(FlockOp::Exclusive),
+            libc::F_WRLCK => Some(FlockOp::ExclusiveNonblock),
+            libc::F_UNLCK => Some(FlockOp::Unlock),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[repr(i32)]
+pub enum FlockOp {
+    Shared = libc::LOCK_SH,
+    SharedNonblock = libc::LOCK_SH | libc::LOCK_NB,
+    Exclusive = libc::LOCK_EX,
+    ExclusiveNonblock = libc::LOCK_EX | libc::LOCK_NB,
+    Unlock = libc::LOCK_UN,
+}
+
+impl FlockOp {
+    pub const fn into_raw(self) -> i32 {
+        self as i32
     }
 }
 
