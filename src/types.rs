@@ -110,12 +110,15 @@ impl LockOwnerID {
 
 /// The device ID.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct DeviceID {
-    major: u32,
-    minor: u32,
+    raw: u32,
 }
 
 impl DeviceID {
+    const MAJOR_MAX: u32 = (0x1 << (32 - 20)) - 1;
+    const MINOR_MAX: u32 = (0x1 << 20) - 1;
+
     /// Create a `DeviceID` from the corresponding pair of major/minor versions.
     ///
     /// # Panics
@@ -126,23 +129,23 @@ impl DeviceID {
     /// * `minor`: 20bits (0x00000 - 0xFFFFF)
     #[inline]
     pub const fn new(major: u32, minor: u32) -> Self {
-        const MAJOR_MAX: u32 = 0x1 << (32 - 20);
-        const MINOR_MAX: u32 = 0x1 << 20;
-        assert!(major < MAJOR_MAX, "DeviceID.major");
-        assert!(minor < MINOR_MAX, "DeviceID.minor");
-        Self { major, minor }
+        assert!(major <= Self::MAJOR_MAX, "DeviceID.major");
+        assert!(minor <= Self::MINOR_MAX, "DeviceID.minor");
+        Self {
+            raw: (major & 0xfff << 20) | (minor & 0xfffff),
+        }
     }
 
     /// Return the major number of this ID.
     #[inline]
     pub const fn major(&self) -> u32 {
-        self.major
+        self.raw >> 20
     }
 
     /// Return the minor number of this ID.
     #[inline]
     pub const fn minor(&self) -> u32 {
-        self.minor
+        self.raw & 0xfffff
     }
 
     /// Convert the value of userland `dev_t` to `DeviceID`.
@@ -157,16 +160,16 @@ impl DeviceID {
 
     #[inline]
     pub const fn from_kernel_dev(rdev: u32) -> Self {
-        Self::new(rdev >> 20, rdev & 0xfff)
+        Self { raw: rdev }
     }
 
     #[inline]
     pub const fn into_userspace_dev(self) -> dev_t {
-        libc::makedev(self.major, self.minor)
+        libc::makedev(self.major(), self.minor())
     }
 
     #[inline]
     pub const fn into_kernel_dev(self) -> u32 {
-        self.major << 20 | self.minor & 0xfff
+        self.raw
     }
 }
