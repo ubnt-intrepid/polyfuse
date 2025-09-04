@@ -1,11 +1,13 @@
 use crate::{
     bytes::{DecodeError, Decoder},
     types::{
-        DeviceID, FileID, LockOwnerID, NodeID, NotifyID, PollWakeupID, RequestID, GID, PID, UID,
+        DeviceID, FileID, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID, PollEvents,
+        PollWakeupID, RequestID, GID, PID, UID,
     },
 };
+use bitflags::bitflags;
 use polyfuse_kernel::*;
-use std::{ffi::OsStr, fmt, time::Duration};
+use std::{ffi::OsStr, fmt, os::unix::fs::OpenOptionsExt, time::Duration};
 
 const FUSE_INT_REQ_BIT: u64 = 1;
 
@@ -554,8 +556,8 @@ impl<'op> Setattr<'op> {
 
     /// Return the file mode to be set.
     #[inline]
-    pub fn mode(&self) -> Option<u32> {
-        self.get(FATTR_MODE, |arg| arg.mode)
+    pub fn mode(&self) -> Option<FileMode> {
+        self.get(FATTR_MODE, |arg| FileMode::from_raw(arg.mode))
     }
 
     /// Return the user id to be set.
@@ -713,8 +715,8 @@ impl<'op> Mknod<'op> {
 
     /// Return the file type and permissions used when creating the new file.
     #[inline]
-    pub fn mode(&self) -> u32 {
-        self.arg.mode
+    pub fn mode(&self) -> FileMode {
+        FileMode::from_raw(self.arg.mode)
     }
 
     /// Return the device number for special file.
@@ -764,8 +766,8 @@ impl<'op> Mkdir<'op> {
 
     /// Return the file type and permissions used when creating the new directory.
     #[inline]
-    pub fn mode(&self) -> u32 {
-        self.arg.mode
+    pub fn permissions(&self) -> FilePermissions {
+        FilePermissions::from_bits_truncate(self.arg.mode)
     }
 
     #[doc(hidden)] // TODO: dox
@@ -882,11 +884,21 @@ impl<'op> Rename<'op> {
 
     /// Return the rename flags.
     #[inline]
-    pub fn flags(&self) -> u32 {
+    pub fn flags(&self) -> RenameFlags {
         match self.arg {
-            RenameArg::V1(..) => 0,
-            RenameArg::V2(arg) => arg.flags,
+            RenameArg::V1(..) => RenameFlags::empty(),
+            RenameArg::V2(arg) => RenameFlags::from_bits_truncate(arg.flags),
         }
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct RenameFlags: u32 {
+        const EXCHANGE = libc::RENAME_EXCHANGE;
+        const NOREPLACE = libc::RENAME_NOREPLACE;
+        const WHITEOUT = libc::RENAME_WHITEOUT;
     }
 }
 
@@ -957,19 +969,112 @@ impl<'op> Open<'op> {
         NodeID::from_raw(self.header.nodeid)
     }
 
-    /// Return the open flags.
-    ///
-    /// The creating flags (`O_CREAT`, `O_EXCL` and `O_NOCTTY`) are removed and
-    /// these flags are handled by the kernel.
-    ///
-    /// If the mount option contains `-o default_permissions`, the access mode flags
-    /// (`O_RDONLY`, `O_WRONLY` and `O_RDWR`) might be handled by the kernel and in that case,
-    /// these flags are omitted before issuing the request. Otherwise, the filesystem should
-    /// handle these flags and return an `EACCES` error when provided access mode is
-    /// invalid.
+    /// Return the access mode and creation/status flags of the opened file.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
+    }
+}
+
+/// The compound type of the access mode and auxiliary flags of opened files.
+///
+/// * If the mount option contains `-o default_permissions`, the access mode
+///   flags (`O_RDONLY`, `O_WRONLY` and `O_RDWR`) might be handled by the kernel
+///   and in that case, these flags are omitted before issuing the request.
+///   Otherwise, the filesystem should handle these flags and return an `EACCES`
+///   error when provided access mode is invalid.
+/// * Some parts of the creating flags (`O_CREAT`, `O_EXCL` and `O_NOCTTY`) are
+///   removed and these flags are handled by the kernel.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct OpenOptions {
+    raw: u32,
+}
+
+impl OpenOptions {
+    const fn from_raw(raw: u32) -> Self {
+        Self { raw }
+    }
+
+    pub const fn access_mode(self) -> Option<AccessMode> {
+        match self.raw as i32 & libc::O_ACCMODE {
+            libc::O_RDONLY => Some(AccessMode::ReadOnly),
+            libc::O_WRONLY => Some(AccessMode::WriteOnly),
+            libc::O_RDWR => Some(AccessMode::ReadWrite),
+            _ => None,
+        }
+    }
+
+    pub const fn flags(self) -> OpenFlags {
+        OpenFlags::from_bits_truncate(self.raw)
+    }
+
+    pub const fn remove(mut self, flags: OpenFlags) -> Self {
+        self.raw &= !flags.bits();
+        self
+    }
+}
+
+impl From<OpenOptions> for std::fs::OpenOptions {
+    fn from(src: OpenOptions) -> Self {
+        let mut options = std::fs::OpenOptions::new();
+        match src.access_mode() {
+            Some(AccessMode::ReadOnly) => {
+                options.read(true);
+            }
+            Some(AccessMode::WriteOnly) => {
+                options.write(true);
+            }
+            Some(AccessMode::ReadWrite) => {
+                options.read(true).write(true);
+            }
+            _ => (),
+        }
+        options.custom_flags(src.flags().bits() as i32);
+        options
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AccessMode {
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
+impl AccessMode {
+    pub const fn into_raw(self) -> i32 {
+        match self {
+            Self::ReadOnly => libc::O_RDONLY,
+            Self::WriteOnly => libc::O_WRONLY,
+            Self::ReadWrite => libc::O_RDWR,
+        }
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct OpenFlags: u32 {
+        // file creation flags.
+        const CLOEXEC = libc::O_CLOEXEC as u32;
+        const DIRECTORY = libc::O_DIRECTORY as u32;
+        const NOFOLLOW = libc::O_NOFOLLOW as u32;
+        const TMPFILE = libc::O_TMPFILE as u32;
+        const TRUNC = libc::O_TRUNC as u32;
+
+        // file status flags.
+        const APPEND = libc::O_APPEND as u32;
+        const ASYNC = libc::O_ASYNC as u32;
+        const DIRECT = libc::O_DIRECT as u32;
+        const DSYNC = libc::O_DSYNC as u32;
+        const LARGEFILE = libc::O_LARGEFILE as u32;
+        const NOATIME = libc::O_NOATIME as u32;
+        const NONBLOCK = libc::O_NONBLOCK as u32;
+        const NDELAY = libc::O_NDELAY as u32;
+        const PATH = libc::O_PATH as u32;
+        const SYNC = libc::O_SYNC as u32;
     }
 }
 
@@ -1023,8 +1128,8 @@ impl<'op> Read<'op> {
 
     /// Return the flags specified at opening the file.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 
     /// Return the identifier of lock owner.
@@ -1087,8 +1192,8 @@ impl<'op> Write<'op> {
 
     /// Return the flags specified at opening the file.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 
     /// Return the identifier of lock owner.
@@ -1130,8 +1235,8 @@ impl<'op> Release<'op> {
 
     /// Return the flags specified at opening the file.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 
     /// Return the identifier of lock owner.
@@ -1246,8 +1351,17 @@ impl<'op> Setxattr<'op> {
 
     /// Return the flags that specifies the meanings of this operation.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn flags(&self) -> SetxattrFlags {
+        SetxattrFlags::from_bits_truncate(self.arg.flags)
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct SetxattrFlags: u32 {
+        const CREATE = libc::XATTR_CREATE as u32;
+        const REPLACE = libc::XATTR_REPLACE as u32;
     }
 }
 
@@ -1420,8 +1534,8 @@ impl<'op> Opendir<'op> {
 
     /// Return the open flags.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 }
 
@@ -1501,10 +1615,10 @@ impl<'op> Releasedir<'op> {
         FileID::from_raw(self.arg.fh)
     }
 
-    /// Return the flags specified at opening the directory.
+    /// Return the open flags.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 }
 
@@ -1794,16 +1908,16 @@ impl<'op> Create<'op> {
     ///
     /// This is the same as `Mknod::mode`.
     #[inline]
-    pub fn mode(&self) -> u32 {
-        self.arg.mode
+    pub fn mode(&self) -> FileMode {
+        FileMode::from_raw(self.arg.mode)
     }
 
     /// Return the open flags.
     ///
     /// This is the same as `Open::flags`.
     #[inline]
-    pub fn open_flags(&self) -> u32 {
-        self.arg.flags
+    pub fn open_options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 
     #[doc(hidden)] // TODO: dox
@@ -1900,8 +2014,21 @@ impl<'op> Fallocate<'op> {
     ///
     /// [fallocate]: http://man7.org/linux/man-pages/man2/fallocate.2.html
     #[inline]
-    pub fn mode(&self) -> u32 {
-        self.arg.mode
+    pub fn mode(&self) -> FallocateFlags {
+        FallocateFlags::from_bits_truncate(self.arg.mode)
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct FallocateFlags: u32 {
+        const KEEP_SIZE = libc::FALLOC_FL_KEEP_SIZE as u32;
+        const UNSHARE_RANGE = libc::FALLOC_FL_UNSHARE_RANGE as u32;
+        const PUNCH_HOLE = libc::FALLOC_FL_PUNCH_HOLE as u32;
+        const COLLAPSE_RANGE = libc::FALLOC_FL_COLLAPSE_RANGE as u32;
+        const ZERO_RANGE = libc::FALLOC_FL_ZERO_RANGE as u32;
+        const INSERT_RANGE = libc::FALLOC_FL_INSERT_RANGE as u32;
     }
 }
 
@@ -2004,8 +2131,8 @@ impl<'op> Poll<'op> {
 
     /// Return the requested poll events.
     #[inline]
-    pub fn events(&self) -> u32 {
-        self.arg.events
+    pub fn events(&self) -> PollEvents {
+        PollEvents::from_bits_truncate(self.arg.events)
     }
 
     /// Return the handle to this poll.

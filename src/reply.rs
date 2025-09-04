@@ -1,6 +1,6 @@
 use crate::{
     bytes::{Bytes, FillBytes},
-    types::{DeviceID, FileID, NodeID, GID, PID, UID},
+    types::{DeviceID, FileID, FileMode, NodeID, PollEvents, GID, PID, UID},
 };
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
@@ -30,10 +30,10 @@ impl FileAttr {
         self.attr.size = size;
     }
 
-    /// Set the permission of the inode.
+    /// Set the file type and permissions of the inode.
     #[inline]
-    pub fn mode(&mut self, mode: u32) {
-        self.attr.mode = mode;
+    pub fn mode(&mut self, mode: FileMode) {
+        self.attr.mode = mode.into_raw();
     }
 
     /// Set the number of hard links.
@@ -573,8 +573,8 @@ impl Bytes for PollOut {
 }
 
 impl PollOut {
-    pub fn revents(&mut self, revents: u32) {
-        self.out.revents = revents;
+    pub fn revents(&mut self, revents: PollEvents) {
+        self.out.revents = revents.bits();
     }
 }
 

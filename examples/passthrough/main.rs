@@ -6,11 +6,11 @@ mod nix;
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
-    op,
+    op::{self, OpenFlags},
     reply::{
         AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
     },
-    types::{DeviceID, FileID, NodeID, GID, UID},
+    types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     KernelConfig, KernelFlags,
 };
 
@@ -18,8 +18,7 @@ use crate::nix::{FileDesc, ReadDir};
 use anyhow::{ensure, Context as _, Result};
 use libc::{
     AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, EINVAL, ENOENT, ENOSYS, ENOTSUP,
-    EOPNOTSUPP, EPERM, O_NOFOLLOW, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, S_IFDIR, S_IFLNK, S_IFMT,
-    UTIME_NOW, UTIME_OMIT,
+    EOPNOTSUPP, EPERM, O_NOFOLLOW, O_PATH, S_IFLNK, S_IFMT, UTIME_NOW, UTIME_OMIT,
 };
 use pico_args::Arguments;
 use slab::Slab;
@@ -28,7 +27,6 @@ use std::{
     ffi::OsStr,
     fs::{File, OpenOptions},
     io::{self, prelude::*},
-    os::unix::prelude::*,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -163,7 +161,7 @@ impl Passthrough {
         &self,
         parent: NodeID,
         name: &OsStr,
-        mode: u32,
+        mode: FileMode,
         rdev: Option<DeviceID>,
         link: Option<&OsStr>,
     ) -> fs::Result<EntryOut> {
@@ -172,18 +170,20 @@ impl Passthrough {
             let parent = inodes.get(parent).ok_or(ENOENT)?;
             let parent = parent.lock().unwrap();
 
-            match mode & S_IFMT {
-                S_IFDIR => {
-                    parent.fd.mkdirat(name, mode)?;
+            match mode.file_type() {
+                Some(FileType::Directory) => {
+                    parent.fd.mkdirat(name, mode.permissions().bits())?;
                 }
-                S_IFLNK => {
+                Some(FileType::SymbolicLink) => {
                     let link = link.expect("missing 'link'");
                     parent.fd.symlinkat(name, link)?;
                 }
                 _ => {
-                    parent
-                        .fd
-                        .mknodat(name, mode, rdev.map_or(0, DeviceID::into_userspace_dev))?;
+                    parent.fd.mknodat(
+                        name,
+                        mode.into_raw(),
+                        rdev.map_or(0, DeviceID::into_userspace_dev),
+                    )?;
                 }
             }
         }
@@ -250,9 +250,9 @@ impl Filesystem for Passthrough {
         // chmod
         if let Some(mode) = req.arg().mode() {
             if let Some(file) = file.as_mut() {
-                nix::fchmod(&**file, mode)?;
+                nix::fchmod(&**file, mode.into_raw())?;
             } else {
-                nix::chmod(fd.procname(), mode)?;
+                nix::chmod(fd.procname(), mode.into_raw())?;
             }
         }
 
@@ -392,7 +392,7 @@ impl Filesystem for Passthrough {
         let out = self.make_node(
             req.arg().parent(),
             req.arg().name(),
-            S_IFDIR | req.arg().mode(),
+            FileMode::new(FileType::Directory, req.arg().permissions()),
             None,
             None,
         )?;
@@ -403,7 +403,7 @@ impl Filesystem for Passthrough {
         let out = self.make_node(
             req.arg().parent(),
             req.arg().name(),
-            S_IFLNK,
+            FileMode::new(FileType::SymbolicLink, FilePermissions::empty()),
             None,
             Some(req.arg().link()),
         )?;
@@ -427,7 +427,7 @@ impl Filesystem for Passthrough {
     }
 
     fn rename(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Rename<'_>>) -> fs::Result {
-        if req.arg().flags() != 0 {
+        if !req.arg().flags().is_empty() {
             // rename2 is not supported.
             return Err(EINVAL.into());
         }
@@ -524,20 +524,7 @@ impl Filesystem for Passthrough {
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
-        let mut options = OpenOptions::new();
-        match (req.arg().flags() & 0x03) as i32 {
-            O_RDONLY => {
-                options.read(true);
-            }
-            O_WRONLY => {
-                options.write(true);
-            }
-            O_RDWR => {
-                options.read(true).write(true);
-            }
-            _ => (),
-        }
-        options.custom_flags(req.arg().flags() as i32 & !O_NOFOLLOW);
+        let options: OpenOptions = req.arg().options().remove(OpenFlags::NOFOLLOW).into();
 
         let file = options.open(inode.fd.procname())?;
         let fh = self.opened_files.insert(Mutex::new(file));
@@ -621,7 +608,7 @@ impl Filesystem for Passthrough {
 
         let op = req.arg().op().expect("invalid lock operation");
 
-        nix::flock(&*file, op.into_raw() as i32)?;
+        nix::flock(&*file, op.into_raw())?;
 
         req.reply(())
     }
@@ -631,7 +618,7 @@ impl Filesystem for Passthrough {
         _: fs::Context<'_, '_>,
         req: fs::Request<'_, op::Fallocate<'_>>,
     ) -> fs::Result {
-        if req.arg().mode() != 0 {
+        if !req.arg().mode().is_empty() {
             return Err(EOPNOTSUPP.into());
         }
 
@@ -726,7 +713,7 @@ impl Filesystem for Passthrough {
             inode.fd.procname(),
             req.arg().name(),
             req.arg().value(),
-            req.arg().flags() as libc::c_int,
+            req.arg().flags().bits() as libc::c_int,
         )?;
 
         req.reply(())
@@ -768,7 +755,7 @@ impl Filesystem for Passthrough {
 fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.ino(NodeID::from_raw(st.st_ino));
     attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
+    attr.mode(FileMode::from_raw(st.st_mode));
     attr.nlink(st.st_nlink as u32);
     attr.uid(UID::from_raw(st.st_uid));
     attr.gid(GID::from_raw(st.st_gid));

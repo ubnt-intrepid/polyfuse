@@ -14,17 +14,14 @@
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
-    op::{self, Forget},
+    op::{self, Forget, OpenFlags},
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
-    types::{DeviceID, FileID, NodeID, GID, UID},
+    types::{DeviceID, FileID, FileMode, NodeID, GID, UID},
     KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{
-    DT_DIR, DT_LNK, DT_REG, DT_UNKNOWN, EINVAL, ENOENT, ENOSYS, ERANGE, O_ACCMODE, O_NOFOLLOW,
-    O_RDONLY, O_RDWR, O_WRONLY,
-};
+use libc::{DT_DIR, DT_LNK, DT_REG, DT_UNKNOWN, EINVAL, ENOENT, ENOSYS, ERANGE};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -215,8 +212,7 @@ impl Filesystem for PathThrough {
 
         // chmod
         if let Some(mode) = req.arg().mode() {
-            let perm = std::fs::Permissions::from_mode(mode);
-            file.file.set_permissions(perm)?;
+            file.file.set_permissions(mode.permissions().into())?;
         }
 
         // truncate
@@ -352,20 +348,7 @@ impl Filesystem for PathThrough {
         let inodes = &mut *self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
-        let mut options = OpenOptions::new();
-        match req.arg().flags() as i32 & O_ACCMODE {
-            O_RDONLY => {
-                options.read(true);
-            }
-            O_WRONLY => {
-                options.write(true);
-            }
-            O_RDWR => {
-                options.read(true).write(true);
-            }
-            _ => (),
-        }
-        options.custom_flags(req.arg().flags() as i32 & !O_NOFOLLOW);
+        let options: OpenOptions = req.arg().options().remove(OpenFlags::NOFOLLOW).into();
 
         let files = &mut *self.files.lock().unwrap();
         let fh = files.insert(FileHandle {
@@ -485,7 +468,7 @@ impl FileHandle {
 fn fill_attr(metadata: &Metadata, attr: &mut FileAttr) {
     attr.ino(NodeID::from_raw(metadata.ino()));
     attr.size(metadata.size());
-    attr.mode(metadata.mode());
+    attr.mode(FileMode::from_raw(metadata.mode()));
     attr.nlink(metadata.nlink() as u32);
     attr.uid(UID::from_raw(metadata.uid()));
     attr.gid(GID::from_raw(metadata.gid()));

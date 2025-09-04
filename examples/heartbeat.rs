@@ -12,7 +12,7 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, FileAttr, OpenOut},
-    types::{DeviceID, NodeID, NotifyID, GID, UID},
+    types::{DeviceID, FileMode, NodeID, NotifyID, GID, UID},
     KernelConfig,
 };
 
@@ -209,7 +209,7 @@ impl Filesystem for Heartbeat {
 fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.ino(NodeID::from_raw(st.st_ino));
     attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
+    attr.mode(FileMode::from_raw(st.st_mode));
     attr.nlink(st.st_nlink as u32);
     attr.uid(UID::from_raw(st.st_uid));
     attr.gid(GID::from_raw(st.st_gid));

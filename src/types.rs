@@ -1,7 +1,8 @@
 //! Common type definitions.
 
+use bitflags::bitflags;
 use libc::dev_t;
-use std::fmt;
+use std::{fmt, os::unix::prelude::*};
 
 macro_rules! define_id_type {
     ($(
@@ -171,5 +172,137 @@ impl DeviceID {
     #[inline]
     pub const fn into_kernel_dev(self) -> u32 {
         self.raw
+    }
+}
+
+/// The file mode.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct FileMode {
+    raw: u32,
+}
+
+impl FileMode {
+    pub const fn new(typ: FileType, perm: FilePermissions) -> Self {
+        Self::from_raw(typ.into_raw() | perm.bits())
+    }
+
+    pub const fn from_raw(raw: u32) -> Self {
+        // TODO: type check
+        Self { raw }
+    }
+
+    pub const fn file_type(self) -> Option<FileType> {
+        FileType::from_raw(self.raw)
+    }
+
+    pub const fn permissions(self) -> FilePermissions {
+        FilePermissions::from_bits_truncate(self.raw)
+    }
+
+    pub const fn into_raw(self) -> u32 {
+        self.raw
+    }
+}
+
+/// File types.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum FileType {
+    Regular,
+    Directory,
+    CharacterDevice,
+    BlockDevice,
+    SymbolicLink,
+    Fifo,
+    Socket,
+}
+
+impl FileType {
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        match raw & libc::S_IFMT {
+            libc::S_IFREG => Some(Self::Regular),
+            libc::S_IFDIR => Some(Self::Directory),
+            libc::S_IFCHR => Some(Self::CharacterDevice),
+            libc::S_IFBLK => Some(Self::BlockDevice),
+            libc::S_IFLNK => Some(Self::SymbolicLink),
+            libc::S_IFIFO => Some(Self::Fifo),
+            libc::S_IFSOCK => Some(Self::Socket),
+            _ => None,
+        }
+    }
+
+    pub const fn into_raw(self) -> u32 {
+        match self {
+            Self::Regular => libc::S_IFREG,
+            Self::Directory => libc::S_IFDIR,
+            Self::CharacterDevice => libc::S_IFCHR,
+            Self::BlockDevice => libc::S_IFBLK,
+            Self::SymbolicLink => libc::S_IFLNK,
+            Self::Fifo => libc::S_IFIFO,
+            Self::Socket => libc::S_IFSOCK,
+        }
+    }
+}
+
+bitflags! {
+    /// File permissions.
+    #[derive(Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct FilePermissions: u32 {
+        const READ_USER = libc::S_IRUSR;
+        const READ_GROUP = libc::S_IRGRP;
+        const READ_OTHER = libc::S_IROTH;
+
+        const WRITE_USER = libc::S_IWUSR;
+        const WRITE_GROUP = libc::S_IWGRP;
+        const WRITE_OTHER = libc::S_IWOTH;
+
+        const EXEC_USER = libc::S_IXUSR;
+        const EXEC_GROUP = libc::S_IXGRP;
+        const EXEC_OTHER = libc::S_IXOTH;
+
+        const SETUID = libc::S_ISUID;
+        const SETGID = libc::S_ISGID;
+
+        const STICKY = libc::S_ISVTX;
+    }
+}
+
+impl FilePermissions {
+    pub const READ: Self = Self::READ_USER
+        .union(Self::READ_GROUP)
+        .union(Self::READ_OTHER);
+
+    pub const WRITE: Self = Self::WRITE_USER
+        .union(Self::WRITE_GROUP)
+        .union(Self::WRITE_OTHER);
+
+    pub const EXEC: Self = Self::EXEC_USER
+        .union(Self::EXEC_GROUP)
+        .union(Self::EXEC_OTHER);
+}
+
+impl From<FilePermissions> for std::fs::Permissions {
+    fn from(perm: FilePermissions) -> Self {
+        Self::from_mode(perm.bits())
+    }
+}
+
+impl From<std::fs::Permissions> for FilePermissions {
+    fn from(perm: std::fs::Permissions) -> Self {
+        Self::from_bits_truncate(perm.mode())
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct PollEvents: u32 {
+        const IN = libc::POLLIN as u32;
+        const OUT = libc::POLLOUT as u32;
+        const RDHUP = libc::POLLRDHUP as u32;
+        const ERR = libc::POLLERR as u32;
+        const HUP = libc::POLLHUP as u32;
+        const INVAL = libc::POLLNVAL as u32;
     }
 }

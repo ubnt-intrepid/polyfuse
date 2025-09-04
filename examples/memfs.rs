@@ -4,9 +4,9 @@
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
-    op,
+    op::{self, SetxattrFlags},
     reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
-    types::{DeviceID, FileID, NodeID, GID, UID},
+    types::{DeviceID, FileID, FileMode, FileType, NodeID, GID, UID},
     KernelConfig,
 };
 
@@ -14,7 +14,7 @@ use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
 use libc::{
     DT_DIR, DT_UNKNOWN, EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP,
-    ERANGE, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, XATTR_CREATE, XATTR_REPLACE,
+    ERANGE, S_IFDIR, S_IFLNK,
 };
 use slab::Slab;
 use std::{
@@ -341,7 +341,7 @@ impl Filesystem for MemFS {
         }
 
         if let Some(mode) = req.arg().mode() {
-            inode.attr.st_mode = mode;
+            inode.attr.st_mode = mode.into_raw();
         }
         if let Some(uid) = req.arg().uid() {
             inode.attr.st_uid = uid.into_raw();
@@ -436,8 +436,8 @@ impl Filesystem for MemFS {
     }
 
     fn mknod(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Mknod<'_>>) -> fs::Result {
-        match req.arg().mode() & S_IFMT {
-            S_IFREG => (),
+        match req.arg().mode().file_type() {
+            Some(FileType::Regular) => (),
             _ => Err(ENOTSUP)?,
         }
 
@@ -446,7 +446,7 @@ impl Filesystem for MemFS {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
                 attr.st_ino = entry.key().into_raw();
                 attr.st_nlink = 1;
-                attr.st_mode = req.arg().mode();
+                attr.st_mode = req.arg().mode().into_raw();
                 attr
             },
             xattrs: HashMap::new(),
@@ -463,7 +463,7 @@ impl Filesystem for MemFS {
                 let mut attr = unsafe { mem::zeroed::<libc::stat>() };
                 attr.st_ino = entry.key().into_raw();
                 attr.st_nlink = 2;
-                attr.st_mode = req.arg().mode() | S_IFDIR;
+                attr.st_mode = req.arg().permissions().bits() | S_IFDIR;
                 attr
             },
             xattrs: HashMap::new(),
@@ -530,7 +530,7 @@ impl Filesystem for MemFS {
     }
 
     fn rename(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Rename<'_>>) -> fs::Result {
-        if req.arg().flags() != 0 {
+        if !req.arg().flags().is_empty() {
             // TODO: handle RENAME_NOREPLACE and RENAME_EXCHANGE.
             Err(EINVAL)?;
         }
@@ -600,8 +600,8 @@ impl Filesystem for MemFS {
         _: fs::Context<'_, '_>,
         req: fs::Request<'_, op::Setxattr<'_>>,
     ) -> fs::Result {
-        let create = req.arg().flags() as i32 & XATTR_CREATE != 0;
-        let replace = req.arg().flags() as i32 & XATTR_REPLACE != 0;
+        let create = req.arg().flags().contains(SetxattrFlags::CREATE);
+        let replace = req.arg().flags().contains(SetxattrFlags::REPLACE);
         if create && replace {
             return Err(EINVAL.into());
         }
@@ -724,7 +724,7 @@ impl Filesystem for MemFS {
 fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
     attr.ino(NodeID::from_raw(st.st_ino));
     attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
+    attr.mode(FileMode::from_raw(st.st_mode));
     attr.nlink(st.st_nlink as u32);
     attr.uid(UID::from_raw(st.st_uid));
     attr.gid(GID::from_raw(st.st_gid));

@@ -6,12 +6,12 @@ use polyfuse::{
     mount::MountOptions,
     op,
     reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    types::{NodeID, GID, UID},
+    types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
     KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{DT_DIR, DT_REG, EISDIR, ENOENT, ENOTDIR, S_IFDIR, S_IFREG};
+use libc::{DT_DIR, DT_REG, EISDIR, ENOENT, ENOTDIR};
 use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -77,7 +77,10 @@ impl Hello {
 
     fn fill_root_attr(&self, attr: &mut FileAttr) {
         attr.ino(NodeID::ROOT);
-        attr.mode(S_IFDIR | 0o555);
+        attr.mode(FileMode::new(
+            FileType::Directory,
+            FilePermissions::READ | FilePermissions::EXEC,
+        ));
         attr.nlink(2);
         attr.uid(self.uid);
         attr.gid(self.gid);
@@ -86,7 +89,7 @@ impl Hello {
     fn fill_hello_attr(&self, attr: &mut FileAttr) {
         attr.ino(HELLO_INO);
         attr.size(HELLO_CONTENT.len() as u64);
-        attr.mode(S_IFREG | 0o444);
+        attr.mode(FileMode::new(FileType::Regular, FilePermissions::READ));
         attr.nlink(1);
         attr.uid(self.uid);
         attr.gid(self.gid);

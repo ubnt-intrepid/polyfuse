@@ -2,12 +2,12 @@ use polyfuse::{
     mount::{mount, MountOptions},
     op,
     reply::AttrOut,
-    types::{NodeID, GID, UID},
+    types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{ENOENT, ENOSYS, S_IFREG};
+use libc::{ENOENT, ENOSYS};
 use std::{io, path::PathBuf, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
@@ -59,7 +59,8 @@ fn getattr(
 
     let mut out = AttrOut::default();
     out.attr().ino(NodeID::ROOT);
-    out.attr().mode(S_IFREG | 0o444);
+    out.attr()
+        .mode(FileMode::new(FileType::Regular, FilePermissions::READ));
     out.attr().size(CONTENT.len() as u64);
     out.attr().nlink(1);
     out.attr().uid(UID::current());

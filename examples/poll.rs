@@ -1,13 +1,15 @@
 use polyfuse::{
     fs::{self, Filesystem},
-    op,
+    op::{self, AccessMode, OpenFlags},
     reply::{AttrOut, OpenOut, PollOut},
-    types::{FileID, NodeID, PollWakeupID, GID, UID},
+    types::{
+        FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID, GID, UID,
+    },
 };
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use libc::{EACCES, EAGAIN, EINVAL, O_ACCMODE, O_NONBLOCK, O_RDONLY, POLLIN, S_IFREG};
+use libc::{EACCES, EAGAIN, EINVAL};
 use std::{
     path::PathBuf,
     sync::{
@@ -64,7 +66,8 @@ impl Filesystem for PollFS {
         let mut out = AttrOut::default();
         out.attr().ino(NodeID::ROOT);
         out.attr().nlink(1);
-        out.attr().mode(S_IFREG | 0o444);
+        out.attr()
+            .mode(FileMode::new(FileType::Regular, FilePermissions::READ));
         out.attr().uid(UID::current());
         out.attr().gid(GID::current());
         out.ttl(Duration::from_secs(u64::max_value() / 2));
@@ -72,11 +75,11 @@ impl Filesystem for PollFS {
     }
 
     fn open(&self, cx: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
-        if req.arg().flags() as i32 & O_ACCMODE != O_RDONLY {
+        if req.arg().options().access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
 
-        let is_nonblock = req.arg().flags() as i32 & O_NONBLOCK != 0;
+        let is_nonblock = req.arg().options().flags().contains(OpenFlags::NONBLOCK);
 
         let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
         let handle = Arc::new(FileHandle {
@@ -163,7 +166,7 @@ impl Filesystem for PollFS {
 
         if state.is_ready {
             tracing::info!("file is ready to read");
-            out.revents(req.arg().events() & POLLIN as u32);
+            out.revents(req.arg().events() & PollEvents::IN);
         } else if let Some(kh) = req.arg().kh() {
             tracing::info!("register the poll handle for notification: kh={}", kh);
             state.kh = Some(kh);
