@@ -1,8 +1,8 @@
 use crate::{
     bytes::{DecodeError, Decoder},
     types::{
-        DeviceID, FileID, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID, PollEvents,
-        PollWakeupID, RequestID, GID, PID, UID,
+        DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
+        PollEvents, PollWakeupID, RequestID, GID, PID, UID,
     },
 };
 use bitflags::bitflags;
@@ -1692,23 +1692,13 @@ impl<'op> Getlk<'op> {
     }
 
     #[inline]
-    pub fn typ(&self) -> u32 {
-        self.arg.lk.typ
-    }
-
-    #[inline]
-    pub fn start(&self) -> u64 {
-        self.arg.lk.start
-    }
-
-    #[inline]
-    pub fn end(&self) -> u64 {
-        self.arg.lk.end
-    }
-
-    #[inline]
-    pub fn pid(&self) -> PID {
-        PID::from_raw(self.arg.lk.pid)
+    pub fn file_lock(&self) -> FileLock {
+        FileLock {
+            typ: self.arg.lk.typ,
+            start: self.arg.lk.start,
+            end: self.arg.lk.end,
+            pid: PID::from_raw(self.arg.lk.pid),
+        }
     }
 }
 
@@ -1739,30 +1729,14 @@ impl<'op> Setlk<'op> {
         FileID::from_raw(self.arg.fh)
     }
 
-    /// Return the identifier of lock owner.
     #[inline]
-    pub fn owner(&self) -> LockOwnerID {
-        LockOwnerID::from_raw(self.arg.owner)
-    }
-
-    #[inline]
-    pub fn typ(&self) -> u32 {
-        self.arg.lk.typ
-    }
-
-    #[inline]
-    pub fn start(&self) -> u64 {
-        self.arg.lk.start
-    }
-
-    #[inline]
-    pub fn end(&self) -> u64 {
-        self.arg.lk.end
-    }
-
-    #[inline]
-    pub fn pid(&self) -> PID {
-        PID::from_raw(self.arg.lk.pid)
+    pub fn file_lock(&self) -> FileLock {
+        FileLock {
+            typ: self.arg.lk.typ,
+            start: self.arg.lk.start,
+            end: self.arg.lk.end,
+            pid: PID::from_raw(self.arg.lk.pid),
+        }
     }
 
     /// Return whether the locking operation might sleep until a lock is obtained.

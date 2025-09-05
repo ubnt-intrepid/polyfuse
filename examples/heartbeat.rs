@@ -6,23 +6,23 @@
 
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
+#![forbid(unsafe_code)]
 
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, FileAttr, OpenOut},
-    types::{DeviceID, FileMode, NodeID, NotifyID, GID, UID},
+    reply::{AttrOut, OpenOut},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
     KernelConfig,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
-use libc::{ENOENT, S_IFREG};
+use libc::ENOENT;
 use std::{
     io::{self, prelude::*},
-    mem,
     path::PathBuf,
     sync::Mutex,
     time::Duration,
@@ -78,17 +78,17 @@ struct Heartbeat {
 
 struct Inner {
     content: String,
-    attr: libc::stat,
+    attr: FileAttr,
 }
 
 impl Heartbeat {
     fn new(kind: Option<NotifyKind>, update_interval: Duration) -> Self {
         let content = Local::now().to_rfc3339();
 
-        let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-        attr.st_ino = NodeID::ROOT.into_raw();
-        attr.st_mode = S_IFREG | 0o444;
-        attr.st_size = content.len() as libc::off_t;
+        let mut attr = FileAttr::new();
+        attr.ino = NodeID::ROOT;
+        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+        attr.size = content.len() as u64;
 
         Self {
             inner: Mutex::new(Inner { content, attr }),
@@ -101,7 +101,7 @@ impl Heartbeat {
     fn update_content(&self) {
         let mut inner = self.inner.lock().unwrap();
         let content = Local::now().to_rfc3339();
-        inner.attr.st_size = content.len() as libc::off_t;
+        inner.attr.size = content.len() as u64;
         inner.content = content;
     }
 
@@ -152,7 +152,7 @@ impl Filesystem for Heartbeat {
         }
         let inner = self.inner.lock().unwrap();
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &inner.attr);
+        out.attr(inner.attr.clone());
         req.reply(out)
     }
 
@@ -204,19 +204,4 @@ impl Filesystem for Heartbeat {
         }
         Ok(())
     }
-}
-
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(NodeID::from_raw(st.st_ino));
-    attr.size(st.st_size as u64);
-    attr.mode(FileMode::from_raw(st.st_mode));
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(UID::from_raw(st.st_uid));
-    attr.gid(GID::from_raw(st.st_gid));
-    attr.rdev(DeviceID::from_userspace_dev(st.st_rdev));
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
 }

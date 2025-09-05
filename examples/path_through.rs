@@ -1,5 +1,6 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented, clippy::todo)]
+#![forbid(unsafe_code)]
 
 // This example is another version of `passthrough.rs` that uses the
 // path strings instead of the file descriptors with `O_PATH` flag
@@ -15,8 +16,8 @@ use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op::{self, Forget, OpenFlags},
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut},
-    types::{DeviceID, FileID, FileMode, NodeID, GID, UID},
+    reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut},
+    types::{FileID, NodeID},
     KernelConfig,
 };
 
@@ -26,12 +27,11 @@ use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::OsString,
-    fs::{File, Metadata, OpenOptions, ReadDir},
+    fs::{File, OpenOptions, ReadDir},
     io::{self, prelude::*, BufRead, BufReader},
     os::unix::prelude::*,
     path::{Path, PathBuf},
     sync::Mutex,
-    time::Duration,
 };
 
 fn main() -> Result<()> {
@@ -148,7 +148,7 @@ impl Filesystem for PathThrough {
         let metadata = std::fs::symlink_metadata(self.source.join(&path))?;
 
         let mut out = EntryOut::default();
-        fill_attr(&metadata, out.attr());
+        out.attr(metadata.try_into().expect("unreachable"));
 
         match inodes.get_by_path_mut(&path) {
             Some(inode) => {
@@ -194,7 +194,7 @@ impl Filesystem for PathThrough {
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
         let mut out = AttrOut::default();
-        fill_attr(&metadata, out.attr());
+        out.attr(metadata.try_into().expect("unreachable"));
 
         req.reply(out)
     }
@@ -235,7 +235,7 @@ impl Filesystem for PathThrough {
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
         let mut out = AttrOut::default();
-        fill_attr(&metadata, out.attr());
+        out.attr(metadata.try_into().expect("unreachable"));
 
         req.reply(out)
     }
@@ -463,28 +463,4 @@ impl FileHandle {
         }
         Ok(())
     }
-}
-
-fn fill_attr(metadata: &Metadata, attr: &mut FileAttr) {
-    attr.ino(NodeID::from_raw(metadata.ino()));
-    attr.size(metadata.size());
-    attr.mode(FileMode::from_raw(metadata.mode()));
-    attr.nlink(metadata.nlink() as u32);
-    attr.uid(UID::from_raw(metadata.uid()));
-    attr.gid(GID::from_raw(metadata.gid()));
-    attr.rdev(DeviceID::from_userspace_dev(metadata.rdev()));
-    attr.blksize(metadata.blksize() as u32);
-    attr.blocks(metadata.blocks());
-    attr.atime(Duration::new(
-        metadata.atime() as u64,
-        metadata.atime_nsec() as u32,
-    ));
-    attr.mtime(Duration::new(
-        metadata.mtime() as u64,
-        metadata.mtime_nsec() as u32,
-    ));
-    attr.ctime(Duration::new(
-        metadata.ctime() as u64,
-        metadata.ctime_nsec() as u32,
-    ));
 }

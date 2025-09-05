@@ -1,12 +1,13 @@
 #![allow(clippy::unnecessary_mut_passed, clippy::rc_buffer)]
 #![deny(clippy::unimplemented)]
+#![forbid(unsafe_code)]
 
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op::{self, SetxattrFlags},
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, WriteOut, XattrOut},
-    types::{DeviceID, FileID, FileMode, FileType, NodeID, GID, UID},
+    reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut, XattrOut},
+    types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID},
     KernelConfig,
 };
 
@@ -14,14 +15,13 @@ use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
 use libc::{
     DT_DIR, DT_UNKNOWN, EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP,
-    ERANGE, S_IFDIR, S_IFLNK,
+    ERANGE,
 };
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::{OsStr, OsString},
     io::prelude::*,
-    mem,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -93,7 +93,7 @@ type OccupiedEntry<'a> = dashmap::mapref::entry::OccupiedEntry<'a, NodeID, INode
 type VacantEntry<'a> = dashmap::mapref::entry::VacantEntry<'a, NodeID, INode>;
 
 struct INode {
-    attr: libc::stat,
+    attr: FileAttr,
     xattrs: HashMap<OsString, Arc<Vec<u8>>>,
     refcount: u64,
     links: u64,
@@ -156,13 +156,13 @@ struct DirEntry {
 }
 
 impl Directory {
-    fn collect_entries(&self, attr: &libc::stat) -> Vec<Arc<DirEntry>> {
+    fn collect_entries(&self, attr: &FileAttr) -> Vec<Arc<DirEntry>> {
         let mut entries = Vec::with_capacity(self.children.len() + 2);
         let mut offset: u64 = 1;
 
         entries.push(Arc::new(DirEntry {
             name: ".".into(),
-            ino: NodeID::from_raw(attr.st_ino),
+            ino: attr.ino,
             typ: DT_DIR as u32,
             off: offset,
         }));
@@ -170,7 +170,7 @@ impl Directory {
 
         entries.push(Arc::new(DirEntry {
             name: "..".into(),
-            ino: self.parent.unwrap_or(NodeID::from_raw(attr.st_ino)),
+            ino: self.parent.unwrap_or(attr.ino),
             typ: DT_DIR as u32,
             off: offset,
         }));
@@ -206,10 +206,13 @@ impl MemFS {
         let inodes = INodeTable::new();
         inodes.vacant_entry().unwrap().insert(INode {
             attr: {
-                let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = 1;
-                attr.st_nlink = 2;
-                attr.st_mode = S_IFDIR | 0o755;
+                let mut attr = FileAttr::new();
+                attr.ino = NodeID::ROOT;
+                attr.nlink = 2;
+                attr.mode = FileMode::new(
+                    FileType::Directory,
+                    FilePermissions::READ | FilePermissions::EXEC | FilePermissions::WRITE_USER,
+                );
                 attr
             },
             xattrs: HashMap::new(),
@@ -247,7 +250,7 @@ impl MemFS {
 
         let mut out = EntryOut::default();
         out.ino(*inode_entry.key());
-        fill_attr(out.attr(), &inode.attr);
+        out.attr(inode.attr.clone());
         out.ttl_entry(self.ttl);
 
         map_entry.insert(*inode_entry.key());
@@ -275,7 +278,7 @@ impl MemFS {
             .expect("should not be panic here");
 
         inode.links = inode.links.saturating_sub(1);
-        inode.attr.st_nlink = inode.attr.st_nlink.saturating_sub(1);
+        inode.attr.nlink = inode.attr.nlink.saturating_sub(1);
 
         Ok(())
     }
@@ -299,7 +302,7 @@ impl Filesystem for MemFS {
 
         let mut out = EntryOut::default();
         out.ino(child_ino);
-        fill_attr(out.attr(), &child.attr);
+        out.attr(child.attr.clone());
         out.ttl_entry(self.ttl);
 
         req.reply(out)
@@ -322,7 +325,7 @@ impl Filesystem for MemFS {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &inode.attr);
+        out.attr(inode.attr.clone());
         out.ttl(self.ttl);
 
         req.reply(out)
@@ -341,34 +344,29 @@ impl Filesystem for MemFS {
         }
 
         if let Some(mode) = req.arg().mode() {
-            inode.attr.st_mode = mode.into_raw();
+            inode.attr.mode = mode;
         }
         if let Some(uid) = req.arg().uid() {
-            inode.attr.st_uid = uid.into_raw();
+            inode.attr.uid = uid;
         }
         if let Some(gid) = req.arg().gid() {
-            inode.attr.st_gid = gid.into_raw();
+            inode.attr.gid = gid;
         }
         if let Some(size) = req.arg().size() {
-            inode.attr.st_size = size as libc::off_t;
+            inode.attr.size = size;
         }
         if let Some(atime) = req.arg().atime() {
-            let atime = to_duration(atime);
-            inode.attr.st_atime = atime.as_secs() as i64;
-            inode.attr.st_atime_nsec = atime.subsec_nanos() as u64 as i64;
+            inode.attr.atime = to_duration(atime);
         }
         if let Some(mtime) = req.arg().mtime() {
-            let mtime = to_duration(mtime);
-            inode.attr.st_mtime = mtime.as_secs() as i64;
-            inode.attr.st_mtime_nsec = mtime.subsec_nanos() as u64 as i64;
+            inode.attr.mtime = to_duration(mtime);
         }
         if let Some(ctime) = req.arg().ctime() {
-            inode.attr.st_ctime = ctime.as_secs() as i64;
-            inode.attr.st_ctime_nsec = ctime.subsec_nanos() as u64 as i64;
+            inode.attr.ctime = ctime;
         }
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &inode.attr);
+        out.attr(inode.attr.clone());
         out.ttl(self.ttl);
 
         req.reply(out)
@@ -386,7 +384,7 @@ impl Filesystem for MemFS {
 
     fn opendir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
-        if inode.attr.st_nlink == 0 {
+        if inode.attr.nlink == 0 {
             return Err(ENOENT.into());
         }
         let dir = inode.as_dir().ok_or(ENOTDIR)?;
@@ -443,10 +441,10 @@ impl Filesystem for MemFS {
 
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
-                let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.key().into_raw();
-                attr.st_nlink = 1;
-                attr.st_mode = req.arg().mode().into_raw();
+                let mut attr = FileAttr::new();
+                attr.ino = *entry.key();
+                attr.nlink = 1;
+                attr.mode = req.arg().mode();
                 attr
             },
             xattrs: HashMap::new(),
@@ -460,10 +458,10 @@ impl Filesystem for MemFS {
     fn mkdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Mkdir<'_>>) -> fs::Result {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
-                let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.key().into_raw();
-                attr.st_nlink = 2;
-                attr.st_mode = req.arg().permissions().bits() | S_IFDIR;
+                let mut attr = FileAttr::new();
+                attr.ino = *entry.key();
+                attr.nlink = 2;
+                attr.mode = FileMode::new(FileType::Directory, req.arg().permissions());
                 attr
             },
             xattrs: HashMap::new(),
@@ -480,10 +478,13 @@ impl Filesystem for MemFS {
     fn symlink(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Symlink<'_>>) -> fs::Result {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
-                let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-                attr.st_ino = entry.key().into_raw();
-                attr.st_nlink = 1;
-                attr.st_mode = S_IFLNK | 0o777;
+                let mut attr = FileAttr::new();
+                attr.ino = *entry.key();
+                attr.nlink = 1;
+                attr.mode = FileMode::new(
+                    FileType::SymbolicLink,
+                    FilePermissions::READ | FilePermissions::WRITE | FilePermissions::EXEC,
+                );
                 attr
             },
             xattrs: HashMap::new(),
@@ -506,14 +507,14 @@ impl Filesystem for MemFS {
             Entry::Vacant(entry) => {
                 entry.insert(req.arg().ino());
                 inode.links += 1;
-                inode.attr.st_nlink += 1;
+                inode.attr.nlink += 1;
                 inode.refcount += 1;
             }
         }
 
         let mut out = EntryOut::default();
         out.ino(req.arg().ino());
-        fill_attr(out.attr(), &inode.attr);
+        out.attr(inode.attr.clone());
         out.ttl_entry(self.ttl);
 
         req.reply(out)
@@ -712,26 +713,11 @@ impl Filesystem for MemFS {
 
         data.read_exact(&mut content[offset..offset + size])?;
 
-        inode.attr.st_size = (offset + size) as libc::off_t;
+        inode.attr.size = (offset + size) as u64;
 
         let mut out = WriteOut::default();
         out.size(req.arg().size());
 
         req.reply(out)
     }
-}
-
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(NodeID::from_raw(st.st_ino));
-    attr.size(st.st_size as u64);
-    attr.mode(FileMode::from_raw(st.st_mode));
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(UID::from_raw(st.st_uid));
-    attr.gid(GID::from_raw(st.st_gid));
-    attr.rdev(DeviceID::from_userspace_dev(st.st_rdev));
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
 }

@@ -3,7 +3,8 @@ use polyfuse::{
     op::{self, AccessMode, OpenFlags},
     reply::{AttrOut, OpenOut, PollOut},
     types::{
-        FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID, GID, UID,
+        FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
+        GID, UID,
     },
 };
 
@@ -64,13 +65,17 @@ impl PollFS {
 impl Filesystem for PollFS {
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let mut out = AttrOut::default();
-        out.attr().ino(NodeID::ROOT);
-        out.attr().nlink(1);
-        out.attr()
-            .mode(FileMode::new(FileType::Regular, FilePermissions::READ));
-        out.attr().uid(UID::current());
-        out.attr().gid(GID::current());
+        out.attr({
+            let mut attr = FileAttr::new();
+            attr.ino = NodeID::ROOT;
+            attr.nlink = 1;
+            attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+            attr.uid = UID::current();
+            attr.gid = GID::current();
+            attr
+        });
         out.ttl(Duration::from_secs(u64::max_value() / 2));
+
         req.reply(out)
     }
 

@@ -7,10 +7,8 @@ use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op::{self, OpenFlags},
-    reply::{
-        AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
-    },
-    types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, StatfsOut, WriteOut, XattrOut},
+    types::{DeviceID, FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     KernelConfig, KernelFlags,
 };
 
@@ -104,10 +102,10 @@ impl Passthrough {
         })
     }
 
-    fn make_entry_param(&self, ino: NodeID, attr: libc::stat) -> EntryOut {
+    fn make_entry_param(&self, ino: NodeID, attr: FileAttr) -> EntryOut {
         let mut reply = EntryOut::default();
         reply.ino(ino);
-        fill_attr(reply.attr(), &attr);
+        reply.attr(attr);
         if let Some(timeout) = self.timeout {
             reply.ttl_entry(timeout);
             reply.ttl_attr(timeout);
@@ -154,7 +152,7 @@ impl Passthrough {
             }
         }
 
-        Ok(self.make_entry_param(ino, stat))
+        Ok(self.make_entry_param(ino, stat.try_into().unwrap()))
     }
 
     fn make_node(
@@ -225,7 +223,7 @@ impl Filesystem for Passthrough {
         let stat = inode.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &stat);
+        out.attr(stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         };
@@ -320,7 +318,7 @@ impl Filesystem for Passthrough {
         let stat = fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &stat);
+        out.attr(stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         };
@@ -370,7 +368,7 @@ impl Filesystem for Passthrough {
         }
 
         let stat = source.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
-        let entry = self.make_entry_param(source.ino, stat);
+        let entry = self.make_entry_param(source.ino, stat.try_into().unwrap());
 
         source.refcount += 1;
 
@@ -746,36 +744,10 @@ impl Filesystem for Passthrough {
         let st = nix::fstatvfs(&inode.fd)?;
 
         let mut out = StatfsOut::default();
-        fill_statfs(out.statfs(), &st);
+        out.statfs(st.try_into().unwrap());
 
         req.reply(out)
     }
-}
-
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(NodeID::from_raw(st.st_ino));
-    attr.size(st.st_size as u64);
-    attr.mode(FileMode::from_raw(st.st_mode));
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(UID::from_raw(st.st_uid));
-    attr.gid(GID::from_raw(st.st_gid));
-    attr.rdev(DeviceID::from_userspace_dev(st.st_rdev));
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
-}
-
-fn fill_statfs(statfs: &mut Statfs, st: &libc::statvfs) {
-    statfs.bsize(st.f_bsize as u32);
-    statfs.frsize(st.f_frsize as u32);
-    statfs.blocks(st.f_blocks);
-    statfs.bfree(st.f_bfree);
-    statfs.bavail(st.f_bavail);
-    statfs.files(st.f_files);
-    statfs.ffree(st.f_ffree);
-    statfs.namelen(st.f_namemax as u32);
 }
 
 // ==== HandlePool ====

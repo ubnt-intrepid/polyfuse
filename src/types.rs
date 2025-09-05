@@ -2,7 +2,7 @@
 
 use bitflags::bitflags;
 use libc::dev_t;
-use std::{fmt, os::unix::prelude::*};
+use std::{fmt, fs::Metadata, os::unix::prelude::*, time::Duration};
 
 macro_rules! define_id_type {
     ($(
@@ -71,6 +71,8 @@ impl NodeID {
 }
 
 impl UID {
+    pub const ROOT: Self = Self::from_raw(0);
+
     pub fn current() -> Self {
         Self::from_raw(unsafe { libc::getuid() })
     }
@@ -81,6 +83,8 @@ impl UID {
 }
 
 impl GID {
+    pub const ROOT: Self = Self::from_raw(0);
+
     pub fn current() -> Self {
         Self::from_raw(unsafe { libc::getgid() })
     }
@@ -182,6 +186,15 @@ pub struct FileMode {
     raw: u32,
 }
 
+impl fmt::Debug for FileMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileMode")
+            .field("file_type", &self.file_type())
+            .field("permissions", &self.permissions())
+            .finish()
+    }
+}
+
 impl FileMode {
     pub const fn new(typ: FileType, perm: FilePermissions) -> Self {
         Self::from_raw(typ.into_raw() | perm.bits())
@@ -246,7 +259,7 @@ impl FileType {
 
 bitflags! {
     /// File permissions.
-    #[derive(Copy, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(transparent)]
     pub struct FilePermissions: u32 {
         const READ_USER = libc::S_IRUSR;
@@ -305,4 +318,154 @@ bitflags! {
         const HUP = libc::POLLHUP as u32;
         const INVAL = libc::POLLNVAL as u32;
     }
+}
+
+/// Attributes about a file.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct FileAttr {
+    pub ino: NodeID,
+    pub size: u64,
+    pub mode: FileMode,
+    pub nlink: u32,
+    pub uid: UID,
+    pub gid: GID,
+    pub rdev: DeviceID,
+    pub blksize: u32,
+    pub blocks: u64,
+    pub atime: Duration,
+    pub mtime: Duration,
+    pub ctime: Duration,
+}
+
+impl Default for FileAttr {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FileAttr {
+    pub const fn new() -> Self {
+        Self {
+            ino: NodeID::ROOT,
+            size: 0,
+            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+            nlink: 1,
+            uid: UID::ROOT,
+            gid: GID::ROOT,
+            rdev: DeviceID::new(0, 0),
+            blksize: 0,
+            blocks: 0,
+            atime: Duration::new(0, 0),
+            mtime: Duration::new(0, 0),
+            ctime: Duration::new(0, 0),
+        }
+    }
+}
+
+impl TryFrom<libc::stat> for FileAttr {
+    type Error = std::convert::Infallible;
+
+    #[inline]
+    fn try_from(st: libc::stat) -> Result<Self, Self::Error> {
+        Self::try_from(&st)
+    }
+}
+
+impl TryFrom<&libc::stat> for FileAttr {
+    type Error = std::convert::Infallible;
+
+    fn try_from(st: &libc::stat) -> Result<Self, Self::Error> {
+        Ok(Self {
+            ino: NodeID::from_raw(st.st_ino),
+            size: st.st_size as _,
+            mode: FileMode::from_raw(st.st_mode),
+            nlink: st.st_nlink as _,
+            uid: UID::from_raw(st.st_uid),
+            gid: GID::from_raw(st.st_gid),
+            rdev: DeviceID::from_userspace_dev(st.st_rdev),
+            blksize: st.st_blksize as _,
+            blocks: st.st_blocks as _,
+            atime: Duration::new(st.st_atime as _, st.st_atime_nsec as _),
+            mtime: Duration::new(st.st_mtime as _, st.st_mtime_nsec as _),
+            ctime: Duration::new(st.st_ctime as _, st.st_ctime_nsec as _),
+        })
+    }
+}
+
+impl TryFrom<Metadata> for FileAttr {
+    type Error = std::convert::Infallible;
+
+    #[inline]
+    fn try_from(metadata: Metadata) -> Result<Self, Self::Error> {
+        Self::try_from(&metadata)
+    }
+}
+
+impl TryFrom<&Metadata> for FileAttr {
+    type Error = std::convert::Infallible;
+
+    fn try_from(m: &Metadata) -> Result<Self, Self::Error> {
+        Ok(Self {
+            ino: NodeID::from_raw(m.ino()),
+            size: m.size(),
+            mode: FileMode::from_raw(m.mode()),
+            nlink: m.nlink() as _,
+            uid: UID::from_raw(m.uid()),
+            gid: GID::from_raw(m.gid()),
+            rdev: DeviceID::from_userspace_dev(m.rdev()),
+            blksize: m.blksize() as _,
+            blocks: m.blocks(),
+            atime: Duration::new(m.atime() as _, m.atime_nsec() as _),
+            mtime: Duration::new(m.mtime() as _, m.mtime_nsec() as _),
+            ctime: Duration::new(m.ctime() as _, m.ctime_nsec() as _),
+        })
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Statfs {
+    pub bsize: u32,
+    pub frsize: u32,
+    pub blocks: u64,
+    pub bfree: u64,
+    pub bavail: u64,
+    pub files: u64,
+    pub ffree: u64,
+    pub namelen: u32,
+}
+
+impl TryFrom<libc::statvfs> for Statfs {
+    type Error = std::convert::Infallible;
+
+    fn try_from(st: libc::statvfs) -> Result<Self, Self::Error> {
+        Self::try_from(&st)
+    }
+}
+
+impl TryFrom<&libc::statvfs> for Statfs {
+    type Error = std::convert::Infallible;
+
+    fn try_from(st: &libc::statvfs) -> Result<Self, Self::Error> {
+        Ok(Self {
+            bsize: st.f_bsize as _,
+            frsize: st.f_frsize as _,
+            blocks: st.f_blocks,
+            bfree: st.f_bfree,
+            bavail: st.f_bavail,
+            files: st.f_files,
+            ffree: st.f_ffree,
+            namelen: st.f_namemax as _,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct FileLock {
+    pub typ: u32,
+    pub start: u64,
+    pub end: u64,
+    pub pid: PID,
 }

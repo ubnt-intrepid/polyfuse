@@ -1,8 +1,10 @@
+#![forbid(unsafe_code)]
+
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
     reply::AttrOut,
-    types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 
@@ -58,13 +60,16 @@ fn getattr(
     }
 
     let mut out = AttrOut::default();
-    out.attr().ino(NodeID::ROOT);
-    out.attr()
-        .mode(FileMode::new(FileType::Regular, FilePermissions::READ));
-    out.attr().size(CONTENT.len() as u64);
-    out.attr().nlink(1);
-    out.attr().uid(UID::current());
-    out.attr().gid(GID::current());
+    out.attr({
+        let mut attr = FileAttr::new();
+        attr.ino = NodeID::ROOT;
+        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+        attr.size = CONTENT.len() as u64;
+        attr.nlink = 1;
+        attr.uid = UID::current();
+        attr.gid = GID::current();
+        attr
+    });
     out.ttl(Duration::from_secs(1));
 
     session.send_reply(conn, req.unique(), 0, out)

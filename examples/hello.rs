@@ -1,12 +1,13 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
+#![forbid(unsafe_code)]
 
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    reply::{AttrOut, EntryOut, ReaddirOut},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     KernelConfig,
 };
 
@@ -75,24 +76,28 @@ impl Hello {
         }
     }
 
-    fn fill_root_attr(&self, attr: &mut FileAttr) {
-        attr.ino(NodeID::ROOT);
-        attr.mode(FileMode::new(
+    fn root_attr(&self) -> FileAttr {
+        let mut attr = FileAttr::new();
+        attr.ino = NodeID::ROOT;
+        attr.mode = FileMode::new(
             FileType::Directory,
             FilePermissions::READ | FilePermissions::EXEC,
-        ));
-        attr.nlink(2);
-        attr.uid(self.uid);
-        attr.gid(self.gid);
+        );
+        attr.nlink = 2; // ".", ".."
+        attr.uid = self.uid;
+        attr.gid = self.gid;
+        attr
     }
 
-    fn fill_hello_attr(&self, attr: &mut FileAttr) {
-        attr.ino(HELLO_INO);
-        attr.size(HELLO_CONTENT.len() as u64);
-        attr.mode(FileMode::new(FileType::Regular, FilePermissions::READ));
-        attr.nlink(1);
-        attr.uid(self.uid);
-        attr.gid(self.gid);
+    fn hello_attr(&self) -> FileAttr {
+        let mut attr = FileAttr::new();
+        attr.ino = HELLO_INO;
+        attr.size = HELLO_CONTENT.len() as u64;
+        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+        attr.nlink = 1;
+        attr.uid = self.uid;
+        attr.gid = self.gid;
+        attr
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -108,7 +113,7 @@ impl Filesystem for Hello {
         match req.arg().parent() {
             NodeID::ROOT if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
-                self.fill_hello_attr(out.attr());
+                out.attr(self.hello_attr());
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
@@ -119,14 +124,14 @@ impl Filesystem for Hello {
     }
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
-        let fill_attr = match req.arg().ino() {
-            NodeID::ROOT => Self::fill_root_attr,
-            HELLO_INO => Self::fill_hello_attr,
+        let attr = match req.arg().ino() {
+            NodeID::ROOT => self.root_attr(),
+            HELLO_INO => self.hello_attr(),
             _ => Err(ENOENT)?,
         };
 
         let mut out = AttrOut::default();
-        fill_attr(self, out.attr());
+        out.attr(attr);
         out.ttl(TTL);
 
         req.reply(out)

@@ -6,19 +6,20 @@
 
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented, clippy::todo)]
+#![forbid(unsafe_code)]
 
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, EntryOut, FileAttr, ReaddirOut},
-    types::{DeviceID, FileMode, NodeID, GID, UID},
+    reply::{AttrOut, EntryOut, ReaddirOut},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
-use libc::{EISDIR, ENOENT, ENOTDIR, S_IFDIR, S_IFREG};
+use libc::{EISDIR, ENOENT, ENOTDIR};
 use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
 
 const FILE_INO: NodeID = NodeID::from_raw(2);
@@ -61,8 +62,8 @@ fn generate_filename() -> String {
 }
 
 struct Heartbeat {
-    root_attr: libc::stat,
-    file_attr: libc::stat,
+    root_attr: FileAttr,
+    file_attr: FileAttr,
     ttl: Duration,
     update_interval: Duration,
     current: Mutex<CurrentFile>,
@@ -77,15 +78,18 @@ struct CurrentFile {
 
 impl Heartbeat {
     fn new(ttl: Duration, update_interval: Duration, no_notify: bool) -> Self {
-        let mut root_attr = unsafe { mem::zeroed::<libc::stat>() };
-        root_attr.st_ino = NodeID::ROOT.into_raw();
-        root_attr.st_mode = S_IFDIR | 0o555;
-        root_attr.st_nlink = 1;
+        let mut root_attr = FileAttr::new();
+        root_attr.ino = NodeID::ROOT;
+        root_attr.mode = FileMode::new(
+            FileType::Directory,
+            FilePermissions::READ | FilePermissions::EXEC,
+        );
+        root_attr.nlink = 2; // "." and ".."
 
-        let mut file_attr = unsafe { mem::zeroed::<libc::stat>() };
-        file_attr.st_ino = FILE_INO.into_raw();
-        file_attr.st_mode = S_IFREG | 0o444;
-        file_attr.st_nlink = 1;
+        let mut file_attr = FileAttr::new();
+        file_attr.ino = FILE_INO;
+        file_attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+        file_attr.nlink = 1;
 
         Self {
             root_attr,
@@ -143,8 +147,8 @@ impl Filesystem for Heartbeat {
 
         if req.arg().name().as_bytes() == current.filename.as_bytes() {
             let mut out = EntryOut::default();
-            out.ino(NodeID::from_raw(self.file_attr.st_ino));
-            fill_attr(out.attr(), &self.file_attr);
+            out.ino(self.file_attr.ino);
+            out.attr(self.file_attr.clone());
             out.ttl_entry(self.ttl);
             out.ttl_attr(self.ttl);
 
@@ -169,13 +173,13 @@ impl Filesystem for Heartbeat {
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let attr = match req.arg().ino() {
-            NodeID::ROOT => &self.root_attr,
-            FILE_INO => &self.file_attr,
+            NodeID::ROOT => self.root_attr.clone(),
+            FILE_INO => self.file_attr.clone(),
             _ => Err(ENOENT)?,
         };
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), attr);
+        out.attr(attr);
         out.ttl(self.ttl);
 
         req.reply(out)
@@ -203,19 +207,4 @@ impl Filesystem for Heartbeat {
         out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
         req.reply(out)
     }
-}
-
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(NodeID::from_raw(st.st_ino));
-    attr.size(st.st_size as u64);
-    attr.mode(FileMode::from_raw(st.st_mode));
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(UID::from_raw(st.st_uid));
-    attr.gid(GID::from_raw(st.st_gid));
-    attr.rdev(DeviceID::from_userspace_dev(st.st_rdev));
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
 }
