@@ -13,10 +13,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use libc::{
-    DT_DIR, DT_UNKNOWN, EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP,
-    ERANGE,
-};
+use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP, ERANGE};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -151,7 +148,7 @@ struct Directory {
 struct DirEntry {
     name: OsString,
     ino: NodeID,
-    typ: u32,
+    typ: Option<FileType>,
     off: u64,
 }
 
@@ -163,7 +160,7 @@ impl Directory {
         entries.push(Arc::new(DirEntry {
             name: ".".into(),
             ino: attr.ino,
-            typ: DT_DIR as u32,
+            typ: Some(FileType::Directory),
             off: offset,
         }));
         offset += 1;
@@ -171,7 +168,7 @@ impl Directory {
         entries.push(Arc::new(DirEntry {
             name: "..".into(),
             ino: self.parent.unwrap_or(attr.ino),
-            typ: DT_DIR as u32,
+            typ: Some(FileType::Directory),
             off: offset,
         }));
         offset += 1;
@@ -180,7 +177,7 @@ impl Directory {
             entries.push(Arc::new(DirEntry {
                 name: name.into(),
                 ino,
-                typ: DT_UNKNOWN as u32,
+                typ: None,
                 off: offset,
             }));
             offset += 1;

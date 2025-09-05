@@ -1,6 +1,6 @@
 use crate::{
     bytes::{Bytes, FillBytes},
-    types::{FileAttr, FileID, FileLock, NodeID, PollEvents, Statfs},
+    types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
 };
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
@@ -474,7 +474,7 @@ impl ReaddirOut {
         }
     }
 
-    pub fn entry(&mut self, name: &OsStr, ino: NodeID, typ: u32, off: u64) -> bool {
+    pub fn entry(&mut self, name: &OsStr, ino: NodeID, typ: Option<FileType>, off: u64) -> bool {
         let name = name.as_bytes();
         let remaining = self.buf.capacity() - self.buf.len();
 
@@ -485,11 +485,22 @@ impl ReaddirOut {
             return true;
         }
 
+        let typ = match typ {
+            Some(FileType::BlockDevice) => libc::DT_BLK,
+            Some(FileType::CharacterDevice) => libc::DT_CHR,
+            Some(FileType::Directory) => libc::DT_DIR,
+            Some(FileType::Fifo) => libc::DT_FIFO,
+            Some(FileType::SymbolicLink) => libc::DT_LNK,
+            Some(FileType::Regular) => libc::DT_REG,
+            Some(FileType::Socket) => libc::DT_SOCK,
+            None => libc::DT_UNKNOWN,
+        };
+
         let dirent = fuse_dirent {
             ino: ino.into_raw(),
             off,
             namelen: name.len().try_into().expect("name length is too long"),
-            typ,
+            typ: typ as u32,
             name: [],
         };
         let lenbefore = self.buf.len();

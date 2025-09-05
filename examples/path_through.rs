@@ -17,12 +17,12 @@ use polyfuse::{
     mount::MountOptions,
     op::{self, Forget, OpenFlags},
     reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, WriteOut},
-    types::{FileID, NodeID},
+    types::{FileID, FileType, NodeID},
     KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{DT_DIR, DT_LNK, DT_REG, DT_UNKNOWN, EINVAL, ENOENT, ENOSYS, ERANGE};
+use libc::{EINVAL, ENOENT, ENOSYS, ERANGE};
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -300,13 +300,13 @@ impl Filesystem for PathThrough {
             let metadata = entry.metadata()?;
             let file_type = metadata.file_type();
             let typ = if file_type.is_file() {
-                DT_REG as u32
+                Some(FileType::Regular)
             } else if file_type.is_dir() {
-                DT_DIR as u32
+                Some(FileType::Directory)
             } else if file_type.is_symlink() {
-                DT_LNK as u32
+                Some(FileType::SymbolicLink)
             } else {
-                DT_UNKNOWN as u32
+                None
             };
 
             let full = out.entry(
@@ -417,7 +417,7 @@ struct DirHandle {
 struct DirEntry {
     name: OsString,
     ino: NodeID,
-    typ: u32,
+    typ: Option<FileType>,
 }
 
 // ==== file ====

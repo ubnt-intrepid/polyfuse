@@ -244,6 +244,19 @@ impl FileType {
         }
     }
 
+    pub const fn from_dirent_type(typ: u8) -> Option<Self> {
+        match typ {
+            libc::DT_BLK => Some(Self::BlockDevice),
+            libc::DT_CHR => Some(Self::CharacterDevice),
+            libc::DT_DIR => Some(Self::Directory),
+            libc::DT_FIFO => Some(Self::Fifo),
+            libc::DT_LNK => Some(Self::SymbolicLink),
+            libc::DT_REG => Some(Self::Regular),
+            libc::DT_SOCK => Some(Self::Socket),
+            _ => None,
+        }
+    }
+
     pub const fn into_raw(self) -> u32 {
         match self {
             Self::Regular => libc::S_IFREG,

@@ -12,7 +12,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{DT_DIR, DT_REG, EISDIR, ENOENT, ENOTDIR};
+use libc::{EISDIR, ENOENT, ENOTDIR};
 use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -47,7 +47,7 @@ struct Hello {
 struct DirEntry {
     name: &'static str,
     ino: NodeID,
-    typ: u32,
+    typ: Option<FileType>,
 }
 
 impl Hello {
@@ -56,17 +56,17 @@ impl Hello {
         entries.push(DirEntry {
             name: ".",
             ino: NodeID::ROOT,
-            typ: DT_DIR as u32,
+            typ: Some(FileType::Directory),
         });
         entries.push(DirEntry {
             name: "..",
             ino: NodeID::ROOT,
-            typ: DT_DIR as u32,
+            typ: Some(FileType::Directory),
         });
         entries.push(DirEntry {
             name: HELLO_FILENAME,
             ino: HELLO_INO,
-            typ: DT_REG as u32,
+            typ: Some(FileType::Regular),
         });
 
         Self {

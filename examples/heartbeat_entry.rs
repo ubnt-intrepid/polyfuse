@@ -204,7 +204,7 @@ impl Filesystem for Heartbeat {
         let current = self.current.lock().unwrap();
 
         let mut out = ReaddirOut::new(req.arg().size() as usize);
-        out.entry(current.filename.as_ref(), FILE_INO, 0, 1);
+        out.entry(current.filename.as_ref(), FILE_INO, None, 1);
         req.reply(out)
     }
 }

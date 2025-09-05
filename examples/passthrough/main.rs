@@ -481,7 +481,7 @@ impl Filesystem for Passthrough {
             if out.entry(
                 &entry.name,
                 NodeID::from_raw(entry.ino),
-                entry.typ,
+                FileType::from_dirent_type(entry.typ),
                 entry.off,
             ) {
                 break;
