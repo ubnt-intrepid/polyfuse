@@ -137,7 +137,7 @@ impl DeviceID {
         assert!(major <= Self::MAJOR_MAX, "DeviceID.major");
         assert!(minor <= Self::MINOR_MAX, "DeviceID.minor");
         Self {
-            raw: (major & 0xfff << 20) | (minor & 0xfffff),
+            raw: ((major & 0xfff) << 20) | (minor & 0xfffff),
         }
     }
 
