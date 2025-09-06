@@ -24,6 +24,15 @@ pub trait Op {
     type Release: Release;
     type Statfs: Statfs;
     type Fsync: Fsync;
+    type Setxattr: Setxattr;
+    type Getxattr: Getxattr;
+    type Listxattr: Listxattr;
+    type Removexattr: Removexattr;
+    type Flush: Flush;
+    type Opendir: Opendir;
+    type Readdir: Readdir;
+    type Releasedir: Releasedir;
+    type Fsyncdir: Fsyncdir;
 
     type Forgets: AsRef<[Forget]>;
     type Interrupt: Interrupt;
@@ -51,15 +60,15 @@ pub enum Operation<T: Op> {
     Release(T::Release),
     Statfs(T::Statfs),
     Fsync(T::Fsync),
-    // Setxattr(Setxattr<'op>),
-    // Getxattr(Getxattr<'op>),
-    // Listxattr(Listxattr<'op>),
-    // Removexattr(Removexattr<'op>),
-    // Flush(Flush<'op>),
-    // Opendir(Opendir<'op>),
-    // Readdir(Readdir<'op>),
-    // Releasedir(Releasedir<'op>),
-    // Fsyncdir(Fsyncdir<'op>),
+    Setxattr(T::Setxattr),
+    Getxattr(T::Getxattr),
+    Listxattr(T::Listxattr),
+    Removexattr(T::Removexattr),
+    Flush(T::Flush),
+    Opendir(T::Opendir),
+    Readdir(T::Readdir),
+    Releasedir(T::Releasedir),
+    Fsyncdir(T::Fsyncdir),
     // Getlk(Getlk<'op>),
     // Setlk(Setlk<'op>),
     // Flock(Flock<'op>),
@@ -549,44 +558,18 @@ pub trait Fsync {
 }
 
 /// Set an extended attribute.
-pub struct Setxattr<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_setxattr_in,
-    name: &'op OsStr,
-    value: &'op [u8],
-}
-
-impl fmt::Debug for Setxattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Setxattr").finish()
-    }
-}
-
-impl<'op> Setxattr<'op> {
+pub trait Setxattr {
     /// Return the inode number to set the value of extended attribute.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    fn ino(&self) -> NodeID;
 
     /// Return the name of extended attribute to be set.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
+    fn name(&self) -> &OsStr;
 
     /// Return the value of extended attribute.
-    #[inline]
-    pub fn value(&self) -> &[u8] {
-        self.value
-    }
+    fn value(&self) -> &[u8];
 
     /// Return the flags that specifies the meanings of this operation.
-    #[inline]
-    pub fn flags(&self) -> SetxattrFlags {
-        SetxattrFlags::from_bits_truncate(self.arg.flags)
-    }
+    fn flags(&self) -> SetxattrFlags;
 }
 
 bitflags! {
@@ -609,37 +592,15 @@ bitflags! {
 /// * Otherwise, returns the attribute value with the specified name.
 ///   The filesystem should send an `ERANGE` error if the specified
 ///   size is too small for the attribute value.
-pub struct Getxattr<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_getxattr_in,
-    name: &'op OsStr,
-}
-
-impl fmt::Debug for Getxattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Getxattr").finish()
-    }
-}
-
-impl<'op> Getxattr<'op> {
+pub trait Getxattr {
     /// Return the inode number to be get the extended attribute.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    fn ino(&self) -> NodeID;
 
     /// Return the name of the extend attribute.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
+    fn name(&self) -> &OsStr;
 
     /// Return the maximum length of the attribute value to be replied.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
+    fn size(&self) -> u32;
 }
 
 /// List extended attribute names.
@@ -647,57 +608,21 @@ impl<'op> Getxattr<'op> {
 /// Each element of the attribute names list must be null-terminated.
 /// As with `Getxattr`, the filesystem must send the data length of the attribute
 /// names using `ReplyXattr` if `size` is zero.
-pub struct Listxattr<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_getxattr_in,
-}
-
-impl fmt::Debug for Listxattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Listxattr").finish()
-    }
-}
-
-impl<'op> Listxattr<'op> {
+pub trait Listxattr {
     /// Return the inode number to be obtained the attribute names.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    fn ino(&self) -> NodeID;
 
     /// Return the maximum length of the attribute names to be replied.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
+    fn size(&self) -> u32;
 }
 
 /// Remove an extended attribute.
-pub struct Removexattr<'op> {
-    header: &'op fuse_in_header,
-    name: &'op OsStr,
-}
-
-impl fmt::Debug for Removexattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Removexattr").finish()
-    }
-}
-
-impl<'op> Removexattr<'op> {
+pub trait Removexattr {
     /// Return the inode number to remove the extended attribute.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    fn ino(&self) -> NodeID;
 
     /// Return the name of extended attribute to be removed.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
+    fn name(&self) -> &OsStr;
 }
 
 /// Close a file descriptor.
@@ -710,73 +635,44 @@ impl<'op> Removexattr<'op> {
 /// flush operations might be issued for one `Open`.
 /// Also, it is not guaranteed that flush will always be issued
 /// after some writes.
-pub struct Flush<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_flush_in,
-}
-
-impl fmt::Debug for Flush<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Flush").finish()
-    }
-}
-
-impl<'op> Flush<'op> {
+pub trait Flush {
     /// Return the inode number of target file.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    fn ino(&self) -> NodeID;
 
     /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
+    fn fh(&self) -> FileID;
 
     /// Return the identifier of lock owner.
-    #[inline]
-    pub fn lock_owner(&self) -> LockOwnerID {
-        LockOwnerID::from_raw(self.arg.lock_owner)
-    }
+    fn lock_owner(&self) -> LockOwnerID;
 }
 
 /// Open a directory.
 ///
 /// If the directory is successfully opened, the filesystem must send
 /// the identifier to the opened directory handle using `ReplyOpen`.
-pub struct Opendir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_open_in,
-}
-
-impl fmt::Debug for Opendir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Opendir").finish()
-    }
-}
-
-impl<'op> Opendir<'op> {
+pub trait Opendir {
     /// Return the inode number to be opened.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    fn ino(&self) -> NodeID;
 
     /// Return the open flags.
-    #[inline]
-    pub fn options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
+    fn options(&self) -> OpenOptions;
 }
 
 /// Read contents from an opened directory.
-pub struct Readdir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_read_in,
-    mode: ReaddirMode,
+pub trait Readdir {
+    /// Return the inode number to be read.
+    fn ino(&self) -> NodeID;
+
+    /// Return the handle of opened directory.
+    fn fh(&self) -> FileID;
+
+    /// Return the *offset* value to continue reading the directory stream.
+    fn offset(&self) -> u64;
+
+    /// Return the maximum length of returned data.
+    fn size(&self) -> u32;
+
+    fn mode(&self) -> ReaddirMode;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -785,109 +681,30 @@ pub enum ReaddirMode {
     Plus,
 }
 
-impl fmt::Debug for Readdir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Readdir").finish()
-    }
-}
-
-impl<'op> Readdir<'op> {
-    /// Return the inode number to be read.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the handle of opened directory.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return the *offset* value to continue reading the directory stream.
-    #[inline]
-    pub fn offset(&self) -> u64 {
-        self.arg.offset
-    }
-
-    /// Return the maximum length of returned data.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
-
-    pub fn mode(&self) -> ReaddirMode {
-        self.mode
-    }
-}
-
 /// Release an opened directory.
-pub struct Releasedir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_release_in,
-}
-
-impl fmt::Debug for Releasedir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Releasedir").finish()
-    }
-}
-
-impl<'op> Releasedir<'op> {
+pub trait Releasedir {
     /// Return the inode number of opened directory.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    fn ino(&self) -> NodeID;
 
     /// Return the handle of opened directory.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
+    fn fh(&self) -> FileID;
 
     /// Return the open flags.
-    #[inline]
-    pub fn options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
+    fn options(&self) -> OpenOptions;
 }
 
 /// Synchronize the directory contents.
-pub struct Fsyncdir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_fsync_in,
-}
-
-impl fmt::Debug for Fsyncdir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Fsyncdir").finish()
-    }
-}
-
-impl<'op> Fsyncdir<'op> {
+pub trait Fsyncdir {
     /// Return the inode number to be synchronized.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    fn ino(&self) -> NodeID;
 
     /// Return the handle of opened directory.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
+    fn fh(&self) -> FileID;
 
     /// Return whether to synchronize only the directory contents.
     ///
     /// When this method returns `true`, the metadata does not have to be flushed.
-    #[inline]
-    pub fn datasync(&self) -> bool {
-        self.arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
-    }
+    fn datasync(&self) -> bool;
 }
 
 /// Test for a POSIX file lock.

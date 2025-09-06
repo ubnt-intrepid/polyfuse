@@ -375,7 +375,7 @@ impl Filesystem for MemFS {
         req.reply(link)
     }
 
-    fn opendir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
+    fn opendir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Opendir>) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         if inode.attr.nlink == 0 {
             return Err(ENOENT.into());
@@ -394,7 +394,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Readdir>) -> fs::Result {
         if req.arg().mode() == op::ReaddirMode::Plus {
             Err(ENOSYS)?;
         }
@@ -419,7 +419,7 @@ impl Filesystem for MemFS {
     fn releasedir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Releasedir<'_>>,
+        req: fs::Request<'_, impl op::Releasedir>,
     ) -> fs::Result {
         let dir_handles = &mut *self.dir_handles.lock().unwrap();
         dir_handles.remove(req.arg().fh().into_raw() as usize);
@@ -567,7 +567,7 @@ impl Filesystem for MemFS {
         req.reply(())
     }
 
-    fn getxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getxattr<'_>>) -> fs::Result {
+    fn getxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Getxattr>) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let value = inode.xattrs.get(req.arg().name()).ok_or(ENODATA)?;
         match req.arg().size() {
@@ -585,7 +585,7 @@ impl Filesystem for MemFS {
         }
     }
 
-    fn setxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Setxattr<'_>>) -> fs::Result {
+    fn setxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Setxattr>) -> fs::Result {
         let create = req.arg().flags().contains(SetxattrFlags::CREATE);
         let replace = req.arg().flags().contains(SetxattrFlags::REPLACE);
         if create && replace {
@@ -617,7 +617,11 @@ impl Filesystem for MemFS {
         req.reply(())
     }
 
-    fn listxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Listxattr<'_>>) -> fs::Result {
+    fn listxattr(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, impl op::Listxattr>,
+    ) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
         match req.arg().size() {
@@ -649,7 +653,7 @@ impl Filesystem for MemFS {
     fn removexattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Removexattr<'_>>,
+        req: fs::Request<'_, impl op::Removexattr>,
     ) -> fs::Result {
         let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
 

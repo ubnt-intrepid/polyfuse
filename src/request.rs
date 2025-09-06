@@ -2,7 +2,9 @@ use crate::{
     bytes::{DecodeError, Decoder},
     conn::SpliceRead,
     nix::{Pipe, PipeReader},
-    op::{self, Forget, OpenOptions, Operation, RenameFlags, SetAttrTime},
+    op::{
+        self, Forget, OpenOptions, Operation, ReaddirMode, RenameFlags, SetAttrTime, SetxattrFlags,
+    },
     types::{
         DeviceID, FileID, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID, RequestID, GID,
         PID, UID,
@@ -302,6 +304,15 @@ impl<'req> crate::op::Op for Op<'req> {
     type Release = Release<'req>;
     type Statfs = Statfs<'req>;
     type Fsync = Fsync<'req>;
+    type Setxattr = Setxattr<'req>;
+    type Getxattr = Getxattr<'req>;
+    type Listxattr = Listxattr<'req>;
+    type Removexattr = Removexattr<'req>;
+    type Flush = Flush<'req>;
+    type Opendir = Opendir<'req>;
+    type Readdir = Readdir<'req>;
+    type Releasedir = Releasedir<'req>;
+    type Fsyncdir = Fsyncdir<'req>;
 
     type Forgets = Forgets<'req>;
     type Interrupt = Interrupt<'req>;
@@ -713,6 +724,154 @@ impl<'op> op::Fsync for Fsync<'op> {
     }
 }
 
+struct Setxattr<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_setxattr_in,
+    name: &'op OsStr,
+    value: &'op [u8],
+}
+impl<'op> op::Setxattr for Setxattr<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn name(&self) -> &OsStr {
+        self.name
+    }
+    fn value(&self) -> &[u8] {
+        self.value
+    }
+    fn flags(&self) -> SetxattrFlags {
+        SetxattrFlags::from_bits_truncate(self.arg.flags)
+    }
+}
+
+struct Getxattr<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_getxattr_in,
+    name: &'op OsStr,
+}
+impl<'op> op::Getxattr for Getxattr<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn name(&self) -> &OsStr {
+        self.name
+    }
+    fn size(&self) -> u32 {
+        self.arg.size
+    }
+}
+
+struct Listxattr<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_getxattr_in,
+}
+impl<'op> op::Listxattr for Listxattr<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn size(&self) -> u32 {
+        self.arg.size
+    }
+}
+
+struct Removexattr<'op> {
+    header: &'op fuse_in_header,
+    name: &'op OsStr,
+}
+impl<'op> op::Removexattr for Removexattr<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn name(&self) -> &OsStr {
+        self.name
+    }
+}
+
+struct Flush<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_flush_in,
+}
+impl<'op> op::Flush for Flush<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
+    }
+    fn lock_owner(&self) -> LockOwnerID {
+        LockOwnerID::from_raw(self.arg.lock_owner)
+    }
+}
+
+struct Opendir<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_open_in,
+}
+impl<'op> op::Opendir for Opendir<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
+    }
+}
+
+struct Readdir<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_read_in,
+    mode: ReaddirMode,
+}
+impl<'op> op::Readdir for Readdir<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
+    }
+    fn offset(&self) -> u64 {
+        self.arg.offset
+    }
+    fn size(&self) -> u32 {
+        self.arg.size
+    }
+    fn mode(&self) -> ReaddirMode {
+        self.mode
+    }
+}
+
+struct Releasedir<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_release_in,
+}
+impl<'op> op::Releasedir for Releasedir<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
+    }
+    fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
+    }
+}
+
+struct Fsyncdir<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_fsync_in,
+}
+impl<'op> op::Fsyncdir for Fsyncdir<'op> {
+    fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+    fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
+    }
+    fn datasync(&self) -> bool {
+        self.arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
+    }
+}
+
 fn decode<'req>(
     header: &'req fuse_in_header,
     opcode: fuse_opcode,
@@ -852,71 +1011,71 @@ fn decode<'req>(
             Ok(Operation::Fsync(Fsync { header, arg }))
         }
 
-        // fuse_opcode::FUSE_SETXATTR => {
-        //     let arg = decoder.fetch::<fuse_setxattr_in>()?;
-        //     let name = decoder.fetch_str()?;
-        //     let value = decoder.fetch_bytes(arg.size as usize)?;
-        //     Ok(Operation::Setxattr(Setxattr {
-        //         header,
-        //         arg,
-        //         name,
-        //         value,
-        //     }))
-        // }
+        fuse_opcode::FUSE_SETXATTR => {
+            let arg = decoder.fetch::<fuse_setxattr_in>()?;
+            let name = decoder.fetch_str()?;
+            let value = decoder.fetch_bytes(arg.size as usize)?;
+            Ok(Operation::Setxattr(Setxattr {
+                header,
+                arg,
+                name,
+                value,
+            }))
+        }
 
-        // fuse_opcode::FUSE_GETXATTR => {
-        //     let arg = decoder.fetch()?;
-        //     let name = decoder.fetch_str()?;
-        //     Ok(Operation::Getxattr(Getxattr { header, arg, name }))
-        // }
+        fuse_opcode::FUSE_GETXATTR => {
+            let arg = decoder.fetch()?;
+            let name = decoder.fetch_str()?;
+            Ok(Operation::Getxattr(Getxattr { header, arg, name }))
+        }
 
-        // fuse_opcode::FUSE_LISTXATTR => {
-        //     let arg = decoder.fetch()?;
-        //     Ok(Operation::Listxattr(Listxattr { header, arg }))
-        // }
+        fuse_opcode::FUSE_LISTXATTR => {
+            let arg = decoder.fetch()?;
+            Ok(Operation::Listxattr(Listxattr { header, arg }))
+        }
 
-        // fuse_opcode::FUSE_REMOVEXATTR => {
-        //     let name = decoder.fetch_str()?;
-        //     Ok(Operation::Removexattr(Removexattr { header, name }))
-        // }
+        fuse_opcode::FUSE_REMOVEXATTR => {
+            let name = decoder.fetch_str()?;
+            Ok(Operation::Removexattr(Removexattr { header, name }))
+        }
 
-        // fuse_opcode::FUSE_FLUSH => {
-        //     let arg = decoder.fetch()?;
-        //     Ok(Operation::Flush(Flush { header, arg }))
-        // }
+        fuse_opcode::FUSE_FLUSH => {
+            let arg = decoder.fetch()?;
+            Ok(Operation::Flush(Flush { header, arg }))
+        }
 
-        // fuse_opcode::FUSE_OPENDIR => {
-        //     let arg = decoder.fetch()?;
-        //     Ok(Operation::Opendir(Opendir { header, arg }))
-        // }
+        fuse_opcode::FUSE_OPENDIR => {
+            let arg = decoder.fetch()?;
+            Ok(Operation::Opendir(Opendir { header, arg }))
+        }
 
-        // fuse_opcode::FUSE_READDIR => {
-        //     let arg = decoder.fetch()?;
-        //     Ok(Operation::Readdir(Readdir {
-        //         header,
-        //         arg,
-        //         mode: ReaddirMode::Normal,
-        //     }))
-        // }
+        fuse_opcode::FUSE_READDIR => {
+            let arg = decoder.fetch()?;
+            Ok(Operation::Readdir(Readdir {
+                header,
+                arg,
+                mode: ReaddirMode::Normal,
+            }))
+        }
 
-        // fuse_opcode::FUSE_READDIRPLUS => {
-        //     let arg = decoder.fetch()?;
-        //     Ok(Operation::Readdir(Readdir {
-        //         header,
-        //         arg,
-        //         mode: ReaddirMode::Plus,
-        //     }))
-        // }
+        fuse_opcode::FUSE_READDIRPLUS => {
+            let arg = decoder.fetch()?;
+            Ok(Operation::Readdir(Readdir {
+                header,
+                arg,
+                mode: ReaddirMode::Plus,
+            }))
+        }
 
-        // fuse_opcode::FUSE_RELEASEDIR => {
-        //     let arg = decoder.fetch()?;
-        //     Ok(Operation::Releasedir(Releasedir { header, arg }))
-        // }
+        fuse_opcode::FUSE_RELEASEDIR => {
+            let arg = decoder.fetch()?;
+            Ok(Operation::Releasedir(Releasedir { header, arg }))
+        }
 
-        // fuse_opcode::FUSE_FSYNCDIR => {
-        //     let arg = decoder.fetch()?;
-        //     Ok(Operation::Fsyncdir(Fsyncdir { header, arg }))
-        // }
+        fuse_opcode::FUSE_FSYNCDIR => {
+            let arg = decoder.fetch()?;
+            Ok(Operation::Fsyncdir(Fsyncdir { header, arg }))
+        }
 
         // fuse_opcode::FUSE_GETLK => {
         //     let arg = decoder.fetch()?;

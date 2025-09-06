@@ -446,7 +446,7 @@ impl Filesystem for Passthrough {
         req.reply(())
     }
 
-    fn opendir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
+    fn opendir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Opendir>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
@@ -459,7 +459,7 @@ impl Filesystem for Passthrough {
         req.reply(out)
     }
 
-    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Readdir>) -> fs::Result {
         if req.arg().mode() == op::ReaddirMode::Plus {
             return Err(ENOSYS.into());
         }
@@ -487,7 +487,7 @@ impl Filesystem for Passthrough {
         req.reply(out)
     }
 
-    fn fsyncdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Fsyncdir<'_>>) -> fs::Result {
+    fn fsyncdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Fsyncdir>) -> fs::Result {
         let read_dir = self.opened_dirs.get(req.arg().fh()).ok_or(ENOENT)?;
         let read_dir = read_dir.lock().unwrap();
 
@@ -503,7 +503,7 @@ impl Filesystem for Passthrough {
     fn releasedir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Releasedir<'_>>,
+        req: fs::Request<'_, impl op::Releasedir>,
     ) -> fs::Result {
         let _dir = self.opened_dirs.remove(req.arg().fh());
         req.reply(())
@@ -570,7 +570,7 @@ impl Filesystem for Passthrough {
         req.reply(out)
     }
 
-    fn flush(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Flush<'_>>) -> fs::Result {
+    fn flush(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Flush>) -> fs::Result {
         let file = self.opened_files.get(req.arg().fh()).ok_or(ENOENT)?;
         let file = file.lock().unwrap();
 
@@ -621,7 +621,7 @@ impl Filesystem for Passthrough {
         req.reply(())
     }
 
-    fn getxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getxattr<'_>>) -> fs::Result {
+    fn getxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Getxattr>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
@@ -647,7 +647,11 @@ impl Filesystem for Passthrough {
         }
     }
 
-    fn listxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Listxattr<'_>>) -> fs::Result {
+    fn listxattr(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, impl op::Listxattr>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
@@ -673,7 +677,7 @@ impl Filesystem for Passthrough {
         }
     }
 
-    fn setxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Setxattr<'_>>) -> fs::Result {
+    fn setxattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Setxattr>) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
@@ -696,7 +700,7 @@ impl Filesystem for Passthrough {
     fn removexattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Removexattr<'_>>,
+        req: fs::Request<'_, impl op::Removexattr>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;

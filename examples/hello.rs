@@ -156,7 +156,7 @@ impl Filesystem for Hello {
         req.reply(data)
     }
 
-    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Readdir>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOTDIR)?
         }

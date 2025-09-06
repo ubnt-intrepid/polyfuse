@@ -247,7 +247,7 @@ impl Filesystem for PathThrough {
         req.reply(path.as_os_str())
     }
 
-    fn opendir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
+    fn opendir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Opendir>) -> fs::Result {
         let inodes = &mut *self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
@@ -264,7 +264,7 @@ impl Filesystem for PathThrough {
         req.reply(out)
     }
 
-    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Readdir>) -> fs::Result {
         if req.arg().mode() == op::ReaddirMode::Plus {
             return Err(ENOSYS.into());
         }
@@ -333,7 +333,7 @@ impl Filesystem for PathThrough {
     fn releasedir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Releasedir<'_>>,
+        req: fs::Request<'_, impl op::Releasedir>,
     ) -> fs::Result {
         let dirs = &mut *self.dirs.lock().unwrap();
         let _dir = dirs.remove(req.arg().fh().into_raw() as usize);
@@ -368,7 +368,7 @@ impl Filesystem for PathThrough {
         &self,
         _: fs::Env<'_, '_>,
         req: fs::Request<'_, impl op::Write>,
-        data: fs::Data<'_>,
+        data: impl io::Read + Unpin,
     ) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
@@ -381,21 +381,21 @@ impl Filesystem for PathThrough {
         req.reply(out)
     }
 
-    fn flush(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Flush<'_>>) -> fs::Result {
+    fn flush(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Flush>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         file.fsync(false)?;
         req.reply(())
     }
 
-    fn fsync(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Fsync<'_>>) -> fs::Result {
+    fn fsync(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Fsync>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         file.fsync(req.arg().datasync())?;
         req.reply(())
     }
 
-    fn release(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Release<'_>>) -> fs::Result {
+    fn release(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Release>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let _file = files.remove(req.arg().fh().into_raw() as usize);
         req.reply(())
