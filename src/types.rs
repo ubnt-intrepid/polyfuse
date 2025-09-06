@@ -200,8 +200,7 @@ impl FileMode {
         Self::from_raw(typ.into_raw() | perm.bits())
     }
 
-    pub const fn from_raw(raw: u32) -> Self {
-        // TODO: type check
+    pub(crate) const fn from_raw(raw: u32) -> Self {
         Self { raw }
     }
 
