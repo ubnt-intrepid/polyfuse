@@ -53,7 +53,7 @@ fn getattr(
     session: &Session,
     conn: &mut Connection,
     req: &RequestBuffer,
-    op: op::Getattr<'_>,
+    op: impl op::Getattr,
 ) -> io::Result<()> {
     if op.ino() != NodeID::ROOT {
         return session.send_reply(conn, req.unique(), ENOENT, ());
@@ -79,7 +79,7 @@ fn read(
     session: &Session,
     conn: &mut Connection,
     req: &RequestBuffer,
-    op: op::Read<'_>,
+    op: impl op::Read,
 ) -> io::Result<()> {
     if op.ino() != NodeID::ROOT {
         return session.send_reply(conn, req.unique(), ENOENT, ());

@@ -138,7 +138,7 @@ impl Filesystem for Heartbeat {
         Ok(())
     }
 
-    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Lookup>) -> fs::Result {
         if req.arg().parent() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
@@ -171,7 +171,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Getattr>) -> fs::Result {
         let attr = match req.arg().ino() {
             NodeID::ROOT => self.root_attr.clone(),
             FILE_INO => self.file_attr.clone(),
@@ -185,7 +185,7 @@ impl Filesystem for Heartbeat {
         req.reply(out)
     }
 
-    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Read>) -> fs::Result {
         match req.arg().ino() {
             NodeID::ROOT => Err(EISDIR)?,
             FILE_INO => req.reply(()),

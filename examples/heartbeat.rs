@@ -21,12 +21,7 @@ use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
 use libc::ENOENT;
-use std::{
-    io::{self, prelude::*},
-    path::PathBuf,
-    sync::Mutex,
-    time::Duration,
-};
+use std::{io, path::PathBuf, sync::Mutex, time::Duration};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -146,7 +141,7 @@ impl Filesystem for Heartbeat {
         Ok(())
     }
 
-    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Getattr>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
@@ -156,7 +151,7 @@ impl Filesystem for Heartbeat {
         req.reply(out)
     }
 
-    fn open(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
+    fn open(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Open>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
@@ -165,7 +160,7 @@ impl Filesystem for Heartbeat {
         req.reply(out)
     }
 
-    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Read>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?
         }
@@ -186,8 +181,8 @@ impl Filesystem for Heartbeat {
     fn notify_reply(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::NotifyReply<'_>>,
-        mut data: fs::Data<'_>,
+        req: fs::Request<'_, impl op::NotifyReply>,
+        mut data: impl io::Read,
     ) -> io::Result<()> {
         if let Some((_, original)) = self.retrieves.remove(&req.arg().unique()) {
             let data = {

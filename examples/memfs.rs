@@ -18,7 +18,7 @@ use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::{OsStr, OsString},
-    io::prelude::*,
+    io,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -282,7 +282,7 @@ impl MemFS {
 }
 
 impl Filesystem for MemFS {
-    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Lookup>) -> fs::Result {
         let parent = self.inodes.get(req.arg().parent()).ok_or(ENOENT)?;
         let parent = parent.as_dir().ok_or(ENOTDIR)?;
 
@@ -318,7 +318,7 @@ impl Filesystem for MemFS {
         }
     }
 
-    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Getattr>) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
         let mut out = AttrOut::default();
@@ -328,7 +328,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    fn setattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Setattr<'_>>) -> fs::Result {
+    fn setattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Setattr>) -> fs::Result {
         let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
 
         fn to_duration(t: op::SetAttrTime) -> Duration {
@@ -369,7 +369,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    fn readlink(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readlink<'_>>) -> fs::Result {
+    fn readlink(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Readlink>) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let link = inode.as_symlink().ok_or(EINVAL)?;
         req.reply(link)
@@ -426,7 +426,7 @@ impl Filesystem for MemFS {
         req.reply(())
     }
 
-    fn mknod(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Mknod<'_>>) -> fs::Result {
+    fn mknod(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Mknod>) -> fs::Result {
         match req.arg().mode().file_type() {
             Some(FileType::Regular) => (),
             _ => Err(ENOTSUP)?,
@@ -448,7 +448,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    fn mkdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Mkdir<'_>>) -> fs::Result {
+    fn mkdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Mkdir>) -> fs::Result {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
@@ -468,7 +468,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    fn symlink(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Symlink<'_>>) -> fs::Result {
+    fn symlink(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Symlink>) -> fs::Result {
         let out = self.make_node(req.arg().parent(), req.arg().name(), |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
@@ -488,7 +488,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    fn link(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Link<'_>>) -> fs::Result {
+    fn link(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Link>) -> fs::Result {
         let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
 
         debug_assert!(req.arg().ino() != req.arg().newparent());
@@ -513,17 +513,17 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    fn unlink(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Unlink<'_>>) -> fs::Result {
+    fn unlink(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Unlink>) -> fs::Result {
         self.unlink_node(req.arg().parent(), req.arg().name())?;
         req.reply(())
     }
 
-    fn rmdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Rmdir<'_>>) -> fs::Result {
+    fn rmdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Rmdir>) -> fs::Result {
         self.unlink_node(req.arg().parent(), req.arg().name())?;
         req.reply(())
     }
 
-    fn rename(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Rename<'_>>) -> fs::Result {
+    fn rename(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Rename>) -> fs::Result {
         if !req.arg().flags().is_empty() {
             // TODO: handle RENAME_NOREPLACE and RENAME_EXCHANGE.
             Err(EINVAL)?;
@@ -663,7 +663,7 @@ impl Filesystem for MemFS {
         req.reply(())
     }
 
-    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, impl op::Read>) -> fs::Result {
         let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
         let content = inode.as_file().ok_or(EINVAL)?;
@@ -680,8 +680,8 @@ impl Filesystem for MemFS {
     fn write(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Write<'_>>,
-        mut data: fs::Data<'_>,
+        req: fs::Request<'_, impl op::Write>,
+        mut data: impl io::Read,
     ) -> fs::Result {
         let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
 

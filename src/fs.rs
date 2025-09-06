@@ -4,7 +4,7 @@ use crate::{
     mount::MountOptions,
     notify,
     op::{self, Forget, Operation},
-    request::{RemainingData, RequestBuffer},
+    request::RequestBuffer,
     session::{KernelConfig, KernelFlags, Session},
     types::{NodeID, NotifyID, PollWakeupID, GID, PID, UID},
 };
@@ -46,7 +46,7 @@ impl From<io::Error> for Error {
 macro_rules! define_ops {
     ($( $name:ident: $Arg:ident ),*$(,)*) => {$(
         #[allow(unused_variables)]
-        fn $name<'env, 'req>(&'env self, env: Env<'_, 'env>, req: Request<'req, op::$Arg<'req>>) -> Result {
+        fn $name<'env>(&'env self, env: Env<'_, 'env>, req: Request<'_, impl op::$Arg>) -> Result {
             Err(Error::Code(ENOSYS))
         }
     )*};
@@ -70,33 +70,33 @@ pub trait Filesystem {
         release: Release,
         statfs: Statfs,
         fsync: Fsync,
-        setxattr: Setxattr,
-        getxattr: Getxattr,
-        listxattr: Listxattr,
-        removexattr: Removexattr,
-        flush: Flush,
-        opendir: Opendir,
-        readdir: Readdir,
-        releasedir: Releasedir,
-        fsyncdir: Fsyncdir,
-        getlk: Getlk,
-        setlk: Setlk,
-        flock: Flock,
-        access: Access,
-        create: Create,
-        bmap: Bmap,
-        fallocate: Fallocate,
-        copy_file_range: CopyFileRange,
-        poll: Poll,
-        lseek: Lseek,
+        // setxattr: Setxattr,
+        // getxattr: Getxattr,
+        // listxattr: Listxattr,
+        // removexattr: Removexattr,
+        // flush: Flush,
+        // opendir: Opendir,
+        // readdir: Readdir,
+        // releasedir: Releasedir,
+        // fsyncdir: Fsyncdir,
+        // getlk: Getlk,
+        // setlk: Setlk,
+        // flock: Flock,
+        // access: Access,
+        // create: Create,
+        // bmap: Bmap,
+        // fallocate: Fallocate,
+        // copy_file_range: CopyFileRange,
+        // poll: Poll,
+        // lseek: Lseek,
     }
 
     #[allow(unused_variables)]
-    fn write<'env, 'req>(
+    fn write<'env>(
         &'env self,
         env: Env<'_, 'env>,
-        req: Request<'req, op::Write<'req>>,
-        data: Data<'req>,
+        req: Request<'_, impl op::Write>,
+        data: impl io::Read,
     ) -> Result {
         Err(Error::Code(ENOSYS))
     }
@@ -110,11 +110,11 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
-    fn notify_reply<'env, 'req>(
+    fn notify_reply<'env>(
         &'env self,
         env: Env<'_, 'env>,
-        req: Request<'req, op::NotifyReply<'req>>,
-        data: Data<'req>,
+        req: Request<'_, impl op::NotifyReply>,
+        data: impl io::Read,
     ) -> io::Result<()> {
         Ok(())
     }
@@ -216,20 +216,6 @@ impl<T> Request<'_, T> {
                 _ => Error::Reply(err),
             })?;
         Ok(Replied { _private: () })
-    }
-}
-
-pub struct Data<'req> {
-    inner: RemainingData<'req>,
-}
-
-impl io::Read for Data<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.read(buf)
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        self.inner.read_vectored(bufs)
     }
 }
 
@@ -335,7 +321,7 @@ where
             .buf
             .operation()
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-        tracing::debug!(?op);
+        //tracing::debug!(?op);
 
         let env = Env {
             notifier: self.notifier.clone(),
@@ -356,43 +342,43 @@ where
             Operation::Link(op) => self.fs.link(env, self.req(op)),
             Operation::Open(op) => self.fs.open(env, self.req(op)),
             Operation::Read(op) => self.fs.read(env, self.req(op)),
+            Operation::Write(op) => self.fs.write(env, self.req(op), data),
             Operation::Release(op) => self.fs.release(env, self.req(op)),
             Operation::Statfs(op) => self.fs.statfs(env, self.req(op)),
             Operation::Fsync(op) => self.fs.fsync(env, self.req(op)),
-            Operation::Setxattr(op) => self.fs.setxattr(env, self.req(op)),
-            Operation::Getxattr(op) => self.fs.getxattr(env, self.req(op)),
-            Operation::Listxattr(op) => self.fs.listxattr(env, self.req(op)),
-            Operation::Removexattr(op) => self.fs.removexattr(env, self.req(op)),
-            Operation::Flush(op) => self.fs.flush(env, self.req(op)),
-            Operation::Opendir(op) => self.fs.opendir(env, self.req(op)),
-            Operation::Readdir(op) => self.fs.readdir(env, self.req(op)),
-            Operation::Releasedir(op) => self.fs.releasedir(env, self.req(op)),
-            Operation::Fsyncdir(op) => self.fs.fsyncdir(env, self.req(op)),
-            Operation::Getlk(op) => self.fs.getlk(env, self.req(op)),
-            Operation::Setlk(op) => self.fs.setlk(env, self.req(op)),
-            Operation::Flock(op) => self.fs.flock(env, self.req(op)),
-            Operation::Access(op) => self.fs.access(env, self.req(op)),
-            Operation::Create(op) => self.fs.create(env, self.req(op)),
-            Operation::Bmap(op) => self.fs.bmap(env, self.req(op)),
-            Operation::Fallocate(op) => self.fs.fallocate(env, self.req(op)),
-            Operation::CopyFileRange(op) => self.fs.copy_file_range(env, self.req(op)),
-            Operation::Poll(op) => self.fs.poll(env, self.req(op)),
-            Operation::Lseek(op) => self.fs.lseek(env, self.req(op)),
-            Operation::Write(op) => self.fs.write(env, self.req(op), Data { inner: data }),
+            // Operation::Setxattr(op) => self.fs.setxattr(env, self.req(op)),
+            // Operation::Getxattr(op) => self.fs.getxattr(env, self.req(op)),
+            // Operation::Listxattr(op) => self.fs.listxattr(env, self.req(op)),
+            // Operation::Removexattr(op) => self.fs.removexattr(env, self.req(op)),
+            // Operation::Flush(op) => self.fs.flush(env, self.req(op)),
+            // Operation::Opendir(op) => self.fs.opendir(env, self.req(op)),
+            // Operation::Readdir(op) => self.fs.readdir(env, self.req(op)),
+            // Operation::Releasedir(op) => self.fs.releasedir(env, self.req(op)),
+            // Operation::Fsyncdir(op) => self.fs.fsyncdir(env, self.req(op)),
+            // Operation::Getlk(op) => self.fs.getlk(env, self.req(op)),
+            // Operation::Setlk(op) => self.fs.setlk(env, self.req(op)),
+            // Operation::Flock(op) => self.fs.flock(env, self.req(op)),
+            // Operation::Access(op) => self.fs.access(env, self.req(op)),
+            // Operation::Create(op) => self.fs.create(env, self.req(op)),
+            // Operation::Bmap(op) => self.fs.bmap(env, self.req(op)),
+            // Operation::Fallocate(op) => self.fs.fallocate(env, self.req(op)),
+            // Operation::CopyFileRange(op) => self.fs.copy_file_range(env, self.req(op)),
+            // Operation::Poll(op) => self.fs.poll(env, self.req(op)),
+            // Operation::Lseek(op) => self.fs.lseek(env, self.req(op)),
             Operation::NotifyReply(op) => {
-                self.fs
-                    .notify_reply(env, self.req(op), Data { inner: data })?;
+                self.fs.notify_reply(env, self.req(op), data)?;
                 return Ok(());
             }
             Operation::Forget(forgets) => {
                 self.fs.forget(env, forgets.as_ref());
                 return Ok(());
             }
-            Operation::Interrupt(op) => {
-                tracing::warn!("interrupted(unique={})", op.unique());
-                // TODO: handle interrupt requests.
-                Err(ENOSYS.into())
-            }
+            // Operation::Interrupt(op) => {
+            //     tracing::warn!("interrupted(unique={})", op.unique());
+            //     // TODO: handle interrupt requests.
+            //     Err(ENOSYS.into())
+            // }
+            _ => todo!(),
         };
 
         match result {
