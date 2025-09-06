@@ -46,7 +46,7 @@ impl From<io::Error> for Error {
 macro_rules! define_ops {
     ($( $name:ident: $Arg:ident ),*$(,)*) => {$(
         #[allow(unused_variables)]
-        fn $name<'env, 'req>(&'env self, cx: Context<'_, 'env>, req: Request<'req, op::$Arg<'req>>) -> Result {
+        fn $name<'env, 'req>(&'env self, env: Env<'_, 'env>, req: Request<'req, op::$Arg<'req>>) -> Result {
             Err(Error::Code(ENOSYS))
         }
     )*};
@@ -94,7 +94,7 @@ pub trait Filesystem {
     #[allow(unused_variables)]
     fn write<'env, 'req>(
         &'env self,
-        cx: Context<'_, 'env>,
+        env: Env<'_, 'env>,
         req: Request<'req, op::Write<'req>>,
         data: Data<'req>,
     ) -> Result {
@@ -102,17 +102,17 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
-    fn forget<'env>(&'env self, cx: Context<'_, 'env>, forgets: &[Forget]) {}
+    fn forget<'env>(&'env self, env: Env<'_, 'env>, forgets: &[Forget]) {}
 
     #[allow(unused_variables)]
-    fn init<'env>(&'env self, cx: Context<'_, 'env>) -> io::Result<()> {
+    fn init<'env>(&'env self, env: Env<'_, 'env>) -> io::Result<()> {
         Ok(())
     }
 
     #[allow(unused_variables)]
     fn notify_reply<'env, 'req>(
         &'env self,
-        cx: Context<'_, 'env>,
+        env: Env<'_, 'env>,
         req: Request<'req, op::NotifyReply<'req>>,
         data: Data<'req>,
     ) -> io::Result<()> {
@@ -123,7 +123,7 @@ pub trait Filesystem {
 pub type Spawner<'scope, 'env> = &'scope thread::Scope<'scope, 'env>;
 
 #[non_exhaustive]
-pub struct Context<'scope, 'env: 'scope> {
+pub struct Env<'scope, 'env: 'scope> {
     pub notifier: Notifier<'env>,
     pub spawner: Spawner<'scope, 'env>,
 }
@@ -255,7 +255,7 @@ where
     let notify_unique = AtomicU64::new(0);
 
     thread::scope(|spawner| -> io::Result<()> {
-        fs.init(Context {
+        fs.init(Env {
             notifier: Notifier {
                 session: &session,
                 conn: &conn,
@@ -337,55 +337,55 @@ where
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
 
-        let cx = Context {
+        let env = Env {
             notifier: self.notifier.clone(),
             spawner,
         };
 
         let result = match op {
-            Operation::Lookup(op) => self.fs.lookup(cx, self.req(op)),
-            Operation::Getattr(op) => self.fs.getattr(cx, self.req(op)),
-            Operation::Setattr(op) => self.fs.setattr(cx, self.req(op)),
-            Operation::Readlink(op) => self.fs.readlink(cx, self.req(op)),
-            Operation::Symlink(op) => self.fs.symlink(cx, self.req(op)),
-            Operation::Mknod(op) => self.fs.mknod(cx, self.req(op)),
-            Operation::Mkdir(op) => self.fs.mkdir(cx, self.req(op)),
-            Operation::Unlink(op) => self.fs.unlink(cx, self.req(op)),
-            Operation::Rmdir(op) => self.fs.rmdir(cx, self.req(op)),
-            Operation::Rename(op) => self.fs.rename(cx, self.req(op)),
-            Operation::Link(op) => self.fs.link(cx, self.req(op)),
-            Operation::Open(op) => self.fs.open(cx, self.req(op)),
-            Operation::Read(op) => self.fs.read(cx, self.req(op)),
-            Operation::Release(op) => self.fs.release(cx, self.req(op)),
-            Operation::Statfs(op) => self.fs.statfs(cx, self.req(op)),
-            Operation::Fsync(op) => self.fs.fsync(cx, self.req(op)),
-            Operation::Setxattr(op) => self.fs.setxattr(cx, self.req(op)),
-            Operation::Getxattr(op) => self.fs.getxattr(cx, self.req(op)),
-            Operation::Listxattr(op) => self.fs.listxattr(cx, self.req(op)),
-            Operation::Removexattr(op) => self.fs.removexattr(cx, self.req(op)),
-            Operation::Flush(op) => self.fs.flush(cx, self.req(op)),
-            Operation::Opendir(op) => self.fs.opendir(cx, self.req(op)),
-            Operation::Readdir(op) => self.fs.readdir(cx, self.req(op)),
-            Operation::Releasedir(op) => self.fs.releasedir(cx, self.req(op)),
-            Operation::Fsyncdir(op) => self.fs.fsyncdir(cx, self.req(op)),
-            Operation::Getlk(op) => self.fs.getlk(cx, self.req(op)),
-            Operation::Setlk(op) => self.fs.setlk(cx, self.req(op)),
-            Operation::Flock(op) => self.fs.flock(cx, self.req(op)),
-            Operation::Access(op) => self.fs.access(cx, self.req(op)),
-            Operation::Create(op) => self.fs.create(cx, self.req(op)),
-            Operation::Bmap(op) => self.fs.bmap(cx, self.req(op)),
-            Operation::Fallocate(op) => self.fs.fallocate(cx, self.req(op)),
-            Operation::CopyFileRange(op) => self.fs.copy_file_range(cx, self.req(op)),
-            Operation::Poll(op) => self.fs.poll(cx, self.req(op)),
-            Operation::Lseek(op) => self.fs.lseek(cx, self.req(op)),
-            Operation::Write(op) => self.fs.write(cx, self.req(op), Data { inner: data }),
+            Operation::Lookup(op) => self.fs.lookup(env, self.req(op)),
+            Operation::Getattr(op) => self.fs.getattr(env, self.req(op)),
+            Operation::Setattr(op) => self.fs.setattr(env, self.req(op)),
+            Operation::Readlink(op) => self.fs.readlink(env, self.req(op)),
+            Operation::Symlink(op) => self.fs.symlink(env, self.req(op)),
+            Operation::Mknod(op) => self.fs.mknod(env, self.req(op)),
+            Operation::Mkdir(op) => self.fs.mkdir(env, self.req(op)),
+            Operation::Unlink(op) => self.fs.unlink(env, self.req(op)),
+            Operation::Rmdir(op) => self.fs.rmdir(env, self.req(op)),
+            Operation::Rename(op) => self.fs.rename(env, self.req(op)),
+            Operation::Link(op) => self.fs.link(env, self.req(op)),
+            Operation::Open(op) => self.fs.open(env, self.req(op)),
+            Operation::Read(op) => self.fs.read(env, self.req(op)),
+            Operation::Release(op) => self.fs.release(env, self.req(op)),
+            Operation::Statfs(op) => self.fs.statfs(env, self.req(op)),
+            Operation::Fsync(op) => self.fs.fsync(env, self.req(op)),
+            Operation::Setxattr(op) => self.fs.setxattr(env, self.req(op)),
+            Operation::Getxattr(op) => self.fs.getxattr(env, self.req(op)),
+            Operation::Listxattr(op) => self.fs.listxattr(env, self.req(op)),
+            Operation::Removexattr(op) => self.fs.removexattr(env, self.req(op)),
+            Operation::Flush(op) => self.fs.flush(env, self.req(op)),
+            Operation::Opendir(op) => self.fs.opendir(env, self.req(op)),
+            Operation::Readdir(op) => self.fs.readdir(env, self.req(op)),
+            Operation::Releasedir(op) => self.fs.releasedir(env, self.req(op)),
+            Operation::Fsyncdir(op) => self.fs.fsyncdir(env, self.req(op)),
+            Operation::Getlk(op) => self.fs.getlk(env, self.req(op)),
+            Operation::Setlk(op) => self.fs.setlk(env, self.req(op)),
+            Operation::Flock(op) => self.fs.flock(env, self.req(op)),
+            Operation::Access(op) => self.fs.access(env, self.req(op)),
+            Operation::Create(op) => self.fs.create(env, self.req(op)),
+            Operation::Bmap(op) => self.fs.bmap(env, self.req(op)),
+            Operation::Fallocate(op) => self.fs.fallocate(env, self.req(op)),
+            Operation::CopyFileRange(op) => self.fs.copy_file_range(env, self.req(op)),
+            Operation::Poll(op) => self.fs.poll(env, self.req(op)),
+            Operation::Lseek(op) => self.fs.lseek(env, self.req(op)),
+            Operation::Write(op) => self.fs.write(env, self.req(op), Data { inner: data }),
             Operation::NotifyReply(op) => {
                 self.fs
-                    .notify_reply(cx, self.req(op), Data { inner: data })?;
+                    .notify_reply(env, self.req(op), Data { inner: data })?;
                 return Ok(());
             }
             Operation::Forget(forgets) => {
-                self.fs.forget(cx, forgets.as_ref());
+                self.fs.forget(env, forgets.as_ref());
                 return Ok(());
             }
             Operation::Interrupt(op) => {

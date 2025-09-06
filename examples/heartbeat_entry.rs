@@ -130,15 +130,15 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    fn init<'env>(&'env self, cx: fs::Context<'_, 'env>) -> io::Result<()> {
-        cx.spawner.spawn(move || -> Result<()> {
-            self.heartbeat(&cx.notifier)?;
+    fn init<'env>(&'env self, env: fs::Env<'_, 'env>) -> io::Result<()> {
+        env.spawner.spawn(move || -> Result<()> {
+            self.heartbeat(&env.notifier)?;
             Ok(())
         });
         Ok(())
     }
 
-    fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
         if req.arg().parent() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
@@ -162,7 +162,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn forget(&self, _: fs::Context<'_, '_>, forgets: &[op::Forget]) {
+    fn forget(&self, _: fs::Env<'_, '_>, forgets: &[op::Forget]) {
         let mut current = self.current.lock().unwrap();
         for forget in forgets {
             if forget.ino() == FILE_INO {
@@ -171,7 +171,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let attr = match req.arg().ino() {
             NodeID::ROOT => self.root_attr.clone(),
             FILE_INO => self.file_attr.clone(),
@@ -185,7 +185,7 @@ impl Filesystem for Heartbeat {
         req.reply(out)
     }
 
-    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         match req.arg().ino() {
             NodeID::ROOT => Err(EISDIR)?,
             FILE_INO => req.reply(()),
@@ -193,7 +193,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }

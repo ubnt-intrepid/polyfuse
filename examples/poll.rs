@@ -63,7 +63,7 @@ impl PollFS {
 }
 
 impl Filesystem for PollFS {
-    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let mut out = AttrOut::default();
         out.attr({
             let mut attr = FileAttr::new();
@@ -79,7 +79,7 @@ impl Filesystem for PollFS {
         req.reply(out)
     }
 
-    fn open(&self, cx: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
+    fn open(&self, cx: fs::Env<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
         if req.arg().options().access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
@@ -136,7 +136,7 @@ impl Filesystem for PollFS {
         })
     }
 
-    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         let handle = &**self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
         let mut state = handle.state.lock().unwrap();
         if handle.is_nonblock {
@@ -163,7 +163,7 @@ impl Filesystem for PollFS {
         req.reply(&content[..std::cmp::min(content.len(), bufsize)])
     }
 
-    fn poll(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Poll<'_>>) -> fs::Result {
+    fn poll(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Poll<'_>>) -> fs::Result {
         let handle = &*self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
         let state = &mut *handle.state.lock().unwrap();
 
@@ -180,7 +180,7 @@ impl Filesystem for PollFS {
         req.reply(out)
     }
 
-    fn release(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Release<'_>>) -> fs::Result {
+    fn release(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Release<'_>>) -> fs::Result {
         drop(self.handles.remove(&req.arg().fh()));
         req.reply(())
     }

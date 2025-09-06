@@ -133,20 +133,20 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    fn init<'env>(&'env self, cx: fs::Context<'_, 'env>) -> io::Result<()> {
+    fn init<'env>(&'env self, env: fs::Env<'_, 'env>) -> io::Result<()> {
         // Spawn a task that beats the heart.
-        cx.spawner.spawn(move || -> Result<()> {
+        env.spawner.spawn(move || -> Result<()> {
             loop {
                 tracing::info!("heartbeat");
                 self.update_content();
-                self.notify(&cx.notifier)?;
+                self.notify(&env.notifier)?;
                 std::thread::sleep(self.update_interval);
             }
         });
         Ok(())
     }
 
-    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
@@ -156,7 +156,7 @@ impl Filesystem for Heartbeat {
         req.reply(out)
     }
 
-    fn open(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
+    fn open(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
@@ -165,7 +165,7 @@ impl Filesystem for Heartbeat {
         req.reply(out)
     }
 
-    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?
         }
@@ -185,7 +185,7 @@ impl Filesystem for Heartbeat {
 
     fn notify_reply(
         &self,
-        _: fs::Context<'_, '_>,
+        _: fs::Env<'_, '_>,
         req: fs::Request<'_, op::NotifyReply<'_>>,
         mut data: fs::Data<'_>,
     ) -> io::Result<()> {

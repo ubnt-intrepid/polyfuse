@@ -140,7 +140,7 @@ impl PathThrough {
 }
 
 impl Filesystem for PathThrough {
-    fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
         let inodes = &mut *self.inodes.lock().unwrap();
         let parent = inodes.get(req.arg().parent()).ok_or(ENOENT)?;
         let path = parent.path.join(req.arg().name());
@@ -170,7 +170,7 @@ impl Filesystem for PathThrough {
         req.reply(out)
     }
 
-    fn forget(&self, _: fs::Context<'_, '_>, forgets: &[Forget]) {
+    fn forget(&self, _: fs::Env<'_, '_>, forgets: &[Forget]) {
         let inodes = &mut *self.inodes.lock().unwrap();
         for forget in forgets {
             if let Entry::Occupied(mut entry) = inodes.map.entry(forget.ino()) {
@@ -188,7 +188,7 @@ impl Filesystem for PathThrough {
         }
     }
 
-    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let inodes = &mut *self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
@@ -199,7 +199,7 @@ impl Filesystem for PathThrough {
         req.reply(out)
     }
 
-    fn setattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Setattr<'_>>) -> fs::Result {
+    fn setattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Setattr<'_>>) -> fs::Result {
         let fh = req.arg().fh().ok_or(ENOENT)?;
         let files = &mut *self.files.lock().unwrap();
         let file = files.get(fh.into_raw() as usize).ok_or(EINVAL)?;
@@ -240,18 +240,14 @@ impl Filesystem for PathThrough {
         req.reply(out)
     }
 
-    fn readlink(
-        &self,
-        _: fs::Context<'_, '_>,
-        req: fs::Request<'_, op::Readlink<'_>>,
-    ) -> fs::Result {
+    fn readlink(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readlink<'_>>) -> fs::Result {
         let inodes = &mut *self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let path = std::fs::read_link(self.source.join(&inode.path))?;
         req.reply(path.as_os_str())
     }
 
-    fn opendir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
+    fn opendir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
         let inodes = &mut *self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
@@ -268,7 +264,7 @@ impl Filesystem for PathThrough {
         req.reply(out)
     }
 
-    fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
         if req.arg().mode() == op::ReaddirMode::Plus {
             return Err(ENOSYS.into());
         }
@@ -336,7 +332,7 @@ impl Filesystem for PathThrough {
 
     fn releasedir(
         &self,
-        _: fs::Context<'_, '_>,
+        _: fs::Env<'_, '_>,
         req: fs::Request<'_, op::Releasedir<'_>>,
     ) -> fs::Result {
         let dirs = &mut *self.dirs.lock().unwrap();
@@ -344,7 +340,7 @@ impl Filesystem for PathThrough {
         req.reply(())
     }
 
-    fn open(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
+    fn open(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
         let inodes = &mut *self.inodes.lock().unwrap();
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
 
@@ -361,7 +357,7 @@ impl Filesystem for PathThrough {
         req.reply(out)
     }
 
-    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         let buf = file.read(req.arg().offset(), req.arg().size() as usize)?;
@@ -370,7 +366,7 @@ impl Filesystem for PathThrough {
 
     fn write(
         &self,
-        _: fs::Context<'_, '_>,
+        _: fs::Env<'_, '_>,
         req: fs::Request<'_, op::Write<'_>>,
         data: fs::Data<'_>,
     ) -> fs::Result {
@@ -385,21 +381,21 @@ impl Filesystem for PathThrough {
         req.reply(out)
     }
 
-    fn flush(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Flush<'_>>) -> fs::Result {
+    fn flush(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Flush<'_>>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         file.fsync(false)?;
         req.reply(())
     }
 
-    fn fsync(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Fsync<'_>>) -> fs::Result {
+    fn fsync(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Fsync<'_>>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let file = Slab::get_mut(files, req.arg().fh().into_raw() as usize).ok_or(EINVAL)?;
         file.fsync(req.arg().datasync())?;
         req.reply(())
     }
 
-    fn release(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Release<'_>>) -> fs::Result {
+    fn release(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Release<'_>>) -> fs::Result {
         let files = &mut *self.files.lock().unwrap();
         let _file = files.remove(req.arg().fh().into_raw() as usize);
         req.reply(())

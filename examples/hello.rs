@@ -109,7 +109,7 @@ impl Hello {
 }
 
 impl Filesystem for Hello {
-    fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
         match req.arg().parent() {
             NodeID::ROOT if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
@@ -123,7 +123,7 @@ impl Filesystem for Hello {
         }
     }
 
-    fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let attr = match req.arg().ino() {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
@@ -137,7 +137,7 @@ impl Filesystem for Hello {
         req.reply(out)
     }
 
-    fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         match req.arg().ino() {
             HELLO_INO => (),
             NodeID::ROOT => Err(EISDIR)?,
@@ -156,7 +156,7 @@ impl Filesystem for Hello {
         req.reply(data)
     }
 
-    fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOTDIR)?
         }
