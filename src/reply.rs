@@ -1,94 +1,27 @@
-use crate::bytes::{Bytes, FillBytes};
+use crate::{
+    bytes::{Bytes, FillBytes},
+    types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
+};
 use polyfuse_kernel::*;
 use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::IntoBytes as _;
 
-/// Attributes about a file.
-#[repr(transparent)]
-pub struct FileAttr {
-    attr: fuse_attr,
-}
-
-impl FileAttr {
-    #[inline]
-    fn from_attr_mut(attr: &mut fuse_attr) -> &mut FileAttr {
-        unsafe { &mut *(attr as *mut fuse_attr as *mut FileAttr) }
-    }
-
-    /// Set the inode number.
-    #[inline]
-    pub fn ino(&mut self, ino: u64) {
-        self.attr.ino = ino;
-    }
-
-    /// Set the size of content.
-    #[inline]
-    pub fn size(&mut self, size: u64) {
-        self.attr.size = size;
-    }
-
-    /// Set the permission of the inode.
-    #[inline]
-    pub fn mode(&mut self, mode: u32) {
-        self.attr.mode = mode;
-    }
-
-    /// Set the number of hard links.
-    #[inline]
-    pub fn nlink(&mut self, nlink: u32) {
-        self.attr.nlink = nlink;
-    }
-
-    /// Set the user ID.
-    #[inline]
-    pub fn uid(&mut self, uid: u32) {
-        self.attr.uid = uid;
-    }
-
-    /// Set the group ID.
-    #[inline]
-    pub fn gid(&mut self, gid: u32) {
-        self.attr.gid = gid;
-    }
-
-    /// Set the device ID.
-    #[inline]
-    pub fn rdev(&mut self, rdev: u32) {
-        self.attr.rdev = rdev;
-    }
-
-    /// Set the block size.
-    #[inline]
-    pub fn blksize(&mut self, blksize: u32) {
-        self.attr.blksize = blksize;
-    }
-
-    /// Set the number of allocated blocks.
-    #[inline]
-    pub fn blocks(&mut self, blocks: u64) {
-        self.attr.blocks = blocks;
-    }
-
-    /// Set the last accessed time.
-    #[inline]
-    pub fn atime(&mut self, atime: Duration) {
-        self.attr.atime = atime.as_secs();
-        self.attr.atimensec = atime.subsec_nanos();
-    }
-
-    /// Set the last modification time.
-    #[inline]
-    pub fn mtime(&mut self, mtime: Duration) {
-        self.attr.mtime = mtime.as_secs();
-        self.attr.mtimensec = mtime.subsec_nanos();
-    }
-
-    /// Set the last created time.
-    #[inline]
-    pub fn ctime(&mut self, ctime: Duration) {
-        self.attr.ctime = ctime.as_secs();
-        self.attr.ctimensec = ctime.subsec_nanos();
-    }
+fn fill_fuse_attr(slot: &mut fuse_attr, attr: &FileAttr) {
+    slot.ino = attr.ino.into_raw();
+    slot.size = attr.size;
+    slot.blocks = attr.blocks;
+    slot.atime = attr.atime.as_secs();
+    slot.mtime = attr.mtime.as_secs();
+    slot.ctime = attr.ctime.as_secs();
+    slot.atimensec = attr.atime.subsec_nanos();
+    slot.mtimensec = attr.mtime.subsec_nanos();
+    slot.ctimensec = attr.ctime.subsec_nanos();
+    slot.mode = attr.mode.into_raw();
+    slot.nlink = attr.nlink;
+    slot.uid = attr.uid.into_raw();
+    slot.gid = attr.gid.into_raw();
+    slot.rdev = attr.rdev.into_kernel_dev();
+    slot.blksize = attr.blksize;
 }
 
 #[derive(Default)]
@@ -123,8 +56,8 @@ impl Bytes for EntryOut {
 impl EntryOut {
     /// Return the object to fill attribute values about this entry.
     #[inline]
-    pub fn attr(&mut self) -> &mut FileAttr {
-        FileAttr::from_attr_mut(&mut self.out.attr)
+    pub fn attr(&mut self, attr: FileAttr) {
+        fill_fuse_attr(&mut self.out.attr, &attr);
     }
 
     /// Set the inode number of this entry.
@@ -134,8 +67,8 @@ impl EntryOut {
     /// but the *zeroed* entries also have the ability to specify the lifetime
     /// of the entry cache by using the `ttl_entry` parameter.
     #[inline]
-    pub fn ino(&mut self, ino: u64) {
-        self.out.nodeid = ino;
+    pub fn ino(&mut self, ino: NodeID) {
+        self.out.nodeid = ino.into_raw();
     }
 
     /// Set the generation of this entry.
@@ -184,8 +117,8 @@ impl fmt::Debug for AttrOut {
 impl AttrOut {
     /// Return the object to fill attribute values.
     #[inline]
-    pub fn attr(&mut self) -> &mut FileAttr {
-        FileAttr::from_attr_mut(&mut self.out.attr)
+    pub fn attr(&mut self, attr: FileAttr) {
+        fill_fuse_attr(&mut self.out.attr, &attr);
     }
 
     /// Set the validity timeout for this attribute.
@@ -243,8 +176,8 @@ impl Bytes for OpenOut {
 
 impl OpenOut {
     /// Set the handle of opened file.
-    pub fn fh(&mut self, fh: u64) {
-        self.out.fh = fh;
+    pub fn fh(&mut self, fh: FileID) {
+        self.out.fh = fh.into_raw();
     }
 
     #[inline]
@@ -346,60 +279,19 @@ impl Bytes for StatfsOut {
 
 impl StatfsOut {
     /// Return the object to fill the filesystem statistics.
-    pub fn statfs(&mut self) -> &mut Statfs {
-        Statfs::from_kstatfs_mut(&mut self.out.st)
-    }
-}
-
-#[derive(Default)]
-pub struct Statfs {
-    st: fuse_kstatfs,
-}
-
-impl Statfs {
-    #[inline]
-    fn from_kstatfs_mut(st: &mut fuse_kstatfs) -> &mut Statfs {
-        unsafe { &mut *(st as *mut fuse_kstatfs as *mut Statfs) }
-    }
-
-    /// Set the block size.
-    pub fn bsize(&mut self, bsize: u32) {
-        self.st.bsize = bsize;
-    }
-
-    /// Set the fragment size.
-    pub fn frsize(&mut self, frsize: u32) {
-        self.st.frsize = frsize;
-    }
-
-    /// Set the number of blocks in the filesystem.
-    pub fn blocks(&mut self, blocks: u64) {
-        self.st.blocks = blocks;
-    }
-
-    /// Set the number of free blocks.
-    pub fn bfree(&mut self, bfree: u64) {
-        self.st.bfree = bfree;
-    }
-
-    /// Set the number of free blocks for non-priviledge users.
-    pub fn bavail(&mut self, bavail: u64) {
-        self.st.bavail = bavail;
-    }
-
-    /// Set the number of inodes.
-    pub fn files(&mut self, files: u64) {
-        self.st.files = files;
-    }
-
-    /// Set the number of free inodes.
-    pub fn ffree(&mut self, ffree: u64) {
-        self.st.ffree = ffree;
-    }
-
-    /// Set the maximum length of file names.
-    pub fn namelen(&mut self, namelen: u32) {
-        self.st.namelen = namelen;
+    pub fn statfs(&mut self, st: Statfs) {
+        self.out.st = fuse_kstatfs {
+            blocks: st.blocks,
+            bfree: st.bfree,
+            bavail: st.bavail,
+            files: st.files,
+            ffree: st.ffree,
+            bsize: st.bsize,
+            namelen: st.namelen,
+            frsize: st.frsize,
+            padding: 0,
+            spare: [0; 6],
+        };
     }
 }
 
@@ -468,40 +360,13 @@ impl Bytes for LkOut {
 }
 
 impl LkOut {
-    pub fn file_lock(&mut self) -> &mut FileLock {
-        FileLock::from_file_lock_mut(&mut self.out.lk)
-    }
-}
-
-#[repr(transparent)]
-pub struct FileLock {
-    lk: fuse_file_lock,
-}
-
-impl FileLock {
-    #[inline]
-    fn from_file_lock_mut(lk: &mut fuse_file_lock) -> &mut Self {
-        unsafe { &mut *(lk as *mut fuse_file_lock as *mut Self) }
-    }
-
-    /// Set the type of this lock.
-    pub fn typ(&mut self, typ: u32) {
-        self.lk.typ = typ;
-    }
-
-    /// Set the starting offset to be locked.
-    pub fn start(&mut self, start: u64) {
-        self.lk.start = start;
-    }
-
-    /// Set the ending offset to be locked.
-    pub fn end(&mut self, end: u64) {
-        self.lk.end = end;
-    }
-
-    /// Set the process ID.
-    pub fn pid(&mut self, pid: u32) {
-        self.lk.pid = pid;
+    pub fn file_lock(&mut self, lk: &FileLock) {
+        self.out.lk = fuse_file_lock {
+            start: lk.start,
+            end: lk.end,
+            typ: lk.typ,
+            pid: lk.pid.into_raw(),
+        };
     }
 }
 
@@ -570,8 +435,8 @@ impl Bytes for PollOut {
 }
 
 impl PollOut {
-    pub fn revents(&mut self, revents: u32) {
-        self.out.revents = revents;
+    pub fn revents(&mut self, revents: PollEvents) {
+        self.out.revents = revents.bits();
     }
 }
 
@@ -609,7 +474,7 @@ impl ReaddirOut {
         }
     }
 
-    pub fn entry(&mut self, name: &OsStr, ino: u64, typ: u32, off: u64) -> bool {
+    pub fn entry(&mut self, name: &OsStr, ino: NodeID, typ: Option<FileType>, off: u64) -> bool {
         let name = name.as_bytes();
         let remaining = self.buf.capacity() - self.buf.len();
 
@@ -620,11 +485,22 @@ impl ReaddirOut {
             return true;
         }
 
+        let typ = match typ {
+            Some(FileType::BlockDevice) => libc::DT_BLK,
+            Some(FileType::CharacterDevice) => libc::DT_CHR,
+            Some(FileType::Directory) => libc::DT_DIR,
+            Some(FileType::Fifo) => libc::DT_FIFO,
+            Some(FileType::SymbolicLink) => libc::DT_LNK,
+            Some(FileType::Regular) => libc::DT_REG,
+            Some(FileType::Socket) => libc::DT_SOCK,
+            None => libc::DT_UNKNOWN,
+        };
+
         let dirent = fuse_dirent {
-            ino,
+            ino: ino.into_raw(),
             off,
             namelen: name.len().try_into().expect("name length is too long"),
-            typ,
+            typ: typ as u32,
             name: [],
         };
         let lenbefore = self.buf.len();

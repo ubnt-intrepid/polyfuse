@@ -6,28 +6,27 @@
 
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
+#![forbid(unsafe_code)]
 
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, FileAttr, OpenOut},
+    reply::{AttrOut, OpenOut},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
     KernelConfig,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
-use libc::{ENOENT, S_IFREG};
+use libc::ENOENT;
 use std::{
     io::{self, prelude::*},
-    mem,
     path::PathBuf,
     sync::Mutex,
     time::Duration,
 };
-
-const ROOT_INO: u64 = 1;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -72,24 +71,24 @@ impl std::str::FromStr for NotifyKind {
 
 struct Heartbeat {
     inner: Mutex<Inner>,
-    retrieves: DashMap<u64, String>,
+    retrieves: DashMap<NotifyID, String>,
     kind: Option<NotifyKind>,
     update_interval: Duration,
 }
 
 struct Inner {
     content: String,
-    attr: libc::stat,
+    attr: FileAttr,
 }
 
 impl Heartbeat {
     fn new(kind: Option<NotifyKind>, update_interval: Duration) -> Self {
         let content = Local::now().to_rfc3339();
 
-        let mut attr = unsafe { mem::zeroed::<libc::stat>() };
-        attr.st_ino = ROOT_INO;
-        attr.st_mode = S_IFREG | 0o444;
-        attr.st_size = content.len() as libc::off_t;
+        let mut attr = FileAttr::new();
+        attr.ino = NodeID::ROOT;
+        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+        attr.size = content.len() as u64;
 
         Self {
             inner: Mutex::new(Inner { content, attr }),
@@ -102,7 +101,7 @@ impl Heartbeat {
     fn update_content(&self) {
         let mut inner = self.inner.lock().unwrap();
         let content = Local::now().to_rfc3339();
-        inner.attr.st_size = content.len() as libc::off_t;
+        inner.attr.size = content.len() as u64;
         inner.content = content;
     }
 
@@ -113,18 +112,18 @@ impl Heartbeat {
                 let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
-                notifier.store(ROOT_INO, 0, &content)?;
+                notifier.store(NodeID::ROOT, 0, &content)?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
-                let unique = notifier.retrieve(ROOT_INO, 0, 1024)?;
+                let unique = notifier.retrieve(NodeID::ROOT, 0, 1024)?;
                 self.retrieves.insert(unique, content);
             }
 
             Some(NotifyKind::Invalidate) => {
                 tracing::info!("send notify_invalidate_inode");
-                notifier.inval_inode(ROOT_INO, 0, 0)?;
+                notifier.inval_inode(NodeID::ROOT, 0, 0)?;
             }
 
             None => { /* do nothing */ }
@@ -148,17 +147,17 @@ impl Filesystem for Heartbeat {
     }
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
-        if req.arg().ino() != ROOT_INO {
+        if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
         let inner = self.inner.lock().unwrap();
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &inner.attr);
+        out.attr(inner.attr.clone());
         req.reply(out)
     }
 
     fn open(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
-        if req.arg().ino() != ROOT_INO {
+        if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
         let mut out = OpenOut::default();
@@ -167,7 +166,7 @@ impl Filesystem for Heartbeat {
     }
 
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
-        if req.arg().ino() != ROOT_INO {
+        if req.arg().ino() != NodeID::ROOT {
             Err(ENOENT)?
         }
 
@@ -205,19 +204,4 @@ impl Filesystem for Heartbeat {
         }
         Ok(())
     }
-}
-
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(st.st_ino);
-    attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
-    attr.rdev(st.st_rdev as u32);
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
 }

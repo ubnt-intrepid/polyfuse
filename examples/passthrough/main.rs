@@ -6,10 +6,9 @@ mod nix;
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
-    op,
-    reply::{
-        AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut, Statfs, StatfsOut, WriteOut, XattrOut,
-    },
+    op::{self, OpenFlags},
+    reply::{AttrOut, EntryOut, OpenOut, ReaddirOut, StatfsOut, WriteOut, XattrOut},
+    types::{DeviceID, FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     KernelConfig, KernelFlags,
 };
 
@@ -17,8 +16,7 @@ use crate::nix::{FileDesc, ReadDir};
 use anyhow::{ensure, Context as _, Result};
 use libc::{
     AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, EINVAL, ENOENT, ENOSYS, ENOTSUP,
-    EOPNOTSUPP, EPERM, O_NOFOLLOW, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, S_IFDIR, S_IFLNK, S_IFMT,
-    UTIME_NOW, UTIME_OMIT,
+    EOPNOTSUPP, EPERM, O_NOFOLLOW, O_PATH, S_IFLNK, S_IFMT, UTIME_NOW, UTIME_OMIT,
 };
 use pico_args::Arguments;
 use slab::Slab;
@@ -27,7 +25,6 @@ use std::{
     ffi::OsStr,
     fs::{File, OpenOptions},
     io::{self, prelude::*},
-    os::unix::prelude::*,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -70,7 +67,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-type Ino = u64;
 type SrcId = (u64, libc::dev_t);
 
 struct Passthrough {
@@ -89,9 +85,9 @@ impl Passthrough {
 
         let mut inodes = INodeTable::new();
         let entry = inodes.vacant_entry();
-        debug_assert_eq!(entry.ino(), 1);
+        debug_assert_eq!(entry.ino(), NodeID::ROOT);
         entry.insert(INode {
-            ino: 1,
+            ino: NodeID::ROOT,
             fd,
             refcount: u64::max_value() / 2, // the root node's cache is never removed.
             src_id: (stat.st_ino, stat.st_dev),
@@ -106,10 +102,10 @@ impl Passthrough {
         })
     }
 
-    fn make_entry_param(&self, ino: u64, attr: libc::stat) -> EntryOut {
+    fn make_entry_param(&self, ino: NodeID, attr: FileAttr) -> EntryOut {
         let mut reply = EntryOut::default();
         reply.ino(ino);
-        fill_attr(reply.attr(), &attr);
+        reply.attr(attr);
         if let Some(timeout) = self.timeout {
             reply.ttl_entry(timeout);
             reply.ttl_attr(timeout);
@@ -117,7 +113,7 @@ impl Passthrough {
         reply
     }
 
-    fn do_lookup(&self, parent: u64, name: &OsStr) -> fs::Result<EntryOut> {
+    fn do_lookup(&self, parent: NodeID, name: &OsStr) -> fs::Result<EntryOut> {
         let mut inodes = self.inodes.lock().unwrap();
         let inodes = &mut *inodes;
 
@@ -156,15 +152,15 @@ impl Passthrough {
             }
         }
 
-        Ok(self.make_entry_param(ino, stat))
+        Ok(self.make_entry_param(ino, stat.try_into().unwrap()))
     }
 
     fn make_node(
         &self,
-        parent: Ino,
+        parent: NodeID,
         name: &OsStr,
-        mode: u32,
-        rdev: Option<u32>,
+        mode: FileMode,
+        rdev: Option<DeviceID>,
         link: Option<&OsStr>,
     ) -> fs::Result<EntryOut> {
         {
@@ -172,18 +168,20 @@ impl Passthrough {
             let parent = inodes.get(parent).ok_or(ENOENT)?;
             let parent = parent.lock().unwrap();
 
-            match mode & S_IFMT {
-                S_IFDIR => {
-                    parent.fd.mkdirat(name, mode)?;
+            match mode.file_type() {
+                Some(FileType::Directory) => {
+                    parent.fd.mkdirat(name, mode.permissions().bits())?;
                 }
-                S_IFLNK => {
+                Some(FileType::SymbolicLink) => {
                     let link = link.expect("missing 'link'");
                     parent.fd.symlinkat(name, link)?;
                 }
                 _ => {
-                    parent
-                        .fd
-                        .mknodat(name, mode, rdev.unwrap_or(0) as libc::dev_t)?;
+                    parent.fd.mknodat(
+                        name,
+                        mode.into_raw(),
+                        rdev.map_or(0, DeviceID::into_userspace_dev),
+                    )?;
                 }
             }
         }
@@ -225,7 +223,7 @@ impl Filesystem for Passthrough {
         let stat = inode.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &stat);
+        out.attr(stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         };
@@ -250,9 +248,9 @@ impl Filesystem for Passthrough {
         // chmod
         if let Some(mode) = req.arg().mode() {
             if let Some(file) = file.as_mut() {
-                nix::fchmod(&**file, mode)?;
+                nix::fchmod(&**file, mode.into_raw())?;
             } else {
-                nix::chmod(fd.procname(), mode)?;
+                nix::chmod(fd.procname(), mode.into_raw())?;
             }
         }
 
@@ -260,7 +258,12 @@ impl Filesystem for Passthrough {
         match (req.arg().uid(), req.arg().gid()) {
             (None, None) => (),
             (uid, gid) => {
-                fd.fchownat("", uid, gid, AT_SYMLINK_NOFOLLOW)?;
+                fd.fchownat(
+                    "",
+                    uid.map(UID::into_raw),
+                    gid.map(GID::into_raw),
+                    AT_SYMLINK_NOFOLLOW,
+                )?;
             }
         }
 
@@ -315,7 +318,7 @@ impl Filesystem for Passthrough {
         let stat = fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         let mut out = AttrOut::default();
-        fill_attr(out.attr(), &stat);
+        out.attr(stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
             out.ttl(timeout);
         };
@@ -365,7 +368,7 @@ impl Filesystem for Passthrough {
         }
 
         let stat = source.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
-        let entry = self.make_entry_param(source.ino, stat);
+        let entry = self.make_entry_param(source.ino, stat.try_into().unwrap());
 
         source.refcount += 1;
 
@@ -387,7 +390,7 @@ impl Filesystem for Passthrough {
         let out = self.make_node(
             req.arg().parent(),
             req.arg().name(),
-            S_IFDIR | req.arg().mode(),
+            FileMode::new(FileType::Directory, req.arg().permissions()),
             None,
             None,
         )?;
@@ -398,7 +401,7 @@ impl Filesystem for Passthrough {
         let out = self.make_node(
             req.arg().parent(),
             req.arg().name(),
-            S_IFLNK,
+            FileMode::new(FileType::SymbolicLink, FilePermissions::empty()),
             None,
             Some(req.arg().link()),
         )?;
@@ -422,7 +425,7 @@ impl Filesystem for Passthrough {
     }
 
     fn rename(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Rename<'_>>) -> fs::Result {
-        if req.arg().flags() != 0 {
+        if !req.arg().flags().is_empty() {
             // rename2 is not supported.
             return Err(EINVAL.into());
         }
@@ -475,7 +478,12 @@ impl Filesystem for Passthrough {
         let mut out = ReaddirOut::new(req.arg().size() as usize);
         for entry in read_dir {
             let entry = entry?;
-            if out.entry(&entry.name, entry.ino, entry.typ, entry.off) {
+            if out.entry(
+                &entry.name,
+                NodeID::from_raw(entry.ino),
+                FileType::from_dirent_type(entry.typ),
+                entry.off,
+            ) {
                 break;
             }
         }
@@ -514,20 +522,7 @@ impl Filesystem for Passthrough {
         let inode = inodes.get(req.arg().ino()).ok_or(ENOENT)?;
         let inode = inode.lock().unwrap();
 
-        let mut options = OpenOptions::new();
-        match (req.arg().flags() & 0x03) as i32 {
-            O_RDONLY => {
-                options.read(true);
-            }
-            O_WRONLY => {
-                options.write(true);
-            }
-            O_RDWR => {
-                options.read(true).write(true);
-            }
-            _ => (),
-        }
-        options.custom_flags(req.arg().flags() as i32 & !O_NOFOLLOW);
+        let options: OpenOptions = req.arg().options().remove(OpenFlags::NOFOLLOW).into();
 
         let file = options.open(inode.fd.procname())?;
         let fh = self.opened_files.insert(Mutex::new(file));
@@ -609,9 +604,9 @@ impl Filesystem for Passthrough {
         let file = self.opened_files.get(req.arg().fh()).ok_or(ENOENT)?;
         let file = file.lock().unwrap();
 
-        let op = req.arg().op().expect("invalid lock operation") as i32;
+        let op = req.arg().op().expect("invalid lock operation");
 
-        nix::flock(&*file, op)?;
+        nix::flock(&*file, op.into_raw())?;
 
         req.reply(())
     }
@@ -621,7 +616,7 @@ impl Filesystem for Passthrough {
         _: fs::Context<'_, '_>,
         req: fs::Request<'_, op::Fallocate<'_>>,
     ) -> fs::Result {
-        if req.arg().mode() != 0 {
+        if !req.arg().mode().is_empty() {
             return Err(EOPNOTSUPP.into());
         }
 
@@ -716,7 +711,7 @@ impl Filesystem for Passthrough {
             inode.fd.procname(),
             req.arg().name(),
             req.arg().value(),
-            req.arg().flags() as libc::c_int,
+            req.arg().flags().bits() as libc::c_int,
         )?;
 
         req.reply(())
@@ -749,36 +744,10 @@ impl Filesystem for Passthrough {
         let st = nix::fstatvfs(&inode.fd)?;
 
         let mut out = StatfsOut::default();
-        fill_statfs(out.statfs(), &st);
+        out.statfs(st.try_into().unwrap());
 
         req.reply(out)
     }
-}
-
-fn fill_attr(attr: &mut FileAttr, st: &libc::stat) {
-    attr.ino(st.st_ino);
-    attr.size(st.st_size as u64);
-    attr.mode(st.st_mode);
-    attr.nlink(st.st_nlink as u32);
-    attr.uid(st.st_uid);
-    attr.gid(st.st_gid);
-    attr.rdev(st.st_rdev as u32);
-    attr.blksize(st.st_blksize as u32);
-    attr.blocks(st.st_blocks as u64);
-    attr.atime(Duration::new(st.st_atime as u64, st.st_atime_nsec as u32));
-    attr.mtime(Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32));
-    attr.ctime(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
-}
-
-fn fill_statfs(statfs: &mut Statfs, st: &libc::statvfs) {
-    statfs.bsize(st.f_bsize as u32);
-    statfs.frsize(st.f_frsize as u32);
-    statfs.blocks(st.f_blocks);
-    statfs.bfree(st.f_bfree);
-    statfs.bavail(st.f_bavail);
-    statfs.files(st.f_files);
-    statfs.ffree(st.f_ffree);
-    statfs.namelen(st.f_namemax as u32);
 }
 
 // ==== HandlePool ====
@@ -792,23 +761,23 @@ impl<T> Default for HandlePool<T> {
 }
 
 impl<T> HandlePool<T> {
-    fn get(&self, fh: u64) -> Option<Arc<T>> {
-        self.0.lock().unwrap().get(fh as usize).cloned()
+    fn get(&self, fh: FileID) -> Option<Arc<T>> {
+        self.0.lock().unwrap().get(fh.into_raw() as usize).cloned()
     }
 
-    fn remove(&self, fh: u64) -> Arc<T> {
-        self.0.lock().unwrap().remove(fh as usize)
+    fn remove(&self, fh: FileID) -> Arc<T> {
+        self.0.lock().unwrap().remove(fh.into_raw() as usize)
     }
 
-    fn insert(&self, entry: T) -> u64 {
-        self.0.lock().unwrap().insert(Arc::new(entry)) as u64
+    fn insert(&self, entry: T) -> FileID {
+        FileID::from_raw(self.0.lock().unwrap().insert(Arc::new(entry)) as u64)
     }
 }
 
 // ==== INode ====
 
 struct INode {
-    ino: Ino,
+    ino: NodeID,
     src_id: SrcId,
     is_symlink: bool,
     fd: FileDesc,
@@ -818,8 +787,8 @@ struct INode {
 // ==== INodeTable ====
 
 struct INodeTable {
-    map: HashMap<Ino, Arc<Mutex<INode>>>,
-    src_to_ino: HashMap<SrcId, Ino>,
+    map: HashMap<NodeID, Arc<Mutex<INode>>>,
+    src_to_ino: HashMap<SrcId, NodeID>,
     next_ino: u64,
 }
 
@@ -832,7 +801,7 @@ impl INodeTable {
         }
     }
 
-    fn get(&self, ino: Ino) -> Option<Arc<Mutex<INode>>> {
+    fn get(&self, ino: NodeID) -> Option<Arc<Mutex<INode>>> {
         self.map.get(&ino).cloned()
     }
 
@@ -843,17 +812,20 @@ impl INodeTable {
 
     fn vacant_entry(&mut self) -> VacantEntry<'_> {
         let ino = self.next_ino;
-        VacantEntry { table: self, ino }
+        VacantEntry {
+            table: self,
+            ino: NodeID::from_raw(ino),
+        }
     }
 }
 
 struct VacantEntry<'a> {
     table: &'a mut INodeTable,
-    ino: Ino,
+    ino: NodeID,
 }
 
 impl VacantEntry<'_> {
-    fn ino(&self) -> Ino {
+    fn ino(&self) -> NodeID {
         self.ino
     }
 

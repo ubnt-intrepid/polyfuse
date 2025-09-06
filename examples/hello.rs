@@ -1,21 +1,22 @@
 #![allow(clippy::unnecessary_mut_passed)]
 #![deny(clippy::unimplemented)]
+#![forbid(unsafe_code)]
 
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, EntryOut, FileAttr, OpenOut, ReaddirOut},
+    reply::{AttrOut, EntryOut, ReaddirOut},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{DT_DIR, DT_REG, EISDIR, ENOENT, ENOTDIR, S_IFDIR, S_IFREG};
+use libc::{EISDIR, ENOENT, ENOTDIR};
 use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
-const ROOT_INO: u64 = 1;
-const HELLO_INO: u64 = 2;
+const HELLO_INO: NodeID = NodeID::from_raw(2);
 const HELLO_FILENAME: &str = "hello.txt";
 const HELLO_CONTENT: &[u8] = b"Hello, world!\n";
 
@@ -39,14 +40,14 @@ fn main() -> Result<()> {
 
 struct Hello {
     entries: Vec<DirEntry>,
-    uid: u32,
-    gid: u32,
+    uid: UID,
+    gid: GID,
 }
 
 struct DirEntry {
     name: &'static str,
-    ino: u64,
-    typ: u32,
+    ino: NodeID,
+    typ: Option<FileType>,
 }
 
 impl Hello {
@@ -54,42 +55,49 @@ impl Hello {
         let mut entries = Vec::with_capacity(3);
         entries.push(DirEntry {
             name: ".",
-            ino: ROOT_INO,
-            typ: DT_DIR as u32,
+            ino: NodeID::ROOT,
+            typ: Some(FileType::Directory),
         });
         entries.push(DirEntry {
             name: "..",
-            ino: ROOT_INO,
-            typ: DT_DIR as u32,
+            ino: NodeID::ROOT,
+            typ: Some(FileType::Directory),
         });
         entries.push(DirEntry {
             name: HELLO_FILENAME,
             ino: HELLO_INO,
-            typ: DT_REG as u32,
+            typ: Some(FileType::Regular),
         });
 
         Self {
             entries,
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
+            uid: UID::current(),
+            gid: GID::current(),
         }
     }
 
-    fn fill_root_attr(&self, attr: &mut FileAttr) {
-        attr.ino(ROOT_INO);
-        attr.mode(S_IFDIR | 0o555);
-        attr.nlink(2);
-        attr.uid(self.uid);
-        attr.gid(self.gid);
+    fn root_attr(&self) -> FileAttr {
+        let mut attr = FileAttr::new();
+        attr.ino = NodeID::ROOT;
+        attr.mode = FileMode::new(
+            FileType::Directory,
+            FilePermissions::READ | FilePermissions::EXEC,
+        );
+        attr.nlink = 2; // ".", ".."
+        attr.uid = self.uid;
+        attr.gid = self.gid;
+        attr
     }
 
-    fn fill_hello_attr(&self, attr: &mut FileAttr) {
-        attr.ino(HELLO_INO);
-        attr.size(HELLO_CONTENT.len() as u64);
-        attr.mode(S_IFREG | 0o444);
-        attr.nlink(1);
-        attr.uid(self.uid);
-        attr.gid(self.gid);
+    fn hello_attr(&self) -> FileAttr {
+        let mut attr = FileAttr::new();
+        attr.ino = HELLO_INO;
+        attr.size = HELLO_CONTENT.len() as u64;
+        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+        attr.nlink = 1;
+        attr.uid = self.uid;
+        attr.gid = self.gid;
+        attr
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -103,9 +111,9 @@ impl Hello {
 impl Filesystem for Hello {
     fn lookup(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
         match req.arg().parent() {
-            ROOT_INO if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
+            NodeID::ROOT if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 let mut out = EntryOut::default();
-                self.fill_hello_attr(out.attr());
+                out.attr(self.hello_attr());
                 out.ino(HELLO_INO);
                 out.ttl_attr(TTL);
                 out.ttl_entry(TTL);
@@ -116,14 +124,14 @@ impl Filesystem for Hello {
     }
 
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
-        let fill_attr = match req.arg().ino() {
-            ROOT_INO => Self::fill_root_attr,
-            HELLO_INO => Self::fill_hello_attr,
+        let attr = match req.arg().ino() {
+            NodeID::ROOT => self.root_attr(),
+            HELLO_INO => self.hello_attr(),
             _ => Err(ENOENT)?,
         };
 
         let mut out = AttrOut::default();
-        fill_attr(self, out.attr());
+        out.attr(attr);
         out.ttl(TTL);
 
         req.reply(out)
@@ -132,7 +140,7 @@ impl Filesystem for Hello {
     fn read(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
         match req.arg().ino() {
             HELLO_INO => (),
-            ROOT_INO => Err(EISDIR)?,
+            NodeID::ROOT => Err(EISDIR)?,
             _ => Err(ENOENT)?,
         }
 
@@ -148,14 +156,8 @@ impl Filesystem for Hello {
         req.reply(data)
     }
 
-    fn opendir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Opendir<'_>>) -> fs::Result {
-        let mut out = OpenOut::default();
-        out.fh(req.arg().ino());
-        req.reply(out)
-    }
-
     fn readdir(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
-        if req.arg().ino() != ROOT_INO {
+        if req.arg().ino() != NodeID::ROOT {
             Err(ENOTDIR)?
         }
 

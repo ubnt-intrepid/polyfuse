@@ -1,6 +1,15 @@
-use crate::bytes::{DecodeError, Decoder};
+use crate::{
+    bytes::{DecodeError, Decoder},
+    types::{
+        DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
+        PollEvents, PollWakeupID, RequestID, GID, PID, UID,
+    },
+};
+use bitflags::bitflags;
 use polyfuse_kernel::*;
-use std::{ffi::OsStr, fmt, time::Duration, u32, u64};
+use std::{ffi::OsStr, fmt, os::unix::fs::OpenOptionsExt, time::Duration};
+
+const FUSE_INT_REQ_BIT: u64 = 1;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -283,8 +292,7 @@ impl<'op> Operation<'op> {
                 if arg.lk_flags & FUSE_LK_FLOCK == 0 {
                     Ok(Operation::Setlk(Setlk { header, arg, sleep }))
                 } else {
-                    let op = convert_to_flock_op(arg.lk.typ, sleep).unwrap_or(0);
-                    Ok(Operation::Flock(Flock { header, arg, op }))
+                    Ok(Operation::Flock(Flock { header, arg, sleep }))
                 }
             }
 
@@ -321,50 +329,6 @@ impl<'op> Operation<'op> {
 
             _ => Err(Error::UnsupportedOpcode),
         }
-    }
-}
-
-#[inline]
-fn convert_to_flock_op(lk_type: u32, sleep: bool) -> Option<u32> {
-    const F_RDLCK: u32 = libc::F_RDLCK as u32;
-    const F_WRLCK: u32 = libc::F_WRLCK as u32;
-    const F_UNLCK: u32 = libc::F_UNLCK as u32;
-
-    let mut op = match lk_type {
-        F_RDLCK => libc::LOCK_SH as u32,
-        F_WRLCK => libc::LOCK_EX as u32,
-        F_UNLCK => libc::LOCK_UN as u32,
-        _ => return None,
-    };
-
-    if !sleep {
-        op |= libc::LOCK_NB as u32;
-    }
-    Some(op)
-}
-
-/// The identifier for locking operations.
-#[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct LockOwner(u64);
-
-impl fmt::Debug for LockOwner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "LockOwner {{ .. }}")
-    }
-}
-
-impl LockOwner {
-    /// Create a `LockOwner` from the raw value.
-    #[inline]
-    pub const fn from_raw(id: u64) -> Self {
-        Self(id)
-    }
-
-    /// Take the raw value of this identifier.
-    #[inline]
-    pub const fn into_raw(self) -> u64 {
-        self.0
     }
 }
 
@@ -416,8 +380,8 @@ impl fmt::Debug for Forget {
 impl Forget {
     /// Return the inode number of the target inode.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.forget.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.forget.nodeid)
     }
 
     /// Return the released lookup count of the target inode.
@@ -443,14 +407,14 @@ impl fmt::Debug for NotifyReply<'_> {
 impl<'op> NotifyReply<'op> {
     /// Return the unique ID of the corresponding notification message.
     #[inline]
-    pub fn unique(&self) -> u64 {
-        self.header.unique
+    pub fn unique(&self) -> NotifyID {
+        NotifyID::from_raw(self.header.unique)
     }
 
     /// Return the inode number corresponding with the cache data.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the starting position of the cache data.
@@ -483,8 +447,8 @@ impl fmt::Debug for Interrupt<'_> {
 impl<'op> Interrupt<'op> {
     /// Return the target unique ID to be interrupted.
     #[inline]
-    pub fn unique(&self) -> u64 {
-        self.arg.unique
+    pub fn unique(&self) -> RequestID {
+        RequestID::from_raw(self.arg.unique & !FUSE_INT_REQ_BIT)
     }
 }
 
@@ -509,8 +473,8 @@ impl fmt::Debug for Lookup<'_> {
 
 impl<'op> Lookup<'op> {
     /// Return the inode number of the parent directory.
-    pub fn parent(&self) -> u64 {
-        self.header.nodeid
+    pub fn parent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the name of the entry to be looked up.
@@ -539,14 +503,14 @@ impl fmt::Debug for Getattr<'_> {
 
 impl<'op> Getattr<'op> {
     /// Return the inode number for obtaining the attribute value.
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file, if specified.
-    pub fn fh(&self) -> Option<u64> {
+    pub fn fh(&self) -> Option<FileID> {
         if self.arg.getattr_flags & FUSE_GETATTR_FH != 0 {
-            Some(self.arg.fh)
+            Some(FileID::from_raw(self.arg.fh))
         } else {
             None
         }
@@ -580,32 +544,32 @@ impl<'op> Setattr<'op> {
     }
 
     /// Return the inode number to be set the attribute values.
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file, if specified.
     #[inline]
-    pub fn fh(&self) -> Option<u64> {
-        self.get(FATTR_FH, |arg| arg.fh)
+    pub fn fh(&self) -> Option<FileID> {
+        self.get(FATTR_FH, |arg| FileID::from_raw(arg.fh))
     }
 
     /// Return the file mode to be set.
     #[inline]
-    pub fn mode(&self) -> Option<u32> {
-        self.get(FATTR_MODE, |arg| arg.mode)
+    pub fn mode(&self) -> Option<FileMode> {
+        self.get(FATTR_MODE, |arg| FileMode::from_raw(arg.mode))
     }
 
     /// Return the user id to be set.
     #[inline]
-    pub fn uid(&self) -> Option<u32> {
-        self.get(FATTR_UID, |arg| arg.uid)
+    pub fn uid(&self) -> Option<UID> {
+        self.get(FATTR_UID, |arg| UID::from_raw(arg.uid))
     }
 
     /// Return the group id to be set.
     #[inline]
-    pub fn gid(&self) -> Option<u32> {
-        self.get(FATTR_GID, |arg| arg.gid)
+    pub fn gid(&self) -> Option<GID> {
+        self.get(FATTR_GID, |arg| GID::from_raw(arg.gid))
     }
 
     /// Return the size of the file content to be set.
@@ -646,8 +610,8 @@ impl<'op> Setattr<'op> {
 
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner(&self) -> Option<LockOwner> {
-        self.get(FATTR_LOCKOWNER, |arg| LockOwner::from_raw(arg.lock_owner))
+    pub fn lock_owner(&self) -> Option<LockOwnerID> {
+        self.get(FATTR_LOCKOWNER, |arg| LockOwnerID::from_raw(arg.lock_owner))
     }
 }
 
@@ -677,8 +641,8 @@ impl fmt::Debug for Readlink<'_> {
 impl<'op> Readlink<'op> {
     /// Return the inode number to be read the link value.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 }
 
@@ -702,8 +666,8 @@ impl fmt::Debug for Symlink<'_> {
 impl<'op> Symlink<'op> {
     /// Return the inode number of the parent directory.
     #[inline]
-    pub fn parent(&self) -> u64 {
-        self.header.nodeid
+    pub fn parent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the name of the symbolic link to create.
@@ -739,8 +703,8 @@ impl fmt::Debug for Mknod<'_> {
 impl<'op> Mknod<'op> {
     /// Return the inode number of the parent directory.
     #[inline]
-    pub fn parent(&self) -> u64 {
-        self.header.nodeid
+    pub fn parent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the file name to create.
@@ -751,8 +715,8 @@ impl<'op> Mknod<'op> {
 
     /// Return the file type and permissions used when creating the new file.
     #[inline]
-    pub fn mode(&self) -> u32 {
-        self.arg.mode
+    pub fn mode(&self) -> FileMode {
+        FileMode::from_raw(self.arg.mode)
     }
 
     /// Return the device number for special file.
@@ -760,8 +724,8 @@ impl<'op> Mknod<'op> {
     /// This value is meaningful only if the created node is a device file
     /// (i.e. the file type is specified either `S_IFCHR` or `S_IFBLK`).
     #[inline]
-    pub fn rdev(&self) -> u32 {
-        self.arg.rdev
+    pub fn rdev(&self) -> DeviceID {
+        DeviceID::from_kernel_dev(self.arg.rdev)
     }
 
     #[doc(hidden)] // TODO: dox
@@ -790,8 +754,8 @@ impl fmt::Debug for Mkdir<'_> {
 impl<'op> Mkdir<'op> {
     /// Return the inode number of the parent directory where the directory is created.
     #[inline]
-    pub fn parent(&self) -> u64 {
-        self.header.nodeid
+    pub fn parent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the name of the directory to be created.
@@ -802,8 +766,8 @@ impl<'op> Mkdir<'op> {
 
     /// Return the file type and permissions used when creating the new directory.
     #[inline]
-    pub fn mode(&self) -> u32 {
-        self.arg.mode
+    pub fn permissions(&self) -> FilePermissions {
+        FilePermissions::from_bits_truncate(self.arg.mode)
     }
 
     #[doc(hidden)] // TODO: dox
@@ -830,8 +794,8 @@ impl fmt::Debug for Unlink<'_> {
 impl<'op> Unlink<'op> {
     /// Return the inode number of the parent directory.
     #[inline]
-    pub fn parent(&self) -> u64 {
-        self.header.nodeid
+    pub fn parent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the file name to be removed.
@@ -859,8 +823,8 @@ impl<'op> Rmdir<'op> {
 
     /// Return the inode number of the parent directory.
     #[inline]
-    pub fn parent(&self) -> u64 {
-        self.header.nodeid
+    pub fn parent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the directory name to be removed.
@@ -893,8 +857,8 @@ impl fmt::Debug for Rename<'_> {
 impl<'op> Rename<'op> {
     /// Return the inode number of the old parent directory.
     #[inline]
-    pub fn parent(&self) -> u64 {
-        self.header.nodeid
+    pub fn parent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the old name of the target node.
@@ -905,10 +869,10 @@ impl<'op> Rename<'op> {
 
     /// Return the inode number of the new parent directory.
     #[inline]
-    pub fn newparent(&self) -> u64 {
+    pub fn newparent(&self) -> NodeID {
         match self.arg {
-            RenameArg::V1(arg) => arg.newdir,
-            RenameArg::V2(arg) => arg.newdir,
+            RenameArg::V1(arg) => NodeID::from_raw(arg.newdir),
+            RenameArg::V2(arg) => NodeID::from_raw(arg.newdir),
         }
     }
 
@@ -920,11 +884,21 @@ impl<'op> Rename<'op> {
 
     /// Return the rename flags.
     #[inline]
-    pub fn flags(&self) -> u32 {
+    pub fn flags(&self) -> RenameFlags {
         match self.arg {
-            RenameArg::V1(..) => 0,
-            RenameArg::V2(arg) => arg.flags,
+            RenameArg::V1(..) => RenameFlags::empty(),
+            RenameArg::V2(arg) => RenameFlags::from_bits_truncate(arg.flags),
         }
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct RenameFlags: u32 {
+        const EXCHANGE = libc::RENAME_EXCHANGE;
+        const NOREPLACE = libc::RENAME_NOREPLACE;
+        const WHITEOUT = libc::RENAME_WHITEOUT;
     }
 }
 
@@ -948,14 +922,14 @@ impl fmt::Debug for Link<'_> {
 impl<'op> Link<'op> {
     /// Return the *original* inode number which links to the created hard link.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.arg.oldnodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.arg.oldnodeid)
     }
 
     /// Return the inode number of the parent directory where the hard link is created.
     #[inline]
-    pub fn newparent(&self) -> u64 {
-        self.header.nodeid
+    pub fn newparent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the name of the hard link to be created.
@@ -991,23 +965,116 @@ impl<'op> Open<'op> {
 
     /// Return the inode number to be opened.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
-    /// Return the open flags.
-    ///
-    /// The creating flags (`O_CREAT`, `O_EXCL` and `O_NOCTTY`) are removed and
-    /// these flags are handled by the kernel.
-    ///
-    /// If the mount option contains `-o default_permissions`, the access mode flags
-    /// (`O_RDONLY`, `O_WRONLY` and `O_RDWR`) might be handled by the kernel and in that case,
-    /// these flags are omitted before issuing the request. Otherwise, the filesystem should
-    /// handle these flags and return an `EACCES` error when provided access mode is
-    /// invalid.
+    /// Return the access mode and creation/status flags of the opened file.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
+    }
+}
+
+/// The compound type of the access mode and auxiliary flags of opened files.
+///
+/// * If the mount option contains `-o default_permissions`, the access mode
+///   flags (`O_RDONLY`, `O_WRONLY` and `O_RDWR`) might be handled by the kernel
+///   and in that case, these flags are omitted before issuing the request.
+///   Otherwise, the filesystem should handle these flags and return an `EACCES`
+///   error when provided access mode is invalid.
+/// * Some parts of the creating flags (`O_CREAT`, `O_EXCL` and `O_NOCTTY`) are
+///   removed and these flags are handled by the kernel.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct OpenOptions {
+    raw: u32,
+}
+
+impl OpenOptions {
+    const fn from_raw(raw: u32) -> Self {
+        Self { raw }
+    }
+
+    pub const fn access_mode(self) -> Option<AccessMode> {
+        match self.raw as i32 & libc::O_ACCMODE {
+            libc::O_RDONLY => Some(AccessMode::ReadOnly),
+            libc::O_WRONLY => Some(AccessMode::WriteOnly),
+            libc::O_RDWR => Some(AccessMode::ReadWrite),
+            _ => None,
+        }
+    }
+
+    pub const fn flags(self) -> OpenFlags {
+        OpenFlags::from_bits_truncate(self.raw)
+    }
+
+    pub const fn remove(mut self, flags: OpenFlags) -> Self {
+        self.raw &= !flags.bits();
+        self
+    }
+}
+
+impl From<OpenOptions> for std::fs::OpenOptions {
+    fn from(src: OpenOptions) -> Self {
+        let mut options = std::fs::OpenOptions::new();
+        match src.access_mode() {
+            Some(AccessMode::ReadOnly) => {
+                options.read(true);
+            }
+            Some(AccessMode::WriteOnly) => {
+                options.write(true);
+            }
+            Some(AccessMode::ReadWrite) => {
+                options.read(true).write(true);
+            }
+            _ => (),
+        }
+        options.custom_flags(src.flags().bits() as i32);
+        options
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AccessMode {
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
+impl AccessMode {
+    pub const fn into_raw(self) -> i32 {
+        match self {
+            Self::ReadOnly => libc::O_RDONLY,
+            Self::WriteOnly => libc::O_WRONLY,
+            Self::ReadWrite => libc::O_RDWR,
+        }
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct OpenFlags: u32 {
+        // file creation flags.
+        const CLOEXEC = libc::O_CLOEXEC as u32;
+        const DIRECTORY = libc::O_DIRECTORY as u32;
+        const NOFOLLOW = libc::O_NOFOLLOW as u32;
+        const TMPFILE = libc::O_TMPFILE as u32;
+        const TRUNC = libc::O_TRUNC as u32;
+
+        // file status flags.
+        const APPEND = libc::O_APPEND as u32;
+        const ASYNC = libc::O_ASYNC as u32;
+        const DIRECT = libc::O_DIRECT as u32;
+        const DSYNC = libc::O_DSYNC as u32;
+        const LARGEFILE = libc::O_LARGEFILE as u32;
+        const NOATIME = libc::O_NOATIME as u32;
+        const NONBLOCK = libc::O_NONBLOCK as u32;
+        const NDELAY = libc::O_NDELAY as u32;
+        const PATH = libc::O_PATH as u32;
+        const SYNC = libc::O_SYNC as u32;
     }
 }
 
@@ -1037,14 +1104,14 @@ impl fmt::Debug for Read<'_> {
 impl<'op> Read<'op> {
     /// Return the inode number to be read.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the starting position of the content to be read.
@@ -1061,15 +1128,15 @@ impl<'op> Read<'op> {
 
     /// Return the flags specified at opening the file.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner(&self) -> Option<LockOwner> {
+    pub fn lock_owner(&self) -> Option<LockOwnerID> {
         if self.arg.read_flags & FUSE_READ_LOCKOWNER != 0 {
-            Some(LockOwner::from_raw(self.arg.lock_owner))
+            Some(LockOwnerID::from_raw(self.arg.lock_owner))
         } else {
             None
         }
@@ -1101,14 +1168,14 @@ impl fmt::Debug for Write<'_> {
 impl<'op> Write<'op> {
     /// Return the inode number to be written.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the starting position of contents to be written.
@@ -1125,15 +1192,15 @@ impl<'op> Write<'op> {
 
     /// Return the flags specified at opening the file.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner(&self) -> Option<LockOwner> {
+    pub fn lock_owner(&self) -> Option<LockOwnerID> {
         if self.arg.write_flags & FUSE_WRITE_LOCKOWNER != 0 {
-            Some(LockOwner::from_raw(self.arg.lock_owner))
+            Some(LockOwnerID::from_raw(self.arg.lock_owner))
         } else {
             None
         }
@@ -1156,26 +1223,26 @@ impl fmt::Debug for Release<'_> {
 impl<'op> Release<'op> {
     /// Return the inode number of opened file.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the flags specified at opening the file.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.lock_owner)
+    pub fn lock_owner(&self) -> LockOwnerID {
+        LockOwnerID::from_raw(self.arg.lock_owner)
     }
 
     /// Return whether the operation indicates a flush.
@@ -1208,8 +1275,8 @@ impl fmt::Debug for Statfs<'_> {
 impl<'op> Statfs<'op> {
     /// Return the inode number or `0` which means "undefined".
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 }
 
@@ -1229,14 +1296,14 @@ impl fmt::Debug for Fsync<'_> {
 impl<'op> Fsync<'op> {
     /// Return the inode number to be synchronized.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return whether to synchronize only the file contents.
@@ -1266,8 +1333,8 @@ impl fmt::Debug for Setxattr<'_> {
 impl<'op> Setxattr<'op> {
     /// Return the inode number to set the value of extended attribute.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the name of extended attribute to be set.
@@ -1284,8 +1351,17 @@ impl<'op> Setxattr<'op> {
 
     /// Return the flags that specifies the meanings of this operation.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn flags(&self) -> SetxattrFlags {
+        SetxattrFlags::from_bits_truncate(self.arg.flags)
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct SetxattrFlags: u32 {
+        const CREATE = libc::XATTR_CREATE as u32;
+        const REPLACE = libc::XATTR_REPLACE as u32;
     }
 }
 
@@ -1316,8 +1392,8 @@ impl fmt::Debug for Getxattr<'_> {
 impl<'op> Getxattr<'op> {
     /// Return the inode number to be get the extended attribute.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the name of the extend attribute.
@@ -1353,8 +1429,8 @@ impl fmt::Debug for Listxattr<'_> {
 impl<'op> Listxattr<'op> {
     /// Return the inode number to be obtained the attribute names.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the maximum length of the attribute names to be replied.
@@ -1380,8 +1456,8 @@ impl fmt::Debug for Removexattr<'_> {
 impl<'op> Removexattr<'op> {
     /// Return the inode number to remove the extended attribute.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the name of extended attribute to be removed.
@@ -1416,20 +1492,20 @@ impl fmt::Debug for Flush<'_> {
 impl<'op> Flush<'op> {
     /// Return the inode number of target file.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn lock_owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.lock_owner)
+    pub fn lock_owner(&self) -> LockOwnerID {
+        LockOwnerID::from_raw(self.arg.lock_owner)
     }
 }
 
@@ -1452,14 +1528,14 @@ impl fmt::Debug for Opendir<'_> {
 impl<'op> Opendir<'op> {
     /// Return the inode number to be opened.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the open flags.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 }
 
@@ -1486,14 +1562,14 @@ impl fmt::Debug for Readdir<'_> {
 impl<'op> Readdir<'op> {
     /// Return the inode number to be read.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened directory.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the *offset* value to continue reading the directory stream.
@@ -1529,20 +1605,20 @@ impl fmt::Debug for Releasedir<'_> {
 impl<'op> Releasedir<'op> {
     /// Return the inode number of opened directory.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened directory.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
-    /// Return the flags specified at opening the directory.
+    /// Return the open flags.
     #[inline]
-    pub fn flags(&self) -> u32 {
-        self.arg.flags
+    pub fn options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 }
 
@@ -1562,14 +1638,14 @@ impl fmt::Debug for Fsyncdir<'_> {
 impl<'op> Fsyncdir<'op> {
     /// Return the inode number to be synchronized.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened directory.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return whether to synchronize only the directory contents.
@@ -1599,40 +1675,30 @@ impl fmt::Debug for Getlk<'_> {
 impl<'op> Getlk<'op> {
     /// Return the inode number to be tested the lock.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.owner)
+    pub fn owner(&self) -> LockOwnerID {
+        LockOwnerID::from_raw(self.arg.owner)
     }
 
     #[inline]
-    pub fn typ(&self) -> u32 {
-        self.arg.lk.typ
-    }
-
-    #[inline]
-    pub fn start(&self) -> u64 {
-        self.arg.lk.start
-    }
-
-    #[inline]
-    pub fn end(&self) -> u64 {
-        self.arg.lk.end
-    }
-
-    #[inline]
-    pub fn pid(&self) -> u32 {
-        self.arg.lk.pid
+    pub fn file_lock(&self) -> FileLock {
+        FileLock {
+            typ: self.arg.lk.typ,
+            start: self.arg.lk.start,
+            end: self.arg.lk.end,
+            pid: PID::from_raw(self.arg.lk.pid),
+        }
     }
 }
 
@@ -1653,40 +1719,24 @@ impl fmt::Debug for Setlk<'_> {
 impl<'op> Setlk<'op> {
     /// Return the inode number to be obtained the lock.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
-    }
-
-    /// Return the identifier of lock owner.
-    #[inline]
-    pub fn owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.owner)
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     #[inline]
-    pub fn typ(&self) -> u32 {
-        self.arg.lk.typ
-    }
-
-    #[inline]
-    pub fn start(&self) -> u64 {
-        self.arg.lk.start
-    }
-
-    #[inline]
-    pub fn end(&self) -> u64 {
-        self.arg.lk.end
-    }
-
-    #[inline]
-    pub fn pid(&self) -> u32 {
-        self.arg.lk.pid
+    pub fn file_lock(&self) -> FileLock {
+        FileLock {
+            typ: self.arg.lk.typ,
+            start: self.arg.lk.start,
+            end: self.arg.lk.end,
+            pid: PID::from_raw(self.arg.lk.pid),
+        }
     }
 
     /// Return whether the locking operation might sleep until a lock is obtained.
@@ -1700,7 +1750,7 @@ impl<'op> Setlk<'op> {
 pub struct Flock<'op> {
     header: &'op fuse_in_header,
     arg: &'op fuse_lk_in,
-    op: u32,
+    sleep: bool,
 }
 
 impl fmt::Debug for Flock<'_> {
@@ -1713,20 +1763,20 @@ impl fmt::Debug for Flock<'_> {
 impl<'op> Flock<'op> {
     /// Return the target inode number.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the identifier of lock owner.
     #[inline]
-    pub fn owner(&self) -> LockOwner {
-        LockOwner::from_raw(self.arg.owner)
+    pub fn owner(&self) -> LockOwnerID {
+        LockOwnerID::from_raw(self.arg.owner)
     }
 
     /// Return the locking operation.
@@ -1735,8 +1785,32 @@ impl<'op> Flock<'op> {
     ///
     /// [flock]: http://man7.org/linux/man-pages/man2/flock.2.html
     #[inline]
-    pub fn op(&self) -> Option<u32> {
-        Some(self.op)
+    pub fn op(&self) -> Option<FlockOp> {
+        match self.arg.lk.typ as i32 {
+            libc::F_RDLCK if self.sleep => Some(FlockOp::Shared),
+            libc::F_RDLCK => Some(FlockOp::SharedNonblock),
+            libc::F_WRLCK if self.sleep => Some(FlockOp::Exclusive),
+            libc::F_WRLCK => Some(FlockOp::ExclusiveNonblock),
+            libc::F_UNLCK => Some(FlockOp::Unlock),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[repr(i32)]
+pub enum FlockOp {
+    Shared = libc::LOCK_SH,
+    SharedNonblock = libc::LOCK_SH | libc::LOCK_NB,
+    Exclusive = libc::LOCK_EX,
+    ExclusiveNonblock = libc::LOCK_EX | libc::LOCK_NB,
+    Unlock = libc::LOCK_UN,
+}
+
+impl FlockOp {
+    pub const fn into_raw(self) -> i32 {
+        self as i32
     }
 }
 
@@ -1756,8 +1830,8 @@ impl fmt::Debug for Access<'_> {
 impl<'op> Access<'op> {
     /// Return the inode number subject to the access permission check.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the requested access mode.
@@ -1792,8 +1866,8 @@ impl<'op> Create<'op> {
     ///
     /// This is the same as `Mknod::parent`.
     #[inline]
-    pub fn parent(&self) -> u64 {
-        self.header.nodeid
+    pub fn parent(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the file name to crate.
@@ -1808,16 +1882,16 @@ impl<'op> Create<'op> {
     ///
     /// This is the same as `Mknod::mode`.
     #[inline]
-    pub fn mode(&self) -> u32 {
-        self.arg.mode
+    pub fn mode(&self) -> FileMode {
+        FileMode::from_raw(self.arg.mode)
     }
 
     /// Return the open flags.
     ///
     /// This is the same as `Open::flags`.
     #[inline]
-    pub fn open_flags(&self) -> u32 {
-        self.arg.flags
+    pub fn open_options(&self) -> OpenOptions {
+        OpenOptions::from_raw(self.arg.flags)
     }
 
     #[doc(hidden)] // TODO: dox
@@ -1849,8 +1923,8 @@ impl fmt::Debug for Bmap<'_> {
 impl<'op> Bmap<'op> {
     /// Return the inode number of the file node to be mapped.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the block index to be mapped.
@@ -1886,14 +1960,14 @@ impl fmt::Debug for Fallocate<'_> {
 impl<'op> Fallocate<'op> {
     /// Return the number of target inode to be allocated the space.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle for opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the starting point of region to be allocated.
@@ -1914,8 +1988,21 @@ impl<'op> Fallocate<'op> {
     ///
     /// [fallocate]: http://man7.org/linux/man-pages/man2/fallocate.2.html
     #[inline]
-    pub fn mode(&self) -> u32 {
-        self.arg.mode
+    pub fn mode(&self) -> FallocateFlags {
+        FallocateFlags::from_bits_truncate(self.arg.mode)
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct FallocateFlags: u32 {
+        const KEEP_SIZE = libc::FALLOC_FL_KEEP_SIZE as u32;
+        const UNSHARE_RANGE = libc::FALLOC_FL_UNSHARE_RANGE as u32;
+        const PUNCH_HOLE = libc::FALLOC_FL_PUNCH_HOLE as u32;
+        const COLLAPSE_RANGE = libc::FALLOC_FL_COLLAPSE_RANGE as u32;
+        const ZERO_RANGE = libc::FALLOC_FL_ZERO_RANGE as u32;
+        const INSERT_RANGE = libc::FALLOC_FL_INSERT_RANGE as u32;
     }
 }
 
@@ -1937,14 +2024,14 @@ impl fmt::Debug for CopyFileRange<'_> {
 impl<'op> CopyFileRange<'op> {
     /// Return the inode number of source file.
     #[inline]
-    pub fn ino_in(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino_in(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the file handle of source file.
     #[inline]
-    pub fn fh_in(&self) -> u64 {
-        self.arg.fh_in
+    pub fn fh_in(&self) -> FileID {
+        FileID::from_raw(self.arg.fh_in)
     }
 
     /// Return the starting point of source file where the data should be read.
@@ -1955,14 +2042,14 @@ impl<'op> CopyFileRange<'op> {
 
     /// Return the inode number of target file.
     #[inline]
-    pub fn ino_out(&self) -> u64 {
-        self.arg.nodeid_out
+    pub fn ino_out(&self) -> NodeID {
+        NodeID::from_raw(self.arg.nodeid_out)
     }
 
     /// Return the file handle of target file.
     #[inline]
-    pub fn fh_out(&self) -> u64 {
-        self.arg.fh_out
+    pub fn fh_out(&self) -> FileID {
+        FileID::from_raw(self.arg.fh_out)
     }
 
     /// Return the starting point of target file where the data should be written.
@@ -2006,20 +2093,20 @@ impl fmt::Debug for Poll<'_> {
 impl<'op> Poll<'op> {
     /// Return the inode number to check the I/O readiness.
     #[inline]
-    pub fn ino(&self) -> u64 {
-        self.header.nodeid
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
     }
 
     /// Return the handle of opened file.
     #[inline]
-    pub fn fh(&self) -> u64 {
-        self.arg.fh
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
     }
 
     /// Return the requested poll events.
     #[inline]
-    pub fn events(&self) -> u32 {
-        self.arg.events
+    pub fn events(&self) -> PollEvents {
+        PollEvents::from_bits_truncate(self.arg.events)
     }
 
     /// Return the handle to this poll.
@@ -2027,9 +2114,9 @@ impl<'op> Poll<'op> {
     /// If the returned value is not `None`, the filesystem should send the notification
     /// when the corresponding I/O will be ready.
     #[inline]
-    pub fn kh(&self) -> Option<u64> {
+    pub fn kh(&self) -> Option<PollWakeupID> {
         if self.arg.flags & FUSE_POLL_SCHEDULE_NOTIFY != 0 {
-            Some(self.arg.kh)
+            Some(PollWakeupID::from_raw(self.arg.kh))
         } else {
             None
         }

@@ -306,7 +306,7 @@ impl ReadDir {
 pub struct DirEntry {
     pub name: OsString,
     pub ino: u64,
-    pub typ: u32,
+    pub typ: u8,
     pub off: u64,
 }
 
@@ -336,7 +336,7 @@ impl Iterator for ReadDir {
                 let entry = DirEntry {
                     name: name.to_owned(),
                     ino: raw_entry.d_ino,
-                    typ: raw_entry.d_type as u32,
+                    typ: raw_entry.d_type,
                     off: raw_entry.d_off as u64,
                 };
 

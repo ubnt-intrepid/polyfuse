@@ -1,12 +1,15 @@
+#![forbid(unsafe_code)]
+
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
     reply::AttrOut,
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{ENOENT, ENOSYS, S_IFREG};
+use libc::{ENOENT, ENOSYS};
 use std::{io, path::PathBuf, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
@@ -52,17 +55,21 @@ fn getattr(
     req: &RequestBuffer,
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
-    if op.ino() != 1 {
+    if op.ino() != NodeID::ROOT {
         return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 
     let mut out = AttrOut::default();
-    out.attr().ino(1);
-    out.attr().mode(S_IFREG | 0o444);
-    out.attr().size(CONTENT.len() as u64);
-    out.attr().nlink(1);
-    out.attr().uid(unsafe { libc::getuid() });
-    out.attr().gid(unsafe { libc::getgid() });
+    out.attr({
+        let mut attr = FileAttr::new();
+        attr.ino = NodeID::ROOT;
+        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+        attr.size = CONTENT.len() as u64;
+        attr.nlink = 1;
+        attr.uid = UID::current();
+        attr.gid = GID::current();
+        attr
+    });
     out.ttl(Duration::from_secs(1));
 
     session.send_reply(conn, req.unique(), 0, out)
@@ -74,7 +81,7 @@ fn read(
     req: &RequestBuffer,
     op: op::Read<'_>,
 ) -> io::Result<()> {
-    if op.ino() != 1 {
+    if op.ino() != NodeID::ROOT {
         return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 

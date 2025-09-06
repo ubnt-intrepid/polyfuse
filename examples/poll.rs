@@ -1,12 +1,16 @@
 use polyfuse::{
     fs::{self, Filesystem},
-    op,
+    op::{self, AccessMode, OpenFlags},
     reply::{AttrOut, OpenOut, PollOut},
+    types::{
+        FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
+        GID, UID,
+    },
 };
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use libc::{EACCES, EAGAIN, EINVAL, O_ACCMODE, O_NONBLOCK, O_RDONLY, POLLIN, S_IFREG};
+use libc::{EACCES, EAGAIN, EINVAL};
 use std::{
     path::PathBuf,
     sync::{
@@ -43,7 +47,7 @@ fn main() -> Result<()> {
 }
 
 struct PollFS {
-    handles: DashMap<u64, Arc<FileHandle>>,
+    handles: DashMap<FileID, Arc<FileHandle>>,
     next_fh: AtomicU64,
     wakeup_interval: Duration,
 }
@@ -61,21 +65,26 @@ impl PollFS {
 impl Filesystem for PollFS {
     fn getattr(&self, _: fs::Context<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
         let mut out = AttrOut::default();
-        out.attr().ino(1);
-        out.attr().nlink(1);
-        out.attr().mode(S_IFREG | 0o444);
-        out.attr().uid(unsafe { libc::getuid() });
-        out.attr().gid(unsafe { libc::getgid() });
+        out.attr({
+            let mut attr = FileAttr::new();
+            attr.ino = NodeID::ROOT;
+            attr.nlink = 1;
+            attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+            attr.uid = UID::current();
+            attr.gid = GID::current();
+            attr
+        });
         out.ttl(Duration::from_secs(u64::max_value() / 2));
+
         req.reply(out)
     }
 
     fn open(&self, cx: fs::Context<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
-        if req.arg().flags() as i32 & O_ACCMODE != O_RDONLY {
+        if req.arg().options().access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
 
-        let is_nonblock = req.arg().flags() as i32 & O_NONBLOCK != 0;
+        let is_nonblock = req.arg().options().flags().contains(OpenFlags::NONBLOCK);
 
         let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
         let handle = Arc::new(FileHandle {
@@ -115,6 +124,7 @@ impl Filesystem for PollFS {
             }
         });
 
+        let fh = FileID::from_raw(fh);
         self.handles.insert(fh, handle);
 
         req.reply({
@@ -161,7 +171,7 @@ impl Filesystem for PollFS {
 
         if state.is_ready {
             tracing::info!("file is ready to read");
-            out.revents(req.arg().events() & POLLIN as u32);
+            out.revents(req.arg().events() & PollEvents::IN);
         } else if let Some(kh) = req.arg().kh() {
             tracing::info!("register the poll handle for notification: kh={}", kh);
             state.kh = Some(kh);
@@ -185,5 +195,5 @@ struct FileHandle {
 #[derive(Default)]
 struct FileHandleState {
     is_ready: bool,
-    kh: Option<u64>,
+    kh: Option<PollWakeupID>,
 }
