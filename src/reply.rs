@@ -440,6 +440,41 @@ impl PollOut {
     }
 }
 
+#[derive(Default)]
+pub struct LseekOut {
+    out: fuse_lseek_out,
+}
+
+impl fmt::Debug for LseekOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: add fields.
+        f.debug_struct("LseekOut").finish()
+    }
+}
+
+impl Bytes for LseekOut {
+    #[inline]
+    fn size(&self) -> usize {
+        self.out.as_bytes().len()
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
+        dst.put(self.out.as_bytes());
+    }
+}
+
+impl LseekOut {
+    pub fn offset(&mut self, offset: u64) {
+        self.out.offset = offset;
+    }
+}
+
 pub struct ReaddirOut {
     buf: Vec<u8>,
 }

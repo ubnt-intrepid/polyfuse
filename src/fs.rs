@@ -88,6 +88,7 @@ pub trait Filesystem {
         fallocate: Fallocate,
         copy_file_range: CopyFileRange,
         poll: Poll,
+        lseek: Lseek,
     }
 
     #[allow(unused_variables)]
@@ -376,6 +377,7 @@ where
             Operation::Fallocate(op) => self.fs.fallocate(cx, self.req(op)),
             Operation::CopyFileRange(op) => self.fs.copy_file_range(cx, self.req(op)),
             Operation::Poll(op) => self.fs.poll(cx, self.req(op)),
+            Operation::Lseek(op) => self.fs.lseek(cx, self.req(op)),
             Operation::Write(op) => self.fs.write(cx, self.req(op), Data { inner: data }),
             Operation::NotifyReply(op) => {
                 self.fs

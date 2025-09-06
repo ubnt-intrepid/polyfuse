@@ -60,6 +60,7 @@ pub enum Operation<'op> {
     Fallocate(Fallocate<'op>),
     CopyFileRange(CopyFileRange<'op>),
     Poll(Poll<'op>),
+    Lseek(Lseek<'op>),
 
     Forget(Forgets<'op>),
     Interrupt(Interrupt<'op>),
@@ -327,7 +328,17 @@ impl<'op> Operation<'op> {
                 Ok(Operation::Poll(Poll { header, arg }))
             }
 
-            _ => Err(Error::UnsupportedOpcode),
+            fuse_opcode::FUSE_LSEEK => {
+                let arg = decoder.fetch()?;
+                Ok(Operation::Lseek(Lseek { header, arg }))
+            }
+
+            fuse_opcode::FUSE_INIT | fuse_opcode::FUSE_DESTROY => {
+                // should be handled by the upstream process.
+                unreachable!()
+            }
+
+            fuse_opcode::FUSE_IOCTL | fuse_opcode::CUSE_INIT => Err(Error::UnsupportedOpcode),
         }
     }
 }
@@ -2121,4 +2132,54 @@ impl<'op> Poll<'op> {
             None
         }
     }
+}
+
+/// Reposition the offset of read/write operations.
+///
+/// See [`lseek(2)`][lseek] for details.
+///
+/// [lseek]: https://man7.org/linux/man-pages/man2/lseek.2.html
+pub struct Lseek<'op> {
+    header: &'op fuse_in_header,
+    arg: &'op fuse_lseek_in,
+}
+
+impl fmt::Debug for Lseek<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lseek").finish()
+    }
+}
+
+impl Lseek<'_> {
+    pub fn ino(&self) -> NodeID {
+        NodeID::from_raw(self.header.nodeid)
+    }
+
+    pub fn fh(&self) -> FileID {
+        FileID::from_raw(self.arg.fh)
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.arg.offset
+    }
+
+    pub fn whence(&self) -> Option<Whence> {
+        match self.arg.whence as i32 {
+            libc::SEEK_SET => Some(Whence::Set),
+            libc::SEEK_CUR => Some(Whence::Current),
+            libc::SEEK_END => Some(Whence::End),
+            libc::SEEK_DATA => Some(Whence::Data),
+            libc::SEEK_HOLE => Some(Whence::Hole),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Whence {
+    Set,
+    Current,
+    End,
+    Data,
+    Hole,
 }
