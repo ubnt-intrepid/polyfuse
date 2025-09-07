@@ -65,7 +65,8 @@ impl Filesystem for PollFS {
     fn getattr(
         &self,
         _: fs::Env<'_, '_>,
-        _: fs::Request<'_, op::Getattr<'_>>,
+        _: fs::Request<'_>,
+        _: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
         reply.out().attr({
@@ -84,14 +85,15 @@ impl Filesystem for PollFS {
     fn open(
         &self,
         cx: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Open<'_>>,
+        _: fs::Request<'_>,
+        op: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        if req.arg().options().access_mode() != Some(AccessMode::ReadOnly) {
+        if op.options().access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
 
-        let is_nonblock = req.arg().options().flags().contains(OpenFlags::NONBLOCK);
+        let is_nonblock = op.options().flags().contains(OpenFlags::NONBLOCK);
 
         let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
         let handle = Arc::new(FileHandle {
@@ -143,10 +145,11 @@ impl Filesystem for PollFS {
     fn read(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Read<'_>>,
+        _: fs::Request<'_>,
+        op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let handle = &**self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
+        let handle = &**self.handles.get(&op.fh()).ok_or(EINVAL)?;
         let mut state = handle.state.lock().unwrap();
         if handle.is_nonblock {
             if !state.is_ready {
@@ -165,8 +168,8 @@ impl Filesystem for PollFS {
 
         tracing::info!("complete reading");
 
-        let offset = req.arg().offset() as usize;
-        let bufsize = req.arg().size() as usize;
+        let offset = op.offset() as usize;
+        let bufsize = op.size() as usize;
         let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
         reply.send(&content[..std::cmp::min(content.len(), bufsize)])
@@ -175,17 +178,18 @@ impl Filesystem for PollFS {
     fn poll(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Poll<'_>>,
+        _: fs::Request<'_>,
+        op: op::Poll<'_>,
         reply: fs::ReplyPoll<'_>,
     ) -> fs::Result {
-        let handle = &*self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
+        let handle = &*self.handles.get(&op.fh()).ok_or(EINVAL)?;
         let state = &mut *handle.state.lock().unwrap();
 
         let mut revents = PollEvents::empty();
         if state.is_ready {
             tracing::info!("file is ready to read");
-            revents = req.arg().events() & PollEvents::IN;
-        } else if let Some(kh) = req.arg().kh() {
+            revents = op.events() & PollEvents::IN;
+        } else if let Some(kh) = op.kh() {
             tracing::info!("register the poll handle for notification: kh={}", kh);
             state.kh = Some(kh);
         }
@@ -196,10 +200,11 @@ impl Filesystem for PollFS {
     fn release(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Release<'_>>,
+        _: fs::Request<'_>,
+        op: op::Release<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        drop(self.handles.remove(&req.arg().fh()));
+        drop(self.handles.remove(&op.fh()));
         reply.send()
     }
 }

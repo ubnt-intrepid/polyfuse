@@ -140,16 +140,17 @@ impl Filesystem for Heartbeat {
     fn lookup(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Lookup<'_>>,
+        _: fs::Request<'_>,
+        arg: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        if req.arg().parent() != NodeID::ROOT {
+        if arg.parent() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
 
         let mut current = self.current.lock().unwrap();
 
-        if req.arg().name().as_bytes() == current.filename.as_bytes() {
+        if arg.name().as_bytes() == current.filename.as_bytes() {
             reply.out().ino(self.file_attr.ino);
             reply.out().attr(self.file_attr.clone());
             reply.out().ttl_entry(self.ttl);
@@ -176,10 +177,11 @@ impl Filesystem for Heartbeat {
     fn getattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Getattr<'_>>,
+        _: fs::Request<'_>,
+        arg: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let attr = match req.arg().ino() {
+        let attr = match arg.ino() {
             NodeID::ROOT => self.root_attr.clone(),
             FILE_INO => self.file_attr.clone(),
             _ => Err(ENOENT)?,
@@ -193,10 +195,11 @@ impl Filesystem for Heartbeat {
     fn read(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Read<'_>>,
+        _: fs::Request<'_>,
+        arg: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        match req.arg().ino() {
+        match arg.ino() {
             NodeID::ROOT => Err(EISDIR)?,
             FILE_INO => reply.send(()),
             _ => Err(ENOENT)?,
@@ -206,13 +209,14 @@ impl Filesystem for Heartbeat {
     fn readdir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Readdir<'_>>,
+        _: fs::Request<'_>,
+        arg: op::Readdir<'_>,
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
-        if req.arg().ino() != NodeID::ROOT {
+        if arg.ino() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
-        if req.arg().offset() > 0 {
+        if arg.offset() > 0 {
             return reply.send();
         }
 

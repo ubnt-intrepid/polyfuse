@@ -148,10 +148,11 @@ impl Filesystem for Heartbeat {
     fn getattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Getattr<'_>>,
+        _: fs::Request<'_>,
+        arg: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        if req.arg().ino() != NodeID::ROOT {
+        if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
         let inner = self.inner.lock().unwrap();
@@ -162,10 +163,11 @@ impl Filesystem for Heartbeat {
     fn open(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Open<'_>>,
+        _: fs::Request<'_>,
+        arg: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        if req.arg().ino() != NodeID::ROOT {
+        if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
         reply.out().keep_cache(true);
@@ -175,21 +177,22 @@ impl Filesystem for Heartbeat {
     fn read(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Read<'_>>,
+        _: fs::Request<'_>,
+        arg: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        if req.arg().ino() != NodeID::ROOT {
+        if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?
         }
 
         let inner = self.inner.lock().unwrap();
 
-        let offset = req.arg().offset() as usize;
+        let offset = arg.offset() as usize;
         if offset >= inner.content.len() {
             return reply.send(());
         }
 
-        let size = req.arg().size() as usize;
+        let size = arg.size() as usize;
         let data = &inner.content.as_bytes()[offset..];
         let data = &data[..std::cmp::min(data.len(), size)];
         reply.send(data)
@@ -198,12 +201,12 @@ impl Filesystem for Heartbeat {
     fn notify_reply(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::NotifyReply<'_>>,
+        arg: op::NotifyReply<'_>,
         mut data: fs::Data<'_>,
     ) -> io::Result<()> {
-        if let Some((_, original)) = self.retrieves.remove(&req.arg().unique()) {
+        if let Some((_, original)) = self.retrieves.remove(&arg.unique()) {
             let data = {
-                let mut buf = vec![0u8; req.arg().size() as usize];
+                let mut buf = vec![0u8; arg.size() as usize];
                 data.read_exact(&mut buf)?;
                 buf
             };

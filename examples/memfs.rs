@@ -289,17 +289,14 @@ impl Filesystem for MemFS {
     fn lookup(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Lookup<'_>>,
+        _: fs::Request<'_>,
+        op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        let parent = self.inodes.get(req.arg().parent()).ok_or(ENOENT)?;
+        let parent = self.inodes.get(op.parent()).ok_or(ENOENT)?;
         let parent = parent.as_dir().ok_or(ENOTDIR)?;
 
-        let child_ino = parent
-            .children
-            .get(req.arg().name())
-            .copied()
-            .ok_or(ENOENT)?;
+        let child_ino = parent.children.get(op.name()).copied().ok_or(ENOENT)?;
         let mut child = self
             .inodes
             .get_mut(child_ino)
@@ -328,10 +325,11 @@ impl Filesystem for MemFS {
     fn getattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Getattr<'_>>,
+        _: fs::Request<'_>,
+        op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
 
         reply.out().attr(inode.attr.clone());
         reply.out().ttl(self.ttl);
@@ -341,10 +339,11 @@ impl Filesystem for MemFS {
     fn setattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Setattr<'_>>,
+        _: fs::Request<'_>,
+        op: op::Setattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
         fn to_duration(t: op::SetAttrTime) -> Duration {
             match t {
@@ -355,25 +354,25 @@ impl Filesystem for MemFS {
             }
         }
 
-        if let Some(mode) = req.arg().mode() {
+        if let Some(mode) = op.mode() {
             inode.attr.mode = mode;
         }
-        if let Some(uid) = req.arg().uid() {
+        if let Some(uid) = op.uid() {
             inode.attr.uid = uid;
         }
-        if let Some(gid) = req.arg().gid() {
+        if let Some(gid) = op.gid() {
             inode.attr.gid = gid;
         }
-        if let Some(size) = req.arg().size() {
+        if let Some(size) = op.size() {
             inode.attr.size = size;
         }
-        if let Some(atime) = req.arg().atime() {
+        if let Some(atime) = op.atime() {
             inode.attr.atime = to_duration(atime);
         }
-        if let Some(mtime) = req.arg().mtime() {
+        if let Some(mtime) = op.mtime() {
             inode.attr.mtime = to_duration(mtime);
         }
-        if let Some(ctime) = req.arg().ctime() {
+        if let Some(ctime) = op.ctime() {
             inode.attr.ctime = ctime;
         }
 
@@ -385,10 +384,11 @@ impl Filesystem for MemFS {
     fn readlink(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Readlink<'_>>,
+        _: fs::Request<'_>,
+        op: op::Readlink<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
         let link = inode.as_symlink().ok_or(EINVAL)?;
         reply.send(link)
     }
@@ -396,10 +396,11 @@ impl Filesystem for MemFS {
     fn opendir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Opendir<'_>>,
+        _: fs::Request<'_>,
+        op: op::Opendir<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
         if inode.attr.nlink == 0 {
             return Err(ENOENT.into());
         }
@@ -418,19 +419,18 @@ impl Filesystem for MemFS {
     fn readdir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Readdir<'_>>,
+        _: fs::Request<'_>,
+        op: op::Readdir<'_>,
         mut reply: fs::ReplyDir,
     ) -> fs::Result {
-        if req.arg().mode() == op::ReaddirMode::Plus {
+        if op.mode() == op::ReaddirMode::Plus {
             Err(ENOSYS)?;
         }
 
         let dir_handles = &mut *self.dir_handles.lock().unwrap();
-        let dir = dir_handles
-            .get(req.arg().fh().into_raw() as usize)
-            .ok_or(EINVAL)?;
+        let dir = dir_handles.get(op.fh().into_raw() as usize).ok_or(EINVAL)?;
 
-        for entry in dir.entries.iter().skip(req.arg().offset() as usize) {
+        for entry in dir.entries.iter().skip(op.offset() as usize) {
             if reply.push_entry(&entry.name, entry.ino, entry.typ, entry.off) {
                 break;
             }
@@ -443,31 +443,33 @@ impl Filesystem for MemFS {
     fn releasedir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Releasedir<'_>>,
+        _: fs::Request<'_>,
+        op: op::Releasedir<'_>,
         reply: fs::ReplyUnit,
     ) -> fs::Result {
         let dir_handles = &mut *self.dir_handles.lock().unwrap();
-        dir_handles.remove(req.arg().fh().into_raw() as usize);
+        dir_handles.remove(op.fh().into_raw() as usize);
         reply.send()
     }
 
     fn mknod(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Mknod<'_>>,
+        _: fs::Request<'_>,
+        op: op::Mknod<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        match req.arg().mode().file_type() {
+        match op.mode().file_type() {
             Some(FileType::Regular) => (),
             _ => Err(ENOTSUP)?,
         }
 
-        self.make_node(reply, req.arg().parent(), req.arg().name(), |entry| INode {
+        self.make_node(reply, op.parent(), op.name(), |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
                 attr.ino = *entry.key();
                 attr.nlink = 1;
-                attr.mode = req.arg().mode();
+                attr.mode = op.mode();
                 attr
             },
             xattrs: HashMap::new(),
@@ -480,15 +482,16 @@ impl Filesystem for MemFS {
     fn mkdir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Mkdir<'_>>,
+        _: fs::Request<'_>,
+        op: op::Mkdir<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.make_node(reply, req.arg().parent(), req.arg().name(), |entry| INode {
+        self.make_node(reply, op.parent(), op.name(), |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
                 attr.ino = *entry.key();
                 attr.nlink = 2;
-                attr.mode = FileMode::new(FileType::Directory, req.arg().permissions());
+                attr.mode = FileMode::new(FileType::Directory, op.permissions());
                 attr
             },
             xattrs: HashMap::new(),
@@ -496,7 +499,7 @@ impl Filesystem for MemFS {
             links: 1,
             kind: INodeKind::Directory(Directory {
                 children: HashMap::new(),
-                parent: Some(req.arg().parent()),
+                parent: Some(op.parent()),
             }),
         })
     }
@@ -504,10 +507,11 @@ impl Filesystem for MemFS {
     fn symlink(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Symlink<'_>>,
+        _: fs::Request<'_>,
+        op: op::Symlink<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.make_node(reply, req.arg().parent(), req.arg().name(), |entry| INode {
+        self.make_node(reply, op.parent(), op.name(), |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
                 attr.ino = *entry.key();
@@ -521,33 +525,34 @@ impl Filesystem for MemFS {
             xattrs: HashMap::new(),
             refcount: 1,
             links: 1,
-            kind: INodeKind::Symlink(Arc::new(req.arg().link().into())),
+            kind: INodeKind::Symlink(Arc::new(op.link().into())),
         })
     }
 
     fn link(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Link<'_>>,
+        _: fs::Request<'_>,
+        op: op::Link<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
-        debug_assert!(req.arg().ino() != req.arg().newparent());
-        let mut newparent = self.inodes.get_mut(req.arg().newparent()).ok_or(ENOENT)?;
+        debug_assert!(op.ino() != op.newparent());
+        let mut newparent = self.inodes.get_mut(op.newparent()).ok_or(ENOENT)?;
         let newparent = newparent.as_dir_mut().ok_or(ENOTDIR)?;
 
-        match newparent.children.entry(req.arg().newname().into()) {
+        match newparent.children.entry(op.newname().into()) {
             Entry::Occupied(..) => return Err(EEXIST.into()),
             Entry::Vacant(entry) => {
-                entry.insert(req.arg().ino());
+                entry.insert(op.ino());
                 inode.links += 1;
                 inode.attr.nlink += 1;
                 inode.refcount += 1;
             }
         }
 
-        reply.out().ino(req.arg().ino());
+        reply.out().ino(op.ino());
         reply.out().attr(inode.attr.clone());
         reply.out().ttl_entry(self.ttl);
         reply.send()
@@ -556,45 +561,48 @@ impl Filesystem for MemFS {
     fn unlink(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Unlink<'_>>,
+        _: fs::Request<'_>,
+        op: op::Unlink<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        self.unlink_node(req.arg().parent(), req.arg().name())?;
+        self.unlink_node(op.parent(), op.name())?;
         reply.send()
     }
 
     fn rmdir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Rmdir<'_>>,
+        _: fs::Request<'_>,
+        op: op::Rmdir<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        self.unlink_node(req.arg().parent(), req.arg().name())?;
+        self.unlink_node(op.parent(), op.name())?;
         reply.send()
     }
 
     fn rename(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Rename<'_>>,
+        _: fs::Request<'_>,
+        op: op::Rename<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        if !req.arg().flags().is_empty() {
+        if !op.flags().is_empty() {
             // TODO: handle RENAME_NOREPLACE and RENAME_EXCHANGE.
             Err(EINVAL)?;
         }
 
-        let mut parent = self.inodes.get_mut(req.arg().parent()).ok_or(ENOENT)?;
+        let mut parent = self.inodes.get_mut(op.parent()).ok_or(ENOENT)?;
         let parent = parent.as_dir_mut().ok_or(ENOTDIR)?;
 
-        match req.arg().newparent() {
-            newparent if newparent == req.arg().parent() => {
-                let ino = match parent.children.get(req.arg().name()) {
+        match op.newparent() {
+            newparent if newparent == op.parent() => {
+                let ino = match parent.children.get(op.name()) {
                     Some(&ino) => ino,
                     None => return Err(ENOENT.into()),
                 };
 
-                match parent.children.entry(req.arg().newname().into()) {
+                match parent.children.entry(op.newname().into()) {
                     Entry::Occupied(..) => return Err(EEXIST.into()),
                     Entry::Vacant(entry) => {
                         entry.insert(ino);
@@ -602,7 +610,7 @@ impl Filesystem for MemFS {
                 }
                 parent
                     .children
-                    .remove(req.arg().name())
+                    .remove(op.name())
                     .unwrap_or_else(|| unreachable!());
             }
 
@@ -610,11 +618,11 @@ impl Filesystem for MemFS {
                 let mut newparent = self.inodes.get_mut(newparent).ok_or(ENOENT)?;
                 let newparent = newparent.as_dir_mut().ok_or(ENOTDIR)?;
 
-                let entry = match newparent.children.entry(req.arg().newname().into()) {
+                let entry = match newparent.children.entry(op.newname().into()) {
                     Entry::Occupied(..) => return Err(EEXIST.into()),
                     Entry::Vacant(entry) => entry,
                 };
-                let ino = parent.children.remove(req.arg().name()).ok_or(ENOENT)?;
+                let ino = parent.children.remove(op.name()).ok_or(ENOENT)?;
                 entry.insert(ino);
             }
         }
@@ -625,12 +633,13 @@ impl Filesystem for MemFS {
     fn getxattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Getxattr<'_>>,
+        _: fs::Request<'_>,
+        op: op::Getxattr<'_>,
         reply: fs::ReplyXattr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
-        let value = inode.xattrs.get(req.arg().name()).ok_or(ENODATA)?;
-        match req.arg().size() {
+        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
+        let value = inode.xattrs.get(op.name()).ok_or(ENODATA)?;
+        match op.size() {
             0 => reply.send_size(value.len() as u32),
             size => {
                 if value.len() as u32 > size {
@@ -644,24 +653,25 @@ impl Filesystem for MemFS {
     fn setxattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Setxattr<'_>>,
+        _: fs::Request<'_>,
+        op: op::Setxattr<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let create = req.arg().flags().contains(SetxattrFlags::CREATE);
-        let replace = req.arg().flags().contains(SetxattrFlags::REPLACE);
+        let create = op.flags().contains(SetxattrFlags::CREATE);
+        let replace = op.flags().contains(SetxattrFlags::REPLACE);
         if create && replace {
             return Err(EINVAL.into());
         }
 
-        let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
-        match inode.xattrs.entry(req.arg().name().into()) {
+        match inode.xattrs.entry(op.name().into()) {
             Entry::Occupied(entry) => {
                 if create {
                     return Err(EEXIST.into());
                 }
                 let value = Arc::make_mut(entry.into_mut());
-                *value = req.arg().value().into();
+                *value = op.value().into();
             }
             Entry::Vacant(entry) => {
                 if replace {
@@ -670,7 +680,7 @@ impl Filesystem for MemFS {
                 if create {
                     entry.insert(Arc::default());
                 } else {
-                    entry.insert(Arc::new(req.arg().value().into()));
+                    entry.insert(Arc::new(op.value().into()));
                 }
             }
         }
@@ -681,12 +691,13 @@ impl Filesystem for MemFS {
     fn listxattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Listxattr<'_>>,
+        _: fs::Request<'_>,
+        op: op::Listxattr<'_>,
         reply: fs::ReplyXattr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
 
-        match req.arg().size() {
+        match op.size() {
             0 => {
                 let total_len = inode.xattrs.keys().map(|name| name.len() as u32 + 1).sum();
                 reply.send_size(total_len)
@@ -713,12 +724,13 @@ impl Filesystem for MemFS {
     fn removexattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Removexattr<'_>>,
+        _: fs::Request<'_>,
+        op: op::Removexattr<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
-        match inode.xattrs.entry(req.arg().name().into()) {
+        match inode.xattrs.entry(op.name().into()) {
             Entry::Occupied(entry) => {
                 entry.remove();
             }
@@ -731,15 +743,16 @@ impl Filesystem for MemFS {
     fn read(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Read<'_>>,
+        _: fs::Request<'_>,
+        op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(req.arg().ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
 
         let content = inode.as_file().ok_or(EINVAL)?;
 
-        let offset = req.arg().offset() as usize;
-        let size = req.arg().size() as usize;
+        let offset = op.offset() as usize;
+        let size = op.size() as usize;
 
         let content = content.get(offset..).unwrap_or(&[]);
         let content = &content[..std::cmp::min(content.len(), size)];
@@ -750,16 +763,17 @@ impl Filesystem for MemFS {
     fn write(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Write<'_>>,
+        _: fs::Request<'_>,
+        op: op::Write<'_>,
         mut data: fs::Data<'_>,
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(req.arg().ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
         let content = inode.as_file_mut().ok_or(EINVAL)?;
 
-        let offset = req.arg().offset() as usize;
-        let size = req.arg().size() as usize;
+        let offset = op.offset() as usize;
+        let size = op.size() as usize;
 
         content.resize(std::cmp::max(content.len(), offset + size), 0);
 
@@ -767,6 +781,6 @@ impl Filesystem for MemFS {
 
         inode.attr.size = (offset + size) as u64;
 
-        reply.send(req.arg().size())
+        reply.send(op.size())
     }
 }

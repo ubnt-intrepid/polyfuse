@@ -111,11 +111,12 @@ impl Filesystem for Hello {
     fn lookup(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Lookup<'_>>,
+        _: fs::Request<'_>,
+        op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry,
     ) -> fs::Result {
-        match req.arg().parent() {
-            NodeID::ROOT if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
+        match op.parent() {
+            NodeID::ROOT if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 reply.out().attr(self.hello_attr());
                 reply.out().ino(HELLO_INO);
                 reply.out().ttl_attr(TTL);
@@ -129,10 +130,11 @@ impl Filesystem for Hello {
     fn getattr(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Getattr<'_>>,
+        _: fs::Request<'_>,
+        op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr,
     ) -> fs::Result {
-        let attr = match req.arg().ino() {
+        let attr = match op.ino() {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
             _ => Err(ENOENT)?,
@@ -146,10 +148,11 @@ impl Filesystem for Hello {
     fn read(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Read<'_>>,
+        _: fs::Request<'_>,
+        op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        match req.arg().ino() {
+        match op.ino() {
             HELLO_INO => (),
             NodeID::ROOT => Err(EISDIR)?,
             _ => Err(ENOENT)?,
@@ -157,9 +160,9 @@ impl Filesystem for Hello {
 
         let mut data: &[u8] = &[];
 
-        let offset = req.arg().offset() as usize;
+        let offset = op.offset() as usize;
         if offset < HELLO_CONTENT.len() {
-            let size = req.arg().size() as usize;
+            let size = op.size() as usize;
             data = &HELLO_CONTENT[offset..];
             data = &data[..std::cmp::min(data.len(), size)];
         }
@@ -170,14 +173,15 @@ impl Filesystem for Hello {
     fn readdir(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::Readdir<'_>>,
+        _: fs::Request<'_>,
+        op: op::Readdir<'_>,
         mut reply: fs::ReplyDir,
     ) -> fs::Result {
-        if req.arg().ino() != NodeID::ROOT {
+        if op.ino() != NodeID::ROOT {
             Err(ENOTDIR)?
         }
 
-        for (i, entry) in self.dir_entries().skip(req.arg().offset() as usize) {
+        for (i, entry) in self.dir_entries().skip(op.offset() as usize) {
             let full = reply.push_entry(
                 entry.name.as_ref(), //
                 entry.ino,

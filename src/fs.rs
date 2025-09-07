@@ -53,8 +53,10 @@ macro_rules! define_ops {
     ($( $name:ident: { $Arg:ident, $Reply:ident } ),*$(,)*) => {$(
         #[allow(unused_variables)]
         fn $name<'env, 'req>(
-            &'env self, env: Env<'_, 'env>,
-            req: Request<'req, op::$Arg<'req>>,
+            &'env self,
+            env: Env<'_, 'env>,
+            req: Request<'req>,
+            op: op::$Arg<'req>,
             reply: $Reply<'req>,
         ) -> Result {
             Err(Error::Code(ENOSYS))
@@ -105,7 +107,8 @@ pub trait Filesystem {
     fn write<'env, 'req>(
         &'env self,
         env: Env<'_, 'env>,
-        req: Request<'req, op::Write<'req>>,
+        req: Request<'req>,
+        op: op::Write<'req>,
         data: Data<'req>,
         reply: ReplyWrite<'req>,
     ) -> Result {
@@ -124,7 +127,7 @@ pub trait Filesystem {
     fn notify_reply<'env, 'req>(
         &'env self,
         env: Env<'_, 'env>,
-        req: Request<'req, op::NotifyReply<'req>>,
+        op: op::NotifyReply<'req>,
         data: Data<'req>,
     ) -> io::Result<()> {
         Ok(())
@@ -186,12 +189,11 @@ impl Notifier<'_> {
 }
 
 /// The context for a single FUSE request used by the filesystem.
-pub struct Request<'req, T: 'req> {
+pub struct Request<'req> {
     buf: &'req RequestBuffer,
-    arg: T,
 }
 
-impl<T> Request<'_, T> {
+impl Request<'_> {
     pub fn uid(&self) -> UID {
         self.buf.uid()
     }
@@ -202,10 +204,6 @@ impl<T> Request<'_, T> {
 
     pub fn pid(&self) -> PID {
         self.buf.pid()
-    }
-
-    pub fn arg(&self) -> &T {
-        &self.arg
     }
 }
 
@@ -521,13 +519,6 @@ where
         Ok(())
     }
 
-    fn req<Arg>(&self, arg: Arg) -> Request<'_, Arg> {
-        Request {
-            buf: &self.buf,
-            arg,
-        }
-    }
-
     fn handle_request<'scope>(&mut self, spawner: Spawner<'scope, 'env>) -> io::Result<()>
     where
         'env: 'scope,
@@ -546,6 +537,8 @@ where
             spawner,
         };
 
+        let req = Request { buf: &self.buf };
+
         let base = ReplyBase {
             session: self.session,
             conn: &self.conn,
@@ -555,7 +548,8 @@ where
         let result = match op {
             Operation::Lookup(op) => self.fs.lookup(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyEntry {
                     base,
                     out: EntryOut::default(),
@@ -563,7 +557,8 @@ where
             ),
             Operation::Getattr(op) => self.fs.getattr(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyAttr {
                     base,
                     out: AttrOut::default(),
@@ -571,16 +566,18 @@ where
             ),
             Operation::Setattr(op) => self.fs.setattr(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyAttr {
                     base,
                     out: AttrOut::default(),
                 },
             ),
-            Operation::Readlink(op) => self.fs.readlink(env, self.req(op), ReplyData { base }),
+            Operation::Readlink(op) => self.fs.readlink(env, req, op, ReplyData { base }),
             Operation::Symlink(op) => self.fs.symlink(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyEntry {
                     base,
                     out: EntryOut::default(),
@@ -588,7 +585,8 @@ where
             ),
             Operation::Mknod(op) => self.fs.mknod(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyEntry {
                     base,
                     out: EntryOut::default(),
@@ -596,18 +594,20 @@ where
             ),
             Operation::Mkdir(op) => self.fs.mkdir(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyEntry {
                     base,
                     out: EntryOut::default(),
                 },
             ),
-            Operation::Unlink(op) => self.fs.unlink(env, self.req(op), ReplyUnit { base }),
-            Operation::Rmdir(op) => self.fs.rmdir(env, self.req(op), ReplyUnit { base }),
-            Operation::Rename(op) => self.fs.rename(env, self.req(op), ReplyUnit { base }),
+            Operation::Unlink(op) => self.fs.unlink(env, req, op, ReplyUnit { base }),
+            Operation::Rmdir(op) => self.fs.rmdir(env, req, op, ReplyUnit { base }),
+            Operation::Rename(op) => self.fs.rename(env, req, op, ReplyUnit { base }),
             Operation::Link(op) => self.fs.link(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyEntry {
                     base,
                     out: EntryOut::default(),
@@ -615,26 +615,26 @@ where
             ),
             Operation::Open(op) => self.fs.open(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyOpen {
                     base,
                     out: OpenOut::default(),
                 },
             ),
-            Operation::Read(op) => self.fs.read(env, self.req(op), ReplyData { base }),
-            Operation::Release(op) => self.fs.release(env, self.req(op), ReplyUnit { base }),
-            Operation::Statfs(op) => self.fs.statfs(env, self.req(op), ReplyStatfs { base }),
-            Operation::Fsync(op) => self.fs.fsync(env, self.req(op), ReplyUnit { base }),
-            Operation::Setxattr(op) => self.fs.setxattr(env, self.req(op), ReplyUnit { base }),
-            Operation::Getxattr(op) => self.fs.getxattr(env, self.req(op), ReplyXattr { base }),
-            Operation::Listxattr(op) => self.fs.listxattr(env, self.req(op), ReplyXattr { base }),
-            Operation::Removexattr(op) => {
-                self.fs.removexattr(env, self.req(op), ReplyUnit { base })
-            }
-            Operation::Flush(op) => self.fs.flush(env, self.req(op), ReplyUnit { base }),
+            Operation::Read(op) => self.fs.read(env, req, op, ReplyData { base }),
+            Operation::Release(op) => self.fs.release(env, req, op, ReplyUnit { base }),
+            Operation::Statfs(op) => self.fs.statfs(env, req, op, ReplyStatfs { base }),
+            Operation::Fsync(op) => self.fs.fsync(env, req, op, ReplyUnit { base }),
+            Operation::Setxattr(op) => self.fs.setxattr(env, req, op, ReplyUnit { base }),
+            Operation::Getxattr(op) => self.fs.getxattr(env, req, op, ReplyXattr { base }),
+            Operation::Listxattr(op) => self.fs.listxattr(env, req, op, ReplyXattr { base }),
+            Operation::Removexattr(op) => self.fs.removexattr(env, req, op, ReplyUnit { base }),
+            Operation::Flush(op) => self.fs.flush(env, req, op, ReplyUnit { base }),
             Operation::Opendir(op) => self.fs.opendir(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyOpen {
                     base,
                     out: OpenOut::default(),
@@ -644,43 +644,43 @@ where
                 let capacity = op.size() as usize;
                 self.fs.readdir(
                     env,
-                    self.req(op),
+                    req,
+                    op,
                     ReplyDir {
                         base,
                         out: ReaddirOut::new(capacity),
                     },
                 )
             }
-            Operation::Releasedir(op) => self.fs.releasedir(env, self.req(op), ReplyUnit { base }),
-            Operation::Fsyncdir(op) => self.fs.fsyncdir(env, self.req(op), ReplyUnit { base }),
-            Operation::Getlk(op) => self.fs.getlk(env, self.req(op), ReplyLock { base }),
-            Operation::Setlk(op) => self.fs.setlk(env, self.req(op), ReplyUnit { base }),
-            Operation::Flock(op) => self.fs.flock(env, self.req(op), ReplyUnit { base }),
-            Operation::Access(op) => self.fs.access(env, self.req(op), ReplyUnit { base }),
+            Operation::Releasedir(op) => self.fs.releasedir(env, req, op, ReplyUnit { base }),
+            Operation::Fsyncdir(op) => self.fs.fsyncdir(env, req, op, ReplyUnit { base }),
+            Operation::Getlk(op) => self.fs.getlk(env, req, op, ReplyLock { base }),
+            Operation::Setlk(op) => self.fs.setlk(env, req, op, ReplyUnit { base }),
+            Operation::Flock(op) => self.fs.flock(env, req, op, ReplyUnit { base }),
+            Operation::Access(op) => self.fs.access(env, req, op, ReplyUnit { base }),
             Operation::Create(op) => self.fs.create(
                 env,
-                self.req(op),
+                req,
+                op,
                 ReplyCreate {
                     base,
                     entry_out: EntryOut::default(),
                     open_out: OpenOut::default(),
                 },
             ),
-            Operation::Bmap(op) => self.fs.bmap(env, self.req(op), ReplyBmap { base }),
-            Operation::Fallocate(op) => self.fs.fallocate(env, self.req(op), ReplyUnit { base }),
+            Operation::Bmap(op) => self.fs.bmap(env, req, op, ReplyBmap { base }),
+            Operation::Fallocate(op) => self.fs.fallocate(env, req, op, ReplyUnit { base }),
             Operation::CopyFileRange(op) => {
-                self.fs
-                    .copy_file_range(env, self.req(op), ReplyWrite { base })
+                self.fs.copy_file_range(env, req, op, ReplyWrite { base })
             }
-            Operation::Poll(op) => self.fs.poll(env, self.req(op), ReplyPoll { base }),
-            Operation::Lseek(op) => self.fs.lseek(env, self.req(op), ReplyLseek { base }),
+            Operation::Poll(op) => self.fs.poll(env, req, op, ReplyPoll { base }),
+            Operation::Lseek(op) => self.fs.lseek(env, req, op, ReplyLseek { base }),
             Operation::Write(op) => {
                 self.fs
-                    .write(env, self.req(op), Data { inner: data }, ReplyWrite { base })
+                    .write(env, req, op, Data { inner: data }, ReplyWrite { base })
             }
             Operation::NotifyReply(op) => {
-                self.fs
-                    .notify_reply(env, self.req(op), Data { inner: data })?;
+                self.fs.notify_reply(env, op, Data { inner: data })?;
                 return Ok(());
             }
             Operation::Forget(forgets) => {
