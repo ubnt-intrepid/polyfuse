@@ -1,7 +1,6 @@
 use polyfuse::{
     fs::{self, Filesystem},
     op::{self, AccessMode, OpenFlags},
-    reply::{AttrOut, OpenOut, PollOut},
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
         GID, UID,
@@ -63,9 +62,13 @@ impl PollFS {
 }
 
 impl Filesystem for PollFS {
-    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
-        let mut out = AttrOut::default();
-        out.attr({
+    fn getattr(
+        &self,
+        _: fs::Env<'_, '_>,
+        _: fs::Request<'_, op::Getattr<'_>>,
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
+        reply.out().attr({
             let mut attr = FileAttr::new();
             attr.ino = NodeID::ROOT;
             attr.nlink = 1;
@@ -74,12 +77,16 @@ impl Filesystem for PollFS {
             attr.gid = GID::current();
             attr
         });
-        out.ttl(Duration::from_secs(u64::max_value() / 2));
-
-        req.reply(out)
+        reply.out().ttl(Duration::from_secs(u64::max_value() / 2));
+        reply.send()
     }
 
-    fn open(&self, cx: fs::Env<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
+    fn open(
+        &self,
+        cx: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Open<'_>>,
+        mut reply: fs::ReplyOpen<'_>,
+    ) -> fs::Result {
         if req.arg().options().access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
@@ -127,16 +134,18 @@ impl Filesystem for PollFS {
         let fh = FileID::from_raw(fh);
         self.handles.insert(fh, handle);
 
-        req.reply({
-            let mut out = OpenOut::default();
-            out.fh(fh);
-            out.direct_io(true);
-            out.nonseekable(true);
-            out
-        })
+        reply.out().fh(fh);
+        reply.out().direct_io(true);
+        reply.out().nonseekable(true);
+        reply.send()
     }
 
-    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Read<'_>>,
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         let handle = &**self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
         let mut state = handle.state.lock().unwrap();
         if handle.is_nonblock {
@@ -160,29 +169,38 @@ impl Filesystem for PollFS {
         let bufsize = req.arg().size() as usize;
         let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-        req.reply(&content[..std::cmp::min(content.len(), bufsize)])
+        reply.send(&content[..std::cmp::min(content.len(), bufsize)])
     }
 
-    fn poll(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Poll<'_>>) -> fs::Result {
+    fn poll(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Poll<'_>>,
+        reply: fs::ReplyPoll<'_>,
+    ) -> fs::Result {
         let handle = &*self.handles.get(&req.arg().fh()).ok_or(EINVAL)?;
         let state = &mut *handle.state.lock().unwrap();
 
-        let mut out = PollOut::default();
-
+        let mut revents = PollEvents::empty();
         if state.is_ready {
             tracing::info!("file is ready to read");
-            out.revents(req.arg().events() & PollEvents::IN);
+            revents = req.arg().events() & PollEvents::IN;
         } else if let Some(kh) = req.arg().kh() {
             tracing::info!("register the poll handle for notification: kh={}", kh);
             state.kh = Some(kh);
         }
 
-        req.reply(out)
+        reply.send(revents)
     }
 
-    fn release(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Release<'_>>) -> fs::Result {
+    fn release(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Release<'_>>,
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         drop(self.handles.remove(&req.arg().fh()));
-        req.reply(())
+        reply.send()
     }
 }
 

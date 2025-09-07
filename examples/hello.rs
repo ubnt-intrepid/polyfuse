@@ -6,7 +6,6 @@ use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, EntryOut, ReaddirOut},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     KernelConfig,
 };
@@ -109,35 +108,47 @@ impl Hello {
 }
 
 impl Filesystem for Hello {
-    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+    fn lookup(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Lookup<'_>>,
+        mut reply: fs::ReplyEntry,
+    ) -> fs::Result {
         match req.arg().parent() {
             NodeID::ROOT if req.arg().name().as_bytes() == HELLO_FILENAME.as_bytes() => {
-                let mut out = EntryOut::default();
-                out.attr(self.hello_attr());
-                out.ino(HELLO_INO);
-                out.ttl_attr(TTL);
-                out.ttl_entry(TTL);
-                req.reply(out)
+                reply.out().attr(self.hello_attr());
+                reply.out().ino(HELLO_INO);
+                reply.out().ttl_attr(TTL);
+                reply.out().ttl_entry(TTL);
+                reply.send()
             }
             _ => Err(ENOENT)?,
         }
     }
 
-    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Getattr<'_>>,
+        mut reply: fs::ReplyAttr,
+    ) -> fs::Result {
         let attr = match req.arg().ino() {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
             _ => Err(ENOENT)?,
         };
 
-        let mut out = AttrOut::default();
-        out.attr(attr);
-        out.ttl(TTL);
-
-        req.reply(out)
+        reply.out().attr(attr);
+        reply.out().ttl(TTL);
+        reply.send()
     }
 
-    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Read<'_>>,
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         match req.arg().ino() {
             HELLO_INO => (),
             NodeID::ROOT => Err(EISDIR)?,
@@ -153,18 +164,21 @@ impl Filesystem for Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        req.reply(data)
+        reply.send(data)
     }
 
-    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Readdir<'_>>,
+        mut reply: fs::ReplyDir,
+    ) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOTDIR)?
         }
 
-        let mut out = ReaddirOut::new(req.arg().size() as usize);
-
         for (i, entry) in self.dir_entries().skip(req.arg().offset() as usize) {
-            let full = out.entry(
+            let full = reply.push_entry(
                 entry.name.as_ref(), //
                 entry.ino,
                 entry.typ,
@@ -175,6 +189,6 @@ impl Filesystem for Hello {
             }
         }
 
-        req.reply(out)
+        reply.send()
     }
 }

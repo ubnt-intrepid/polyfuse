@@ -12,7 +12,6 @@ use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, EntryOut, ReaddirOut},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     KernelConfig,
 };
@@ -138,7 +137,12 @@ impl Filesystem for Heartbeat {
         Ok(())
     }
 
-    fn lookup(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Lookup<'_>>) -> fs::Result {
+    fn lookup(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Lookup<'_>>,
+        mut reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         if req.arg().parent() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
@@ -146,13 +150,11 @@ impl Filesystem for Heartbeat {
         let mut current = self.current.lock().unwrap();
 
         if req.arg().name().as_bytes() == current.filename.as_bytes() {
-            let mut out = EntryOut::default();
-            out.ino(self.file_attr.ino);
-            out.attr(self.file_attr.clone());
-            out.ttl_entry(self.ttl);
-            out.ttl_attr(self.ttl);
-
-            let res = req.reply(out)?;
+            reply.out().ino(self.file_attr.ino);
+            reply.out().attr(self.file_attr.clone());
+            reply.out().ttl_entry(self.ttl);
+            reply.out().ttl_attr(self.ttl);
+            let res = reply.send()?;
 
             current.nlookup += 1;
 
@@ -171,40 +173,52 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
+    fn getattr(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Getattr<'_>>,
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         let attr = match req.arg().ino() {
             NodeID::ROOT => self.root_attr.clone(),
             FILE_INO => self.file_attr.clone(),
             _ => Err(ENOENT)?,
         };
 
-        let mut out = AttrOut::default();
-        out.attr(attr);
-        out.ttl(self.ttl);
-
-        req.reply(out)
+        reply.out().attr(attr);
+        reply.out().ttl(self.ttl);
+        reply.send()
     }
 
-    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
+    fn read(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Read<'_>>,
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         match req.arg().ino() {
             NodeID::ROOT => Err(EISDIR)?,
-            FILE_INO => req.reply(()),
+            FILE_INO => reply.send(()),
             _ => Err(ENOENT)?,
         }
     }
 
-    fn readdir(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Readdir<'_>>) -> fs::Result {
+    fn readdir(
+        &self,
+        _: fs::Env<'_, '_>,
+        req: fs::Request<'_, op::Readdir<'_>>,
+        mut reply: fs::ReplyDir<'_>,
+    ) -> fs::Result {
         if req.arg().ino() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
         if req.arg().offset() > 0 {
-            return req.reply(());
+            return reply.send();
         }
 
         let current = self.current.lock().unwrap();
+        reply.push_entry(current.filename.as_ref(), FILE_INO, None, 1);
 
-        let mut out = ReaddirOut::new(req.arg().size() as usize);
-        out.entry(current.filename.as_ref(), FILE_INO, None, 1);
-        req.reply(out)
+        reply.send()
     }
 }
