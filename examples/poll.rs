@@ -14,9 +14,9 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Condvar, Mutex,
+        Arc, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const CONTENT: &str = "Hello, world!\n";
@@ -96,10 +96,11 @@ impl Filesystem for PollFS {
         let is_nonblock = op.options().flags().contains(OpenFlags::NONBLOCK);
 
         let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
+        let deadline = Instant::now() + self.wakeup_interval;
         let handle = Arc::new(FileHandle {
             is_nonblock,
-            state: Mutex::default(),
-            condvar: Condvar::new(),
+            kh: OnceLock::new(),
+            deadline,
         });
 
         tracing::info!("spawn reading task");
@@ -118,15 +119,10 @@ impl Filesystem for PollFS {
 
                 // Do nothing when the handle is already closed.
                 if let Some(handle) = handle.upgrade() {
-                    let state = &mut *handle.state.lock().unwrap();
-
-                    if let Some(kh) = state.kh {
+                    if let Some(kh) = handle.kh.get() {
                         tracing::info!("send wakeup notification, kh={}", kh);
-                        cx.notifier.poll_wakeup(kh)?;
+                        cx.notifier.poll_wakeup(*kh)?;
                     }
-
-                    state.is_ready = true;
-                    handle.condvar.notify_one();
                 }
 
                 Ok(())
@@ -149,24 +145,21 @@ impl Filesystem for PollFS {
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let handle = &**self.handles.get(&op.fh()).ok_or(EINVAL)?;
-        let mut state = handle.state.lock().unwrap();
+        let handle = &*self.handles.get(&op.fh()).ok_or(EINVAL)?;
         if handle.is_nonblock {
-            if !state.is_ready {
+            if handle.deadline > Instant::now() {
                 tracing::info!("send EAGAIN immediately");
                 Err(EAGAIN)?;
             }
         } else {
             tracing::info!("wait for the completion of background task");
-            state = handle
-                .condvar
-                .wait_while(state, |state| !state.is_ready)
-                .unwrap();
+            let now = Instant::now();
+            if handle.deadline > now {
+                std::thread::sleep(handle.deadline.duration_since(now));
+            }
         }
 
-        debug_assert!(state.is_ready);
-
-        tracing::info!("complete reading");
+        tracing::info!("ready to read contents");
 
         let offset = op.offset() as usize;
         let bufsize = op.size() as usize;
@@ -183,15 +176,15 @@ impl Filesystem for PollFS {
         reply: fs::ReplyPoll<'_>,
     ) -> fs::Result {
         let handle = &*self.handles.get(&op.fh()).ok_or(EINVAL)?;
-        let state = &mut *handle.state.lock().unwrap();
+        let now = Instant::now();
 
         let mut revents = PollEvents::empty();
-        if state.is_ready {
+        if handle.deadline <= now {
             tracing::info!("file is ready to read");
             revents = op.events() & PollEvents::IN;
         } else if let Some(kh) = op.kh() {
             tracing::info!("register the poll handle for notification: kh={}", kh);
-            state.kh = Some(kh);
+            let _ = handle.kh.set(kh);
         }
 
         reply.send(revents)
@@ -211,12 +204,6 @@ impl Filesystem for PollFS {
 
 struct FileHandle {
     is_nonblock: bool,
-    state: Mutex<FileHandleState>,
-    condvar: Condvar,
-}
-
-#[derive(Default)]
-struct FileHandleState {
-    is_ready: bool,
-    kh: Option<PollWakeupID>,
+    kh: OnceLock<PollWakeupID>,
+    deadline: Instant,
 }
