@@ -51,25 +51,24 @@ struct DirEntry {
 
 impl Hello {
     fn new() -> Self {
-        let mut entries = Vec::with_capacity(3);
-        entries.push(DirEntry {
-            name: ".",
-            ino: NodeID::ROOT,
-            typ: Some(FileType::Directory),
-        });
-        entries.push(DirEntry {
-            name: "..",
-            ino: NodeID::ROOT,
-            typ: Some(FileType::Directory),
-        });
-        entries.push(DirEntry {
-            name: HELLO_FILENAME,
-            ino: HELLO_INO,
-            typ: Some(FileType::Regular),
-        });
-
         Self {
-            entries,
+            entries: vec![
+                DirEntry {
+                    name: ".",
+                    ino: NodeID::ROOT,
+                    typ: Some(FileType::Directory),
+                },
+                DirEntry {
+                    name: "..",
+                    ino: NodeID::ROOT,
+                    typ: Some(FileType::Directory),
+                },
+                DirEntry {
+                    name: HELLO_FILENAME,
+                    ino: HELLO_INO,
+                    typ: Some(FileType::Regular),
+                },
+            ],
             uid: UID::current(),
             gid: GID::current(),
         }
