@@ -24,6 +24,7 @@ libc = "0.2"
 num_cpus = "1.17"
 polyfuse-kernel = { version = ">=0.2.1", path = "crates/polyfuse-kernel" }
 thiserror = "2"
+tokio = { version = ">=1.8.4", features = [ "fs", "net", "rt" ] }
 tracing = "0.1"
 zerocopy = "0.8.26"
 
@@ -35,7 +36,7 @@ nix = { version = "0.30", features = [ "user", "fs" ] }
 pico-args = "0.5"
 pin-project-lite = "0.2"
 slab = ">=0.4.11"
-tokio = { version = ">=1.8.4", features = [ "macros", "fs", "io-util", "net", "rt-multi-thread" ] }
+tokio = { version = ">=1.8.4", features = [ "macros", "fs", "io-util", "net", "rt-multi-thread", "sync", "time" ] }
 tracing-subscriber = "0.3"
 
 [workspace]

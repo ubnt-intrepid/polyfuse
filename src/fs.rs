@@ -2,7 +2,7 @@ use crate::{
     bytes::Bytes,
     conn::Connection,
     mount::MountOptions,
-    notify,
+    notify::{self, Notify},
     op::{self, Forget, Operation},
     reply::{
         AttrOut, BmapOut, EntryOut, LkOut, LseekOut, OpenOut, PollOut, ReaddirOut, StatfsOut,
@@ -10,18 +10,17 @@ use crate::{
     },
     request::{RemainingData, RequestBuffer},
     session::{KernelConfig, KernelFlags, Session},
-    types::{
-        FileLock, FileType, NodeID, NotifyID, PollEvents, PollWakeupID, Statfs, GID, PID, UID,
-    },
+    types::{FileLock, FileType, NodeID, PollEvents, Statfs, GID, PID, UID},
 };
 use libc::{EIO, ENOENT, ENOSYS};
 use std::{
     ffi::OsStr,
+    future::Future,
     io,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-    thread,
+    sync::{Arc, Weak},
 };
+use tokio::{io::unix::AsyncFd, task::JoinSet};
 
 pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
@@ -52,14 +51,16 @@ impl From<io::Error> for Error {
 macro_rules! define_ops {
     ($( $name:ident: { $Arg:ident, $Reply:ident } ),*$(,)*) => {$(
         #[allow(unused_variables)]
-        fn $name<'env, 'req>(
-            &'env self,
-            env: Env<'_, 'env>,
-            req: Request<'req>,
-            op: op::$Arg<'req>,
-            reply: $Reply<'req>,
-        ) -> Result {
-            Err(Error::Code(ENOSYS))
+        fn $name(
+            self: &Arc<Self>,
+            env: &Env,
+            req: Request<'_>,
+            op: op::$Arg<'_>,
+            reply: $Reply<'_>,
+        ) -> impl Future<Output = Result> + Send {
+            async {
+                Err(Error::Code(ENOSYS))
+            }
         }
     )*};
 }
@@ -104,87 +105,74 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
-    fn write<'env, 'req>(
-        &'env self,
-        env: Env<'_, 'env>,
-        req: Request<'req>,
-        op: op::Write<'req>,
-        data: Data<'req>,
-        reply: ReplyWrite<'req>,
-    ) -> Result {
-        Err(Error::Code(ENOSYS))
+    fn write(
+        self: &Arc<Self>,
+        env: &Env,
+        req: Request<'_>,
+        op: op::Write<'_>,
+        data: Data<'_>,
+        reply: ReplyWrite<'_>,
+    ) -> impl Future<Output = Result> + Send {
+        async { Err(Error::Code(ENOSYS)) }
     }
 
     #[allow(unused_variables)]
-    fn forget<'env>(&'env self, env: Env<'_, 'env>, forgets: &[Forget]) {}
-
-    #[allow(unused_variables)]
-    fn init<'env>(&'env self, env: Env<'_, 'env>) -> io::Result<()> {
-        Ok(())
+    fn forget(self: &Arc<Self>, env: &Env, forgets: &[Forget]) -> impl Future<Output = ()> + Send {
+        async {}
     }
 
     #[allow(unused_variables)]
-    fn notify_reply<'env, 'req>(
-        &'env self,
-        env: Env<'_, 'env>,
-        op: op::NotifyReply<'req>,
-        data: Data<'req>,
-    ) -> io::Result<()> {
-        Ok(())
+    fn init(self: &Arc<Self>, env: &Env) -> impl Future<Output = io::Result<()>> + Send {
+        async { Ok(()) }
+    }
+
+    #[allow(unused_variables)]
+    fn notify_reply(
+        self: &Arc<Self>,
+        env: &Env,
+        op: op::NotifyReply<'_>,
+        data: Data<'_>,
+    ) -> impl Future<Output = io::Result<()>> + Send {
+        async { Ok(()) }
     }
 }
 
-pub type Spawner<'scope, 'env> = &'scope thread::Scope<'scope, 'env>;
-
-#[non_exhaustive]
-pub struct Env<'scope, 'env: 'scope> {
-    pub notifier: Notifier<'env>,
-    pub spawner: Spawner<'scope, 'env>,
+pub struct Env {
+    inner: Arc<EnvInner>,
 }
 
-#[derive(Clone)]
-pub struct Notifier<'env> {
-    session: &'env Session,
-    conn: &'env Connection,
-    notify_unique: &'env AtomicU64,
+impl Env {
+    pub fn notifier(&self) -> Notifier {
+        Notifier {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
 }
 
-impl Notifier<'_> {
-    fn send<T>(&self, notify: T) -> io::Result<()>
+struct EnvInner {
+    session: Session,
+    conn: Connection,
+}
+
+impl EnvInner {
+    fn send_notify<T>(&self, notify: T) -> io::Result<()>
     where
         T: notify::Notify,
     {
-        self.session.send_notify(self.conn, notify)
+        self.session.send_notify(&self.conn, notify)
     }
+}
 
-    pub fn inval_inode(&self, ino: NodeID, off: i64, len: i64) -> io::Result<()> {
-        self.send(notify::InvalNode::new(ino, off, len))
-    }
+pub struct Notifier {
+    inner: Weak<EnvInner>,
+}
 
-    pub fn inval_entry(&self, parent: NodeID, name: &OsStr) -> io::Result<()> {
-        self.send(notify::InvalEntry::new(parent, name))
-    }
-
-    pub fn delete(&self, parent: NodeID, child: NodeID, name: &OsStr) -> io::Result<()> {
-        self.send(notify::Delete::new(parent, child, name))
-    }
-
-    pub fn store<B>(&self, ino: NodeID, offset: u64, data: B) -> io::Result<()>
-    where
-        B: Bytes,
-    {
-        self.send(notify::Store::new(ino, offset, data))
-    }
-
-    pub fn retrieve(&self, ino: NodeID, offset: u64, size: u32) -> io::Result<NotifyID> {
-        let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
-        let unique = NotifyID::from_raw(unique);
-        self.send(notify::Retrieve::new(unique, ino, offset, size))?;
-        Ok(unique)
-    }
-
-    pub fn poll_wakeup(&self, kh: PollWakeupID) -> io::Result<()> {
-        self.send(notify::PollWakeup::new(kh))
+impl Notifier {
+    pub fn send(&self, notify: impl Notify) -> io::Result<()> {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.send_notify(notify)?;
+        }
+        Ok(())
     }
 }
 
@@ -437,14 +425,14 @@ impl ReplyLseek<'_> {
     }
 }
 
-pub fn run<T>(
+pub async fn run<T>(
     fs: T,
     mountpoint: PathBuf,
     mountopts: MountOptions,
     mut config: KernelConfig,
 ) -> io::Result<()>
 where
-    T: Filesystem + Sync,
+    T: Filesystem + Send + Sync + 'static,
 {
     let span = tracing::debug_span!("polyfuse::fs::run");
     let _enter = span.enter();
@@ -454,75 +442,72 @@ where
     let mut session = Session::new();
     session.init(&conn, &mut config)?;
 
-    let num_workers = num_cpus::get();
+    let env = Arc::new(Env {
+        inner: Arc::new(EnvInner { session, conn }),
+    });
+    let fs = Arc::new(fs);
+    fs.init(&env).await?;
 
-    let notify_unique = AtomicU64::new(0);
+    let num_workers = num_cpus::get() * 4;
 
-    thread::scope(|spawner| -> io::Result<()> {
-        fs.init(Env {
-            notifier: Notifier {
-                session: &session,
-                conn: &conn,
-                notify_unique: &notify_unique,
+    let mut join_set = JoinSet::new();
+    for _i in 0..num_workers {
+        let conn = env.inner.conn.try_ioc_clone()?;
+        let worker = Worker {
+            fs: fs.clone(),
+            env: env.clone(),
+            conn: AsyncFd::new(conn)?,
+            buf: if config.flags.contains(KernelFlags::SPLICE_READ) {
+                RequestBuffer::new_splice(config.request_buffer_size())?
+            } else {
+                RequestBuffer::new_fallback(config.request_buffer_size())?
             },
-            spawner,
-        })?;
+        };
+        join_set.spawn(async move { worker.run().await });
+    }
 
-        for _i in 0..num_workers {
-            let worker = Worker {
-                fs: &fs,
-                session: &session,
-                notifier: Notifier {
-                    session: &session,
-                    conn: &conn,
-                    notify_unique: &notify_unique,
-                },
-                conn: conn.try_ioc_clone()?,
-                buf: if config.flags.contains(KernelFlags::SPLICE_READ) {
-                    RequestBuffer::new_splice(config.request_buffer_size())?
-                } else {
-                    RequestBuffer::new_fallback(config.request_buffer_size())?
-                },
-            };
-            spawner.spawn(move || worker.run(spawner));
-        }
-
-        // TODO: on_destroy
-
-        Ok(())
-    })?;
+    // TODO: on_destroy
+    let _results = join_set.join_all().await;
 
     fusermount.unmount()?;
 
     Ok(())
 }
 
-struct Worker<'env, T> {
-    fs: &'env T,
-    session: &'env Session,
-    notifier: Notifier<'env>,
-    conn: Connection,
+struct Worker<T> {
+    fs: Arc<T>,
+    env: Arc<Env>,
+    conn: AsyncFd<Connection>,
     buf: RequestBuffer,
 }
 
-impl<'env, T> Worker<'env, T>
+impl<T> Worker<T>
 where
     T: Filesystem,
 {
-    fn run<'scope>(mut self, spawner: Spawner<'scope, 'env>) -> io::Result<()>
-    where
-        'env: 'scope,
-    {
-        while self.session.recv_request(&self.conn, &mut self.buf)? {
-            self.handle_request(spawner)?;
+    async fn run(mut self) -> io::Result<()> {
+        while self.read_request().await? {
+            self.handle_request().await?;
         }
         Ok(())
     }
 
-    fn handle_request<'scope>(&mut self, spawner: Spawner<'scope, 'env>) -> io::Result<()>
-    where
-        'env: 'scope,
-    {
+    async fn read_request(&mut self) -> io::Result<bool> {
+        loop {
+            let mut guard = self.conn.readable().await?;
+            match guard.try_io(|conn| {
+                self.env
+                    .inner
+                    .session
+                    .recv_request(conn.get_ref(), &mut self.buf)
+            }) {
+                Ok(result) => return result,
+                Err(_would_block) => continue,
+            }
+        }
+    }
+
+    async fn handle_request<'scope>(&mut self) -> io::Result<()> {
         let span = tracing::debug_span!("handle_request", unique = ?self.buf.unique());
         let _enter = span.enter();
 
@@ -532,159 +517,247 @@ where
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
 
-        let env = Env {
-            notifier: self.notifier.clone(),
-            spawner,
-        };
-
         let req = Request { buf: &self.buf };
 
         let base = ReplyBase {
-            session: self.session,
-            conn: &self.conn,
+            session: &self.env.inner.session,
+            conn: self.conn.get_ref(),
             buf: &self.buf,
         };
 
         let result = match op {
-            Operation::Lookup(op) => self.fs.lookup(
-                env,
-                req,
-                op,
-                ReplyEntry {
-                    base,
-                    out: EntryOut::default(),
-                },
-            ),
-            Operation::Getattr(op) => self.fs.getattr(
-                env,
-                req,
-                op,
-                ReplyAttr {
-                    base,
-                    out: AttrOut::default(),
-                },
-            ),
-            Operation::Setattr(op) => self.fs.setattr(
-                env,
-                req,
-                op,
-                ReplyAttr {
-                    base,
-                    out: AttrOut::default(),
-                },
-            ),
-            Operation::Readlink(op) => self.fs.readlink(env, req, op, ReplyData { base }),
-            Operation::Symlink(op) => self.fs.symlink(
-                env,
-                req,
-                op,
-                ReplyEntry {
-                    base,
-                    out: EntryOut::default(),
-                },
-            ),
-            Operation::Mknod(op) => self.fs.mknod(
-                env,
-                req,
-                op,
-                ReplyEntry {
-                    base,
-                    out: EntryOut::default(),
-                },
-            ),
-            Operation::Mkdir(op) => self.fs.mkdir(
-                env,
-                req,
-                op,
-                ReplyEntry {
-                    base,
-                    out: EntryOut::default(),
-                },
-            ),
-            Operation::Unlink(op) => self.fs.unlink(env, req, op, ReplyUnit { base }),
-            Operation::Rmdir(op) => self.fs.rmdir(env, req, op, ReplyUnit { base }),
-            Operation::Rename(op) => self.fs.rename(env, req, op, ReplyUnit { base }),
-            Operation::Link(op) => self.fs.link(
-                env,
-                req,
-                op,
-                ReplyEntry {
-                    base,
-                    out: EntryOut::default(),
-                },
-            ),
-            Operation::Open(op) => self.fs.open(
-                env,
-                req,
-                op,
-                ReplyOpen {
-                    base,
-                    out: OpenOut::default(),
-                },
-            ),
-            Operation::Read(op) => self.fs.read(env, req, op, ReplyData { base }),
-            Operation::Release(op) => self.fs.release(env, req, op, ReplyUnit { base }),
-            Operation::Statfs(op) => self.fs.statfs(env, req, op, ReplyStatfs { base }),
-            Operation::Fsync(op) => self.fs.fsync(env, req, op, ReplyUnit { base }),
-            Operation::Setxattr(op) => self.fs.setxattr(env, req, op, ReplyUnit { base }),
-            Operation::Getxattr(op) => self.fs.getxattr(env, req, op, ReplyXattr { base }),
-            Operation::Listxattr(op) => self.fs.listxattr(env, req, op, ReplyXattr { base }),
-            Operation::Removexattr(op) => self.fs.removexattr(env, req, op, ReplyUnit { base }),
-            Operation::Flush(op) => self.fs.flush(env, req, op, ReplyUnit { base }),
-            Operation::Opendir(op) => self.fs.opendir(
-                env,
-                req,
-                op,
-                ReplyOpen {
-                    base,
-                    out: OpenOut::default(),
-                },
-            ),
+            Operation::Lookup(op) => {
+                self.fs
+                    .lookup(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyEntry {
+                            base,
+                            out: EntryOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Getattr(op) => {
+                self.fs
+                    .getattr(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyAttr {
+                            base,
+                            out: AttrOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Setattr(op) => {
+                self.fs
+                    .setattr(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyAttr {
+                            base,
+                            out: AttrOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Readlink(op) => {
+                self.fs
+                    .readlink(&self.env, req, op, ReplyData { base })
+                    .await
+            }
+            Operation::Symlink(op) => {
+                self.fs
+                    .symlink(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyEntry {
+                            base,
+                            out: EntryOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Mknod(op) => {
+                self.fs
+                    .mknod(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyEntry {
+                            base,
+                            out: EntryOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Mkdir(op) => {
+                self.fs
+                    .mkdir(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyEntry {
+                            base,
+                            out: EntryOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Unlink(op) => self.fs.unlink(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Rmdir(op) => self.fs.rmdir(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Rename(op) => self.fs.rename(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Link(op) => {
+                self.fs
+                    .link(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyEntry {
+                            base,
+                            out: EntryOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Open(op) => {
+                self.fs
+                    .open(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyOpen {
+                            base,
+                            out: OpenOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Read(op) => self.fs.read(&self.env, req, op, ReplyData { base }).await,
+            Operation::Release(op) => {
+                self.fs
+                    .release(&self.env, req, op, ReplyUnit { base })
+                    .await
+            }
+            Operation::Statfs(op) => {
+                self.fs
+                    .statfs(&self.env, req, op, ReplyStatfs { base })
+                    .await
+            }
+            Operation::Fsync(op) => self.fs.fsync(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Setxattr(op) => {
+                self.fs
+                    .setxattr(&self.env, req, op, ReplyUnit { base })
+                    .await
+            }
+            Operation::Getxattr(op) => {
+                self.fs
+                    .getxattr(&self.env, req, op, ReplyXattr { base })
+                    .await
+            }
+            Operation::Listxattr(op) => {
+                self.fs
+                    .listxattr(&self.env, req, op, ReplyXattr { base })
+                    .await
+            }
+            Operation::Removexattr(op) => {
+                self.fs
+                    .removexattr(&self.env, req, op, ReplyUnit { base })
+                    .await
+            }
+            Operation::Flush(op) => self.fs.flush(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Opendir(op) => {
+                self.fs
+                    .opendir(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyOpen {
+                            base,
+                            out: OpenOut::default(),
+                        },
+                    )
+                    .await
+            }
             Operation::Readdir(op) => {
                 let capacity = op.size() as usize;
-                self.fs.readdir(
-                    env,
-                    req,
-                    op,
-                    ReplyDir {
-                        base,
-                        out: ReaddirOut::new(capacity),
-                    },
-                )
+                self.fs
+                    .readdir(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyDir {
+                            base,
+                            out: ReaddirOut::new(capacity),
+                        },
+                    )
+                    .await
             }
-            Operation::Releasedir(op) => self.fs.releasedir(env, req, op, ReplyUnit { base }),
-            Operation::Fsyncdir(op) => self.fs.fsyncdir(env, req, op, ReplyUnit { base }),
-            Operation::Getlk(op) => self.fs.getlk(env, req, op, ReplyLock { base }),
-            Operation::Setlk(op) => self.fs.setlk(env, req, op, ReplyUnit { base }),
-            Operation::Flock(op) => self.fs.flock(env, req, op, ReplyUnit { base }),
-            Operation::Access(op) => self.fs.access(env, req, op, ReplyUnit { base }),
-            Operation::Create(op) => self.fs.create(
-                env,
-                req,
-                op,
-                ReplyCreate {
-                    base,
-                    entry_out: EntryOut::default(),
-                    open_out: OpenOut::default(),
-                },
-            ),
-            Operation::Bmap(op) => self.fs.bmap(env, req, op, ReplyBmap { base }),
-            Operation::Fallocate(op) => self.fs.fallocate(env, req, op, ReplyUnit { base }),
+            Operation::Releasedir(op) => {
+                self.fs
+                    .releasedir(&self.env, req, op, ReplyUnit { base })
+                    .await
+            }
+            Operation::Fsyncdir(op) => {
+                self.fs
+                    .fsyncdir(&self.env, req, op, ReplyUnit { base })
+                    .await
+            }
+            Operation::Getlk(op) => self.fs.getlk(&self.env, req, op, ReplyLock { base }).await,
+            Operation::Setlk(op) => self.fs.setlk(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Flock(op) => self.fs.flock(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Access(op) => self.fs.access(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Create(op) => {
+                self.fs
+                    .create(
+                        &self.env,
+                        req,
+                        op,
+                        ReplyCreate {
+                            base,
+                            entry_out: EntryOut::default(),
+                            open_out: OpenOut::default(),
+                        },
+                    )
+                    .await
+            }
+            Operation::Bmap(op) => self.fs.bmap(&self.env, req, op, ReplyBmap { base }).await,
+            Operation::Fallocate(op) => {
+                self.fs
+                    .fallocate(&self.env, req, op, ReplyUnit { base })
+                    .await
+            }
             Operation::CopyFileRange(op) => {
-                self.fs.copy_file_range(env, req, op, ReplyWrite { base })
+                self.fs
+                    .copy_file_range(&self.env, req, op, ReplyWrite { base })
+                    .await
             }
-            Operation::Poll(op) => self.fs.poll(env, req, op, ReplyPoll { base }),
-            Operation::Lseek(op) => self.fs.lseek(env, req, op, ReplyLseek { base }),
+            Operation::Poll(op) => self.fs.poll(&self.env, req, op, ReplyPoll { base }).await,
+            Operation::Lseek(op) => self.fs.lseek(&self.env, req, op, ReplyLseek { base }).await,
             Operation::Write(op) => {
                 self.fs
-                    .write(env, req, op, Data { inner: data }, ReplyWrite { base })
+                    .write(
+                        &self.env,
+                        req,
+                        op,
+                        Data { inner: data },
+                        ReplyWrite { base },
+                    )
+                    .await
             }
             Operation::NotifyReply(op) => {
-                self.fs.notify_reply(env, op, Data { inner: data })?;
+                self.fs
+                    .notify_reply(&self.env, op, Data { inner: data })
+                    .await?;
                 return Ok(());
             }
             Operation::Forget(forgets) => {
-                self.fs.forget(env, forgets.as_ref());
+                self.fs.forget(&self.env, forgets.as_ref()).await;
                 return Ok(());
             }
             Operation::Interrupt(op) => {
@@ -697,10 +770,12 @@ where
         match result {
             Ok(..) | Err(Error::Cancelled) => {}
             Err(Error::Reply(err)) => return Err(err),
-            Err(Error::Code(errno)) => {
-                self.session
-                    .send_reply(&self.conn, self.buf.unique(), errno, ())?
-            }
+            Err(Error::Code(errno)) => self.env.inner.session.send_reply(
+                self.conn.get_ref(),
+                self.buf.unique(),
+                errno,
+                (),
+            )?,
         }
 
         Ok(())

@@ -26,14 +26,19 @@ use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::OsString,
-    fs::{File, OpenOptions, ReadDir},
     io::{self, prelude::*, BufRead, BufReader},
     os::unix::prelude::*,
     path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio::{
+    fs::{File, OpenOptions, ReadDir},
+    io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _},
     sync::Mutex,
 };
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -53,7 +58,8 @@ fn main() -> Result<()> {
         mountpoint,
         MountOptions::default(),
         KernelConfig::default(),
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
@@ -139,14 +145,14 @@ impl PathThrough {
 }
 
 impl Filesystem for PathThrough {
-    fn lookup(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn lookup(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        let inodes = &mut *self.inodes.lock().unwrap();
+        let inodes = &mut *self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
         let path = parent.path.join(op.name());
 
@@ -174,8 +180,8 @@ impl Filesystem for PathThrough {
         reply.send()
     }
 
-    fn forget(&self, _: fs::Env<'_, '_>, forgets: &[Forget]) {
-        let inodes = &mut *self.inodes.lock().unwrap();
+    async fn forget(self: &Arc<Self>, _: &fs::Env, forgets: &[Forget]) {
+        let inodes = &mut *self.inodes.lock().await;
         for forget in forgets {
             if let Entry::Occupied(mut entry) = inodes.map.entry(forget.ino()) {
                 let refcount = {
@@ -192,14 +198,14 @@ impl Filesystem for PathThrough {
         }
     }
 
-    fn getattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn getattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let inodes = &mut *self.inodes.lock().unwrap();
+        let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
@@ -207,31 +213,31 @@ impl Filesystem for PathThrough {
         reply.send()
     }
 
-    fn setattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn setattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Setattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
         let fh = op.fh().ok_or(ENOENT)?;
-        let files = &mut *self.files.lock().unwrap();
+        let files = &mut *self.files.lock().await;
         let file = files.get(fh.into_raw() as usize).ok_or(EINVAL)?;
 
-        file.file.sync_all()?;
+        file.file.sync_all().await?;
 
-        let inodes = &mut *self.inodes.lock().unwrap();
+        let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let path = self.source.join(&inode.path);
 
         // chmod
         if let Some(mode) = op.mode() {
-            file.file.set_permissions(mode.permissions().into())?;
+            file.file.set_permissions(mode.permissions().into()).await?;
         }
 
         // truncate
         if let Some(size) = op.size() {
-            file.file.set_len(size)?;
+            file.file.set_len(size).await?;
         }
 
         // chown
@@ -252,32 +258,32 @@ impl Filesystem for PathThrough {
         reply.send()
     }
 
-    fn readlink(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn readlink(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readlink<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let inodes = &mut *self.inodes.lock().unwrap();
+        let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let path = std::fs::read_link(self.source.join(&inode.path))?;
         reply.send(path.as_os_str())
     }
 
-    fn opendir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn opendir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Opendir<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        let inodes = &mut *self.inodes.lock().unwrap();
+        let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
 
-        let dirs = &mut *self.dirs.lock().unwrap();
+        let dirs = &mut *self.dirs.lock().await;
         let fh = dirs.insert(DirHandle {
-            read_dir: std::fs::read_dir(self.source.join(&inode.path))?,
+            read_dir: tokio::fs::read_dir(self.source.join(&inode.path)).await?,
             last_entry: None,
             offset: 1,
         }) as u64;
@@ -286,9 +292,9 @@ impl Filesystem for PathThrough {
         reply.send()
     }
 
-    fn readdir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn readdir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
         mut reply: fs::ReplyDir<'_>,
@@ -297,7 +303,7 @@ impl Filesystem for PathThrough {
             return Err(ENOSYS.into());
         }
 
-        let dirs = &mut *self.dirs.lock().unwrap();
+        let dirs = &mut *self.dirs.lock().await;
         let dir = Slab::get_mut(dirs, op.fh().into_raw() as usize).ok_or(EINVAL)?;
 
         let mut at_least_one_entry = false;
@@ -312,15 +318,13 @@ impl Filesystem for PathThrough {
             dir.offset += 1;
         }
 
-        #[allow(clippy::while_let_on_iterator)]
-        while let Some(entry) = dir.read_dir.next() {
-            let entry = entry?;
+        while let Some(entry) = dir.read_dir.next_entry().await? {
             match entry.file_name() {
                 name if name.as_bytes() == b"." || name.as_bytes() == b".." => continue,
                 _ => (),
             }
 
-            let metadata = entry.metadata()?;
+            let metadata = entry.metadata().await?;
             let file_type = metadata.file_type();
             let typ = if file_type.is_file() {
                 Some(FileType::Regular)
@@ -357,103 +361,105 @@ impl Filesystem for PathThrough {
         reply.send()
     }
 
-    fn releasedir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn releasedir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Releasedir<'_>,
-        reply: fs::ReplyUnit,
+        reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let dirs = &mut *self.dirs.lock().unwrap();
+        let dirs = &mut *self.dirs.lock().await;
         let _dir = dirs.remove(op.fh().into_raw() as usize);
         reply.send()
     }
 
-    fn open(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn open(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        let inodes = &mut *self.inodes.lock().unwrap();
+        let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
 
         let options: OpenOptions = op.options().remove(OpenFlags::NOFOLLOW).into();
 
-        let files = &mut *self.files.lock().unwrap();
+        let files = &mut *self.files.lock().await;
         let fh = files.insert(FileHandle {
-            file: options.open(self.source.join(&inode.path))?,
+            file: options.open(self.source.join(&inode.path)).await?,
         }) as u64;
 
         reply.out().fh(FileID::from_raw(fh));
         reply.send()
     }
 
-    fn read(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn read(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let files = &mut *self.files.lock().unwrap();
+        let files = &mut *self.files.lock().await;
         let file = Slab::get_mut(files, op.fh().into_raw() as usize).ok_or(EINVAL)?;
-        let buf = file.read(op.offset(), op.size() as usize)?;
+        let buf = file.read(op.offset(), op.size() as usize).await?;
         reply.send(buf)
     }
 
-    fn write(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn write(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Write<'_>,
         data: fs::Data<'_>,
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
-        let files = &mut *self.files.lock().unwrap();
+        let files = &mut *self.files.lock().await;
         let file = Slab::get_mut(files, op.fh().into_raw() as usize).ok_or(EINVAL)?;
         let offset = op.offset();
         let size = op.size();
-        let written = file.write(BufReader::new(data).take(size as u64), offset)?;
+        let written = file
+            .write(BufReader::new(data).take(size as u64), offset)
+            .await?;
 
         reply.send(written as u32)
     }
 
-    fn flush(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn flush(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Flush<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let files = &mut *self.files.lock().unwrap();
+        let files = &mut *self.files.lock().await;
         let file = Slab::get_mut(files, op.fh().into_raw() as usize).ok_or(EINVAL)?;
-        file.fsync(false)?;
+        file.fsync(false).await?;
         reply.send()
     }
 
-    fn fsync(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn fsync(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Fsync<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let files = &mut *self.files.lock().unwrap();
+        let files = &mut *self.files.lock().await;
         let file = Slab::get_mut(files, op.fh().into_raw() as usize).ok_or(EINVAL)?;
-        file.fsync(op.datasync())?;
+        file.fsync(op.datasync()).await?;
         reply.send()
     }
 
-    fn release(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn release(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Release<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let files = &mut *self.files.lock().unwrap();
+        let files = &mut *self.files.lock().await;
         let _file = files.remove(op.fh().into_raw() as usize);
         reply.send()
     }
@@ -480,20 +486,23 @@ struct FileHandle {
 }
 
 impl FileHandle {
-    fn read(&mut self, offset: u64, size: usize) -> io::Result<Vec<u8>> {
-        self.file.seek(io::SeekFrom::Start(offset))?;
+    async fn read(&mut self, offset: u64, size: usize) -> io::Result<Vec<u8>> {
+        self.file.seek(io::SeekFrom::Start(offset)).await?;
 
         let mut buf = Vec::<u8>::with_capacity(size);
-        (&mut self.file).take(size as u64).read_to_end(&mut buf)?;
+        (&mut self.file)
+            .take(size as u64)
+            .read_to_end(&mut buf)
+            .await?;
 
         Ok(buf)
     }
 
-    fn write<T>(&mut self, mut data: T, offset: u64) -> io::Result<usize>
+    async fn write<T>(&mut self, mut data: T, offset: u64) -> io::Result<usize>
     where
         T: BufRead + Unpin,
     {
-        self.file.seek(io::SeekFrom::Start(offset))?;
+        self.file.seek(io::SeekFrom::Start(offset)).await?;
 
         let mut written = 0;
         loop {
@@ -501,18 +510,18 @@ impl FileHandle {
             if chunk.is_empty() {
                 break;
             }
-            let n = self.file.write(chunk)?;
+            let n = self.file.write(chunk).await?;
             written += n;
         }
 
         Ok(written)
     }
 
-    fn fsync(&mut self, datasync: bool) -> io::Result<()> {
+    async fn fsync(&mut self, datasync: bool) -> io::Result<()> {
         if datasync {
-            self.file.sync_data()?;
+            self.file.sync_data().await?;
         } else {
-            self.file.sync_all()?;
+            self.file.sync_all().await?;
         }
         Ok(())
     }

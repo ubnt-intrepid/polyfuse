@@ -21,12 +21,14 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::{Duration, SystemTime},
 };
+use tokio::sync::Mutex;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -39,7 +41,8 @@ fn main() -> Result<()> {
         mountpoint,
         MountOptions::default(),
         KernelConfig::default(),
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
@@ -286,9 +289,9 @@ impl MemFS {
 }
 
 impl Filesystem for MemFS {
-    fn lookup(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn lookup(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
@@ -309,7 +312,7 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn forget(&self, _: fs::Env<'_, '_>, forgets: &[op::Forget]) {
+    async fn forget(self: &Arc<Self>, _: &fs::Env, forgets: &[op::Forget]) {
         for forget in forgets {
             if let Some(mut inode) = self.inodes.occupied_entry(forget.ino()) {
                 inode.get_mut().refcount =
@@ -322,9 +325,9 @@ impl Filesystem for MemFS {
         }
     }
 
-    fn getattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn getattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
@@ -336,9 +339,9 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn setattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn setattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Setattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
@@ -381,9 +384,9 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn readlink(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn readlink(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readlink<'_>,
         reply: fs::ReplyData<'_>,
@@ -393,9 +396,9 @@ impl Filesystem for MemFS {
         reply.send(link)
     }
 
-    fn opendir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn opendir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Opendir<'_>,
         mut reply: fs::ReplyOpen<'_>,
@@ -406,7 +409,7 @@ impl Filesystem for MemFS {
         }
         let dir = inode.as_dir().ok_or(ENOTDIR)?;
 
-        let dir_handles = &mut *self.dir_handles.lock().unwrap();
+        let dir_handles = &mut *self.dir_handles.lock().await;
         let key = dir_handles.insert(DirHandle {
             entries: dir.collect_entries(&inode.attr),
             offset: AtomicUsize::new(0),
@@ -416,18 +419,18 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn readdir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn readdir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
-        mut reply: fs::ReplyDir,
+        mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
         if op.mode() == op::ReaddirMode::Plus {
             Err(ENOSYS)?;
         }
 
-        let dir_handles = &mut *self.dir_handles.lock().unwrap();
+        let dir_handles = &mut *self.dir_handles.lock().await;
         let dir = dir_handles.get(op.fh().into_raw() as usize).ok_or(EINVAL)?;
 
         for entry in dir.entries.iter().skip(op.offset() as usize) {
@@ -440,21 +443,21 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn releasedir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn releasedir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Releasedir<'_>,
-        reply: fs::ReplyUnit,
+        reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let dir_handles = &mut *self.dir_handles.lock().unwrap();
+        let dir_handles = &mut *self.dir_handles.lock().await;
         dir_handles.remove(op.fh().into_raw() as usize);
         reply.send()
     }
 
-    fn mknod(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn mknod(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Mknod<'_>,
         reply: fs::ReplyEntry<'_>,
@@ -479,9 +482,9 @@ impl Filesystem for MemFS {
         })
     }
 
-    fn mkdir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn mkdir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Mkdir<'_>,
         reply: fs::ReplyEntry<'_>,
@@ -504,9 +507,9 @@ impl Filesystem for MemFS {
         })
     }
 
-    fn symlink(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn symlink(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Symlink<'_>,
         reply: fs::ReplyEntry<'_>,
@@ -529,9 +532,9 @@ impl Filesystem for MemFS {
         })
     }
 
-    fn link(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn link(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Link<'_>,
         mut reply: fs::ReplyEntry<'_>,
@@ -558,9 +561,9 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn unlink(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn unlink(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Unlink<'_>,
         reply: fs::ReplyUnit<'_>,
@@ -569,9 +572,9 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn rmdir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn rmdir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Rmdir<'_>,
         reply: fs::ReplyUnit<'_>,
@@ -580,9 +583,9 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn rename(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn rename(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Rename<'_>,
         reply: fs::ReplyUnit<'_>,
@@ -630,9 +633,9 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn getxattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn getxattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getxattr<'_>,
         reply: fs::ReplyXattr<'_>,
@@ -650,9 +653,9 @@ impl Filesystem for MemFS {
         }
     }
 
-    fn setxattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn setxattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Setxattr<'_>,
         reply: fs::ReplyUnit<'_>,
@@ -688,9 +691,9 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn listxattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn listxattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Listxattr<'_>,
         reply: fs::ReplyXattr<'_>,
@@ -721,9 +724,9 @@ impl Filesystem for MemFS {
         }
     }
 
-    fn removexattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn removexattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Removexattr<'_>,
         reply: fs::ReplyUnit<'_>,
@@ -740,9 +743,9 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    fn read(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn read(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
@@ -760,9 +763,9 @@ impl Filesystem for MemFS {
         reply.send(content)
     }
 
-    fn write(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn write(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Write<'_>,
         mut data: fs::Data<'_>,

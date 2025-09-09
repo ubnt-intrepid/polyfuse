@@ -11,7 +11,7 @@
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
-    op,
+    notify, op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
     KernelConfig,
 };
@@ -23,11 +23,16 @@ use libc::ENOENT;
 use std::{
     io::{self, prelude::*},
     path::PathBuf,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
+use tokio::{sync::Mutex, task};
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -45,7 +50,8 @@ fn main() -> Result<()> {
         mountpoint,
         MountOptions::default(),
         KernelConfig::default(),
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
@@ -73,6 +79,7 @@ struct Heartbeat {
     retrieves: DashMap<NotifyID, String>,
     kind: Option<NotifyKind>,
     update_interval: Duration,
+    notify_unique: AtomicU64,
 }
 
 struct Inner {
@@ -94,35 +101,38 @@ impl Heartbeat {
             retrieves: DashMap::new(),
             kind,
             update_interval,
+            notify_unique: AtomicU64::new(1),
         }
     }
 
-    fn update_content(&self) {
-        let mut inner = self.inner.lock().unwrap();
+    async fn update_content(&self) {
+        let mut inner = self.inner.lock().await;
         let content = Local::now().to_rfc3339();
         inner.attr.size = content.len() as u64;
         inner.content = content;
     }
 
-    fn notify(&self, notifier: &fs::Notifier<'_>) -> io::Result<()> {
+    async fn notify(&self, notifier: &fs::Notifier) -> io::Result<()> {
         match self.kind {
             Some(NotifyKind::Store) => {
-                let inner = &*self.inner.lock().unwrap();
+                let inner = &*self.inner.lock().await;
                 let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
-                notifier.store(NodeID::ROOT, 0, &content)?;
+                notifier.send(notify::Store::new(NodeID::ROOT, 0, &content))?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
-                let unique = notifier.retrieve(NodeID::ROOT, 0, 1024)?;
+                let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
+                let unique = NotifyID::from_raw(unique);
+                notifier.send(notify::Retrieve::new(unique, NodeID::ROOT, 0, 1024))?;
                 self.retrieves.insert(unique, content);
             }
 
             Some(NotifyKind::Invalidate) => {
                 tracing::info!("send notify_invalidate_inode");
-                notifier.inval_inode(NodeID::ROOT, 0, 0)?;
+                notifier.send(notify::InvalNode::new(NodeID::ROOT, 0, 0))?;
             }
 
             None => { /* do nothing */ }
@@ -132,22 +142,25 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    fn init<'env>(&'env self, env: fs::Env<'_, 'env>) -> io::Result<()> {
+    async fn init(self: &Arc<Self>, env: &fs::Env) -> io::Result<()> {
         // Spawn a task that beats the heart.
-        env.spawner.spawn(move || -> Result<()> {
+        let this = self.clone();
+        let notifier = env.notifier();
+        #[allow(clippy::let_underscore_future)]
+        let _: task::JoinHandle<Result<()>> = task::spawn(async move {
             loop {
                 tracing::info!("heartbeat");
-                self.update_content();
-                self.notify(&env.notifier)?;
-                std::thread::sleep(self.update_interval);
+                this.update_content().await;
+                this.notify(&notifier).await?;
+                tokio::time::sleep(this.update_interval).await;
             }
         });
         Ok(())
     }
 
-    fn getattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn getattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
@@ -155,14 +168,14 @@ impl Filesystem for Heartbeat {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().await;
         reply.out().attr(inner.attr.clone());
         reply.send()
     }
 
-    fn open(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn open(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
@@ -174,9 +187,9 @@ impl Filesystem for Heartbeat {
         reply.send()
     }
 
-    fn read(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn read(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Read<'_>,
         reply: fs::ReplyData<'_>,
@@ -185,7 +198,7 @@ impl Filesystem for Heartbeat {
             Err(ENOENT)?
         }
 
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().await;
 
         let offset = arg.offset() as usize;
         if offset >= inner.content.len() {
@@ -198,9 +211,9 @@ impl Filesystem for Heartbeat {
         reply.send(data)
     }
 
-    fn notify_reply(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn notify_reply(
+        self: &Arc<Self>,
+        _: &fs::Env,
         arg: op::NotifyReply<'_>,
         mut data: fs::Data<'_>,
     ) -> io::Result<()> {

@@ -1046,6 +1046,12 @@ impl From<OpenOptions> for std::fs::OpenOptions {
     }
 }
 
+impl From<OpenOptions> for tokio::fs::OpenOptions {
+    fn from(options: OpenOptions) -> Self {
+        std::fs::OpenOptions::from(options).into()
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum AccessMode {

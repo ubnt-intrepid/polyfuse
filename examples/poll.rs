@@ -1,5 +1,6 @@
 use polyfuse::{
     fs::{self, Filesystem},
+    notify,
     op::{self, AccessMode, OpenFlags},
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
@@ -8,9 +9,9 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use dashmap::DashMap;
 use libc::{EACCES, EAGAIN, EINVAL};
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -18,10 +19,12 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tokio::{sync::RwLock, task};
 
 const CONTENT: &str = "Hello, world!\n";
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -40,13 +43,14 @@ fn main() -> Result<()> {
         mountpoint,
         Default::default(),
         Default::default(),
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
 
 struct PollFS {
-    handles: DashMap<FileID, Arc<FileHandle>>,
+    handles: RwLock<HashMap<FileID, Arc<FileHandle>>>,
     next_fh: AtomicU64,
     wakeup_interval: Duration,
 }
@@ -54,7 +58,7 @@ struct PollFS {
 impl PollFS {
     fn new(wakeup_interval: Duration) -> Self {
         Self {
-            handles: DashMap::new(),
+            handles: RwLock::new(HashMap::new()),
             next_fh: AtomicU64::new(0),
             wakeup_interval,
         }
@@ -62,9 +66,9 @@ impl PollFS {
 }
 
 impl Filesystem for PollFS {
-    fn getattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn getattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         _: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
@@ -82,9 +86,9 @@ impl Filesystem for PollFS {
         reply.send()
     }
 
-    fn open(
-        &self,
-        cx: fs::Env<'_, '_>,
+    async fn open(
+        self: &Arc<Self>,
+        env: &fs::Env,
         _: fs::Request<'_>,
         op: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
@@ -104,16 +108,18 @@ impl Filesystem for PollFS {
         });
 
         tracing::info!("spawn reading task");
-        cx.spawner.spawn({
+        #[allow(clippy::let_underscore_future)]
+        let _: task::JoinHandle<Result<()>> = task::spawn({
+            let notifier = env.notifier();
             let handle = Arc::downgrade(&handle);
             let wakeup_interval = self.wakeup_interval;
 
-            move || -> Result<()> {
+            async move {
                 let span = tracing::debug_span!("reading_task", fh=?fh);
                 let _enter = span.enter();
 
                 tracing::info!("start reading");
-                std::thread::sleep(wakeup_interval);
+                tokio::time::sleep(wakeup_interval).await;
 
                 tracing::info!("reading completed");
 
@@ -121,7 +127,7 @@ impl Filesystem for PollFS {
                 if let Some(handle) = handle.upgrade() {
                     if let Some(kh) = handle.kh.get() {
                         tracing::info!("send wakeup notification, kh={}", kh);
-                        cx.notifier.poll_wakeup(*kh)?;
+                        notifier.send(notify::PollWakeup::new(*kh))?;
                     }
                 }
 
@@ -130,7 +136,7 @@ impl Filesystem for PollFS {
         });
 
         let fh = FileID::from_raw(fh);
-        self.handles.insert(fh, handle);
+        self.handles.write().await.insert(fh, handle);
 
         reply.out().fh(fh);
         reply.out().direct_io(true);
@@ -138,14 +144,17 @@ impl Filesystem for PollFS {
         reply.send()
     }
 
-    fn read(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn read(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let handle = &*self.handles.get(&op.fh()).ok_or(EINVAL)?;
+        let handle = {
+            let handles = self.handles.read().await;
+            handles.get(&op.fh()).cloned().ok_or(EINVAL)?
+        };
         if handle.is_nonblock {
             if handle.deadline > Instant::now() {
                 tracing::info!("send EAGAIN immediately");
@@ -155,7 +164,7 @@ impl Filesystem for PollFS {
             tracing::info!("wait for the completion of background task");
             let now = Instant::now();
             if handle.deadline > now {
-                std::thread::sleep(handle.deadline.duration_since(now));
+                tokio::time::sleep(handle.deadline.duration_since(now)).await;
             }
         }
 
@@ -168,14 +177,17 @@ impl Filesystem for PollFS {
         reply.send(&content[..std::cmp::min(content.len(), bufsize)])
     }
 
-    fn poll(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn poll(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Poll<'_>,
         reply: fs::ReplyPoll<'_>,
     ) -> fs::Result {
-        let handle = &*self.handles.get(&op.fh()).ok_or(EINVAL)?;
+        let handle = {
+            let handles = self.handles.read().await;
+            handles.get(&op.fh()).cloned().ok_or(EINVAL)?
+        };
         let now = Instant::now();
 
         let mut revents = PollEvents::empty();
@@ -190,14 +202,14 @@ impl Filesystem for PollFS {
         reply.send(revents)
     }
 
-    fn release(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn release(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Release<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        drop(self.handles.remove(&op.fh()));
+        drop(self.handles.write().await.remove(&op.fh()));
         reply.send()
     }
 }

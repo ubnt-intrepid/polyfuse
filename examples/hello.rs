@@ -12,14 +12,15 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use libc::{EISDIR, ENOENT, ENOTDIR};
-use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
+use std::{os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const HELLO_INO: NodeID = NodeID::from_raw(2);
 const HELLO_FILENAME: &str = "hello.txt";
 const HELLO_CONTENT: &[u8] = b"Hello, world!\n";
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -32,7 +33,8 @@ fn main() -> Result<()> {
         mountpoint,
         MountOptions::default(),
         KernelConfig::default(),
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
@@ -107,12 +109,12 @@ impl Hello {
 }
 
 impl Filesystem for Hello {
-    fn lookup(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn lookup(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
-        mut reply: fs::ReplyEntry,
+        mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
         match op.parent() {
             NodeID::ROOT if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
@@ -126,12 +128,12 @@ impl Filesystem for Hello {
         }
     }
 
-    fn getattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn getattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr,
+        mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
         let attr = match op.ino() {
             NodeID::ROOT => self.root_attr(),
@@ -144,9 +146,9 @@ impl Filesystem for Hello {
         reply.send()
     }
 
-    fn read(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn read(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
@@ -169,12 +171,12 @@ impl Filesystem for Hello {
         reply.send(data)
     }
 
-    fn readdir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn readdir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
-        mut reply: fs::ReplyDir,
+        mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
         if op.ino() != NodeID::ROOT {
             Err(ENOTDIR)?
