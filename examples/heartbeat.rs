@@ -12,7 +12,6 @@ use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
     op,
-    reply::{AttrOut, OpenOut},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
     KernelConfig,
 };
@@ -146,52 +145,68 @@ impl Filesystem for Heartbeat {
         Ok(())
     }
 
-    fn getattr(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Getattr<'_>>) -> fs::Result {
-        if req.arg().ino() != NodeID::ROOT {
+    fn getattr(
+        &self,
+        _: fs::Env<'_, '_>,
+        _: fs::Request<'_>,
+        arg: op::Getattr<'_>,
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
+        if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
         let inner = self.inner.lock().unwrap();
-        let mut out = AttrOut::default();
-        out.attr(inner.attr.clone());
-        req.reply(out)
+        reply.out().attr(inner.attr.clone());
+        reply.send()
     }
 
-    fn open(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Open<'_>>) -> fs::Result {
-        if req.arg().ino() != NodeID::ROOT {
+    fn open(
+        &self,
+        _: fs::Env<'_, '_>,
+        _: fs::Request<'_>,
+        arg: op::Open<'_>,
+        mut reply: fs::ReplyOpen<'_>,
+    ) -> fs::Result {
+        if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
-        let mut out = OpenOut::default();
-        out.keep_cache(true);
-        req.reply(out)
+        reply.out().keep_cache(true);
+        reply.send()
     }
 
-    fn read(&self, _: fs::Env<'_, '_>, req: fs::Request<'_, op::Read<'_>>) -> fs::Result {
-        if req.arg().ino() != NodeID::ROOT {
+    fn read(
+        &self,
+        _: fs::Env<'_, '_>,
+        _: fs::Request<'_>,
+        arg: op::Read<'_>,
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
+        if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?
         }
 
         let inner = self.inner.lock().unwrap();
 
-        let offset = req.arg().offset() as usize;
+        let offset = arg.offset() as usize;
         if offset >= inner.content.len() {
-            return req.reply(());
+            return reply.send(());
         }
 
-        let size = req.arg().size() as usize;
+        let size = arg.size() as usize;
         let data = &inner.content.as_bytes()[offset..];
         let data = &data[..std::cmp::min(data.len(), size)];
-        req.reply(data)
+        reply.send(data)
     }
 
     fn notify_reply(
         &self,
         _: fs::Env<'_, '_>,
-        req: fs::Request<'_, op::NotifyReply<'_>>,
+        arg: op::NotifyReply<'_>,
         mut data: fs::Data<'_>,
     ) -> io::Result<()> {
-        if let Some((_, original)) = self.retrieves.remove(&req.arg().unique()) {
+        if let Some((_, original)) = self.retrieves.remove(&arg.unique()) {
             let data = {
-                let mut buf = vec![0u8; req.arg().size() as usize];
+                let mut buf = vec![0u8; arg.size() as usize];
                 data.read_exact(&mut buf)?;
                 buf
             };
