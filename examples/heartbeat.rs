@@ -29,7 +29,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{sync::Mutex, task};
+use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -142,12 +142,11 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    async fn init(self: &Arc<Self>, env: &fs::Env) -> io::Result<()> {
+    async fn init(self: &Arc<Self>, env: &fs::Env, mut spawner: fs::Spawner<'_>) -> io::Result<()> {
         // Spawn a task that beats the heart.
         let this = self.clone();
         let notifier = env.notifier();
-        #[allow(clippy::let_underscore_future)]
-        let _: task::JoinHandle<Result<()>> = task::spawn(async move {
+        let _ = spawner.spawn(async move {
             loop {
                 tracing::info!("heartbeat");
                 this.update_content().await;

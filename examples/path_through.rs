@@ -180,7 +180,7 @@ impl Filesystem for PathThrough {
         reply.send()
     }
 
-    async fn forget(self: &Arc<Self>, _: &fs::Env, forgets: &[Forget]) {
+    async fn forget(self: &Arc<Self>, _: &fs::Env, _: fs::Spawner<'_>, forgets: &[Forget]) {
         let inodes = &mut *self.inodes.lock().await;
         for forget in forgets {
             if let Entry::Occupied(mut entry) = inodes.map.entry(forget.ino()) {

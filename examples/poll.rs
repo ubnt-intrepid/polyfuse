@@ -19,7 +19,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::{sync::RwLock, task};
+use tokio::sync::RwLock;
 
 const CONTENT: &str = "Hello, world!\n";
 
@@ -89,7 +89,7 @@ impl Filesystem for PollFS {
     async fn open(
         self: &Arc<Self>,
         env: &fs::Env,
-        _: fs::Request<'_>,
+        mut req: fs::Request<'_>,
         op: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
@@ -108,8 +108,7 @@ impl Filesystem for PollFS {
         });
 
         tracing::info!("spawn reading task");
-        #[allow(clippy::let_underscore_future)]
-        let _: task::JoinHandle<Result<()>> = task::spawn({
+        let _ = req.spawner().spawn({
             let notifier = env.notifier();
             let handle = Arc::downgrade(&handle);
             let wakeup_interval = self.wakeup_interval;

@@ -202,7 +202,7 @@ impl Filesystem for Passthrough {
         self.do_lookup(op.parent(), op.name(), reply).await
     }
 
-    async fn forget(self: &Arc<Self>, _: &fs::Env, forgets: &[op::Forget]) {
+    async fn forget(self: &Arc<Self>, _: &fs::Env, _: fs::Spawner<'_>, forgets: &[op::Forget]) {
         let mut inodes = self.inodes.lock().await;
 
         for forget in forgets {

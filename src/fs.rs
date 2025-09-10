@@ -20,7 +20,10 @@ use std::{
     path::PathBuf,
     sync::{Arc, Weak},
 };
-use tokio::{io::unix::AsyncFd, task::JoinSet};
+use tokio::{
+    io::unix::AsyncFd,
+    task::{AbortHandle, JoinSet},
+};
 
 pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
@@ -117,12 +120,21 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
-    fn forget(self: &Arc<Self>, env: &Env, forgets: &[Forget]) -> impl Future<Output = ()> + Send {
+    fn forget(
+        self: &Arc<Self>,
+        env: &Env,
+        spawner: Spawner<'_>,
+        forgets: &[Forget],
+    ) -> impl Future<Output = ()> + Send {
         async {}
     }
 
     #[allow(unused_variables)]
-    fn init(self: &Arc<Self>, env: &Env) -> impl Future<Output = io::Result<()>> + Send {
+    fn init(
+        self: &Arc<Self>,
+        env: &Env,
+        spawner: Spawner<'_>,
+    ) -> impl Future<Output = io::Result<()>> + Send {
         async { Ok(()) }
     }
 
@@ -134,6 +146,26 @@ pub trait Filesystem {
         data: Data<'_>,
     ) -> impl Future<Output = io::Result<()>> + Send {
         async { Ok(()) }
+    }
+}
+
+pub struct Spawner<'req> {
+    join_set: &'req mut JoinSet<io::Result<()>>,
+}
+
+impl Spawner<'_> {
+    pub fn spawn<F>(&mut self, future: F) -> AbortHandle
+    where
+        F: Future<Output = io::Result<()>> + Send + 'static,
+    {
+        self.join_set.spawn(future)
+    }
+
+    pub fn spawn_blocking<F>(&mut self, f: F) -> AbortHandle
+    where
+        F: FnOnce() -> io::Result<()> + Send + 'static,
+    {
+        self.join_set.spawn_blocking(f)
     }
 }
 
@@ -179,6 +211,7 @@ impl Notifier {
 /// The context for a single FUSE request used by the filesystem.
 pub struct Request<'req> {
     buf: &'req RequestBuffer,
+    join_set: &'req mut JoinSet<io::Result<()>>,
 }
 
 impl Request<'_> {
@@ -192,6 +225,12 @@ impl Request<'_> {
 
     pub fn pid(&self) -> PID {
         self.buf.pid()
+    }
+
+    pub fn spawner(&mut self) -> Spawner<'_> {
+        Spawner {
+            join_set: self.join_set,
+        }
     }
 }
 
@@ -437,6 +476,8 @@ where
     let span = tracing::debug_span!("polyfuse::fs::run");
     let _enter = span.enter();
 
+    let mut join_set = JoinSet::new();
+
     let (conn, fusermount) = crate::mount::mount(mountpoint, mountopts)?;
     let conn = Connection::from(conn);
     let mut session = Session::new();
@@ -446,11 +487,15 @@ where
         inner: Arc::new(EnvInner { session, conn }),
     });
     let fs = Arc::new(fs);
-    fs.init(&env).await?;
+    fs.init(
+        &env,
+        Spawner {
+            join_set: &mut join_set,
+        },
+    )
+    .await?;
 
     let num_workers = num_cpus::get() * 4;
-
-    let mut join_set = JoinSet::new();
     for _i in 0..num_workers {
         let conn = env.inner.conn.try_ioc_clone()?;
         let worker = Worker {
@@ -462,6 +507,7 @@ where
             } else {
                 RequestBuffer::new_fallback(config.request_buffer_size())?
             },
+            join_set: JoinSet::new(),
         };
         join_set.spawn(async move { worker.run().await });
     }
@@ -479,6 +525,7 @@ struct Worker<T> {
     env: Arc<Env>,
     conn: AsyncFd<Connection>,
     buf: RequestBuffer,
+    join_set: JoinSet<io::Result<()>>,
 }
 
 impl<T> Worker<T>
@@ -489,6 +536,7 @@ where
         while self.read_request().await? {
             self.handle_request().await?;
         }
+        self.join_set.shutdown().await;
         Ok(())
     }
 
@@ -517,7 +565,10 @@ where
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
 
-        let req = Request { buf: &self.buf };
+        let req = Request {
+            buf: &self.buf,
+            join_set: &mut self.join_set,
+        };
 
         let base = ReplyBase {
             session: &self.env.inner.session,
@@ -757,7 +808,15 @@ where
                 return Ok(());
             }
             Operation::Forget(forgets) => {
-                self.fs.forget(&self.env, forgets.as_ref()).await;
+                self.fs
+                    .forget(
+                        &self.env,
+                        Spawner {
+                            join_set: &mut self.join_set,
+                        },
+                        forgets.as_ref(),
+                    )
+                    .await;
                 return Ok(());
             }
             Operation::Interrupt(op) => {

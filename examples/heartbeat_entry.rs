@@ -20,7 +20,7 @@ use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
 use libc::{EISDIR, ENOENT, ENOTDIR};
 use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
-use tokio::{sync::Mutex, task};
+use tokio::sync::Mutex;
 
 const FILE_INO: NodeID = NodeID::from_raw(2);
 
@@ -106,7 +106,7 @@ impl Heartbeat {
         }
     }
 
-    async fn heartbeat(&self, notifier: &fs::Notifier) -> Result<()> {
+    async fn heartbeat(&self, notifier: &fs::Notifier) -> io::Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = !self.no_notify);
         let _enter = span.enter();
 
@@ -132,11 +132,10 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    async fn init(self: &Arc<Self>, env: &fs::Env) -> io::Result<()> {
+    async fn init(self: &Arc<Self>, env: &fs::Env, mut spawner: fs::Spawner<'_>) -> io::Result<()> {
         let this = self.clone();
         let notifier = env.notifier();
-        #[allow(clippy::let_underscore_future)]
-        let _: task::JoinHandle<Result<()>> = task::spawn(async move {
+        let _ = spawner.spawn(async move {
             this.heartbeat(&notifier).await?;
             Ok(())
         });
@@ -171,7 +170,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    async fn forget(self: &Arc<Self>, _: &fs::Env, forgets: &[op::Forget]) {
+    async fn forget(self: &Arc<Self>, _: &fs::Env, _: fs::Spawner<'_>, forgets: &[op::Forget]) {
         let mut current = self.current.lock().await;
         for forget in forgets {
             if forget.ino() == FILE_INO {

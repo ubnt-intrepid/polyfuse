@@ -312,7 +312,7 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    async fn forget(self: &Arc<Self>, _: &fs::Env, forgets: &[op::Forget]) {
+    async fn forget(self: &Arc<Self>, _: &fs::Env, _: fs::Spawner<'_>, forgets: &[op::Forget]) {
         for forget in forgets {
             if let Some(mut inode) = self.inodes.occupied_entry(forget.ino()) {
                 inode.get_mut().refcount =
