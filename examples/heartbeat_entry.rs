@@ -11,7 +11,7 @@
 use polyfuse::{
     fs::{self, Filesystem},
     mount::MountOptions,
-    op,
+    notify, op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     KernelConfig,
 };
@@ -19,14 +19,16 @@ use polyfuse::{
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
 use libc::{EISDIR, ENOENT, ENOTDIR};
-use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, time::Duration};
+use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 
 const FILE_INO: NodeID = NodeID::from_raw(2);
 
 const DEFAULT_TTL: Duration = Duration::from_secs(0);
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -51,7 +53,8 @@ fn main() -> Result<()> {
         mountpoint,
         MountOptions::default(),
         KernelConfig::default(),
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
@@ -103,7 +106,7 @@ impl Heartbeat {
         }
     }
 
-    fn heartbeat(&self, notifier: &fs::Notifier<'_>) -> Result<()> {
+    async fn heartbeat(&self, notifier: &fs::Notifier) -> io::Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = !self.no_notify);
         let _enter = span.enter();
 
@@ -111,35 +114,37 @@ impl Heartbeat {
             tracing::info!("heartbeat");
 
             let new_filename = generate_filename();
-            let mut current = self.current.lock().unwrap();
+            let mut current = self.current.lock().await;
             tracing::debug!(filename = ?current.filename, nlookup = ?current.nlookup);
             tracing::debug!(?new_filename);
             let old_filename = mem::replace(&mut current.filename, new_filename);
 
             if !self.no_notify && current.nlookup > 0 {
                 tracing::info!("send notify_inval_entry");
-                notifier.inval_entry(NodeID::ROOT, old_filename.as_ref())?;
+                notifier.send(notify::InvalEntry::new(NodeID::ROOT, old_filename.as_ref()))?;
             }
 
             drop(current);
 
-            std::thread::sleep(self.update_interval);
+            tokio::time::sleep(self.update_interval).await;
         }
     }
 }
 
 impl Filesystem for Heartbeat {
-    fn init<'env>(&'env self, env: fs::Env<'_, 'env>) -> io::Result<()> {
-        env.spawner.spawn(move || -> Result<()> {
-            self.heartbeat(&env.notifier)?;
+    async fn init(self: &Arc<Self>, env: &fs::Env, mut spawner: fs::Spawner<'_>) -> io::Result<()> {
+        let this = self.clone();
+        let notifier = env.notifier();
+        let _ = spawner.spawn(async move {
+            this.heartbeat(&notifier).await?;
             Ok(())
         });
         Ok(())
     }
 
-    fn lookup(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn lookup(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
@@ -148,7 +153,7 @@ impl Filesystem for Heartbeat {
             Err(ENOTDIR)?;
         }
 
-        let mut current = self.current.lock().unwrap();
+        let mut current = self.current.lock().await;
 
         if arg.name().as_bytes() == current.filename.as_bytes() {
             reply.out().ino(self.file_attr.ino);
@@ -165,8 +170,8 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn forget(&self, _: fs::Env<'_, '_>, forgets: &[op::Forget]) {
-        let mut current = self.current.lock().unwrap();
+    async fn forget(self: &Arc<Self>, _: &fs::Env, _: fs::Spawner<'_>, forgets: &[op::Forget]) {
+        let mut current = self.current.lock().await;
         for forget in forgets {
             if forget.ino() == FILE_INO {
                 current.nlookup -= forget.nlookup();
@@ -174,9 +179,9 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn getattr(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn getattr(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
@@ -192,9 +197,9 @@ impl Filesystem for Heartbeat {
         reply.send()
     }
 
-    fn read(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn read(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Read<'_>,
         reply: fs::ReplyData<'_>,
@@ -206,9 +211,9 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    fn readdir(
-        &self,
-        _: fs::Env<'_, '_>,
+    async fn readdir(
+        self: &Arc<Self>,
+        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Readdir<'_>,
         mut reply: fs::ReplyDir<'_>,
@@ -220,7 +225,7 @@ impl Filesystem for Heartbeat {
             return reply.send();
         }
 
-        let current = self.current.lock().unwrap();
+        let current = self.current.lock().await;
         reply.push_entry(current.filename.as_ref(), FILE_INO, None, 1);
 
         reply.send()
