@@ -53,8 +53,7 @@ macro_rules! define_ops {
         #[allow(unused_variables)]
         fn $name(
             self: &Arc<Self>,
-            env: &Env,
-            req: Request<'_>,
+            req: &mut Request<'_>,
             op: op::$Arg<'_>,
             reply: $Reply<'_>,
         ) -> impl Future<Output = Result> + Send {
@@ -107,8 +106,7 @@ pub trait Filesystem {
     #[allow(unused_variables)]
     fn write(
         self: &Arc<Self>,
-        env: &Env,
-        req: Request<'_>,
+        req: &mut Request<'_>,
         op: op::Write<'_>,
         data: Data<'_>,
         reply: ReplyWrite<'_>,
@@ -117,20 +115,14 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
-    fn forget(
-        self: &Arc<Self>,
-        env: &Env,
-        spawner: Spawner<'_>,
-        forgets: &[Forget],
-    ) -> impl Future<Output = ()> + Send {
+    fn forget(self: &Arc<Self>, forgets: &[Forget]) -> impl Future<Output = ()> + Send {
         async {}
     }
 
     #[allow(unused_variables)]
     fn init(
         self: &Arc<Self>,
-        env: &Env,
-        spawner: Spawner<'_>,
+        cx: &mut InitContext<'_>,
     ) -> impl Future<Output = io::Result<()>> + Send {
         async { Ok(()) }
     }
@@ -138,7 +130,6 @@ pub trait Filesystem {
     #[allow(unused_variables)]
     fn notify_reply(
         self: &Arc<Self>,
-        env: &Env,
         op: op::NotifyReply<'_>,
         data: Data<'_>,
     ) -> impl Future<Output = io::Result<()>> + Send {
@@ -146,8 +137,46 @@ pub trait Filesystem {
     }
 }
 
-pub struct Spawner<'req> {
-    join_set: &'req mut JoinSet<io::Result<()>>,
+struct Global {
+    session: Session,
+    conn: Connection,
+    #[allow(dead_code)]
+    mountpoint: PathBuf,
+    #[allow(dead_code)]
+    mountopts: MountOptions,
+    config: KernelConfig,
+}
+
+impl Global {
+    fn notifier(self: &Arc<Self>) -> Notifier {
+        Notifier {
+            global: Arc::downgrade(self),
+        }
+    }
+
+    fn send_notify<T>(&self, notify: T) -> io::Result<()>
+    where
+        T: notify::Notify,
+    {
+        self.session.send_notify(&self.conn, notify)
+    }
+}
+
+pub struct Notifier {
+    global: Weak<Global>,
+}
+
+impl Notifier {
+    pub fn send(&self, notify: impl Notify) -> io::Result<()> {
+        if let Some(global) = self.global.upgrade() {
+            global.send_notify(notify)?;
+        }
+        Ok(())
+    }
+}
+
+pub struct Spawner<'a> {
+    join_set: &'a mut JoinSet<io::Result<()>>,
 }
 
 impl Spawner<'_> {
@@ -166,47 +195,26 @@ impl Spawner<'_> {
     }
 }
 
-pub struct Env {
-    inner: Arc<EnvInner>,
+pub struct InitContext<'a> {
+    global: &'a Arc<Global>,
+    join_set: &'a mut JoinSet<io::Result<()>>,
 }
 
-impl Env {
+impl InitContext<'_> {
     pub fn notifier(&self) -> Notifier {
-        Notifier {
-            inner: Arc::downgrade(&self.inner),
-        }
+        self.global.notifier()
     }
-}
 
-struct EnvInner {
-    session: Session,
-    conn: Connection,
-}
-
-impl EnvInner {
-    fn send_notify<T>(&self, notify: T) -> io::Result<()>
-    where
-        T: notify::Notify,
-    {
-        self.session.send_notify(&self.conn, notify)
-    }
-}
-
-pub struct Notifier {
-    inner: Weak<EnvInner>,
-}
-
-impl Notifier {
-    pub fn send(&self, notify: impl Notify) -> io::Result<()> {
-        if let Some(inner) = self.inner.upgrade() {
-            inner.send_notify(notify)?;
+    pub fn spawner(&mut self) -> Spawner<'_> {
+        Spawner {
+            join_set: self.join_set,
         }
-        Ok(())
     }
 }
 
 /// The context for a single FUSE request used by the filesystem.
 pub struct Request<'req> {
+    global: &'req Arc<Global>,
     buf: &'req RequestBuffer,
     join_set: &'req mut JoinSet<io::Result<()>>,
 }
@@ -222,6 +230,10 @@ impl Request<'_> {
 
     pub fn pid(&self) -> PID {
         self.buf.pid()
+    }
+
+    pub fn notifier(&self) -> Notifier {
+        self.global.notifier()
     }
 
     pub fn spawner(&mut self) -> Spawner<'_> {
@@ -470,38 +482,41 @@ where
     let span = tracing::debug_span!("polyfuse::fs::run");
     let _enter = span.enter();
 
-    let mut join_set = JoinSet::new();
-
-    let (conn, fusermount) = crate::mount::mount(mountpoint, mountopts)?;
+    let (conn, fusermount) = crate::mount::mount(mountpoint.clone(), mountopts.clone())?;
     let conn = Connection::from(conn);
+
     let mut session = Session::new();
     session.init(&conn, &mut config)?;
 
-    let env = Arc::new(Env {
-        inner: Arc::new(EnvInner { session, conn }),
+    let global = Arc::new(Global {
+        session,
+        conn,
+        mountpoint,
+        mountopts,
+        config,
     });
+    let mut join_set = JoinSet::new();
     let fs = Arc::new(fs);
-    fs.init(
-        &env,
-        Spawner {
-            join_set: &mut join_set,
-        },
-    )
+
+    fs.init(&mut InitContext {
+        global: &global,
+        join_set: &mut join_set,
+    })
     .await?;
 
     let num_workers = num_cpus::get() * 4;
     for _i in 0..num_workers {
-        let conn = env.inner.conn.try_ioc_clone()?;
+        let conn = global.conn.try_ioc_clone()?;
         let worker = Worker {
-            env: env.clone(),
+            global: global.clone(),
             conn: AsyncFd::new(conn)?,
             join_set: JoinSet::new(),
         };
         let fs = fs.clone();
-        let buf = if config.flags.contains(KernelFlags::SPLICE_READ) {
-            RequestBuffer::new_splice(config.request_buffer_size())?
+        let buf = if global.config.flags.contains(KernelFlags::SPLICE_READ) {
+            RequestBuffer::new_splice(global.config.request_buffer_size())?
         } else {
-            RequestBuffer::new_fallback(config.request_buffer_size())?
+            RequestBuffer::new_fallback(global.config.request_buffer_size())?
         };
         join_set.spawn(async move { worker.run(buf, fs).await });
     }
@@ -515,7 +530,7 @@ where
 }
 
 struct Worker {
-    env: Arc<Env>,
+    global: Arc<Global>,
     conn: AsyncFd<Connection>,
     join_set: JoinSet<io::Result<()>>,
 }
@@ -535,7 +550,7 @@ impl Worker {
     async fn read_request(&self, buf: &mut RequestBuffer) -> io::Result<bool> {
         loop {
             let mut guard = self.conn.readable().await?;
-            match guard.try_io(|conn| self.env.inner.session.recv_request(conn.get_ref(), buf)) {
+            match guard.try_io(|conn| self.global.session.recv_request(conn.get_ref(), buf)) {
                 Ok(result) => return result,
                 Err(_would_block) => continue,
             }
@@ -554,13 +569,14 @@ impl Worker {
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
 
-        let req = Request {
+        let req = &mut Request {
+            global: &self.global,
             buf,
             join_set: &mut self.join_set,
         };
 
         let base = ReplyBase {
-            session: &self.env.inner.session,
+            session: &self.global.session,
             conn: self.conn.get_ref(),
             buf,
         };
@@ -568,7 +584,6 @@ impl Worker {
         let result = match op {
             Operation::Lookup(op) => {
                 fs.lookup(
-                    &self.env,
                     req,
                     op,
                     ReplyEntry {
@@ -580,7 +595,6 @@ impl Worker {
             }
             Operation::Getattr(op) => {
                 fs.getattr(
-                    &self.env,
                     req,
                     op,
                     ReplyAttr {
@@ -592,7 +606,6 @@ impl Worker {
             }
             Operation::Setattr(op) => {
                 fs.setattr(
-                    &self.env,
                     req,
                     op,
                     ReplyAttr {
@@ -602,10 +615,9 @@ impl Worker {
                 )
                 .await
             }
-            Operation::Readlink(op) => fs.readlink(&self.env, req, op, ReplyData { base }).await,
+            Operation::Readlink(op) => fs.readlink(req, op, ReplyData { base }).await,
             Operation::Symlink(op) => {
                 fs.symlink(
-                    &self.env,
                     req,
                     op,
                     ReplyEntry {
@@ -617,7 +629,6 @@ impl Worker {
             }
             Operation::Mknod(op) => {
                 fs.mknod(
-                    &self.env,
                     req,
                     op,
                     ReplyEntry {
@@ -629,7 +640,6 @@ impl Worker {
             }
             Operation::Mkdir(op) => {
                 fs.mkdir(
-                    &self.env,
                     req,
                     op,
                     ReplyEntry {
@@ -639,12 +649,11 @@ impl Worker {
                 )
                 .await
             }
-            Operation::Unlink(op) => fs.unlink(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::Rmdir(op) => fs.rmdir(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::Rename(op) => fs.rename(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Unlink(op) => fs.unlink(req, op, ReplyUnit { base }).await,
+            Operation::Rmdir(op) => fs.rmdir(req, op, ReplyUnit { base }).await,
+            Operation::Rename(op) => fs.rename(req, op, ReplyUnit { base }).await,
             Operation::Link(op) => {
                 fs.link(
-                    &self.env,
                     req,
                     op,
                     ReplyEntry {
@@ -656,7 +665,6 @@ impl Worker {
             }
             Operation::Open(op) => {
                 fs.open(
-                    &self.env,
                     req,
                     op,
                     ReplyOpen {
@@ -666,20 +674,17 @@ impl Worker {
                 )
                 .await
             }
-            Operation::Read(op) => fs.read(&self.env, req, op, ReplyData { base }).await,
-            Operation::Release(op) => fs.release(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::Statfs(op) => fs.statfs(&self.env, req, op, ReplyStatfs { base }).await,
-            Operation::Fsync(op) => fs.fsync(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::Setxattr(op) => fs.setxattr(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::Getxattr(op) => fs.getxattr(&self.env, req, op, ReplyXattr { base }).await,
-            Operation::Listxattr(op) => fs.listxattr(&self.env, req, op, ReplyXattr { base }).await,
-            Operation::Removexattr(op) => {
-                fs.removexattr(&self.env, req, op, ReplyUnit { base }).await
-            }
-            Operation::Flush(op) => fs.flush(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Read(op) => fs.read(req, op, ReplyData { base }).await,
+            Operation::Release(op) => fs.release(req, op, ReplyUnit { base }).await,
+            Operation::Statfs(op) => fs.statfs(req, op, ReplyStatfs { base }).await,
+            Operation::Fsync(op) => fs.fsync(req, op, ReplyUnit { base }).await,
+            Operation::Setxattr(op) => fs.setxattr(req, op, ReplyUnit { base }).await,
+            Operation::Getxattr(op) => fs.getxattr(req, op, ReplyXattr { base }).await,
+            Operation::Listxattr(op) => fs.listxattr(req, op, ReplyXattr { base }).await,
+            Operation::Removexattr(op) => fs.removexattr(req, op, ReplyUnit { base }).await,
+            Operation::Flush(op) => fs.flush(req, op, ReplyUnit { base }).await,
             Operation::Opendir(op) => {
                 fs.opendir(
-                    &self.env,
                     req,
                     op,
                     ReplyOpen {
@@ -692,7 +697,6 @@ impl Worker {
             Operation::Readdir(op) => {
                 let capacity = op.size() as usize;
                 fs.readdir(
-                    &self.env,
                     req,
                     op,
                     ReplyDir {
@@ -702,17 +706,14 @@ impl Worker {
                 )
                 .await
             }
-            Operation::Releasedir(op) => {
-                fs.releasedir(&self.env, req, op, ReplyUnit { base }).await
-            }
-            Operation::Fsyncdir(op) => fs.fsyncdir(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::Getlk(op) => fs.getlk(&self.env, req, op, ReplyLock { base }).await,
-            Operation::Setlk(op) => fs.setlk(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::Flock(op) => fs.flock(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::Access(op) => fs.access(&self.env, req, op, ReplyUnit { base }).await,
+            Operation::Releasedir(op) => fs.releasedir(req, op, ReplyUnit { base }).await,
+            Operation::Fsyncdir(op) => fs.fsyncdir(req, op, ReplyUnit { base }).await,
+            Operation::Getlk(op) => fs.getlk(req, op, ReplyLock { base }).await,
+            Operation::Setlk(op) => fs.setlk(req, op, ReplyUnit { base }).await,
+            Operation::Flock(op) => fs.flock(req, op, ReplyUnit { base }).await,
+            Operation::Access(op) => fs.access(req, op, ReplyUnit { base }).await,
             Operation::Create(op) => {
                 fs.create(
-                    &self.env,
                     req,
                     op,
                     ReplyCreate {
@@ -723,37 +724,21 @@ impl Worker {
                 )
                 .await
             }
-            Operation::Bmap(op) => fs.bmap(&self.env, req, op, ReplyBmap { base }).await,
-            Operation::Fallocate(op) => fs.fallocate(&self.env, req, op, ReplyUnit { base }).await,
-            Operation::CopyFileRange(op) => {
-                fs.copy_file_range(&self.env, req, op, ReplyWrite { base })
+            Operation::Bmap(op) => fs.bmap(req, op, ReplyBmap { base }).await,
+            Operation::Fallocate(op) => fs.fallocate(req, op, ReplyUnit { base }).await,
+            Operation::CopyFileRange(op) => fs.copy_file_range(req, op, ReplyWrite { base }).await,
+            Operation::Poll(op) => fs.poll(req, op, ReplyPoll { base }).await,
+            Operation::Lseek(op) => fs.lseek(req, op, ReplyLseek { base }).await,
+            Operation::Write(op) => {
+                fs.write(req, op, Data { inner: data }, ReplyWrite { base })
                     .await
             }
-            Operation::Poll(op) => fs.poll(&self.env, req, op, ReplyPoll { base }).await,
-            Operation::Lseek(op) => fs.lseek(&self.env, req, op, ReplyLseek { base }).await,
-            Operation::Write(op) => {
-                fs.write(
-                    &self.env,
-                    req,
-                    op,
-                    Data { inner: data },
-                    ReplyWrite { base },
-                )
-                .await
-            }
             Operation::NotifyReply(op) => {
-                fs.notify_reply(&self.env, op, Data { inner: data }).await?;
+                fs.notify_reply(op, Data { inner: data }).await?;
                 return Ok(());
             }
             Operation::Forget(forgets) => {
-                fs.forget(
-                    &self.env,
-                    Spawner {
-                        join_set: &mut self.join_set,
-                    },
-                    forgets.as_ref(),
-                )
-                .await;
+                fs.forget(forgets.as_ref()).await;
                 return Ok(());
             }
             Operation::Interrupt(op) => {
@@ -772,8 +757,7 @@ impl Worker {
                 _ => return Err(err),
             },
             Err(Error::Code(errno)) => {
-                self.env
-                    .inner
+                self.global
                     .session
                     .send_reply(self.conn.get_ref(), buf.unique(), errno, ())?
             }

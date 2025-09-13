@@ -68,8 +68,7 @@ impl PollFS {
 impl Filesystem for PollFS {
     async fn getattr(
         self: &Arc<Self>,
-        _: &fs::Env,
-        _: fs::Request<'_>,
+        _: &mut fs::Request<'_>,
         _: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
@@ -88,8 +87,7 @@ impl Filesystem for PollFS {
 
     async fn open(
         self: &Arc<Self>,
-        env: &fs::Env,
-        mut req: fs::Request<'_>,
+        req: &mut fs::Request<'_>,
         op: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
@@ -108,12 +106,11 @@ impl Filesystem for PollFS {
         });
 
         tracing::info!("spawn reading task");
-        let _ = req.spawner().spawn({
-            let notifier = env.notifier();
+        {
+            let notifier = req.notifier();
             let handle = Arc::downgrade(&handle);
             let wakeup_interval = self.wakeup_interval;
-
-            async move {
+            let _ = req.spawner().spawn(async move {
                 let span = tracing::debug_span!("reading_task", fh=?fh);
                 let _enter = span.enter();
 
@@ -131,8 +128,8 @@ impl Filesystem for PollFS {
                 }
 
                 Ok(())
-            }
-        });
+            });
+        }
 
         let fh = FileID::from_raw(fh);
         self.handles.write().await.insert(fh, handle);
@@ -145,8 +142,7 @@ impl Filesystem for PollFS {
 
     async fn read(
         self: &Arc<Self>,
-        _: &fs::Env,
-        _: fs::Request<'_>,
+        _: &mut fs::Request<'_>,
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
@@ -178,8 +174,7 @@ impl Filesystem for PollFS {
 
     async fn poll(
         self: &Arc<Self>,
-        _: &fs::Env,
-        _: fs::Request<'_>,
+        _: &mut fs::Request<'_>,
         op: op::Poll<'_>,
         reply: fs::ReplyPoll<'_>,
     ) -> fs::Result {
@@ -203,8 +198,7 @@ impl Filesystem for PollFS {
 
     async fn release(
         self: &Arc<Self>,
-        _: &fs::Env,
-        _: fs::Request<'_>,
+        _: &mut fs::Request<'_>,
         op: op::Release<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {

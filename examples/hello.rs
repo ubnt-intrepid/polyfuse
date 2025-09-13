@@ -111,8 +111,7 @@ impl Hello {
 impl Filesystem for Hello {
     async fn lookup(
         self: &Arc<Self>,
-        _: &fs::Env,
-        _: fs::Request<'_>,
+        _: &mut fs::Request<'_>,
         op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
@@ -130,8 +129,7 @@ impl Filesystem for Hello {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &fs::Env,
-        _: fs::Request<'_>,
+        _: &mut fs::Request<'_>,
         op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
@@ -148,8 +146,7 @@ impl Filesystem for Hello {
 
     async fn read(
         self: &Arc<Self>,
-        _: &fs::Env,
-        _: fs::Request<'_>,
+        _: &mut fs::Request<'_>,
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
@@ -173,8 +170,7 @@ impl Filesystem for Hello {
 
     async fn readdir(
         self: &Arc<Self>,
-        _: &fs::Env,
-        _: fs::Request<'_>,
+        _: &mut fs::Request<'_>,
         op: op::Readdir<'_>,
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
