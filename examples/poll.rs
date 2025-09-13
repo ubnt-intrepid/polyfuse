@@ -1,5 +1,9 @@
 use polyfuse::{
-    fs::{self, Filesystem},
+    fs::{
+        self,
+        reply::{self, ReplyAttr, ReplyData, ReplyOpen, ReplyPoll, ReplyUnit},
+        Filesystem,
+    },
     notify,
     op::{self, AccessMode, OpenFlags},
     types::{
@@ -70,8 +74,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         _: &mut fs::Request<'_>,
         _: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         reply.out().attr({
             let mut attr = FileAttr::new();
             attr.ino = NodeID::ROOT;
@@ -89,8 +93,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         req: &mut fs::Request<'_>,
         op: op::Open<'_>,
-        mut reply: fs::ReplyOpen<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyOpen<'_>,
+    ) -> reply::Result {
         if op.options().access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
@@ -144,8 +148,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         _: &mut fs::Request<'_>,
         op: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         let handle = {
             let handles = self.handles.read().await;
             handles.get(&op.fh()).cloned().ok_or(EINVAL)?
@@ -176,8 +180,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         _: &mut fs::Request<'_>,
         op: op::Poll<'_>,
-        reply: fs::ReplyPoll<'_>,
-    ) -> fs::Result {
+        reply: ReplyPoll<'_>,
+    ) -> reply::Result {
         let handle = {
             let handles = self.handles.read().await;
             handles.get(&op.fh()).cloned().ok_or(EINVAL)?
@@ -200,8 +204,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         _: &mut fs::Request<'_>,
         op: op::Release<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         drop(self.handles.write().await.remove(&op.fh()));
         reply.send()
     }

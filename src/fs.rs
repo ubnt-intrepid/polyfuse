@@ -4,17 +4,12 @@ use crate::{
     mount::MountOptions,
     notify::{self, Notify},
     op::{self, Forget, Operation},
-    reply::{
-        AttrOut, BmapOut, EntryOut, LkOut, LseekOut, OpenOut, PollOut, ReaddirOut, StatfsOut,
-        WriteOut, XattrOut,
-    },
     request::{RemainingData, RequestBuffer},
     session::{KernelConfig, KernelFlags, Session},
-    types::{FileLock, FileType, NodeID, PollEvents, Statfs, GID, PID, UID},
+    types::{GID, PID, UID},
 };
-use libc::{EIO, ENOENT, ENOSYS};
+use libc::{ENOENT, ENOSYS};
 use std::{
-    ffi::OsStr,
     future::Future,
     io,
     path::PathBuf,
@@ -25,28 +20,10 @@ use tokio::{
     task::{AbortHandle, JoinSet},
 };
 
-pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("error during reply: {}", _0)]
-    Reply(#[source] io::Error),
-
-    #[error("Operation failed with {}", _0)]
-    Code(i32),
-}
-
-impl From<i32> for Error {
-    fn from(code: i32) -> Self {
-        Self::Code(code)
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Self {
-        Self::Code(err.raw_os_error().unwrap_or(EIO))
-    }
-}
+use self::reply::{
+    ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDir, ReplyEntry, ReplyLock, ReplyLseek,
+    ReplyOpen, ReplyPoll, ReplyStatfs, ReplyUnit, ReplyWrite, ReplyXattr,
+};
 
 macro_rules! define_ops {
     ($( $name:ident: { $Arg:ident, $Reply:ident } ),*$(,)*) => {$(
@@ -55,10 +32,10 @@ macro_rules! define_ops {
             self: &Arc<Self>,
             req: &mut Request<'_>,
             op: op::$Arg<'_>,
-            reply: $Reply<'_>,
-        ) -> impl Future<Output = Result> + Send {
+            reply: reply::$Reply<'_>,
+        ) -> impl Future<Output = reply::Result> + Send {
             async {
-                Err(Error::Code(ENOSYS))
+                Err(reply::Error::unimplemented())
             }
         }
     )*};
@@ -109,9 +86,9 @@ pub trait Filesystem {
         req: &mut Request<'_>,
         op: op::Write<'_>,
         data: Data<'_>,
-        reply: ReplyWrite<'_>,
-    ) -> impl Future<Output = Result> + Send {
-        async { Err(Error::Code(ENOSYS)) }
+        reply: reply::ReplyWrite<'_>,
+    ) -> impl Future<Output = reply::Result> + Send {
+        async { Err(reply::Error::unimplemented()) }
     }
 
     #[allow(unused_variables)]
@@ -257,216 +234,347 @@ impl io::Read for Data<'_> {
     }
 }
 
-/// The ZST to ensure that the filesystem responds to a FUSE request exactly once.
-#[derive(Debug)]
-pub struct Replied {
-    _private: (),
-}
-
-struct ReplyBase<'req> {
+struct ReplySender<'req> {
     session: &'req Session,
     conn: &'req Connection,
     buf: &'req RequestBuffer,
 }
 
-impl ReplyBase<'_> {
-    fn send<B>(self, arg: B) -> Result
+impl ReplySender<'_> {
+    fn send<B>(self, arg: B) -> reply::Result
     where
         B: Bytes,
     {
         self.session
             .send_reply(self.conn, self.buf.unique(), 0, arg)
-            .map_err(Error::Reply)?;
-        Ok(Replied { _private: () })
+            .map_err(reply::Error::Fatal)?;
+        Ok(reply::Replied::new())
     }
 }
 
-pub struct ReplyUnit<'req> {
-    base: ReplyBase<'req>,
-}
+pub mod reply {
+    use super::ReplySender;
+    use crate::{
+        bytes::Bytes,
+        reply::{
+            AttrOut, BmapOut, EntryOut, LkOut, LseekOut, OpenOut, PollOut, ReaddirOut, StatfsOut,
+            WriteOut, XattrOut,
+        },
+        types::{FileLock, FileType, NodeID, PollEvents, Statfs},
+    };
+    use libc::{EIO, ENOSYS};
+    use std::{ffi::OsStr, io};
 
-impl ReplyUnit<'_> {
-    pub fn send(self) -> Result {
-        self.base.send(())
+    pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
+
+    /// The ZST to ensure that the filesystem responds to a FUSE request exactly once.
+    #[derive(Debug)]
+    pub struct Replied {
+        _private: (),
     }
-}
-
-pub struct ReplyEntry<'req> {
-    base: ReplyBase<'req>,
-    out: EntryOut,
-}
-impl ReplyEntry<'_> {
-    pub fn out(&mut self) -> &mut EntryOut {
-        &mut self.out
-    }
-
-    pub fn send(self) -> Result {
-        self.base.send(&self.out)
-    }
-}
-
-pub struct ReplyAttr<'req> {
-    base: ReplyBase<'req>,
-    out: AttrOut,
-}
-impl ReplyAttr<'_> {
-    pub fn out(&mut self) -> &mut AttrOut {
-        &mut self.out
+    impl Replied {
+        pub(super) const fn new() -> Self {
+            Self { _private: () }
+        }
     }
 
-    pub fn send(self) -> Result {
-        self.base.send(&self.out)
-    }
-}
+    #[derive(Debug, thiserror::Error)]
+    pub enum Error {
+        #[error("operation failed with error code {}", _0)]
+        Code(i32),
 
-pub struct ReplyData<'req> {
-    base: ReplyBase<'req>,
-}
-impl ReplyData<'_> {
-    pub fn send<B>(self, bytes: B) -> Result
-    where
-        B: Bytes,
-    {
-        self.base.send(bytes)
-    }
-}
-
-pub struct ReplyWrite<'req> {
-    base: ReplyBase<'req>,
-}
-impl ReplyWrite<'_> {
-    pub fn send(self, size: u32) -> Result {
-        let mut out = WriteOut::default();
-        WriteOut::size(&mut out, size);
-        self.base.send(out)
-    }
-}
-
-pub struct ReplyDir<'req> {
-    base: ReplyBase<'req>,
-    out: ReaddirOut,
-}
-
-impl ReplyDir<'_> {
-    pub fn push_entry(
-        &mut self,
-        name: &OsStr,
-        ino: NodeID,
-        typ: Option<FileType>,
-        offset: u64,
-    ) -> bool {
-        self.out.entry(name, ino, typ, offset)
+        #[error("fatal error: {}", _0)]
+        Fatal(#[source] io::Error),
     }
 
-    pub fn send(self) -> Result {
-        self.base.send(&self.out)
-    }
-}
-
-pub struct ReplyOpen<'req> {
-    base: ReplyBase<'req>,
-    out: OpenOut,
-}
-
-impl ReplyOpen<'_> {
-    pub fn out(&mut self) -> &mut OpenOut {
-        &mut self.out
+    impl From<i32> for Error {
+        fn from(code: i32) -> Self {
+            Self::Code(code)
+        }
     }
 
-    pub fn send(self) -> Result {
-        self.base.send(&self.out)
-    }
-}
-
-pub struct ReplyCreate<'req> {
-    base: ReplyBase<'req>,
-    entry_out: EntryOut,
-    open_out: OpenOut,
-}
-impl ReplyCreate<'_> {
-    pub fn entry_out(&mut self) -> &mut EntryOut {
-        &mut self.entry_out
-    }
-    pub fn open_out(&mut self) -> &mut OpenOut {
-        &mut self.open_out
-    }
-    pub fn send(self) -> Result {
-        self.base.send((self.entry_out, self.open_out))
-    }
-}
-
-pub struct ReplyStatfs<'req> {
-    base: ReplyBase<'req>,
-}
-
-impl ReplyStatfs<'_> {
-    pub fn send(self, st: Statfs) -> Result {
-        let mut out = StatfsOut::default();
-        out.statfs(st);
-        self.base.send(out)
-    }
-}
-
-pub struct ReplyXattr<'req> {
-    base: ReplyBase<'req>,
-}
-
-impl ReplyXattr<'_> {
-    pub fn send_size(self, size: u32) -> Result {
-        let mut out = XattrOut::default();
-        XattrOut::size(&mut out, size);
-        self.base.send(out)
+    impl From<io::Error> for Error {
+        fn from(err: io::Error) -> Self {
+            Self::Code(err.raw_os_error().unwrap_or(EIO))
+        }
     }
 
-    pub fn send_value<B>(self, data: B) -> Result
-    where
-        B: Bytes,
-    {
-        self.base.send(data)
+    impl Error {
+        pub const fn unimplemented() -> Self {
+            Self::Code(ENOSYS)
+        }
     }
-}
 
-pub struct ReplyLock<'req> {
-    base: ReplyBase<'req>,
-}
-impl ReplyLock<'_> {
-    pub fn send(self, lk: FileLock) -> Result {
-        let mut out = LkOut::default();
-        out.file_lock(&lk);
-        self.base.send(out)
+    pub struct ReplyUnit<'req> {
+        sender: ReplySender<'req>,
     }
-}
 
-pub struct ReplyBmap<'req> {
-    base: ReplyBase<'req>,
-}
-impl ReplyBmap<'_> {
-    pub fn send(self, block: u64) -> Result {
-        let mut out = BmapOut::default();
-        out.block(block);
-        self.base.send(out)
+    impl<'req> ReplyUnit<'req> {
+        pub(super) const fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send(self) -> Result {
+            self.sender.send(())
+        }
     }
-}
 
-pub struct ReplyPoll<'req> {
-    base: ReplyBase<'req>,
-}
-impl ReplyPoll<'_> {
-    pub fn send(self, revents: PollEvents) -> Result {
-        let mut out = PollOut::default();
-        out.revents(revents);
-        self.base.send(out)
+    pub struct ReplyEntry<'req> {
+        sender: ReplySender<'req>,
+        out: EntryOut,
     }
-}
 
-pub struct ReplyLseek<'req> {
-    base: ReplyBase<'req>,
-}
-impl ReplyLseek<'_> {
-    pub fn send(self, offset: u64) -> Result {
-        let mut out = LseekOut::default();
-        out.offset(offset);
-        self.base.send(out)
+    impl<'req> ReplyEntry<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self {
+                sender,
+                out: EntryOut::default(),
+            }
+        }
+
+        pub fn out(&mut self) -> &mut EntryOut {
+            &mut self.out
+        }
+
+        pub fn send(self) -> Result {
+            self.sender.send(&self.out)
+        }
+    }
+
+    pub struct ReplyAttr<'req> {
+        sender: ReplySender<'req>,
+        out: AttrOut,
+    }
+
+    impl<'req> ReplyAttr<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self {
+                sender,
+                out: AttrOut::default(),
+            }
+        }
+
+        pub fn out(&mut self) -> &mut AttrOut {
+            &mut self.out
+        }
+
+        pub fn send(self) -> Result {
+            self.sender.send(&self.out)
+        }
+    }
+
+    pub struct ReplyData<'req> {
+        sender: ReplySender<'req>,
+    }
+
+    impl<'req> ReplyData<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send<B>(self, bytes: B) -> Result
+        where
+            B: Bytes,
+        {
+            self.sender.send(bytes)
+        }
+    }
+
+    pub struct ReplyWrite<'req> {
+        sender: ReplySender<'req>,
+    }
+
+    impl<'req> ReplyWrite<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send(self, size: u32) -> Result {
+            let mut out = WriteOut::default();
+            WriteOut::size(&mut out, size);
+            self.sender.send(out)
+        }
+    }
+
+    pub struct ReplyDir<'req> {
+        sender: ReplySender<'req>,
+        out: ReaddirOut,
+    }
+
+    impl<'req> ReplyDir<'req> {
+        pub(super) fn new(sender: ReplySender<'req>, capacity: usize) -> Self {
+            Self {
+                sender,
+                out: ReaddirOut::new(capacity),
+            }
+        }
+
+        pub fn push_entry(
+            &mut self,
+            name: &OsStr,
+            ino: NodeID,
+            typ: Option<FileType>,
+            offset: u64,
+        ) -> bool {
+            self.out.entry(name, ino, typ, offset)
+        }
+
+        pub fn send(self) -> Result {
+            self.sender.send(&self.out)
+        }
+    }
+
+    pub struct ReplyOpen<'req> {
+        sender: ReplySender<'req>,
+        out: OpenOut,
+    }
+
+    impl<'req> ReplyOpen<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self {
+                sender,
+                out: OpenOut::default(),
+            }
+        }
+
+        pub fn out(&mut self) -> &mut OpenOut {
+            &mut self.out
+        }
+
+        pub fn send(self) -> Result {
+            self.sender.send(&self.out)
+        }
+    }
+
+    pub struct ReplyCreate<'req> {
+        sender: ReplySender<'req>,
+        entry_out: EntryOut,
+        open_out: OpenOut,
+    }
+
+    impl<'req> ReplyCreate<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self {
+                sender,
+                entry_out: EntryOut::default(),
+                open_out: OpenOut::default(),
+            }
+        }
+
+        pub fn entry_out(&mut self) -> &mut EntryOut {
+            &mut self.entry_out
+        }
+
+        pub fn open_out(&mut self) -> &mut OpenOut {
+            &mut self.open_out
+        }
+
+        pub fn send(self) -> Result {
+            self.sender.send((self.entry_out, self.open_out))
+        }
+    }
+
+    pub struct ReplyStatfs<'req> {
+        sender: ReplySender<'req>,
+    }
+
+    impl<'req> ReplyStatfs<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send(self, st: Statfs) -> Result {
+            let mut out = StatfsOut::default();
+            out.statfs(st);
+            self.sender.send(out)
+        }
+    }
+
+    pub struct ReplyXattr<'req> {
+        sender: ReplySender<'req>,
+    }
+
+    impl<'req> ReplyXattr<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send_size(self, size: u32) -> Result {
+            let mut out = XattrOut::default();
+            XattrOut::size(&mut out, size);
+            self.sender.send(out)
+        }
+
+        pub fn send_value<B>(self, data: B) -> Result
+        where
+            B: Bytes,
+        {
+            self.sender.send(data)
+        }
+    }
+
+    pub struct ReplyLock<'req> {
+        sender: ReplySender<'req>,
+    }
+
+    impl<'req> ReplyLock<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send(self, lk: FileLock) -> Result {
+            let mut out = LkOut::default();
+            out.file_lock(&lk);
+            self.sender.send(out)
+        }
+    }
+
+    pub struct ReplyBmap<'req> {
+        sender: ReplySender<'req>,
+    }
+
+    impl<'req> ReplyBmap<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send(self, block: u64) -> Result {
+            let mut out = BmapOut::default();
+            out.block(block);
+            self.sender.send(out)
+        }
+    }
+
+    pub struct ReplyPoll<'req> {
+        sender: ReplySender<'req>,
+    }
+
+    impl<'req> ReplyPoll<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send(self, revents: PollEvents) -> Result {
+            let mut out = PollOut::default();
+            out.revents(revents);
+            self.sender.send(out)
+        }
+    }
+
+    pub struct ReplyLseek<'req> {
+        sender: ReplySender<'req>,
+    }
+
+    impl<'req> ReplyLseek<'req> {
+        pub(super) fn new(sender: ReplySender<'req>) -> Self {
+            Self { sender }
+        }
+
+        pub fn send(self, offset: u64) -> Result {
+            let mut out = LseekOut::default();
+            out.offset(offset);
+            self.sender.send(out)
+        }
     }
 }
 
@@ -575,162 +683,55 @@ impl Worker {
             join_set: &mut self.join_set,
         };
 
-        let base = ReplyBase {
+        let sender = ReplySender {
             session: &self.global.session,
             conn: self.conn.get_ref(),
             buf,
         };
 
         let result = match op {
-            Operation::Lookup(op) => {
-                fs.lookup(
-                    req,
-                    op,
-                    ReplyEntry {
-                        base,
-                        out: EntryOut::default(),
-                    },
-                )
-                .await
-            }
-            Operation::Getattr(op) => {
-                fs.getattr(
-                    req,
-                    op,
-                    ReplyAttr {
-                        base,
-                        out: AttrOut::default(),
-                    },
-                )
-                .await
-            }
-            Operation::Setattr(op) => {
-                fs.setattr(
-                    req,
-                    op,
-                    ReplyAttr {
-                        base,
-                        out: AttrOut::default(),
-                    },
-                )
-                .await
-            }
-            Operation::Readlink(op) => fs.readlink(req, op, ReplyData { base }).await,
-            Operation::Symlink(op) => {
-                fs.symlink(
-                    req,
-                    op,
-                    ReplyEntry {
-                        base,
-                        out: EntryOut::default(),
-                    },
-                )
-                .await
-            }
-            Operation::Mknod(op) => {
-                fs.mknod(
-                    req,
-                    op,
-                    ReplyEntry {
-                        base,
-                        out: EntryOut::default(),
-                    },
-                )
-                .await
-            }
-            Operation::Mkdir(op) => {
-                fs.mkdir(
-                    req,
-                    op,
-                    ReplyEntry {
-                        base,
-                        out: EntryOut::default(),
-                    },
-                )
-                .await
-            }
-            Operation::Unlink(op) => fs.unlink(req, op, ReplyUnit { base }).await,
-            Operation::Rmdir(op) => fs.rmdir(req, op, ReplyUnit { base }).await,
-            Operation::Rename(op) => fs.rename(req, op, ReplyUnit { base }).await,
-            Operation::Link(op) => {
-                fs.link(
-                    req,
-                    op,
-                    ReplyEntry {
-                        base,
-                        out: EntryOut::default(),
-                    },
-                )
-                .await
-            }
-            Operation::Open(op) => {
-                fs.open(
-                    req,
-                    op,
-                    ReplyOpen {
-                        base,
-                        out: OpenOut::default(),
-                    },
-                )
-                .await
-            }
-            Operation::Read(op) => fs.read(req, op, ReplyData { base }).await,
-            Operation::Release(op) => fs.release(req, op, ReplyUnit { base }).await,
-            Operation::Statfs(op) => fs.statfs(req, op, ReplyStatfs { base }).await,
-            Operation::Fsync(op) => fs.fsync(req, op, ReplyUnit { base }).await,
-            Operation::Setxattr(op) => fs.setxattr(req, op, ReplyUnit { base }).await,
-            Operation::Getxattr(op) => fs.getxattr(req, op, ReplyXattr { base }).await,
-            Operation::Listxattr(op) => fs.listxattr(req, op, ReplyXattr { base }).await,
-            Operation::Removexattr(op) => fs.removexattr(req, op, ReplyUnit { base }).await,
-            Operation::Flush(op) => fs.flush(req, op, ReplyUnit { base }).await,
-            Operation::Opendir(op) => {
-                fs.opendir(
-                    req,
-                    op,
-                    ReplyOpen {
-                        base,
-                        out: OpenOut::default(),
-                    },
-                )
-                .await
-            }
+            Operation::Lookup(op) => fs.lookup(req, op, ReplyEntry::new(sender)).await,
+            Operation::Getattr(op) => fs.getattr(req, op, ReplyAttr::new(sender)).await,
+            Operation::Setattr(op) => fs.setattr(req, op, ReplyAttr::new(sender)).await,
+            Operation::Readlink(op) => fs.readlink(req, op, ReplyData::new(sender)).await,
+            Operation::Symlink(op) => fs.symlink(req, op, ReplyEntry::new(sender)).await,
+            Operation::Mknod(op) => fs.mknod(req, op, ReplyEntry::new(sender)).await,
+            Operation::Mkdir(op) => fs.mkdir(req, op, ReplyEntry::new(sender)).await,
+            Operation::Unlink(op) => fs.unlink(req, op, ReplyUnit::new(sender)).await,
+            Operation::Rmdir(op) => fs.rmdir(req, op, ReplyUnit::new(sender)).await,
+            Operation::Rename(op) => fs.rename(req, op, ReplyUnit::new(sender)).await,
+            Operation::Link(op) => fs.link(req, op, ReplyEntry::new(sender)).await,
+            Operation::Open(op) => fs.open(req, op, ReplyOpen::new(sender)).await,
+            Operation::Read(op) => fs.read(req, op, ReplyData::new(sender)).await,
+            Operation::Release(op) => fs.release(req, op, ReplyUnit::new(sender)).await,
+            Operation::Statfs(op) => fs.statfs(req, op, ReplyStatfs::new(sender)).await,
+            Operation::Fsync(op) => fs.fsync(req, op, ReplyUnit::new(sender)).await,
+            Operation::Setxattr(op) => fs.setxattr(req, op, ReplyUnit::new(sender)).await,
+            Operation::Getxattr(op) => fs.getxattr(req, op, ReplyXattr::new(sender)).await,
+            Operation::Listxattr(op) => fs.listxattr(req, op, ReplyXattr::new(sender)).await,
+            Operation::Removexattr(op) => fs.removexattr(req, op, ReplyUnit::new(sender)).await,
+            Operation::Flush(op) => fs.flush(req, op, ReplyUnit::new(sender)).await,
+            Operation::Opendir(op) => fs.opendir(req, op, ReplyOpen::new(sender)).await,
             Operation::Readdir(op) => {
                 let capacity = op.size() as usize;
-                fs.readdir(
-                    req,
-                    op,
-                    ReplyDir {
-                        base,
-                        out: ReaddirOut::new(capacity),
-                    },
-                )
-                .await
+                fs.readdir(req, op, ReplyDir::new(sender, capacity)).await
             }
-            Operation::Releasedir(op) => fs.releasedir(req, op, ReplyUnit { base }).await,
-            Operation::Fsyncdir(op) => fs.fsyncdir(req, op, ReplyUnit { base }).await,
-            Operation::Getlk(op) => fs.getlk(req, op, ReplyLock { base }).await,
-            Operation::Setlk(op) => fs.setlk(req, op, ReplyUnit { base }).await,
-            Operation::Flock(op) => fs.flock(req, op, ReplyUnit { base }).await,
-            Operation::Access(op) => fs.access(req, op, ReplyUnit { base }).await,
-            Operation::Create(op) => {
-                fs.create(
-                    req,
-                    op,
-                    ReplyCreate {
-                        base,
-                        entry_out: EntryOut::default(),
-                        open_out: OpenOut::default(),
-                    },
-                )
-                .await
+            Operation::Releasedir(op) => fs.releasedir(req, op, ReplyUnit::new(sender)).await,
+            Operation::Fsyncdir(op) => fs.fsyncdir(req, op, ReplyUnit::new(sender)).await,
+            Operation::Getlk(op) => fs.getlk(req, op, ReplyLock::new(sender)).await,
+            Operation::Setlk(op) => fs.setlk(req, op, ReplyUnit::new(sender)).await,
+            Operation::Flock(op) => fs.flock(req, op, ReplyUnit::new(sender)).await,
+            Operation::Access(op) => fs.access(req, op, ReplyUnit::new(sender)).await,
+            Operation::Create(op) => fs.create(req, op, ReplyCreate::new(sender)).await,
+            Operation::Bmap(op) => fs.bmap(req, op, ReplyBmap::new(sender)).await,
+            Operation::Fallocate(op) => fs.fallocate(req, op, ReplyUnit::new(sender)).await,
+            Operation::CopyFileRange(op) => {
+                fs.copy_file_range(req, op, ReplyWrite::new(sender)).await
             }
-            Operation::Bmap(op) => fs.bmap(req, op, ReplyBmap { base }).await,
-            Operation::Fallocate(op) => fs.fallocate(req, op, ReplyUnit { base }).await,
-            Operation::CopyFileRange(op) => fs.copy_file_range(req, op, ReplyWrite { base }).await,
-            Operation::Poll(op) => fs.poll(req, op, ReplyPoll { base }).await,
-            Operation::Lseek(op) => fs.lseek(req, op, ReplyLseek { base }).await,
+            Operation::Poll(op) => fs.poll(req, op, ReplyPoll::new(sender)).await,
+            Operation::Lseek(op) => fs.lseek(req, op, ReplyLseek::new(sender)).await,
             Operation::Write(op) => {
-                fs.write(req, op, Data { inner: data }, ReplyWrite { base })
+                fs.write(req, op, Data { inner: data }, ReplyWrite::new(sender))
                     .await
             }
             Operation::NotifyReply(op) => {
@@ -750,13 +751,13 @@ impl Worker {
 
         match result {
             Ok(..) => {}
-            Err(Error::Reply(err)) => match err.raw_os_error() {
+            Err(reply::Error::Fatal(err)) => match err.raw_os_error() {
                 Some(ENOENT) => {
                     // missing in processing queue
                 }
                 _ => return Err(err),
             },
-            Err(Error::Code(errno)) => {
+            Err(reply::Error::Code(errno)) => {
                 self.global
                     .session
                     .send_reply(self.conn.get_ref(), buf.unique(), errno, ())?
