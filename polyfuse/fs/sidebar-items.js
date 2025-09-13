@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Error"],"fn":["run"],"struct":["Data","Env","Notifier","Replied","ReplyAttr","ReplyBmap","ReplyCreate","ReplyData","ReplyDir","ReplyEntry","ReplyLock","ReplyLseek","ReplyOpen","ReplyPoll","ReplyStatfs","ReplyUnit","ReplyWrite","ReplyXattr","Request","Spawner"],"trait":["Filesystem"],"type":["Result"]};

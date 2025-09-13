@@ -1,0 +1,505 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="API documentation for the Rust `Filesystem` trait in crate `polyfuse`."><title>Filesystem in polyfuse::fs - Rust</title><script> if (window.location.protocol !== "file:") document.write(`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/SourceSerif4-Regular-46f98efaafac5295.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/FiraSans-Regular-018c141bf0843ffd.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/FiraSans-Medium-8f9a781e4970d388.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/SourceCodePro-Regular-562dcc5011b6de7d.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/SourceCodePro-Semibold-d899c5a5c4aeb14a.ttf.woff2">`)</script><link rel="stylesheet" href="../../static.files/normalize-76eba96aa4d2e634.css"><link rel="stylesheet" href="../../static.files/rustdoc-e935ef01ae1c1829.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="polyfuse" data-themes="" data-resource-suffix="" data-rustdoc-version="1.78.0 (9b00956e5 2024-04-29)" data-channel="1.78.0" data-search-js="search-42d8da7a6b9792c2.js" data-settings-js="settings-4313503d2e1961c2.js" ><script src="../../static.files/storage-4c98445ec4002617.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-12cf3b4f4f9dc36d.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-04d5337699b92874.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-16x16-8b506e7a72182f1c.png"><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-422f7d1d52889060.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-2c020d218678b618.svg"></head><body class="rustdoc trait"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../polyfuse/index.html">polyfuse</a><span class="version">0.6.0-dev</span></h2></div><h2 class="location"><a href="#">Filesystem</a></h2><div class="sidebar-elems"><section><h3><a href="#provided-methods">Provided Methods</a></h3><ul class="block"><li><a href="#method.access">access</a></li><li><a href="#method.bmap">bmap</a></li><li><a href="#method.copy_file_range">copy_file_range</a></li><li><a href="#method.create">create</a></li><li><a href="#method.fallocate">fallocate</a></li><li><a href="#method.flock">flock</a></li><li><a href="#method.flush">flush</a></li><li><a href="#method.forget">forget</a></li><li><a href="#method.fsync">fsync</a></li><li><a href="#method.fsyncdir">fsyncdir</a></li><li><a href="#method.getattr">getattr</a></li><li><a href="#method.getlk">getlk</a></li><li><a href="#method.getxattr">getxattr</a></li><li><a href="#method.init">init</a></li><li><a href="#method.link">link</a></li><li><a href="#method.listxattr">listxattr</a></li><li><a href="#method.lookup">lookup</a></li><li><a href="#method.lseek">lseek</a></li><li><a href="#method.mkdir">mkdir</a></li><li><a href="#method.mknod">mknod</a></li><li><a href="#method.notify_reply">notify_reply</a></li><li><a href="#method.open">open</a></li><li><a href="#method.opendir">opendir</a></li><li><a href="#method.poll">poll</a></li><li><a href="#method.read">read</a></li><li><a href="#method.readdir">readdir</a></li><li><a href="#method.readlink">readlink</a></li><li><a href="#method.release">release</a></li><li><a href="#method.releasedir">releasedir</a></li><li><a href="#method.removexattr">removexattr</a></li><li><a href="#method.rename">rename</a></li><li><a href="#method.rmdir">rmdir</a></li><li><a href="#method.setattr">setattr</a></li><li><a href="#method.setlk">setlk</a></li><li><a href="#method.setxattr">setxattr</a></li><li><a href="#method.statfs">statfs</a></li><li><a href="#method.symlink">symlink</a></li><li><a href="#method.unlink">unlink</a></li><li><a href="#method.write">write</a></li></ul><h3><a href="#object-safety">Object Safety</a></h3><h3><a href="#implementors">Implementors</a></h3></section><h2><a href="index.html">In polyfuse::fs</a></h2></div></nav><div class="sidebar-resizer"></div>
+    <main><div class="width-limiter"><nav class="sub"><form class="search-form"><span></span><div id="sidebar-button" tabindex="-1"><a href="../../polyfuse/all.html" title="show sidebar"></a></div><input class="search-input" name="search" aria-label="Run search in the documentation" autocomplete="off" spellcheck="false" placeholder="Click or press ‘S’ to search, ‘?’ for more options…" type="search"><div id="help-button" tabindex="-1"><a href="../../help.html" title="help">?</a></div><div id="settings-menu" tabindex="-1"><a href="../../settings.html" title="settings"><img width="22" height="22" alt="Change settings" src="../../static.files/wheel-7b819b6101059cd0.svg"></a></div></form></nav><section id="main-content" class="content"><div class="main-heading"><h1>Trait <a href="../index.html">polyfuse</a>::<wbr><a href="index.html">fs</a>::<wbr><a class="trait" href="#">Filesystem</a><button id="copy-path" title="Copy item path to clipboard"><img src="../../static.files/clipboard-7571035ce49a181d.svg" width="19" height="18" alt="Copy item path"></button></h1><span class="out-of-band"><a class="src" href="../../src/polyfuse/fs.rs.html#68-147">source</a> · <button id="toggle-all-docs" title="collapse all docs">[<span>&#x2212;</span>]</button></span></div><pre class="rust item-decl"><code>pub trait Filesystem {
+<details class="toggle type-contents-toggle"><summary class="hideme"><span>Show 39 methods</span></summary>    // Provided methods
+    fn <a href="#method.lookup" class="fn">lookup</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Lookup.html" title="struct polyfuse::op::Lookup">Lookup</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.getattr" class="fn">getattr</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Getattr.html" title="struct polyfuse::op::Getattr">Getattr</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyAttr.html" title="struct polyfuse::fs::ReplyAttr">ReplyAttr</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.setattr" class="fn">setattr</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Setattr.html" title="struct polyfuse::op::Setattr">Setattr</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyAttr.html" title="struct polyfuse::fs::ReplyAttr">ReplyAttr</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.readlink" class="fn">readlink</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Readlink.html" title="struct polyfuse::op::Readlink">Readlink</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyData.html" title="struct polyfuse::fs::ReplyData">ReplyData</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.symlink" class="fn">symlink</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Symlink.html" title="struct polyfuse::op::Symlink">Symlink</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.mknod" class="fn">mknod</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Mknod.html" title="struct polyfuse::op::Mknod">Mknod</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.mkdir" class="fn">mkdir</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Mkdir.html" title="struct polyfuse::op::Mkdir">Mkdir</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.unlink" class="fn">unlink</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Unlink.html" title="struct polyfuse::op::Unlink">Unlink</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.rmdir" class="fn">rmdir</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Rmdir.html" title="struct polyfuse::op::Rmdir">Rmdir</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.rename" class="fn">rename</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Rename.html" title="struct polyfuse::op::Rename">Rename</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.link" class="fn">link</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Link.html" title="struct polyfuse::op::Link">Link</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.open" class="fn">open</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Open.html" title="struct polyfuse::op::Open">Open</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyOpen.html" title="struct polyfuse::fs::ReplyOpen">ReplyOpen</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.read" class="fn">read</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Read.html" title="struct polyfuse::op::Read">Read</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyData.html" title="struct polyfuse::fs::ReplyData">ReplyData</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.release" class="fn">release</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Release.html" title="struct polyfuse::op::Release">Release</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.statfs" class="fn">statfs</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Statfs.html" title="struct polyfuse::op::Statfs">Statfs</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyStatfs.html" title="struct polyfuse::fs::ReplyStatfs">ReplyStatfs</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.fsync" class="fn">fsync</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Fsync.html" title="struct polyfuse::op::Fsync">Fsync</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.setxattr" class="fn">setxattr</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Setxattr.html" title="struct polyfuse::op::Setxattr">Setxattr</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.getxattr" class="fn">getxattr</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Getxattr.html" title="struct polyfuse::op::Getxattr">Getxattr</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyXattr.html" title="struct polyfuse::fs::ReplyXattr">ReplyXattr</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.listxattr" class="fn">listxattr</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Listxattr.html" title="struct polyfuse::op::Listxattr">Listxattr</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyXattr.html" title="struct polyfuse::fs::ReplyXattr">ReplyXattr</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.removexattr" class="fn">removexattr</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Removexattr.html" title="struct polyfuse::op::Removexattr">Removexattr</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.flush" class="fn">flush</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Flush.html" title="struct polyfuse::op::Flush">Flush</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.opendir" class="fn">opendir</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Opendir.html" title="struct polyfuse::op::Opendir">Opendir</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyOpen.html" title="struct polyfuse::fs::ReplyOpen">ReplyOpen</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.readdir" class="fn">readdir</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Readdir.html" title="struct polyfuse::op::Readdir">Readdir</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyDir.html" title="struct polyfuse::fs::ReplyDir">ReplyDir</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.releasedir" class="fn">releasedir</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Releasedir.html" title="struct polyfuse::op::Releasedir">Releasedir</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.fsyncdir" class="fn">fsyncdir</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Fsyncdir.html" title="struct polyfuse::op::Fsyncdir">Fsyncdir</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.getlk" class="fn">getlk</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Getlk.html" title="struct polyfuse::op::Getlk">Getlk</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyLock.html" title="struct polyfuse::fs::ReplyLock">ReplyLock</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.setlk" class="fn">setlk</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Setlk.html" title="struct polyfuse::op::Setlk">Setlk</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.flock" class="fn">flock</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Flock.html" title="struct polyfuse::op::Flock">Flock</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.access" class="fn">access</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Access.html" title="struct polyfuse::op::Access">Access</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.create" class="fn">create</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Create.html" title="struct polyfuse::op::Create">Create</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyCreate.html" title="struct polyfuse::fs::ReplyCreate">ReplyCreate</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.bmap" class="fn">bmap</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Bmap.html" title="struct polyfuse::op::Bmap">Bmap</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyBmap.html" title="struct polyfuse::fs::ReplyBmap">ReplyBmap</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.fallocate" class="fn">fallocate</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Fallocate.html" title="struct polyfuse::op::Fallocate">Fallocate</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.copy_file_range" class="fn">copy_file_range</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.CopyFileRange.html" title="struct polyfuse::op::CopyFileRange">CopyFileRange</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyWrite.html" title="struct polyfuse::fs::ReplyWrite">ReplyWrite</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.poll" class="fn">poll</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Poll.html" title="struct polyfuse::op::Poll">Poll</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyPoll.html" title="struct polyfuse::fs::ReplyPoll">ReplyPoll</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.lseek" class="fn">lseek</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Lseek.html" title="struct polyfuse::op::Lseek">Lseek</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyLseek.html" title="struct polyfuse::fs::ReplyLseek">ReplyLseek</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.write" class="fn">write</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+        op: <a class="struct" href="../op/struct.Write.html" title="struct polyfuse::op::Write">Write</a>&lt;'_&gt;,
+        data: <a class="struct" href="struct.Data.html" title="struct polyfuse::fs::Data">Data</a>&lt;'_&gt;,
+        reply: <a class="struct" href="struct.ReplyWrite.html" title="struct polyfuse::fs::ReplyWrite">ReplyWrite</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.forget" class="fn">forget</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        spawner: <a class="struct" href="struct.Spawner.html" title="struct polyfuse::fs::Spawner">Spawner</a>&lt;'_&gt;,
+        forgets: &amp;[<a class="struct" href="../op/struct.Forget.html" title="struct polyfuse::op::Forget">Forget</a>]
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="primitive" href="https://doc.rust-lang.org/1.78.0/std/primitive.unit.html">()</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.init" class="fn">init</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        spawner: <a class="struct" href="struct.Spawner.html" title="struct polyfuse::fs::Spawner">Spawner</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="https://doc.rust-lang.org/1.78.0/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.78.0/std/primitive.unit.html">()</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+<span class="item-spacer"></span>    fn <a href="#method.notify_reply" class="fn">notify_reply</a>(
+        self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+        env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+        op: <a class="struct" href="../op/struct.NotifyReply.html" title="struct polyfuse::op::NotifyReply">NotifyReply</a>&lt;'_&gt;,
+        data: <a class="struct" href="struct.Data.html" title="struct polyfuse::fs::Data">Data</a>&lt;'_&gt;
+    ) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="https://doc.rust-lang.org/1.78.0/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.78.0/std/primitive.unit.html">()</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> { ... }
+</details>}</code></pre><h2 id="provided-methods" class="section-header">Provided Methods<a href="#provided-methods" class="anchor">§</a></h2><div class="methods"><section id="method.lookup" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.lookup" class="fn">lookup</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Lookup.html" title="struct polyfuse::op::Lookup">Lookup</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.getattr" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.getattr" class="fn">getattr</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Getattr.html" title="struct polyfuse::op::Getattr">Getattr</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyAttr.html" title="struct polyfuse::fs::ReplyAttr">ReplyAttr</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.setattr" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.setattr" class="fn">setattr</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Setattr.html" title="struct polyfuse::op::Setattr">Setattr</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyAttr.html" title="struct polyfuse::fs::ReplyAttr">ReplyAttr</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.readlink" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.readlink" class="fn">readlink</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Readlink.html" title="struct polyfuse::op::Readlink">Readlink</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyData.html" title="struct polyfuse::fs::ReplyData">ReplyData</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.symlink" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.symlink" class="fn">symlink</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Symlink.html" title="struct polyfuse::op::Symlink">Symlink</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.mknod" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.mknod" class="fn">mknod</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Mknod.html" title="struct polyfuse::op::Mknod">Mknod</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.mkdir" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.mkdir" class="fn">mkdir</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Mkdir.html" title="struct polyfuse::op::Mkdir">Mkdir</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.unlink" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.unlink" class="fn">unlink</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Unlink.html" title="struct polyfuse::op::Unlink">Unlink</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.rmdir" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.rmdir" class="fn">rmdir</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Rmdir.html" title="struct polyfuse::op::Rmdir">Rmdir</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.rename" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.rename" class="fn">rename</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Rename.html" title="struct polyfuse::op::Rename">Rename</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.link" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.link" class="fn">link</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Link.html" title="struct polyfuse::op::Link">Link</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyEntry.html" title="struct polyfuse::fs::ReplyEntry">ReplyEntry</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.open" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.open" class="fn">open</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Open.html" title="struct polyfuse::op::Open">Open</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyOpen.html" title="struct polyfuse::fs::ReplyOpen">ReplyOpen</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.read" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.read" class="fn">read</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Read.html" title="struct polyfuse::op::Read">Read</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyData.html" title="struct polyfuse::fs::ReplyData">ReplyData</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.release" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.release" class="fn">release</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Release.html" title="struct polyfuse::op::Release">Release</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.statfs" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.statfs" class="fn">statfs</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Statfs.html" title="struct polyfuse::op::Statfs">Statfs</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyStatfs.html" title="struct polyfuse::fs::ReplyStatfs">ReplyStatfs</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.fsync" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.fsync" class="fn">fsync</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Fsync.html" title="struct polyfuse::op::Fsync">Fsync</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.setxattr" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.setxattr" class="fn">setxattr</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Setxattr.html" title="struct polyfuse::op::Setxattr">Setxattr</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.getxattr" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.getxattr" class="fn">getxattr</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Getxattr.html" title="struct polyfuse::op::Getxattr">Getxattr</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyXattr.html" title="struct polyfuse::fs::ReplyXattr">ReplyXattr</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.listxattr" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.listxattr" class="fn">listxattr</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Listxattr.html" title="struct polyfuse::op::Listxattr">Listxattr</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyXattr.html" title="struct polyfuse::fs::ReplyXattr">ReplyXattr</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.removexattr" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.removexattr" class="fn">removexattr</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Removexattr.html" title="struct polyfuse::op::Removexattr">Removexattr</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.flush" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.flush" class="fn">flush</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Flush.html" title="struct polyfuse::op::Flush">Flush</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.opendir" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.opendir" class="fn">opendir</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Opendir.html" title="struct polyfuse::op::Opendir">Opendir</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyOpen.html" title="struct polyfuse::fs::ReplyOpen">ReplyOpen</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.readdir" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.readdir" class="fn">readdir</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Readdir.html" title="struct polyfuse::op::Readdir">Readdir</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyDir.html" title="struct polyfuse::fs::ReplyDir">ReplyDir</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.releasedir" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.releasedir" class="fn">releasedir</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Releasedir.html" title="struct polyfuse::op::Releasedir">Releasedir</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.fsyncdir" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.fsyncdir" class="fn">fsyncdir</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Fsyncdir.html" title="struct polyfuse::op::Fsyncdir">Fsyncdir</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.getlk" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.getlk" class="fn">getlk</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Getlk.html" title="struct polyfuse::op::Getlk">Getlk</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyLock.html" title="struct polyfuse::fs::ReplyLock">ReplyLock</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.setlk" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.setlk" class="fn">setlk</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Setlk.html" title="struct polyfuse::op::Setlk">Setlk</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.flock" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.flock" class="fn">flock</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Flock.html" title="struct polyfuse::op::Flock">Flock</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.access" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.access" class="fn">access</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Access.html" title="struct polyfuse::op::Access">Access</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.create" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.create" class="fn">create</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Create.html" title="struct polyfuse::op::Create">Create</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyCreate.html" title="struct polyfuse::fs::ReplyCreate">ReplyCreate</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.bmap" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.bmap" class="fn">bmap</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Bmap.html" title="struct polyfuse::op::Bmap">Bmap</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyBmap.html" title="struct polyfuse::fs::ReplyBmap">ReplyBmap</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.fallocate" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.fallocate" class="fn">fallocate</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Fallocate.html" title="struct polyfuse::op::Fallocate">Fallocate</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyUnit.html" title="struct polyfuse::fs::ReplyUnit">ReplyUnit</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.copy_file_range" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.copy_file_range" class="fn">copy_file_range</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.CopyFileRange.html" title="struct polyfuse::op::CopyFileRange">CopyFileRange</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyWrite.html" title="struct polyfuse::fs::ReplyWrite">ReplyWrite</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.poll" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.poll" class="fn">poll</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Poll.html" title="struct polyfuse::op::Poll">Poll</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyPoll.html" title="struct polyfuse::fs::ReplyPoll">ReplyPoll</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.lseek" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#69-105">source</a><h4 class="code-header">fn <a href="#method.lseek" class="fn">lseek</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Lseek.html" title="struct polyfuse::op::Lseek">Lseek</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyLseek.html" title="struct polyfuse::fs::ReplyLseek">ReplyLseek</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.write" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#108-117">source</a><h4 class="code-header">fn <a href="#method.write" class="fn">write</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    req: <a class="struct" href="struct.Request.html" title="struct polyfuse::fs::Request">Request</a>&lt;'_&gt;,
+    op: <a class="struct" href="../op/struct.Write.html" title="struct polyfuse::op::Write">Write</a>&lt;'_&gt;,
+    data: <a class="struct" href="struct.Data.html" title="struct polyfuse::fs::Data">Data</a>&lt;'_&gt;,
+    reply: <a class="struct" href="struct.ReplyWrite.html" title="struct polyfuse::fs::ReplyWrite">ReplyWrite</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type polyfuse::fs::Result">Result</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.forget" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#120-127">source</a><h4 class="code-header">fn <a href="#method.forget" class="fn">forget</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    spawner: <a class="struct" href="struct.Spawner.html" title="struct polyfuse::fs::Spawner">Spawner</a>&lt;'_&gt;,
+    forgets: &amp;[<a class="struct" href="../op/struct.Forget.html" title="struct polyfuse::op::Forget">Forget</a>]
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="primitive" href="https://doc.rust-lang.org/1.78.0/std/primitive.unit.html">()</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.init" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#130-136">source</a><h4 class="code-header">fn <a href="#method.init" class="fn">init</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    spawner: <a class="struct" href="struct.Spawner.html" title="struct polyfuse::fs::Spawner">Spawner</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="https://doc.rust-lang.org/1.78.0/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.78.0/std/primitive.unit.html">()</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section><section id="method.notify_reply" class="method"><a class="src rightside" href="../../src/polyfuse/fs.rs.html#139-146">source</a><h4 class="code-header">fn <a href="#method.notify_reply" class="fn">notify_reply</a>(
+    self: &amp;<a class="struct" href="https://doc.rust-lang.org/1.78.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
+    env: &amp;<a class="struct" href="struct.Env.html" title="struct polyfuse::fs::Env">Env</a>,
+    op: <a class="struct" href="../op/struct.NotifyReply.html" title="struct polyfuse::op::NotifyReply">NotifyReply</a>&lt;'_&gt;,
+    data: <a class="struct" href="struct.Data.html" title="struct polyfuse::fs::Data">Data</a>&lt;'_&gt;
+) -&gt; impl <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="https://doc.rust-lang.org/1.78.0/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.78.0/std/primitive.unit.html">()</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/1.78.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a></h4></section></div><h2 id="object-safety" class="section-header">Object Safety<a href="#object-safety" class="anchor">§</a></h2><div class="object-safety-info">This trait is <b>not</b> <a href="https://doc.rust-lang.org/1.78.0/reference/items/traits.html#object-safety">object safe</a>.</div><h2 id="implementors" class="section-header">Implementors<a href="#implementors" class="anchor">§</a></h2><div id="implementors-list"></div><script src="../../trait.impl/polyfuse/fs/trait.Filesystem.js" async></script></section></div></main></body></html>
