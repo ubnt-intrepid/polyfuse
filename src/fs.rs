@@ -29,9 +29,6 @@ pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("The request has already been cancelled by the kernel")]
-    Cancelled,
-
     #[error("error during reply: {}", _0)]
     Reply(#[source] io::Error),
 
@@ -267,10 +264,7 @@ impl ReplyBase<'_> {
     {
         self.session
             .send_reply(self.conn, self.buf.unique(), 0, arg)
-            .map_err(|err| match err.raw_os_error() {
-                Some(ENOENT) => Error::Cancelled, // missing in processing queue
-                _ => Error::Reply(err),
-            })?;
+            .map_err(Error::Reply)?;
         Ok(Replied { _private: () })
     }
 }
@@ -827,8 +821,13 @@ where
         };
 
         match result {
-            Ok(..) | Err(Error::Cancelled) => {}
-            Err(Error::Reply(err)) => return Err(err),
+            Ok(..) => {}
+            Err(Error::Reply(err)) => match err.raw_os_error() {
+                Some(ENOENT) => {
+                    // missing in processing queue
+                }
+                _ => return Err(err),
+            },
             Err(Error::Code(errno)) => self.env.inner.session.send_reply(
                 self.conn.get_ref(),
                 self.buf.unique(),
