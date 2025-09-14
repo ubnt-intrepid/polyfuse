@@ -3,7 +3,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    reply::AttrOut,
+    out::AttrOut,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };

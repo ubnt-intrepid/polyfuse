@@ -230,7 +230,7 @@ pub mod reply {
     use super::ReplySender;
     use crate::{
         bytes::Bytes,
-        reply::{
+        out::{
             AttrOut, BmapOut, EntryOut, LkOut, LseekOut, OpenOut, PollOut, ReaddirOut, StatfsOut,
             WriteOut, XattrOut,
         },
