@@ -1,9 +1,9 @@
 use crate::{
     bytes::{Bytes, FillBytes},
-    types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
+    types::{FileAttr, FileID, FileLock, NodeID, PollEvents, Statfs},
 };
 use polyfuse_kernel::*;
-use std::{convert::TryInto as _, ffi::OsStr, fmt, mem, os::unix::prelude::*, time::Duration};
+use std::{fmt, time::Duration};
 use zerocopy::IntoBytes as _;
 
 fn fill_fuse_attr(slot: &mut fuse_attr, attr: &FileAttr) {
@@ -473,81 +473,4 @@ impl LseekOut {
     pub fn offset(&mut self, offset: u64) {
         self.out.offset = offset;
     }
-}
-
-pub struct ReaddirOut {
-    buf: Vec<u8>,
-}
-
-impl fmt::Debug for ReaddirOut {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields.
-        f.debug_struct("ReaddirOut").finish()
-    }
-}
-
-impl Bytes for ReaddirOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.buf.size()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        self.buf.count()
-    }
-
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        self.buf.fill_bytes(dst)
-    }
-}
-
-impl ReaddirOut {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            buf: Vec::with_capacity(capacity),
-        }
-    }
-
-    pub fn entry(&mut self, name: &OsStr, ino: NodeID, typ: Option<FileType>, off: u64) -> bool {
-        let name = name.as_bytes();
-        let remaining = self.buf.capacity() - self.buf.len();
-
-        let entry_size = mem::size_of::<fuse_dirent>() + name.len();
-        let aligned_entry_size = aligned(entry_size);
-
-        if remaining < aligned_entry_size {
-            return true;
-        }
-
-        let typ = match typ {
-            Some(FileType::BlockDevice) => libc::DT_BLK,
-            Some(FileType::CharacterDevice) => libc::DT_CHR,
-            Some(FileType::Directory) => libc::DT_DIR,
-            Some(FileType::Fifo) => libc::DT_FIFO,
-            Some(FileType::SymbolicLink) => libc::DT_LNK,
-            Some(FileType::Regular) => libc::DT_REG,
-            Some(FileType::Socket) => libc::DT_SOCK,
-            None => libc::DT_UNKNOWN,
-        };
-
-        let dirent = fuse_dirent {
-            ino: ino.into_raw(),
-            off,
-            namelen: name.len().try_into().expect("name length is too long"),
-            typ: typ as u32,
-            name: [],
-        };
-        let lenbefore = self.buf.len();
-        self.buf.extend_from_slice(dirent.as_bytes());
-        self.buf.extend_from_slice(name);
-        self.buf.resize(lenbefore + aligned_entry_size, 0);
-
-        false
-    }
-}
-
-#[inline]
-const fn aligned(len: usize) -> usize {
-    (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }

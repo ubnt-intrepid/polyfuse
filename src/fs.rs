@@ -231,13 +231,15 @@ pub mod reply {
     use crate::{
         bytes::Bytes,
         out::{
-            AttrOut, BmapOut, EntryOut, LkOut, LseekOut, OpenOut, PollOut, ReaddirOut, StatfsOut,
-            WriteOut, XattrOut,
+            AttrOut, BmapOut, EntryOut, LkOut, LseekOut, OpenOut, PollOut, StatfsOut, WriteOut,
+            XattrOut,
         },
         types::{FileLock, FileType, NodeID, PollEvents, Statfs},
     };
     use libc::{EIO, ENOSYS};
-    use std::{ffi::OsStr, io};
+    use polyfuse_kernel::fuse_dirent;
+    use std::{ffi::OsStr, io, mem, os::unix::prelude::*};
+    use zerocopy::IntoBytes as _;
 
     pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
@@ -372,14 +374,14 @@ pub mod reply {
 
     pub struct ReplyDir<'req> {
         sender: ReplySender<'req>,
-        out: ReaddirOut,
+        buf: Vec<u8>,
     }
 
     impl<'req> ReplyDir<'req> {
         pub(super) fn new(sender: ReplySender<'req>, capacity: usize) -> Self {
             Self {
                 sender,
-                out: ReaddirOut::new(capacity),
+                buf: Vec::with_capacity(capacity),
             }
         }
 
@@ -390,12 +392,50 @@ pub mod reply {
             typ: Option<FileType>,
             offset: u64,
         ) -> bool {
-            self.out.entry(name, ino, typ, offset)
+            let name = name.as_bytes();
+            let remaining = self.buf.capacity() - self.buf.len();
+
+            let entry_size = mem::size_of::<fuse_dirent>() + name.len();
+            let aligned_entry_size = aligned(entry_size);
+
+            if remaining < aligned_entry_size {
+                return true;
+            }
+
+            let typ = match typ {
+                Some(FileType::BlockDevice) => libc::DT_BLK,
+                Some(FileType::CharacterDevice) => libc::DT_CHR,
+                Some(FileType::Directory) => libc::DT_DIR,
+                Some(FileType::Fifo) => libc::DT_FIFO,
+                Some(FileType::SymbolicLink) => libc::DT_LNK,
+                Some(FileType::Regular) => libc::DT_REG,
+                Some(FileType::Socket) => libc::DT_SOCK,
+                None => libc::DT_UNKNOWN,
+            };
+
+            let dirent = fuse_dirent {
+                ino: ino.into_raw(),
+                off: offset,
+                namelen: name.len().try_into().expect("name length is too long"),
+                typ: typ as u32,
+                name: [],
+            };
+            let lenbefore = self.buf.len();
+            self.buf.extend_from_slice(dirent.as_bytes());
+            self.buf.extend_from_slice(name);
+            self.buf.resize(lenbefore + aligned_entry_size, 0);
+
+            false
         }
 
         pub fn send(self) -> Result {
-            self.sender.send(&self.out)
+            self.sender.send(&self.buf[..])
         }
+    }
+
+    #[inline]
+    const fn aligned(len: usize) -> usize {
+        (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
     }
 
     pub struct ReplyOpen<'req> {
