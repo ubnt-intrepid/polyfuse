@@ -12,12 +12,10 @@ use polyfuse::{
     fs::{
         self,
         reply::{self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry},
-        Filesystem,
+        Daemon, Filesystem,
     },
-    mount::MountOptions,
     notify, op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
-    KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -52,13 +50,13 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    polyfuse::fs::run(
-        Heartbeat::new(ttl, update_interval, no_notify),
-        mountpoint,
-        MountOptions::default(),
-        KernelConfig::default(),
-    )
-    .await?;
+    let fs = Arc::new(Heartbeat::new(ttl, update_interval, no_notify));
+
+    let mut daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
+
+    fs.init(&mut daemon);
+
+    daemon.run(fs, None).await?;
 
     Ok(())
 }
@@ -133,19 +131,18 @@ impl Heartbeat {
             tokio::time::sleep(self.update_interval).await;
         }
     }
-}
 
-impl Filesystem for Heartbeat {
-    async fn init(self: &Arc<Self>, cx: &mut fs::InitContext<'_>) -> io::Result<()> {
+    fn init(self: &Arc<Self>, daemon: &mut fs::Daemon) {
         let this = self.clone();
-        let notifier = cx.notifier();
-        let _ = cx.spawner().spawn(async move {
+        let notifier = daemon.notifier();
+        let _ = daemon.spawner().spawn(async move {
             this.heartbeat(&notifier).await?;
             Ok(())
         });
-        Ok(())
     }
+}
 
+impl Filesystem for Heartbeat {
     async fn lookup(
         self: &Arc<Self>,
         _: fs::Request<'_>,

@@ -6,12 +6,10 @@ use polyfuse::{
     fs::{
         self,
         reply::{self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry},
-        Filesystem,
+        Daemon, Filesystem,
     },
-    mount::MountOptions,
     op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
-    KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -32,13 +30,8 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    polyfuse::fs::run(
-        Hello::new(),
-        mountpoint,
-        MountOptions::default(),
-        KernelConfig::default(),
-    )
-    .await?;
+    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
+    daemon.run(Arc::new(Hello::new()), None).await?;
 
     Ok(())
 }

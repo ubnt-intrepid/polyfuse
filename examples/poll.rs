@@ -2,7 +2,7 @@ use polyfuse::{
     fs::{
         self,
         reply::{self, ReplyAttr, ReplyData, ReplyOpen, ReplyPoll, ReplyUnit},
-        Filesystem,
+        Daemon, Filesystem,
     },
     notify,
     op::{self, AccessMode, OpenFlags},
@@ -42,13 +42,10 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    polyfuse::fs::run(
-        PollFS::new(wakeup_interval),
-        mountpoint,
-        Default::default(),
-        Default::default(),
-    )
-    .await?;
+    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
+    daemon
+        .run(Arc::new(PollFS::new(wakeup_interval)), None)
+        .await?;
 
     Ok(())
 }

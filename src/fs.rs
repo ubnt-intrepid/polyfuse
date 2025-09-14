@@ -1,7 +1,7 @@
 use crate::{
     bytes::Bytes,
     conn::Connection,
-    mount::MountOptions,
+    mount::{Fusermount, MountOptions},
     notify::{self, Notify},
     op::{self, Forget, Operation},
     request::{RemainingData, RequestBuffer},
@@ -12,6 +12,8 @@ use libc::{ENOENT, ENOSYS};
 use std::{
     future::Future,
     io,
+    num::NonZeroUsize,
+    panic,
     path::PathBuf,
     sync::{Arc, Weak},
 };
@@ -24,6 +26,8 @@ use self::reply::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDir, ReplyEntry, ReplyLock, ReplyLseek,
     ReplyOpen, ReplyPoll, ReplyStatfs, ReplyUnit, ReplyWrite, ReplyXattr,
 };
+
+const NUM_WORKERS_PER_THREAD: usize = 4;
 
 macro_rules! define_ops {
     ($( $name:ident: { $Arg:ident, $Reply:ident } ),*$(,)*) => {$(
@@ -97,14 +101,6 @@ pub trait Filesystem {
     }
 
     #[allow(unused_variables)]
-    fn init(
-        self: &Arc<Self>,
-        cx: &mut InitContext<'_>,
-    ) -> impl Future<Output = io::Result<()>> + Send {
-        async { Ok(()) }
-    }
-
-    #[allow(unused_variables)]
     fn notify_reply(
         self: &Arc<Self>,
         op: op::NotifyReply<'_>,
@@ -117,11 +113,6 @@ pub trait Filesystem {
 struct Global {
     session: Session,
     conn: Connection,
-    #[allow(dead_code)]
-    mountpoint: PathBuf,
-    #[allow(dead_code)]
-    mountopts: MountOptions,
-    config: KernelConfig,
 }
 
 impl Global {
@@ -169,23 +160,6 @@ impl Spawner<'_> {
         F: FnOnce() -> io::Result<()> + Send + 'static,
     {
         self.join_set.spawn_blocking(f)
-    }
-}
-
-pub struct InitContext<'a> {
-    global: &'a Arc<Global>,
-    join_set: &'a mut JoinSet<io::Result<()>>,
-}
-
-impl InitContext<'_> {
-    pub fn notifier(&self) -> Notifier {
-        self.global.notifier()
-    }
-
-    pub fn spawner(&mut self) -> Spawner<'_> {
-        Spawner {
-            join_set: self.join_set,
-        }
     }
 }
 
@@ -578,63 +552,95 @@ pub mod reply {
     }
 }
 
-pub async fn run<T>(
-    fs: T,
-    mountpoint: PathBuf,
-    mountopts: MountOptions,
-    mut config: KernelConfig,
-) -> io::Result<()>
-where
-    T: Filesystem + Send + Sync + 'static,
-{
-    let span = tracing::debug_span!("polyfuse::fs::run");
-    let _enter = span.enter();
+pub struct Daemon {
+    global: Arc<Global>,
+    config: KernelConfig,
+    fusermount: Fusermount,
+    join_set: JoinSet<io::Result<()>>,
+}
 
-    let (conn, fusermount) = crate::mount::mount(mountpoint.clone(), mountopts.clone())?;
-    let conn = Connection::from(conn);
+impl Daemon {
+    pub async fn mount(
+        mountpoint: PathBuf,
+        mountopts: MountOptions,
+        mut config: KernelConfig,
+    ) -> io::Result<Self> {
+        let (conn, fusermount) = crate::mount::mount(mountpoint, mountopts)?;
+        let conn = Connection::from(conn);
 
-    let mut session = Session::new();
-    session.init(&conn, &mut config)?;
+        let mut session = Session::new();
+        session.init(&conn, &mut config)?;
 
-    let global = Arc::new(Global {
-        session,
-        conn,
-        mountpoint,
-        mountopts,
-        config,
-    });
-    let mut join_set = JoinSet::new();
-    let fs = Arc::new(fs);
-
-    fs.init(&mut InitContext {
-        global: &global,
-        join_set: &mut join_set,
-    })
-    .await?;
-
-    let num_workers = num_cpus::get() * 4;
-    for _i in 0..num_workers {
-        let conn = global.conn.try_ioc_clone()?;
-        let worker = Worker {
-            global: global.clone(),
-            conn: AsyncFd::new(conn)?,
+        Ok(Self {
+            global: Arc::new(Global { session, conn }),
+            config,
+            fusermount,
             join_set: JoinSet::new(),
-        };
-        let fs = fs.clone();
-        let buf = if global.config.flags.contains(KernelFlags::SPLICE_READ) {
-            RequestBuffer::new_splice(global.config.request_buffer_size())?
-        } else {
-            RequestBuffer::new_fallback(global.config.request_buffer_size())?
-        };
-        join_set.spawn(async move { worker.run(buf, fs).await });
+        })
     }
 
-    // TODO: on_destroy
-    let _results = join_set.join_all().await;
+    pub fn config(&self) -> &KernelConfig {
+        &self.config
+    }
 
-    fusermount.unmount()?;
+    pub fn notifier(&self) -> Notifier {
+        self.global.notifier()
+    }
 
-    Ok(())
+    pub fn spawner(&mut self) -> Spawner<'_> {
+        Spawner {
+            join_set: &mut self.join_set,
+        }
+    }
+
+    fn new_worker(&self, _i: usize) -> io::Result<Worker> {
+        let conn = self.global.conn.try_ioc_clone()?;
+        Ok(Worker {
+            global: self.global.clone(),
+            conn: AsyncFd::new(conn)?,
+            join_set: JoinSet::new(),
+        })
+    }
+
+    fn new_request_buffer(&self) -> io::Result<RequestBuffer> {
+        if self.config.flags.contains(KernelFlags::SPLICE_READ) {
+            RequestBuffer::new_splice(self.config.request_buffer_size())
+        } else {
+            RequestBuffer::new_fallback(self.config.request_buffer_size())
+        }
+    }
+
+    pub async fn run<T>(mut self, fs: Arc<T>, num_workers: Option<NonZeroUsize>) -> io::Result<()>
+    where
+        T: Filesystem + Send + Sync + 'static,
+    {
+        let num_workers = num_workers
+            .map(|n| n.get())
+            .unwrap_or_else(|| num_cpus::get() * NUM_WORKERS_PER_THREAD);
+
+        for i in 0..num_workers {
+            let worker = self.new_worker(i)?;
+            let fs = fs.clone();
+            let buf = self.new_request_buffer()?;
+            self.join_set
+                .spawn(async move { worker.run(buf, fs).await });
+        }
+
+        while let Some(result) = self.join_set.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::error!("A worker thread is exited with error: {}", err);
+                }
+                Err(err) if err.is_panic() => panic::resume_unwind(err.into_panic()),
+                Err(_err) => (),
+            }
+        }
+
+        self.fusermount.unmount()?;
+
+        Ok(())
+    }
 }
 
 struct Worker {

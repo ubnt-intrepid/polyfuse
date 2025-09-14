@@ -10,7 +10,7 @@ use polyfuse::{
             self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyUnit,
             ReplyWrite, ReplyXattr,
         },
-        Filesystem,
+        Daemon, Filesystem,
     },
     mount::MountOptions,
     op::{self, OpenFlags},
@@ -68,9 +68,10 @@ async fn main() -> Result<()> {
     config.flags |= KernelFlags::FLOCK_LOCKS;
     config.flags |= KernelFlags::WRITEBACK_CACHE;
 
-    let fs = Passthrough::new(source, timeout)?;
+    let daemon = Daemon::mount(mountpoint, mountopts, config).await?;
 
-    polyfuse::fs::run(fs, mountpoint, mountopts, config).await?;
+    let fs = Passthrough::new(source, timeout)?;
+    daemon.run(Arc::new(fs), None).await?;
 
     Ok(())
 }
