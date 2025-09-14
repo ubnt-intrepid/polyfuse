@@ -3,7 +3,11 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    fs::{self, Filesystem},
+    fs::{
+        self,
+        reply::{self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry},
+        Filesystem,
+    },
     mount::MountOptions,
     op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
@@ -111,11 +115,10 @@ impl Hello {
 impl Filesystem for Hello {
     async fn lookup(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
-        mut reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         match op.parent() {
             NodeID::ROOT if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 reply.out().attr(self.hello_attr());
@@ -130,11 +133,10 @@ impl Filesystem for Hello {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         let attr = match op.ino() {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
@@ -148,11 +150,10 @@ impl Filesystem for Hello {
 
     async fn read(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         match op.ino() {
             HELLO_INO => (),
             NodeID::ROOT => Err(EISDIR)?,
@@ -173,11 +174,10 @@ impl Filesystem for Hello {
 
     async fn readdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
-        mut reply: fs::ReplyDir<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyDir<'_>,
+    ) -> reply::Result {
         if op.ino() != NodeID::ROOT {
             Err(ENOTDIR)?
         }

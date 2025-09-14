@@ -4,7 +4,14 @@
 mod nix;
 
 use polyfuse::{
-    fs::{self, Filesystem},
+    fs::{
+        self,
+        reply::{
+            self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyUnit,
+            ReplyWrite, ReplyXattr,
+        },
+        Filesystem,
+    },
     mount::MountOptions,
     op::{self, OpenFlags},
     types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
@@ -107,8 +114,8 @@ impl Passthrough {
         &self,
         parent: NodeID,
         name: &OsStr,
-        mut reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         let mut inodes = self.inodes.lock().await;
         let inodes = &mut *inodes;
 
@@ -163,8 +170,8 @@ impl Passthrough {
         mode: FileMode,
         rdev: Option<DeviceID>,
         link: Option<&OsStr>,
-        reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         {
             let inodes = self.inodes.lock().await;
             let parent = inodes.get(parent).ok_or(ENOENT)?;
@@ -194,15 +201,14 @@ impl Passthrough {
 impl Filesystem for Passthrough {
     async fn lookup(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
-        reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         self.do_lookup(op.parent(), op.name(), reply).await
     }
 
-    async fn forget(self: &Arc<Self>, _: &fs::Env, _: fs::Spawner<'_>, forgets: &[op::Forget]) {
+    async fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
         let mut inodes = self.inodes.lock().await;
 
         for forget in forgets {
@@ -223,11 +229,10 @@ impl Filesystem for Passthrough {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
@@ -246,11 +251,10 @@ impl Filesystem for Passthrough {
     #[allow(clippy::cognitive_complexity)]
     async fn setattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Setattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -349,11 +353,10 @@ impl Filesystem for Passthrough {
 
     async fn readlink(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readlink<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -363,11 +366,10 @@ impl Filesystem for Passthrough {
 
     async fn link(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Link<'_>,
-        mut reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
 
         let source = inodes.get(op.ino()).ok_or(ENOENT)?;
@@ -413,11 +415,10 @@ impl Filesystem for Passthrough {
 
     async fn mknod(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Mknod<'_>,
-        reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         self.make_node(
             op.parent(),
             op.name(),
@@ -431,11 +432,10 @@ impl Filesystem for Passthrough {
 
     async fn mkdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Mkdir<'_>,
-        reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         self.make_node(
             op.parent(),
             op.name(),
@@ -449,11 +449,10 @@ impl Filesystem for Passthrough {
 
     async fn symlink(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Symlink<'_>,
-        reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         self.make_node(
             op.parent(),
             op.name(),
@@ -467,11 +466,10 @@ impl Filesystem for Passthrough {
 
     async fn unlink(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Unlink<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
         let parent = parent.lock().await;
@@ -481,11 +479,10 @@ impl Filesystem for Passthrough {
 
     async fn rmdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Rmdir<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
         let parent = parent.lock().await;
@@ -495,11 +492,10 @@ impl Filesystem for Passthrough {
 
     async fn rename(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Rename<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         if !op.flags().is_empty() {
             // rename2 is not supported.
             return Err(EINVAL.into());
@@ -531,11 +527,10 @@ impl Filesystem for Passthrough {
 
     async fn opendir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Opendir<'_>,
-        mut reply: fs::ReplyOpen<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyOpen<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -548,11 +543,10 @@ impl Filesystem for Passthrough {
 
     async fn readdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
-        mut reply: fs::ReplyDir<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyDir<'_>,
+    ) -> reply::Result {
         if op.mode() == op::ReaddirMode::Plus {
             return Err(ENOSYS.into());
         }
@@ -582,11 +576,10 @@ impl Filesystem for Passthrough {
 
     async fn fsyncdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Fsyncdir<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let read_dir = self.opened_dirs.get(op.fh()).await.ok_or(ENOENT)?;
         let read_dir = read_dir.lock().await;
 
@@ -601,22 +594,20 @@ impl Filesystem for Passthrough {
 
     async fn releasedir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Releasedir<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let _dir = self.opened_dirs.remove(op.fh()).await;
         reply.send()
     }
 
     async fn open(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Open<'_>,
-        mut reply: fs::ReplyOpen<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyOpen<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -632,11 +623,10 @@ impl Filesystem for Passthrough {
 
     async fn read(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let mut file = file.lock().await;
         let file = &mut *file;
@@ -651,12 +641,11 @@ impl Filesystem for Passthrough {
 
     async fn write(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Write<'_>,
         mut data: fs::Data<'_>,
-        reply: fs::ReplyWrite<'_>,
-    ) -> fs::Result {
+        reply: ReplyWrite<'_>,
+    ) -> reply::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let mut file = file.lock().await;
         let file = &mut *file;
@@ -682,11 +671,10 @@ impl Filesystem for Passthrough {
 
     async fn flush(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Flush<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
@@ -697,11 +685,10 @@ impl Filesystem for Passthrough {
 
     async fn fsync(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Fsync<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
@@ -716,11 +703,10 @@ impl Filesystem for Passthrough {
 
     async fn flock(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Flock<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
@@ -733,11 +719,10 @@ impl Filesystem for Passthrough {
 
     async fn fallocate(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Fallocate<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         if !op.mode().is_empty() {
             return Err(EOPNOTSUPP.into());
         }
@@ -754,22 +739,20 @@ impl Filesystem for Passthrough {
 
     async fn release(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Release<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let _file = self.opened_files.remove(op.fh()).await;
         reply.send()
     }
 
     async fn getxattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getxattr<'_>,
-        reply: fs::ReplyXattr<'_>,
-    ) -> fs::Result {
+        reply: ReplyXattr<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -798,11 +781,10 @@ impl Filesystem for Passthrough {
 
     async fn listxattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Listxattr<'_>,
-        reply: fs::ReplyXattr<'_>,
-    ) -> fs::Result {
+        reply: ReplyXattr<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -830,11 +812,10 @@ impl Filesystem for Passthrough {
 
     async fn setxattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Setxattr<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -858,11 +839,10 @@ impl Filesystem for Passthrough {
 
     async fn removexattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Removexattr<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -879,11 +859,10 @@ impl Filesystem for Passthrough {
 
     async fn statfs(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Statfs<'_>,
-        reply: fs::ReplyStatfs<'_>,
-    ) -> fs::Result {
+        reply: ReplyStatfs<'_>,
+    ) -> reply::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;

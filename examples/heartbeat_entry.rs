@@ -9,7 +9,11 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    fs::{self, Filesystem},
+    fs::{
+        self,
+        reply::{self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry},
+        Filesystem,
+    },
     mount::MountOptions,
     notify, op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
@@ -132,10 +136,10 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    async fn init(self: &Arc<Self>, env: &fs::Env, mut spawner: fs::Spawner<'_>) -> io::Result<()> {
+    async fn init(self: &Arc<Self>, cx: &mut fs::InitContext<'_>) -> io::Result<()> {
         let this = self.clone();
-        let notifier = env.notifier();
-        let _ = spawner.spawn(async move {
+        let notifier = cx.notifier();
+        let _ = cx.spawner().spawn(async move {
             this.heartbeat(&notifier).await?;
             Ok(())
         });
@@ -144,11 +148,10 @@ impl Filesystem for Heartbeat {
 
     async fn lookup(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Lookup<'_>,
-        mut reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         if arg.parent() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
@@ -170,7 +173,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    async fn forget(self: &Arc<Self>, _: &fs::Env, _: fs::Spawner<'_>, forgets: &[op::Forget]) {
+    async fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
         let mut current = self.current.lock().await;
         for forget in forgets {
             if forget.ino() == FILE_INO {
@@ -181,11 +184,10 @@ impl Filesystem for Heartbeat {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         let attr = match arg.ino() {
             NodeID::ROOT => self.root_attr.clone(),
             FILE_INO => self.file_attr.clone(),
@@ -199,11 +201,10 @@ impl Filesystem for Heartbeat {
 
     async fn read(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         match arg.ino() {
             NodeID::ROOT => Err(EISDIR)?,
             FILE_INO => reply.send(()),
@@ -213,11 +214,10 @@ impl Filesystem for Heartbeat {
 
     async fn readdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Readdir<'_>,
-        mut reply: fs::ReplyDir<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyDir<'_>,
+    ) -> reply::Result {
         if arg.ino() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }

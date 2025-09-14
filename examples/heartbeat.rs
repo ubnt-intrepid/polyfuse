@@ -9,7 +9,11 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    fs::{self, Filesystem},
+    fs::{
+        self,
+        reply::{self, ReplyAttr, ReplyData, ReplyOpen},
+        Filesystem,
+    },
     mount::MountOptions,
     notify, op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
@@ -142,11 +146,11 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    async fn init(self: &Arc<Self>, env: &fs::Env, mut spawner: fs::Spawner<'_>) -> io::Result<()> {
+    async fn init(self: &Arc<Self>, cx: &mut fs::InitContext<'_>) -> io::Result<()> {
         // Spawn a task that beats the heart.
         let this = self.clone();
-        let notifier = env.notifier();
-        let _ = spawner.spawn(async move {
+        let notifier = cx.notifier();
+        let _ = cx.spawner().spawn(async move {
             loop {
                 tracing::info!("heartbeat");
                 this.update_content().await;
@@ -159,11 +163,10 @@ impl Filesystem for Heartbeat {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
@@ -174,11 +177,10 @@ impl Filesystem for Heartbeat {
 
     async fn open(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Open<'_>,
-        mut reply: fs::ReplyOpen<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyOpen<'_>,
+    ) -> reply::Result {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
@@ -188,11 +190,10 @@ impl Filesystem for Heartbeat {
 
     async fn read(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         arg: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?
         }
@@ -212,7 +213,6 @@ impl Filesystem for Heartbeat {
 
     async fn notify_reply(
         self: &Arc<Self>,
-        _: &fs::Env,
         arg: op::NotifyReply<'_>,
         mut data: fs::Data<'_>,
     ) -> io::Result<()> {

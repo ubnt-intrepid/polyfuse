@@ -3,7 +3,14 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    fs::{self, Filesystem},
+    fs::{
+        self,
+        reply::{
+            self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry, ReplyOpen, ReplyUnit, ReplyWrite,
+            ReplyXattr,
+        },
+        Filesystem,
+    },
     mount::MountOptions,
     op::{self, SetxattrFlags},
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID},
@@ -232,11 +239,11 @@ impl MemFS {
 
     fn make_node<F>(
         &self,
-        mut reply: fs::ReplyEntry<'_>,
+        mut reply: ReplyEntry<'_>,
         parent: NodeID,
         name: &OsStr,
         f: F,
-    ) -> fs::Result
+    ) -> reply::Result
     where
         F: FnOnce(&VacantEntry<'_>) -> INode,
     {
@@ -263,7 +270,7 @@ impl MemFS {
         reply.send()
     }
 
-    fn unlink_node(&self, parent: NodeID, name: &OsStr) -> fs::Result<()> {
+    fn unlink_node(&self, parent: NodeID, name: &OsStr) -> reply::Result<()> {
         let mut parent = self.inodes.get_mut(parent).ok_or(ENOENT)?;
         let parent = parent.as_dir_mut().ok_or(ENOTDIR)?;
 
@@ -291,11 +298,10 @@ impl MemFS {
 impl Filesystem for MemFS {
     async fn lookup(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
-        mut reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         let parent = self.inodes.get(op.parent()).ok_or(ENOENT)?;
         let parent = parent.as_dir().ok_or(ENOTDIR)?;
 
@@ -312,7 +318,7 @@ impl Filesystem for MemFS {
         reply.send()
     }
 
-    async fn forget(self: &Arc<Self>, _: &fs::Env, _: fs::Spawner<'_>, forgets: &[op::Forget]) {
+    async fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
         for forget in forgets {
             if let Some(mut inode) = self.inodes.occupied_entry(forget.ino()) {
                 inode.get_mut().refcount =
@@ -327,11 +333,10 @@ impl Filesystem for MemFS {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
 
         reply.out().attr(inode.attr.clone());
@@ -341,11 +346,10 @@ impl Filesystem for MemFS {
 
     async fn setattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Setattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
         fn to_duration(t: op::SetAttrTime) -> Duration {
@@ -386,11 +390,10 @@ impl Filesystem for MemFS {
 
     async fn readlink(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readlink<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
         let link = inode.as_symlink().ok_or(EINVAL)?;
         reply.send(link)
@@ -398,11 +401,10 @@ impl Filesystem for MemFS {
 
     async fn opendir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Opendir<'_>,
-        mut reply: fs::ReplyOpen<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyOpen<'_>,
+    ) -> reply::Result {
         let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
         if inode.attr.nlink == 0 {
             return Err(ENOENT.into());
@@ -421,11 +423,10 @@ impl Filesystem for MemFS {
 
     async fn readdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
-        mut reply: fs::ReplyDir<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyDir<'_>,
+    ) -> reply::Result {
         if op.mode() == op::ReaddirMode::Plus {
             Err(ENOSYS)?;
         }
@@ -445,11 +446,10 @@ impl Filesystem for MemFS {
 
     async fn releasedir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Releasedir<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let dir_handles = &mut *self.dir_handles.lock().await;
         dir_handles.remove(op.fh().into_raw() as usize);
         reply.send()
@@ -457,11 +457,10 @@ impl Filesystem for MemFS {
 
     async fn mknod(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Mknod<'_>,
-        reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         match op.mode().file_type() {
             Some(FileType::Regular) => (),
             _ => Err(ENOTSUP)?,
@@ -484,11 +483,10 @@ impl Filesystem for MemFS {
 
     async fn mkdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Mkdir<'_>,
-        reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         self.make_node(reply, op.parent(), op.name(), |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
@@ -509,11 +507,10 @@ impl Filesystem for MemFS {
 
     async fn symlink(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Symlink<'_>,
-        reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         self.make_node(reply, op.parent(), op.name(), |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
@@ -534,11 +531,10 @@ impl Filesystem for MemFS {
 
     async fn link(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Link<'_>,
-        mut reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyEntry<'_>,
+    ) -> reply::Result {
         let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
         debug_assert!(op.ino() != op.newparent());
@@ -563,33 +559,30 @@ impl Filesystem for MemFS {
 
     async fn unlink(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Unlink<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         self.unlink_node(op.parent(), op.name())?;
         reply.send()
     }
 
     async fn rmdir(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Rmdir<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         self.unlink_node(op.parent(), op.name())?;
         reply.send()
     }
 
     async fn rename(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Rename<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         if !op.flags().is_empty() {
             // TODO: handle RENAME_NOREPLACE and RENAME_EXCHANGE.
             Err(EINVAL)?;
@@ -635,11 +628,10 @@ impl Filesystem for MemFS {
 
     async fn getxattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Getxattr<'_>,
-        reply: fs::ReplyXattr<'_>,
-    ) -> fs::Result {
+        reply: ReplyXattr<'_>,
+    ) -> reply::Result {
         let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
         let value = inode.xattrs.get(op.name()).ok_or(ENODATA)?;
         match op.size() {
@@ -655,11 +647,10 @@ impl Filesystem for MemFS {
 
     async fn setxattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Setxattr<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let create = op.flags().contains(SetxattrFlags::CREATE);
         let replace = op.flags().contains(SetxattrFlags::REPLACE);
         if create && replace {
@@ -693,11 +684,10 @@ impl Filesystem for MemFS {
 
     async fn listxattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Listxattr<'_>,
-        reply: fs::ReplyXattr<'_>,
-    ) -> fs::Result {
+        reply: ReplyXattr<'_>,
+    ) -> reply::Result {
         let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
 
         match op.size() {
@@ -726,11 +716,10 @@ impl Filesystem for MemFS {
 
     async fn removexattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Removexattr<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
         match inode.xattrs.entry(op.name().into()) {
@@ -745,11 +734,10 @@ impl Filesystem for MemFS {
 
     async fn read(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
 
         let content = inode.as_file().ok_or(EINVAL)?;
@@ -765,12 +753,11 @@ impl Filesystem for MemFS {
 
     async fn write(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Write<'_>,
         mut data: fs::Data<'_>,
-        reply: fs::ReplyWrite<'_>,
-    ) -> fs::Result {
+        reply: ReplyWrite<'_>,
+    ) -> reply::Result {
         let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
 
         let content = inode.as_file_mut().ok_or(EINVAL)?;

@@ -1,5 +1,9 @@
 use polyfuse::{
-    fs::{self, Filesystem},
+    fs::{
+        self,
+        reply::{self, ReplyAttr, ReplyData, ReplyOpen, ReplyPoll, ReplyUnit},
+        Filesystem,
+    },
     notify,
     op::{self, AccessMode, OpenFlags},
     types::{
@@ -68,11 +72,10 @@ impl PollFS {
 impl Filesystem for PollFS {
     async fn getattr(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         _: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyAttr<'_>,
+    ) -> reply::Result {
         reply.out().attr({
             let mut attr = FileAttr::new();
             attr.ino = NodeID::ROOT;
@@ -88,11 +91,10 @@ impl Filesystem for PollFS {
 
     async fn open(
         self: &Arc<Self>,
-        env: &fs::Env,
         mut req: fs::Request<'_>,
         op: op::Open<'_>,
-        mut reply: fs::ReplyOpen<'_>,
-    ) -> fs::Result {
+        mut reply: ReplyOpen<'_>,
+    ) -> reply::Result {
         if op.options().access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
@@ -108,12 +110,11 @@ impl Filesystem for PollFS {
         });
 
         tracing::info!("spawn reading task");
-        let _ = req.spawner().spawn({
-            let notifier = env.notifier();
+        {
+            let notifier = req.notifier();
             let handle = Arc::downgrade(&handle);
             let wakeup_interval = self.wakeup_interval;
-
-            async move {
+            let _ = req.spawner().spawn(async move {
                 let span = tracing::debug_span!("reading_task", fh=?fh);
                 let _enter = span.enter();
 
@@ -131,8 +132,8 @@ impl Filesystem for PollFS {
                 }
 
                 Ok(())
-            }
-        });
+            });
+        }
 
         let fh = FileID::from_raw(fh);
         self.handles.write().await.insert(fh, handle);
@@ -145,11 +146,10 @@ impl Filesystem for PollFS {
 
     async fn read(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+        reply: ReplyData<'_>,
+    ) -> reply::Result {
         let handle = {
             let handles = self.handles.read().await;
             handles.get(&op.fh()).cloned().ok_or(EINVAL)?
@@ -178,11 +178,10 @@ impl Filesystem for PollFS {
 
     async fn poll(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Poll<'_>,
-        reply: fs::ReplyPoll<'_>,
-    ) -> fs::Result {
+        reply: ReplyPoll<'_>,
+    ) -> reply::Result {
         let handle = {
             let handles = self.handles.read().await;
             handles.get(&op.fh()).cloned().ok_or(EINVAL)?
@@ -203,11 +202,10 @@ impl Filesystem for PollFS {
 
     async fn release(
         self: &Arc<Self>,
-        _: &fs::Env,
         _: fs::Request<'_>,
         op: op::Release<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+        reply: ReplyUnit<'_>,
+    ) -> reply::Result {
         drop(self.handles.write().await.remove(&op.fh()));
         reply.send()
     }
