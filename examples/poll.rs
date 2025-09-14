@@ -72,7 +72,7 @@ impl PollFS {
 impl Filesystem for PollFS {
     async fn getattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         _: op::Getattr<'_>,
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
@@ -91,7 +91,7 @@ impl Filesystem for PollFS {
 
     async fn open(
         self: &Arc<Self>,
-        req: &mut fs::Request<'_>,
+        mut req: fs::Request<'_>,
         op: op::Open<'_>,
         mut reply: ReplyOpen<'_>,
     ) -> reply::Result {
@@ -146,7 +146,7 @@ impl Filesystem for PollFS {
 
     async fn read(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Read<'_>,
         reply: ReplyData<'_>,
     ) -> reply::Result {
@@ -178,7 +178,7 @@ impl Filesystem for PollFS {
 
     async fn poll(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Poll<'_>,
         reply: ReplyPoll<'_>,
     ) -> reply::Result {
@@ -202,7 +202,7 @@ impl Filesystem for PollFS {
 
     async fn release(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Release<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {

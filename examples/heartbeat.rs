@@ -163,7 +163,7 @@ impl Filesystem for Heartbeat {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         arg: op::Getattr<'_>,
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
@@ -177,7 +177,7 @@ impl Filesystem for Heartbeat {
 
     async fn open(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         arg: op::Open<'_>,
         mut reply: ReplyOpen<'_>,
     ) -> reply::Result {
@@ -190,7 +190,7 @@ impl Filesystem for Heartbeat {
 
     async fn read(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         arg: op::Read<'_>,
         reply: ReplyData<'_>,
     ) -> reply::Result {

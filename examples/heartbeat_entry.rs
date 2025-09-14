@@ -148,7 +148,7 @@ impl Filesystem for Heartbeat {
 
     async fn lookup(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         arg: op::Lookup<'_>,
         mut reply: ReplyEntry<'_>,
     ) -> reply::Result {
@@ -184,7 +184,7 @@ impl Filesystem for Heartbeat {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         arg: op::Getattr<'_>,
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
@@ -201,7 +201,7 @@ impl Filesystem for Heartbeat {
 
     async fn read(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         arg: op::Read<'_>,
         reply: ReplyData<'_>,
     ) -> reply::Result {
@@ -214,7 +214,7 @@ impl Filesystem for Heartbeat {
 
     async fn readdir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         arg: op::Readdir<'_>,
         mut reply: ReplyDir<'_>,
     ) -> reply::Result {

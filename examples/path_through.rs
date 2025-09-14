@@ -153,7 +153,7 @@ impl PathThrough {
 impl Filesystem for PathThrough {
     async fn lookup(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Lookup<'_>,
         mut reply: ReplyEntry<'_>,
     ) -> reply::Result {
@@ -205,7 +205,7 @@ impl Filesystem for PathThrough {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Getattr<'_>,
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
@@ -219,7 +219,7 @@ impl Filesystem for PathThrough {
 
     async fn setattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Setattr<'_>,
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
@@ -263,7 +263,7 @@ impl Filesystem for PathThrough {
 
     async fn readlink(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Readlink<'_>,
         reply: ReplyData<'_>,
     ) -> reply::Result {
@@ -275,7 +275,7 @@ impl Filesystem for PathThrough {
 
     async fn opendir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Opendir<'_>,
         mut reply: ReplyOpen<'_>,
     ) -> reply::Result {
@@ -295,7 +295,7 @@ impl Filesystem for PathThrough {
 
     async fn readdir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Readdir<'_>,
         mut reply: ReplyDir<'_>,
     ) -> reply::Result {
@@ -363,7 +363,7 @@ impl Filesystem for PathThrough {
 
     async fn releasedir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Releasedir<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -374,7 +374,7 @@ impl Filesystem for PathThrough {
 
     async fn open(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Open<'_>,
         mut reply: ReplyOpen<'_>,
     ) -> reply::Result {
@@ -394,7 +394,7 @@ impl Filesystem for PathThrough {
 
     async fn read(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Read<'_>,
         reply: ReplyData<'_>,
     ) -> reply::Result {
@@ -406,7 +406,7 @@ impl Filesystem for PathThrough {
 
     async fn write(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Write<'_>,
         data: fs::Data<'_>,
         reply: ReplyWrite<'_>,
@@ -424,7 +424,7 @@ impl Filesystem for PathThrough {
 
     async fn flush(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Flush<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -436,7 +436,7 @@ impl Filesystem for PathThrough {
 
     async fn fsync(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Fsync<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -448,7 +448,7 @@ impl Filesystem for PathThrough {
 
     async fn release(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Release<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {

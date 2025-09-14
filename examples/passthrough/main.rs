@@ -201,7 +201,7 @@ impl Passthrough {
 impl Filesystem for Passthrough {
     async fn lookup(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Lookup<'_>,
         reply: ReplyEntry<'_>,
     ) -> reply::Result {
@@ -229,7 +229,7 @@ impl Filesystem for Passthrough {
 
     async fn getattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Getattr<'_>,
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
@@ -251,7 +251,7 @@ impl Filesystem for Passthrough {
     #[allow(clippy::cognitive_complexity)]
     async fn setattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Setattr<'_>,
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
@@ -353,7 +353,7 @@ impl Filesystem for Passthrough {
 
     async fn readlink(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Readlink<'_>,
         reply: ReplyData<'_>,
     ) -> reply::Result {
@@ -366,7 +366,7 @@ impl Filesystem for Passthrough {
 
     async fn link(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Link<'_>,
         mut reply: ReplyEntry<'_>,
     ) -> reply::Result {
@@ -415,7 +415,7 @@ impl Filesystem for Passthrough {
 
     async fn mknod(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Mknod<'_>,
         reply: ReplyEntry<'_>,
     ) -> reply::Result {
@@ -432,7 +432,7 @@ impl Filesystem for Passthrough {
 
     async fn mkdir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Mkdir<'_>,
         reply: ReplyEntry<'_>,
     ) -> reply::Result {
@@ -449,7 +449,7 @@ impl Filesystem for Passthrough {
 
     async fn symlink(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Symlink<'_>,
         reply: ReplyEntry<'_>,
     ) -> reply::Result {
@@ -466,7 +466,7 @@ impl Filesystem for Passthrough {
 
     async fn unlink(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Unlink<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -479,7 +479,7 @@ impl Filesystem for Passthrough {
 
     async fn rmdir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Rmdir<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -492,7 +492,7 @@ impl Filesystem for Passthrough {
 
     async fn rename(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Rename<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -527,7 +527,7 @@ impl Filesystem for Passthrough {
 
     async fn opendir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Opendir<'_>,
         mut reply: ReplyOpen<'_>,
     ) -> reply::Result {
@@ -543,7 +543,7 @@ impl Filesystem for Passthrough {
 
     async fn readdir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Readdir<'_>,
         mut reply: ReplyDir<'_>,
     ) -> reply::Result {
@@ -576,7 +576,7 @@ impl Filesystem for Passthrough {
 
     async fn fsyncdir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Fsyncdir<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -594,7 +594,7 @@ impl Filesystem for Passthrough {
 
     async fn releasedir(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Releasedir<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -604,7 +604,7 @@ impl Filesystem for Passthrough {
 
     async fn open(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Open<'_>,
         mut reply: ReplyOpen<'_>,
     ) -> reply::Result {
@@ -623,7 +623,7 @@ impl Filesystem for Passthrough {
 
     async fn read(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Read<'_>,
         reply: ReplyData<'_>,
     ) -> reply::Result {
@@ -641,7 +641,7 @@ impl Filesystem for Passthrough {
 
     async fn write(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Write<'_>,
         mut data: fs::Data<'_>,
         reply: ReplyWrite<'_>,
@@ -671,7 +671,7 @@ impl Filesystem for Passthrough {
 
     async fn flush(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Flush<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -685,7 +685,7 @@ impl Filesystem for Passthrough {
 
     async fn fsync(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Fsync<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -703,7 +703,7 @@ impl Filesystem for Passthrough {
 
     async fn flock(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Flock<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -719,7 +719,7 @@ impl Filesystem for Passthrough {
 
     async fn fallocate(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Fallocate<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -739,7 +739,7 @@ impl Filesystem for Passthrough {
 
     async fn release(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Release<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -749,7 +749,7 @@ impl Filesystem for Passthrough {
 
     async fn getxattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Getxattr<'_>,
         reply: ReplyXattr<'_>,
     ) -> reply::Result {
@@ -781,7 +781,7 @@ impl Filesystem for Passthrough {
 
     async fn listxattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Listxattr<'_>,
         reply: ReplyXattr<'_>,
     ) -> reply::Result {
@@ -812,7 +812,7 @@ impl Filesystem for Passthrough {
 
     async fn setxattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Setxattr<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -839,7 +839,7 @@ impl Filesystem for Passthrough {
 
     async fn removexattr(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Removexattr<'_>,
         reply: ReplyUnit<'_>,
     ) -> reply::Result {
@@ -859,7 +859,7 @@ impl Filesystem for Passthrough {
 
     async fn statfs(
         self: &Arc<Self>,
-        _: &mut fs::Request<'_>,
+        _: fs::Request<'_>,
         op: op::Statfs<'_>,
         reply: ReplyStatfs<'_>,
     ) -> reply::Result {

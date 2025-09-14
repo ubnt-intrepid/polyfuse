@@ -30,7 +30,7 @@ macro_rules! define_ops {
         #[allow(unused_variables)]
         fn $name(
             self: &Arc<Self>,
-            req: &mut Request<'_>,
+            req: Request<'_>,
             op: op::$Arg<'_>,
             reply: reply::$Reply<'_>,
         ) -> impl Future<Output = reply::Result> + Send {
@@ -83,7 +83,7 @@ pub trait Filesystem {
     #[allow(unused_variables)]
     fn write(
         self: &Arc<Self>,
-        req: &mut Request<'_>,
+        req: Request<'_>,
         op: op::Write<'_>,
         data: Data<'_>,
         reply: reply::ReplyWrite<'_>,
@@ -677,7 +677,7 @@ impl Worker {
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
 
-        let req = &mut Request {
+        let req = Request {
             global: &self.global,
             buf,
             join_set: &mut self.join_set,
