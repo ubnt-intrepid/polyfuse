@@ -1,4 +1,5 @@
 use crate::types::{FileAttr, FileID, FileLock, NodeID, PollEvents, Statfs};
+use bitflags::bitflags;
 use polyfuse_kernel::*;
 use std::{fmt, time::Duration};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
@@ -129,36 +130,30 @@ impl OpenOut {
         self.raw.fh = fh.into_raw();
     }
 
-    #[inline]
-    fn set_flag(&mut self, flag: u32, enabled: bool) {
-        if enabled {
-            self.raw.open_flags |= flag;
-        } else {
-            self.raw.open_flags &= !flag;
-        }
+    /// Specify the flags for the opened file.
+    pub fn flags(&mut self, flags: OpenOutFlags) {
+        self.raw.open_flags = flags.bits();
     }
+}
 
-    /// Indicates that the direct I/O is used on this file.
-    pub fn direct_io(&mut self, enabled: bool) {
-        self.set_flag(FOPEN_DIRECT_IO, enabled);
-    }
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct OpenOutFlags: u32 {
+        /// Indicates that the direct I/O is used on this file.
+        const DIRECT_IO = FOPEN_DIRECT_IO;
 
-    /// Indicates that the currently cached file data in the kernel
-    /// need not be invalidated.
-    pub fn keep_cache(&mut self, enabled: bool) {
-        self.set_flag(FOPEN_KEEP_CACHE, enabled);
-    }
+        /// Indicates that the currently cached file data in the kernel
+        /// need not be invalidated.
+        const KEEP_CACHE = FOPEN_KEEP_CACHE;
 
-    /// Indicates that the opened file is not seekable.
-    pub fn nonseekable(&mut self, enabled: bool) {
-        self.set_flag(FOPEN_NONSEEKABLE, enabled);
-    }
+        /// Indicates that the opened file is not seekable.
+        const NONSEEKABLE = FOPEN_NONSEEKABLE;
 
-    /// Enable caching of entries returned by `readdir`.
-    ///
-    /// This flag is meaningful only for `opendir` operations.
-    pub fn cache_dir(&mut self, enabled: bool) {
-        self.set_flag(FOPEN_CACHE_DIR, enabled);
+        /// Enable caching of entries returned by `readdir`.
+        ///
+        /// This flag is meaningful only for `opendir` operations.
+        const CACHE_DIR = FOPEN_CACHE_DIR;
     }
 }
 

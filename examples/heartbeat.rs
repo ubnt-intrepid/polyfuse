@@ -15,6 +15,7 @@ use polyfuse::{
         Daemon, Filesystem,
     },
     notify, op,
+    out::OpenOutFlags,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
 };
 
@@ -179,7 +180,7 @@ impl Filesystem for Heartbeat {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
-        reply.out().keep_cache(true);
+        reply.out().flags(OpenOutFlags::KEEP_CACHE);
         reply.send()
     }
 

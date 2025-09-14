@@ -6,6 +6,7 @@ use polyfuse::{
     },
     notify,
     op::{self, AccessMode, OpenFlags},
+    out::OpenOutFlags,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
         GID, UID,
@@ -136,8 +137,9 @@ impl Filesystem for PollFS {
         self.handles.write().await.insert(fh, handle);
 
         reply.out().fh(fh);
-        reply.out().direct_io(true);
-        reply.out().nonseekable(true);
+        reply
+            .out()
+            .flags(OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE);
         reply.send()
     }
 
