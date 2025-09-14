@@ -1,10 +1,7 @@
-use crate::{
-    bytes::{Bytes, FillBytes},
-    types::{FileAttr, FileID, FileLock, NodeID, PollEvents, Statfs},
-};
+use crate::types::{FileAttr, FileID, FileLock, NodeID, PollEvents, Statfs};
 use polyfuse_kernel::*;
 use std::{fmt, time::Duration};
-use zerocopy::IntoBytes as _;
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 fn fill_fuse_attr(slot: &mut fuse_attr, attr: &FileAttr) {
     slot.ino = attr.ino.into_raw();
@@ -24,9 +21,10 @@ fn fill_fuse_attr(slot: &mut fuse_attr, attr: &FileAttr) {
     slot.blksize = attr.blksize;
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct EntryOut {
-    out: fuse_entry_out,
+    raw: fuse_entry_out,
 }
 
 impl fmt::Debug for EntryOut {
@@ -36,28 +34,11 @@ impl fmt::Debug for EntryOut {
     }
 }
 
-impl Bytes for EntryOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl EntryOut {
     /// Return the object to fill attribute values about this entry.
     #[inline]
     pub fn attr(&mut self, attr: FileAttr) {
-        fill_fuse_attr(&mut self.out.attr, &attr);
+        fill_fuse_attr(&mut self.raw.attr, &attr);
     }
 
     /// Set the inode number of this entry.
@@ -68,7 +49,7 @@ impl EntryOut {
     /// of the entry cache by using the `ttl_entry` parameter.
     #[inline]
     pub fn ino(&mut self, ino: NodeID) {
-        self.out.nodeid = ino.into_raw();
+        self.raw.nodeid = ino.into_raw();
     }
 
     /// Set the generation of this entry.
@@ -78,7 +59,7 @@ impl EntryOut {
     /// must ensure that the pair of entry's inode number and generation
     /// are unique for the lifetime of the filesystem.
     pub fn generation(&mut self, generation: u64) {
-        self.out.generation = generation;
+        self.raw.generation = generation;
     }
 
     /// Set the validity timeout for inode attributes.
@@ -87,8 +68,8 @@ impl EntryOut {
     /// when the changes of inode attributes are caused
     /// only by FUSE requests.
     pub fn ttl_attr(&mut self, ttl: Duration) {
-        self.out.attr_valid = ttl.as_secs();
-        self.out.attr_valid_nsec = ttl.subsec_nanos();
+        self.raw.attr_valid = ttl.as_secs();
+        self.raw.attr_valid_nsec = ttl.subsec_nanos();
     }
 
     /// Set the validity timeout for the name.
@@ -97,14 +78,15 @@ impl EntryOut {
     /// when the changes/deletions of directory entries are
     /// caused only by FUSE requests.
     pub fn ttl_entry(&mut self, ttl: Duration) {
-        self.out.entry_valid = ttl.as_secs();
-        self.out.entry_valid_nsec = ttl.subsec_nanos();
+        self.raw.entry_valid = ttl.as_secs();
+        self.raw.entry_valid_nsec = ttl.subsec_nanos();
     }
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct AttrOut {
-    out: fuse_attr_out,
+    raw: fuse_attr_out,
 }
 
 impl fmt::Debug for AttrOut {
@@ -118,36 +100,20 @@ impl AttrOut {
     /// Return the object to fill attribute values.
     #[inline]
     pub fn attr(&mut self, attr: FileAttr) {
-        fill_fuse_attr(&mut self.out.attr, &attr);
+        fill_fuse_attr(&mut self.raw.attr, &attr);
     }
 
     /// Set the validity timeout for this attribute.
     pub fn ttl(&mut self, ttl: Duration) {
-        self.out.attr_valid = ttl.as_secs();
-        self.out.attr_valid_nsec = ttl.subsec_nanos();
+        self.raw.attr_valid = ttl.as_secs();
+        self.raw.attr_valid_nsec = ttl.subsec_nanos();
     }
 }
 
-impl Bytes for AttrOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct OpenOut {
-    out: fuse_open_out,
+    raw: fuse_open_out,
 }
 
 impl fmt::Debug for OpenOut {
@@ -157,35 +123,18 @@ impl fmt::Debug for OpenOut {
     }
 }
 
-impl Bytes for OpenOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl OpenOut {
     /// Set the handle of opened file.
     pub fn fh(&mut self, fh: FileID) {
-        self.out.fh = fh.into_raw();
+        self.raw.fh = fh.into_raw();
     }
 
     #[inline]
     fn set_flag(&mut self, flag: u32, enabled: bool) {
         if enabled {
-            self.out.open_flags |= flag;
+            self.raw.open_flags |= flag;
         } else {
-            self.out.open_flags &= !flag;
+            self.raw.open_flags &= !flag;
         }
     }
 
@@ -213,9 +162,10 @@ impl OpenOut {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct WriteOut {
-    out: fuse_write_out,
+    raw: fuse_write_out,
 }
 
 impl fmt::Debug for WriteOut {
@@ -225,32 +175,16 @@ impl fmt::Debug for WriteOut {
     }
 }
 
-impl Bytes for WriteOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl WriteOut {
     pub fn size(&mut self, size: u32) {
-        self.out.size = size;
+        self.raw.size = size;
     }
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct StatfsOut {
-    out: fuse_statfs_out,
+    raw: fuse_statfs_out,
 }
 
 impl fmt::Debug for StatfsOut {
@@ -260,27 +194,10 @@ impl fmt::Debug for StatfsOut {
     }
 }
 
-impl Bytes for StatfsOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl StatfsOut {
     /// Return the object to fill the filesystem statistics.
     pub fn statfs(&mut self, st: Statfs) {
-        self.out.st = fuse_kstatfs {
+        self.raw.st = fuse_kstatfs {
             blocks: st.blocks,
             bfree: st.bfree,
             bavail: st.bavail,
@@ -295,9 +212,10 @@ impl StatfsOut {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct XattrOut {
-    out: fuse_getxattr_out,
+    raw: fuse_getxattr_out,
 }
 
 impl fmt::Debug for XattrOut {
@@ -307,32 +225,16 @@ impl fmt::Debug for XattrOut {
     }
 }
 
-impl Bytes for XattrOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl XattrOut {
     pub fn size(&mut self, size: u32) {
-        self.out.size = size;
+        self.raw.size = size;
     }
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct LkOut {
-    out: fuse_lk_out,
+    raw: fuse_lk_out,
 }
 
 impl fmt::Debug for LkOut {
@@ -342,26 +244,9 @@ impl fmt::Debug for LkOut {
     }
 }
 
-impl Bytes for LkOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl LkOut {
     pub fn file_lock(&mut self, lk: &FileLock) {
-        self.out.lk = fuse_file_lock {
+        self.raw.lk = fuse_file_lock {
             start: lk.start,
             end: lk.end,
             typ: lk.typ,
@@ -370,9 +255,10 @@ impl LkOut {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct BmapOut {
-    out: fuse_bmap_out,
+    raw: fuse_bmap_out,
 }
 
 impl fmt::Debug for BmapOut {
@@ -382,32 +268,16 @@ impl fmt::Debug for BmapOut {
     }
 }
 
-impl Bytes for BmapOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl BmapOut {
     pub fn block(&mut self, block: u64) {
-        self.out.block = block;
+        self.raw.block = block;
     }
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct PollOut {
-    out: fuse_poll_out,
+    raw: fuse_poll_out,
 }
 
 impl fmt::Debug for PollOut {
@@ -417,32 +287,16 @@ impl fmt::Debug for PollOut {
     }
 }
 
-impl Bytes for PollOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl PollOut {
     pub fn revents(&mut self, revents: PollEvents) {
-        self.out.revents = revents.bits();
+        self.raw.revents = revents.bits();
     }
 }
 
-#[derive(Default)]
+#[derive(Default, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
 pub struct LseekOut {
-    out: fuse_lseek_out,
+    raw: fuse_lseek_out,
 }
 
 impl fmt::Debug for LseekOut {
@@ -452,25 +306,8 @@ impl fmt::Debug for LseekOut {
     }
 }
 
-impl Bytes for LseekOut {
-    #[inline]
-    fn size(&self) -> usize {
-        self.out.as_bytes().len()
-    }
-
-    #[inline]
-    fn count(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn fill_bytes<'a>(&'a self, dst: &mut dyn FillBytes<'a>) {
-        dst.put(self.out.as_bytes());
-    }
-}
-
 impl LseekOut {
     pub fn offset(&mut self, offset: u64) {
-        self.out.offset = offset;
+        self.raw.offset = offset;
     }
 }

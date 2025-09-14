@@ -313,7 +313,7 @@ pub mod reply {
         }
 
         pub fn send(self) -> Result {
-            self.sender.send(&self.out)
+            self.sender.send(self.out.as_bytes())
         }
     }
 
@@ -335,7 +335,7 @@ pub mod reply {
         }
 
         pub fn send(self) -> Result {
-            self.sender.send(&self.out)
+            self.sender.send(self.out.as_bytes())
         }
     }
 
@@ -367,8 +367,8 @@ pub mod reply {
 
         pub fn send(self, size: u32) -> Result {
             let mut out = WriteOut::default();
-            WriteOut::size(&mut out, size);
-            self.sender.send(out)
+            out.size(size);
+            self.sender.send(out.as_bytes())
         }
     }
 
@@ -456,7 +456,7 @@ pub mod reply {
         }
 
         pub fn send(self) -> Result {
-            self.sender.send(&self.out)
+            self.sender.send(self.out.as_bytes())
         }
     }
 
@@ -484,7 +484,8 @@ pub mod reply {
         }
 
         pub fn send(self) -> Result {
-            self.sender.send((self.entry_out, self.open_out))
+            self.sender
+                .send((self.entry_out.as_bytes(), self.open_out.as_bytes()))
         }
     }
 
@@ -500,7 +501,7 @@ pub mod reply {
         pub fn send(self, st: Statfs) -> Result {
             let mut out = StatfsOut::default();
             out.statfs(st);
-            self.sender.send(out)
+            self.sender.send(out.as_bytes())
         }
     }
 
@@ -515,8 +516,8 @@ pub mod reply {
 
         pub fn send_size(self, size: u32) -> Result {
             let mut out = XattrOut::default();
-            XattrOut::size(&mut out, size);
-            self.sender.send(out)
+            out.size(size);
+            self.sender.send(out.as_bytes())
         }
 
         pub fn send_value<B>(self, data: B) -> Result
@@ -539,7 +540,7 @@ pub mod reply {
         pub fn send(self, lk: FileLock) -> Result {
             let mut out = LkOut::default();
             out.file_lock(&lk);
-            self.sender.send(out)
+            self.sender.send(out.as_bytes())
         }
     }
 
@@ -555,7 +556,7 @@ pub mod reply {
         pub fn send(self, block: u64) -> Result {
             let mut out = BmapOut::default();
             out.block(block);
-            self.sender.send(out)
+            self.sender.send(out.as_bytes())
         }
     }
 
@@ -571,7 +572,7 @@ pub mod reply {
         pub fn send(self, revents: PollEvents) -> Result {
             let mut out = PollOut::default();
             out.revents(revents);
-            self.sender.send(out)
+            self.sender.send(out.as_bytes())
         }
     }
 
@@ -587,7 +588,7 @@ pub mod reply {
         pub fn send(self, offset: u64) -> Result {
             let mut out = LseekOut::default();
             out.offset(offset);
-            self.sender.send(out)
+            self.sender.send(out.as_bytes())
         }
     }
 }
