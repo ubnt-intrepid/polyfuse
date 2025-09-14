@@ -12,12 +12,10 @@ use polyfuse::{
     fs::{
         self,
         reply::{self, ReplyAttr, ReplyData, ReplyOpen},
-        Filesystem,
+        Daemon, Filesystem,
     },
-    mount::MountOptions,
     notify, op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
-    KernelConfig,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
@@ -49,13 +47,11 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    polyfuse::fs::run(
-        Heartbeat::new(kind, update_interval),
-        mountpoint,
-        MountOptions::default(),
-        KernelConfig::default(),
-    )
-    .await?;
+    let fs = Arc::new(Heartbeat::new(kind, update_interval));
+
+    let mut daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
+    fs.init(&mut daemon);
+    daemon.run(fs, None).await?;
 
     Ok(())
 }
@@ -143,14 +139,12 @@ impl Heartbeat {
         }
         Ok(())
     }
-}
 
-impl Filesystem for Heartbeat {
-    async fn init(self: &Arc<Self>, cx: &mut fs::InitContext<'_>) -> io::Result<()> {
+    fn init(self: &Arc<Self>, daemon: &mut fs::Daemon) {
         // Spawn a task that beats the heart.
         let this = self.clone();
-        let notifier = cx.notifier();
-        let _ = cx.spawner().spawn(async move {
+        let notifier = daemon.notifier();
+        let _ = daemon.spawner().spawn(async move {
             loop {
                 tracing::info!("heartbeat");
                 this.update_content().await;
@@ -158,9 +152,10 @@ impl Filesystem for Heartbeat {
                 tokio::time::sleep(this.update_interval).await;
             }
         });
-        Ok(())
     }
+}
 
+impl Filesystem for Heartbeat {
     async fn getattr(
         self: &Arc<Self>,
         _: fs::Request<'_>,
