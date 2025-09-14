@@ -11,6 +11,7 @@ use polyfuse::{
 use anyhow::{ensure, Context as _, Result};
 use libc::{ENOENT, ENOSYS};
 use std::{io, path::PathBuf, time::Duration};
+use zerocopy::IntoBytes as _;
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
 
@@ -72,7 +73,7 @@ fn getattr(
     });
     out.ttl(Duration::from_secs(1));
 
-    session.send_reply(conn, req.unique(), 0, out)
+    session.send_reply(conn, req.unique(), 0, out.as_bytes())
 }
 
 fn read(
