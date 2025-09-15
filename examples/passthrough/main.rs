@@ -10,6 +10,7 @@ use polyfuse::{
         mount::MountOptions,
         session::{KernelConfig, KernelFlags},
     },
+    reply::OpenOutFlags,
     types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
 };
 
@@ -614,6 +615,7 @@ impl Filesystem for Passthrough {
         let fh = self.opened_files.insert(Mutex::new(file)).await;
 
         reply.fh(fh);
+        reply.flags(OpenOutFlags::DIRECT_IO);
         reply.send()
     }
 

@@ -15,6 +15,7 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op::{self, Forget, OpenFlags},
+    reply::OpenOutFlags,
     types::{FileID, FileType, NodeID},
 };
 
@@ -379,6 +380,7 @@ impl Filesystem for PathThrough {
         }) as u64;
 
         reply.fh(FileID::from_raw(fh));
+        reply.flags(OpenOutFlags::DIRECT_IO);
         reply.send()
     }
 
