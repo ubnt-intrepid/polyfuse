@@ -4,7 +4,7 @@ use crate::{
     raw::{
         conn::Connection,
         mount::{mount, Fusermount, MountOptions},
-        request::{RemainingData, RequestBuffer},
+        request::{RemainingData, RequestBuffer, RequestHeader},
         session::{KernelConfig, KernelFlags, Session},
     },
     reply,
@@ -297,21 +297,21 @@ impl Spawner<'_> {
 /// The context for a single FUSE request used by the filesystem.
 pub struct Request<'req> {
     global: &'req Arc<Global>,
-    buf: &'req RequestBuffer,
+    header: &'req RequestHeader,
     join_set: &'req mut JoinSet<io::Result<()>>,
 }
 
 impl Request<'_> {
     pub fn uid(&self) -> UID {
-        self.buf.uid()
+        self.header.uid()
     }
 
     pub fn gid(&self) -> GID {
-        self.buf.gid()
+        self.header.gid()
     }
 
     pub fn pid(&self) -> PID {
-        self.buf.pid()
+        self.header.pid()
     }
 
     pub fn notifier(&self) -> Notifier {
@@ -342,7 +342,7 @@ impl io::Read for Data<'_> {
 pub struct ReplySender<'req> {
     session: &'req Session,
     conn: &'req Connection,
-    buf: &'req RequestBuffer,
+    header: &'req RequestHeader,
 }
 
 mod _priv {
@@ -361,7 +361,7 @@ mod _priv {
             B: Bytes,
         {
             self.session
-                .send_reply(self.conn, self.buf.unique(), 0, arg)
+                .send_reply(self.conn, self.header.unique(), 0, arg)
                 .map_err(Error::Fatal)?;
             Ok(Replied { _priv: () })
         }
@@ -490,7 +490,7 @@ impl Worker {
         T: Filesystem,
     {
         while self.read_request(&mut buf).await? {
-            self.handle_request(&buf, &fs).await?;
+            self.handle_request(&mut buf, &fs).await?;
         }
         self.join_set.shutdown().await;
         Ok(())
@@ -506,28 +506,28 @@ impl Worker {
         }
     }
 
-    async fn handle_request<T>(&mut self, buf: &RequestBuffer, fs: &Arc<T>) -> io::Result<()>
+    async fn handle_request<T>(&mut self, buf: &mut RequestBuffer, fs: &Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
     {
-        let span = tracing::debug_span!("handle_request", unique = ?buf.unique());
+        let span = tracing::debug_span!("handle_request", unique = ?buf.header().unique());
         let _enter = span.enter();
 
-        let (op, data) = buf
-            .operation()
+        let (header, arg, data) = buf.parts();
+        let op = Operation::decode(header, arg)
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
 
         let req = Request {
             global: &self.global,
-            buf,
+            header,
             join_set: &mut self.join_set,
         };
 
         let sender = ReplySender {
             session: &self.global.session,
             conn: self.conn.get_ref(),
-            buf,
+            header,
         };
 
         let result = match op {
@@ -598,11 +598,12 @@ impl Worker {
                 }
                 _ => return Err(err),
             },
-            Err(Error::Code(errno)) => {
-                self.global
-                    .session
-                    .send_reply(self.conn.get_ref(), buf.unique(), errno, ())?
-            }
+            Err(Error::Code(errno)) => self.global.session.send_reply(
+                self.conn.get_ref(),
+                buf.header().unique(),
+                errno,
+                (),
+            )?,
         }
 
         Ok(())

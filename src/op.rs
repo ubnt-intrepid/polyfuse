@@ -1,5 +1,6 @@
 use crate::{
     bytes::{DecodeError, Decoder},
+    raw::request::RequestHeader,
     types::{
         DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
         PollEvents, PollWakeupID, RequestID, GID, PID, UID,
@@ -68,11 +69,10 @@ pub enum Operation<'op> {
 }
 
 impl<'op> Operation<'op> {
-    pub(crate) fn decode(
-        header: &'op fuse_in_header,
-        opcode: fuse_opcode,
-        arg: &'op [u8],
-    ) -> Result<Self, Error> {
+    pub fn decode(header: &'op RequestHeader, arg: &'op [u8]) -> Result<Self, Error> {
+        let header = &header.raw;
+        let opcode = fuse_opcode::try_from(header.opcode).map_err(|_| Error::UnsupportedOpcode)?;
+
         let mut decoder = Decoder::new(arg);
 
         match opcode {

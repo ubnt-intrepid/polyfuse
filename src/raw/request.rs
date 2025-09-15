@@ -1,6 +1,5 @@
 use crate::{
     nix::{Pipe, PipeReader},
-    op::Operation,
     raw::conn::SpliceRead,
     types::{RequestID, GID, PID, UID},
 };
@@ -10,7 +9,7 @@ use std::{
     io::{self, prelude::*},
     mem,
 };
-use zerocopy::IntoBytes as _;
+use zerocopy::{FromZeros as _, Immutable, IntoBytes, KnownLayout};
 
 // MEMO: FUSE_MIN_READ_BUFFER に到達する or 超える可能性のある opcode の一覧 (要調査)
 // * FUSE_BATCH_FORGET
@@ -24,9 +23,41 @@ use zerocopy::IntoBytes as _;
 // * その他
 //   - 基本的には NAME_MAX=256, PATH_MAX=4096 による制限があるので、8096 bytes に到達することはないはず
 
+#[derive(IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
+pub struct RequestHeader {
+    pub(crate) raw: fuse_in_header,
+}
+
+impl RequestHeader {
+    /// Return the unique ID of the request.
+    #[inline]
+    pub const fn unique(&self) -> RequestID {
+        RequestID::from_raw(self.raw.unique)
+    }
+
+    /// Return the user ID of the calling process.
+    #[inline]
+    pub const fn uid(&self) -> UID {
+        UID::from_raw(self.raw.uid)
+    }
+
+    /// Return the group ID of the calling process.
+    #[inline]
+    pub const fn gid(&self) -> GID {
+        GID::from_raw(self.raw.gid)
+    }
+
+    /// Return the process ID of the calling process.
+    #[inline]
+    pub const fn pid(&self) -> PID {
+        PID::from_raw(self.raw.pid)
+    }
+}
+
 /// The buffer to store a processing FUSE request received from the kernel driver.
 pub struct RequestBuffer {
-    header: fuse_in_header,
+    header: RequestHeader,
     opcode: Option<fuse_opcode>,
     mode: ReadMode,
 }
@@ -50,7 +81,9 @@ enum ReadMode {
 impl RequestBuffer {
     pub fn new_splice(bufsize: usize) -> io::Result<Self> {
         Ok(Self {
-            header: fuse_in_header::default(),
+            header: RequestHeader {
+                raw: fuse_in_header::new_zeroed(),
+            },
             opcode: None,
             mode: ReadMode::Splice {
                 arg: {
@@ -67,7 +100,9 @@ impl RequestBuffer {
 
     pub fn new_fallback(bufsize: usize) -> io::Result<Self> {
         Ok(Self {
-            header: fuse_in_header::default(),
+            header: RequestHeader {
+                raw: fuse_in_header::new_zeroed(),
+            },
             opcode: None,
             mode: ReadMode::Fallback {
                 arg: vec![0u8; bufsize - mem::size_of::<fuse_in_header>()].into_boxed_slice(),
@@ -76,56 +111,36 @@ impl RequestBuffer {
         })
     }
 
-    /// Return the unique ID of the request.
-    #[inline]
-    pub fn unique(&self) -> RequestID {
-        RequestID::from_raw(self.header.unique)
-    }
-
-    /// Return the user ID of the calling process.
-    #[inline]
-    pub fn uid(&self) -> UID {
-        UID::from_raw(self.header.uid)
-    }
-
-    /// Return the group ID of the calling process.
-    #[inline]
-    pub fn gid(&self) -> GID {
-        GID::from_raw(self.header.gid)
-    }
-
-    /// Return the process ID of the calling process.
-    #[inline]
-    pub fn pid(&self) -> PID {
-        PID::from_raw(self.header.pid)
+    pub const fn header(&self) -> &RequestHeader {
+        &self.header
     }
 
     pub(crate) fn opcode(&self) -> fuse_opcode {
         self.opcode.expect("The request has not been received yet")
     }
 
-    /// Decode the argument of this request.
-    pub fn operation(&self) -> Result<(Operation<'_>, RemainingData<'_>), crate::op::Error> {
-        let (arg, data) = match &self.mode {
-            ReadMode::Splice { arg, pipe, .. } => (&arg[..], RemainingData::Splice(&pipe.reader)),
+    /// Deconstruct the contents of this request to the separated parts.
+    pub fn parts(&mut self) -> (&RequestHeader, &[u8], RemainingData<'_>) {
+        match &self.mode {
+            ReadMode::Splice { arg, pipe, .. } => {
+                (&self.header, &arg[..], RemainingData::Splice(&pipe.reader))
+            }
             ReadMode::Fallback { arg, pos } => {
                 let (arg, remaining) = arg.split_at(*pos);
-                (arg, RemainingData::Fallback(remaining))
+                (&self.header, arg, RemainingData::Fallback(remaining))
             }
-        };
-        let op = Operation::decode(&self.header, self.opcode(), arg)?;
-        Ok((op, data))
+        }
     }
 
     pub(crate) fn clear(&mut self) -> io::Result<()> {
-        self.header = fuse_in_header::default(); // opcode=0 means that the buffer is not valid.
+        self.header.raw.zero(); // opcode=0 means that the buffer is not valid.
         match &mut self.mode {
             ReadMode::Splice { arg, pipe, .. } => {
                 arg.truncate(0);
                 if pipe.reader.remaining_bytes()? > 0 {
                     tracing::warn!(
                         "The remaining data of request(unique={}) is destroyed",
-                        self.header.unique
+                        self.header.unique()
                     );
                     let _ = mem::replace(pipe, crate::nix::pipe()?);
                 }
@@ -153,16 +168,16 @@ impl RequestBuffer {
                         "dequeued request message is too short",
                     ))?
                 }
-                pipe.reader.read_exact(self.header.as_mut_bytes())?;
+                pipe.reader.read_exact(self.header.raw.as_mut_bytes())?;
 
-                if len != self.header.len as usize {
+                if len != self.header.raw.len as usize {
                     Err(ReceiveError::invalid_data(
                         "The value in_header.len is mismatched to the result of splice(2)",
                     ))?
                 }
 
-                let opcode = fuse_opcode::try_from(self.header.opcode)
-                    .map_err(|_| ReceiveError::UnrecognizedOpcode(self.header.opcode))?;
+                let opcode = fuse_opcode::try_from(self.header.raw.opcode)
+                    .map_err(|_| ReceiveError::UnrecognizedOpcode(self.header.raw.opcode))?;
                 self.opcode = Some(opcode);
 
                 let arglen = arg_len(&self.header, opcode);
@@ -174,19 +189,19 @@ impl RequestBuffer {
                 tracing::debug!("use fallback");
                 let len = conn
                     .read_vectored(&mut [
-                        io::IoSliceMut::new(self.header.as_mut_bytes()),
+                        io::IoSliceMut::new(self.header.raw.as_mut_bytes()),
                         io::IoSliceMut::new(&mut arg[..]),
                     ])
                     .map_err(ReceiveError::from_read_operation)?;
 
-                if len != self.header.len as usize {
+                if len != self.header.raw.len as usize {
                     Err(ReceiveError::invalid_data(
                         "The value in_header.len is mismatched to the result of splice(2)",
                     ))?
                 }
 
-                let opcode = fuse_opcode::try_from(self.header.opcode)
-                    .map_err(|_| ReceiveError::UnrecognizedOpcode(self.header.opcode))?;
+                let opcode = fuse_opcode::try_from(self.header.raw.opcode)
+                    .map_err(|_| ReceiveError::UnrecognizedOpcode(self.header.raw.opcode))?;
                 self.opcode = Some(opcode);
 
                 *pos = arg_len(&self.header, opcode);
@@ -196,10 +211,10 @@ impl RequestBuffer {
     }
 }
 
-fn arg_len(header: &fuse_in_header, opcode: fuse_opcode) -> usize {
+fn arg_len(header: &RequestHeader, opcode: fuse_opcode) -> usize {
     match opcode {
         fuse_opcode::FUSE_WRITE | fuse_opcode::FUSE_NOTIFY_REPLY => mem::size_of::<fuse_write_in>(),
-        _ => header.len as usize - mem::size_of::<fuse_in_header>(),
+        _ => header.raw.len as usize - mem::size_of::<fuse_in_header>(),
     }
 }
 

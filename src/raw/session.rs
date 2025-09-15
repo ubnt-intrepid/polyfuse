@@ -475,7 +475,7 @@ impl Session {
                         "The opcode `{}' is not recognized by the current version of polyfuse.",
                         code
                     );
-                    self.send_reply(&mut conn, buf.unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, buf.header().unique(), ENOSYS, ())?;
                     continue;
                 }
                 Err(ReceiveError::Fatal(err)) => {
@@ -505,10 +505,10 @@ impl Session {
                 fuse_opcode::FUSE_IOCTL | fuse_opcode::FUSE_LSEEK | fuse_opcode::CUSE_INIT => {
                     tracing::warn!(
                         "unsupported opcode (unique={}, opcode={})",
-                        buf.unique(),
+                        buf.header().unique(),
                         buf.opcode() as u32
                     );
-                    self.send_reply(&mut conn, buf.unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, buf.header().unique(), ENOSYS, ())?;
                     continue;
                 }
 
@@ -516,7 +516,7 @@ impl Session {
                     // FIXME: impl fmt::Debug for fuse_opcode
                     tracing::debug!(
                         "Got a request (unique={}, opcode={})",
-                        buf.unique(),
+                        buf.header().unique(),
                         opcode as u32
                     );
                     break Ok(true);
