@@ -1,6 +1,5 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
-    notify,
     op::{self, AccessMode, OpenFlags},
     reply::OpenOutFlags,
     types::{
@@ -120,7 +119,7 @@ impl Filesystem for PollFS {
                 if let Some(handle) = handle.upgrade() {
                     if let Some(kh) = handle.kh.get() {
                         tracing::info!("send wakeup notification, kh={}", kh);
-                        notifier.send(notify::PollWakeup::new(*kh))?;
+                        notifier.poll_wakeup(*kh)?;
                     }
                 }
 

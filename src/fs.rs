@@ -2,26 +2,31 @@ use crate::{
     bytes::Bytes,
     conn::Connection,
     mount::{Fusermount, MountOptions},
-    notify::{self, Notify},
     op::{self, Forget, Operation},
     reply,
     request::{RemainingData, RequestBuffer},
     session::{KernelConfig, KernelFlags, Session},
-    types::{GID, PID, UID},
+    types::{NodeID, NotifyID, PollWakeupID, GID, PID, UID},
 };
 use libc::{EIO, ENOENT, ENOSYS};
+use polyfuse_kernel::*;
 use std::{
+    ffi::OsStr,
     future::Future,
     io,
     num::NonZeroUsize,
     panic,
     path::PathBuf,
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Weak,
+    },
 };
 use tokio::{
     io::unix::AsyncFd,
     task::{AbortHandle, JoinSet},
 };
+use zerocopy::IntoBytes as _;
 
 const NUM_WORKERS_PER_THREAD: usize = 4;
 
@@ -133,6 +138,7 @@ pub trait Filesystem {
 struct Global {
     session: Session,
     conn: Connection,
+    notify_unique: AtomicU64,
 }
 
 impl Global {
@@ -142,11 +148,11 @@ impl Global {
         }
     }
 
-    fn send_notify<T>(&self, notify: T) -> io::Result<()>
+    fn send_notify<B>(&self, code: fuse_notify_code, arg: B) -> io::Result<()>
     where
-        T: notify::Notify,
+        B: Bytes,
     {
-        self.session.send_notify(&self.conn, notify)
+        self.session.send_notify(&self.conn, code, arg)
     }
 }
 
@@ -155,11 +161,114 @@ pub struct Notifier {
 }
 
 impl Notifier {
-    pub fn send(&self, notify: impl Notify) -> io::Result<()> {
-        if let Some(global) = self.global.upgrade() {
-            global.send_notify(notify)?;
-        }
-        Ok(())
+    fn global(&self) -> io::Result<Arc<Global>> {
+        self.global.upgrade().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "The daemon has already been destroyed",
+            )
+        })
+    }
+
+    /// Notify the cache invalidation about an inode to the kernel.
+    pub fn inval_inode(&self, ino: NodeID, off: i64, len: i64) -> io::Result<()> {
+        self.global()?.send_notify(
+            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+            fuse_notify_inval_inode_out {
+                ino: ino.into_raw(),
+                off,
+                len,
+            }
+            .as_bytes(),
+        )
+    }
+
+    /// Notify the invalidation about a directory entry to the kernel.
+    pub fn inval_entry(&self, parent: NodeID, name: &OsStr) -> io::Result<()> {
+        let namelen = name.len().try_into().expect("provided name is too long");
+        self.global()?.send_notify(
+            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+            (
+                fuse_notify_inval_entry_out {
+                    parent: parent.into_raw(),
+                    namelen,
+                    padding: 0,
+                }
+                .as_bytes(),
+                name,
+            ),
+        )
+    }
+
+    /// Notify the invalidation about a directory entry to the kernel.
+    ///
+    /// The role of this notification is similar to `InvalEntry`.
+    /// Additionally, when the provided `child` inode matches the inode
+    /// in the dentry cache, the inotify will inform the deletion to
+    /// watchers if exists.
+    pub fn delete(&self, parent: NodeID, child: NodeID, name: &OsStr) -> io::Result<()> {
+        let namelen = name.len().try_into().expect("provided name is too long");
+        self.global()?.send_notify(
+            fuse_notify_code::FUSE_NOTIFY_DELETE,
+            (
+                fuse_notify_delete_out {
+                    parent: parent.into_raw(),
+                    child: child.into_raw(),
+                    namelen,
+                    padding: 0,
+                }
+                .as_bytes(),
+                name,
+            ),
+        )
+    }
+
+    /// Push the data in an inode for updating the kernel cache.
+    pub fn store<B>(&self, ino: NodeID, offset: u64, data: B) -> io::Result<()>
+    where
+        B: Bytes,
+    {
+        let size = data.size().try_into().expect("provided data is too large");
+        self.global()?.send_notify(
+            fuse_notify_code::FUSE_NOTIFY_STORE,
+            (
+                fuse_notify_store_out {
+                    nodeid: ino.into_raw(),
+                    offset,
+                    size,
+                    padding: 0,
+                }
+                .as_bytes(),
+                data,
+            ),
+        )
+    }
+
+    /// Retrieve data in an inode from the kernel cache.
+    pub fn retrieve(&self, ino: NodeID, offset: u64, size: u32) -> io::Result<NotifyID> {
+        let global = self.global()?;
+        let unique = global.notify_unique.fetch_add(1, Ordering::AcqRel);
+        global.session.send_notify(
+            &global.conn,
+            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+            fuse_notify_retrieve_out {
+                notify_unique: unique,
+                nodeid: ino.into_raw(),
+                offset,
+                size,
+                padding: 0,
+            }
+            .as_bytes(),
+        )?;
+        Ok(NotifyID::from_raw(unique))
+    }
+
+    /// Send I/O readiness to the kernel.
+    pub fn poll_wakeup(&self, kh: PollWakeupID) -> io::Result<()> {
+        self.global()?.send_notify(
+            fuse_notify_code::FUSE_NOTIFY_POLL,
+            fuse_notify_poll_wakeup_out { kh: kh.into_raw() }.as_bytes(),
+        )
     }
 }
 
@@ -292,7 +401,11 @@ impl Daemon {
         session.init(&conn, &mut config)?;
 
         Ok(Self {
-            global: Arc::new(Global { session, conn }),
+            global: Arc::new(Global {
+                session,
+                conn,
+                notify_unique: AtomicU64::new(0),
+            }),
             config,
             fusermount,
             join_set: JoinSet::new(),

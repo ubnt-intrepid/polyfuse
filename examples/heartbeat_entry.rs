@@ -10,7 +10,7 @@
 
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
-    notify, op,
+    op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
 
@@ -119,7 +119,7 @@ impl Heartbeat {
 
             if !self.no_notify && current.nlookup > 0 {
                 tracing::info!("send notify_inval_entry");
-                notifier.send(notify::InvalEntry::new(NodeID::ROOT, old_filename.as_ref()))?;
+                notifier.inval_entry(NodeID::ROOT, old_filename.as_ref())?;
             }
 
             drop(current);

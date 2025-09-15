@@ -1,7 +1,6 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
     conn::SpliceRead,
-    notify::Notify,
     request::{ReceiveError, RequestBuffer},
     types::RequestID,
 };
@@ -567,13 +566,11 @@ impl Session {
     }
 
     /// Send a notification message to the kernel.
-    pub fn send_notify<T, N>(&self, conn: T, notify: N) -> io::Result<()>
+    pub fn send_notify<T, B>(&self, conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
     where
         T: io::Write,
-        N: Notify,
+        B: Bytes,
     {
-        let arg = notify.bytes();
-
         let len = (mem::size_of::<fuse_out_header>() + arg.size())
             .try_into()
             .expect("Argument size is too large");
@@ -583,7 +580,7 @@ impl Session {
             (
                 POD(fuse_out_header {
                     len,
-                    error: N::NOTIFY_CODE as i32,
+                    error: code as i32,
                     unique: 0, // unique=0 indicates that the message is a notification.
                 }),
                 arg,

@@ -10,7 +10,7 @@
 
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
-    notify, op,
+    op,
     reply::OpenOutFlags,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
 };
@@ -22,10 +22,7 @@ use libc::ENOENT;
 use std::{
     io::{self, prelude::*},
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::Duration,
 };
 use tokio::sync::Mutex;
@@ -76,7 +73,6 @@ struct Heartbeat {
     retrieves: DashMap<NotifyID, String>,
     kind: Option<NotifyKind>,
     update_interval: Duration,
-    notify_unique: AtomicU64,
 }
 
 struct Inner {
@@ -98,7 +94,6 @@ impl Heartbeat {
             retrieves: DashMap::new(),
             kind,
             update_interval,
-            notify_unique: AtomicU64::new(1),
         }
     }
 
@@ -116,20 +111,18 @@ impl Heartbeat {
                 let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
-                notifier.send(notify::Store::new(NodeID::ROOT, 0, &content))?;
+                notifier.store(NodeID::ROOT, 0, &content)?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
-                let unique = self.notify_unique.fetch_add(1, Ordering::SeqCst);
-                let unique = NotifyID::from_raw(unique);
-                notifier.send(notify::Retrieve::new(unique, NodeID::ROOT, 0, 1024))?;
+                let unique = notifier.retrieve(NodeID::ROOT, 0, 1024)?;
                 self.retrieves.insert(unique, content);
             }
 
             Some(NotifyKind::Invalidate) => {
                 tracing::info!("send notify_invalidate_inode");
-                notifier.send(notify::InvalNode::new(NodeID::ROOT, 0, 0))?;
+                notifier.inval_inode(NodeID::ROOT, 0, 0)?;
             }
 
             None => { /* do nothing */ }
