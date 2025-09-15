@@ -253,9 +253,9 @@ impl MemFS {
         let inode_entry = self.inodes.vacant_entry().expect("inode number conflict");
         let inode = f(&inode_entry);
 
-        reply.out().ino(*inode_entry.key());
-        reply.out().attr(inode.attr.clone());
-        reply.out().ttl_entry(self.ttl);
+        reply.ino(*inode_entry.key());
+        reply.attr(&inode.attr);
+        reply.ttl_entry(self.ttl);
 
         map_entry.insert(*inode_entry.key());
         inode_entry.insert(inode);
@@ -305,9 +305,9 @@ impl Filesystem for MemFS {
             .expect("should not be panic here");
         child.refcount += 1;
 
-        reply.out().ino(child_ino);
-        reply.out().attr(child.attr.clone());
-        reply.out().ttl_entry(self.ttl);
+        reply.ino(child_ino);
+        reply.attr(&child.attr);
+        reply.ttl_entry(self.ttl);
         reply.send()
     }
 
@@ -332,8 +332,8 @@ impl Filesystem for MemFS {
     ) -> reply::Result {
         let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
 
-        reply.out().attr(inode.attr.clone());
-        reply.out().ttl(self.ttl);
+        reply.attr(&inode.attr);
+        reply.ttl(self.ttl);
         reply.send()
     }
 
@@ -376,8 +376,8 @@ impl Filesystem for MemFS {
             inode.attr.ctime = ctime;
         }
 
-        reply.out().attr(inode.attr.clone());
-        reply.out().ttl(self.ttl);
+        reply.attr(&inode.attr);
+        reply.ttl(self.ttl);
         reply.send()
     }
 
@@ -410,7 +410,7 @@ impl Filesystem for MemFS {
             offset: AtomicUsize::new(0),
         });
 
-        reply.out().fh(FileID::from_raw(key as u64));
+        reply.fh(FileID::from_raw(key as u64));
         reply.send()
     }
 
@@ -544,9 +544,9 @@ impl Filesystem for MemFS {
             }
         }
 
-        reply.out().ino(op.ino());
-        reply.out().attr(inode.attr.clone());
-        reply.out().ttl_entry(self.ttl);
+        reply.ino(op.ino());
+        reply.attr(&inode.attr);
+        reply.ttl_entry(self.ttl);
         reply.send()
     }
 

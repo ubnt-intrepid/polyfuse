@@ -3,14 +3,14 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op,
-    out::AttrOut,
-    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
     Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
+use polyfuse_kernel::{fuse_attr, fuse_attr_out};
 
 use anyhow::{ensure, Context as _, Result};
 use libc::{ENOENT, ENOSYS};
-use std::{io, path::PathBuf, time::Duration};
+use std::{io, path::PathBuf};
 use zerocopy::IntoBytes as _;
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
@@ -60,18 +60,29 @@ fn getattr(
         return session.send_reply(conn, req.unique(), ENOENT, ());
     }
 
-    let mut out = AttrOut::default();
-    out.attr({
-        let mut attr = FileAttr::new();
-        attr.ino = NodeID::ROOT;
-        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-        attr.size = CONTENT.len() as u64;
-        attr.nlink = 1;
-        attr.uid = UID::current();
-        attr.gid = GID::current();
-        attr
-    });
-    out.ttl(Duration::from_secs(1));
+    let out = fuse_attr_out {
+        attr_valid: 1,
+        attr_valid_nsec: 0,
+        dummy: 0,
+        attr: fuse_attr {
+            ino: NodeID::ROOT.into_raw(),
+            size: CONTENT.len() as u64,
+            blocks: 0,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+            atimensec: 0,
+            mtimensec: 0,
+            ctimensec: 0,
+            mode: FileMode::new(FileType::Regular, FilePermissions::READ).into_raw(),
+            nlink: 1,
+            uid: UID::current().into_raw(),
+            gid: GID::current().into_raw(),
+            rdev: 0,
+            blksize: 0,
+            padding: 0,
+        },
+    };
 
     session.send_reply(conn, req.unique(), 0, out.as_bytes())
 }

@@ -114,10 +114,10 @@ impl Filesystem for Hello {
     ) -> reply::Result {
         match op.parent() {
             NodeID::ROOT if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
-                reply.out().attr(self.hello_attr());
-                reply.out().ino(HELLO_INO);
-                reply.out().ttl_attr(TTL);
-                reply.out().ttl_entry(TTL);
+                reply.attr(&self.hello_attr());
+                reply.ino(HELLO_INO);
+                reply.ttl_attr(TTL);
+                reply.ttl_entry(TTL);
                 reply.send()
             }
             _ => Err(ENOENT)?,
@@ -136,8 +136,8 @@ impl Filesystem for Hello {
             _ => Err(ENOENT)?,
         };
 
-        reply.out().attr(attr);
-        reply.out().ttl(TTL);
+        reply.attr(&attr);
+        reply.ttl(TTL);
         reply.send()
     }
 

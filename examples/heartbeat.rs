@@ -11,11 +11,10 @@
 use polyfuse::{
     fs::{
         self,
-        reply::{self, ReplyAttr, ReplyData, ReplyOpen},
+        reply::{self, OpenOutFlags, ReplyAttr, ReplyData, ReplyOpen},
         Daemon, Filesystem,
     },
     notify, op,
-    out::OpenOutFlags,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
 };
 
@@ -167,7 +166,7 @@ impl Filesystem for Heartbeat {
             Err(ENOENT)?;
         }
         let inner = self.inner.lock().await;
-        reply.out().attr(inner.attr.clone());
+        reply.attr(&inner.attr);
         reply.send()
     }
 
@@ -180,7 +179,7 @@ impl Filesystem for Heartbeat {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
-        reply.out().flags(OpenOutFlags::KEEP_CACHE);
+        reply.flags(OpenOutFlags::KEEP_CACHE);
         reply.send()
     }
 

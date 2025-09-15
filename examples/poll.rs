@@ -1,12 +1,11 @@
 use polyfuse::{
     fs::{
         self,
-        reply::{self, ReplyAttr, ReplyData, ReplyOpen, ReplyPoll, ReplyUnit},
+        reply::{self, OpenOutFlags, ReplyAttr, ReplyData, ReplyOpen, ReplyPoll, ReplyUnit},
         Daemon, Filesystem,
     },
     notify,
     op::{self, AccessMode, OpenFlags},
-    out::OpenOutFlags,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
         GID, UID,
@@ -74,16 +73,15 @@ impl Filesystem for PollFS {
         _: op::Getattr<'_>,
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
-        reply.out().attr({
-            let mut attr = FileAttr::new();
-            attr.ino = NodeID::ROOT;
-            attr.nlink = 1;
-            attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-            attr.uid = UID::current();
-            attr.gid = GID::current();
-            attr
-        });
-        reply.out().ttl(Duration::from_secs(u64::max_value() / 2));
+        let mut attr = FileAttr::new();
+        attr.ino = NodeID::ROOT;
+        attr.nlink = 1;
+        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+        attr.uid = UID::current();
+        attr.gid = GID::current();
+
+        reply.attr(&attr);
+        reply.ttl(Duration::from_secs(u64::max_value() / 2));
         reply.send()
     }
 
@@ -136,10 +134,8 @@ impl Filesystem for PollFS {
         let fh = FileID::from_raw(fh);
         self.handles.write().await.insert(fh, handle);
 
-        reply.out().fh(fh);
-        reply
-            .out()
-            .flags(OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE);
+        reply.fh(fh);
+        reply.flags(OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE);
         reply.send()
     }
 

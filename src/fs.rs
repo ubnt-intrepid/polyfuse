@@ -230,18 +230,33 @@ pub mod reply {
     use super::ReplySender;
     use crate::{
         bytes::Bytes,
-        out::{
-            AttrOut, BmapOut, EntryOut, LkOut, LseekOut, OpenOut, PollOut, StatfsOut, WriteOut,
-            XattrOut,
-        },
-        types::{FileLock, FileType, NodeID, PollEvents, Statfs},
+        types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
     };
+    use bitflags::bitflags;
     use libc::{EIO, ENOSYS};
-    use polyfuse_kernel::fuse_dirent;
-    use std::{ffi::OsStr, io, mem, os::unix::prelude::*};
-    use zerocopy::IntoBytes as _;
+    use polyfuse_kernel::*;
+    use std::{ffi::OsStr, io, mem, os::unix::prelude::*, time::Duration};
+    use zerocopy::{FromZeros as _, IntoBytes as _};
 
     pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
+
+    fn fill_fuse_attr(slot: &mut fuse_attr, attr: &FileAttr) {
+        slot.ino = attr.ino.into_raw();
+        slot.size = attr.size;
+        slot.blocks = attr.blocks;
+        slot.atime = attr.atime.as_secs();
+        slot.mtime = attr.mtime.as_secs();
+        slot.ctime = attr.ctime.as_secs();
+        slot.atimensec = attr.atime.subsec_nanos();
+        slot.mtimensec = attr.mtime.subsec_nanos();
+        slot.ctimensec = attr.ctime.subsec_nanos();
+        slot.mode = attr.mode.into_raw();
+        slot.nlink = attr.nlink;
+        slot.uid = attr.uid.into_raw();
+        slot.gid = attr.gid.into_raw();
+        slot.rdev = attr.rdev.into_kernel_dev();
+        slot.blksize = attr.blksize;
+    }
 
     /// The ZST to ensure that the filesystem responds to a FUSE request exactly once.
     #[derive(Debug)]
@@ -297,19 +312,62 @@ pub mod reply {
 
     pub struct ReplyEntry<'req> {
         sender: ReplySender<'req>,
-        out: EntryOut,
+        out: fuse_entry_out,
     }
 
     impl<'req> ReplyEntry<'req> {
         pub(super) fn new(sender: ReplySender<'req>) -> Self {
             Self {
                 sender,
-                out: EntryOut::default(),
+                out: fuse_entry_out::new_zeroed(),
             }
         }
 
-        pub fn out(&mut self) -> &mut EntryOut {
-            &mut self.out
+        /// Set the inode number of this entry.
+        ///
+        /// If the value is not set, it means that the entry is *negative*.
+        /// Returning a negative entry is also possible with the `ENOENT` error,
+        /// but the *zeroed* entries also have the ability to specify the lifetime
+        /// of the entry cache by using the `ttl_entry` parameter.
+        #[inline]
+        pub fn ino(&mut self, ino: NodeID) {
+            self.out.nodeid = ino.into_raw();
+        }
+
+        /// Fill attribute values about this entry.
+        #[inline]
+        pub fn attr(&mut self, attr: &FileAttr) {
+            fill_fuse_attr(&mut self.out.attr, attr);
+        }
+
+        /// Set the generation of this entry.
+        ///
+        /// This parameter is used to distinguish the inode from the past one
+        /// when the filesystem reuse inode numbers.  That is, the operations
+        /// must ensure that the pair of entry's inode number and generation
+        /// are unique for the lifetime of the filesystem.
+        pub fn generation(&mut self, generation: u64) {
+            self.out.generation = generation;
+        }
+
+        /// Set the validity timeout for inode attributes.
+        ///
+        /// The operations should set this value to very large
+        /// when the changes of inode attributes are caused
+        /// only by FUSE requests.
+        pub fn ttl_attr(&mut self, ttl: Duration) {
+            self.out.attr_valid = ttl.as_secs();
+            self.out.attr_valid_nsec = ttl.subsec_nanos();
+        }
+
+        /// Set the validity timeout for the name.
+        ///
+        /// The operations should set this value to very large
+        /// when the changes/deletions of directory entries are
+        /// caused only by FUSE requests.
+        pub fn ttl_entry(&mut self, ttl: Duration) {
+            self.out.entry_valid = ttl.as_secs();
+            self.out.entry_valid_nsec = ttl.subsec_nanos();
         }
 
         pub fn send(self) -> Result {
@@ -319,19 +377,27 @@ pub mod reply {
 
     pub struct ReplyAttr<'req> {
         sender: ReplySender<'req>,
-        out: AttrOut,
+        out: fuse_attr_out,
     }
 
     impl<'req> ReplyAttr<'req> {
         pub(super) fn new(sender: ReplySender<'req>) -> Self {
             Self {
                 sender,
-                out: AttrOut::default(),
+                out: fuse_attr_out::new_zeroed(),
             }
         }
 
-        pub fn out(&mut self) -> &mut AttrOut {
-            &mut self.out
+        /// Return the object to fill attribute values.
+        #[inline]
+        pub fn attr(&mut self, attr: &FileAttr) {
+            fill_fuse_attr(&mut self.out.attr, attr);
+        }
+
+        /// Set the validity timeout for this attribute.
+        pub fn ttl(&mut self, ttl: Duration) {
+            self.out.attr_valid = ttl.as_secs();
+            self.out.attr_valid_nsec = ttl.subsec_nanos();
         }
 
         pub fn send(self) -> Result {
@@ -366,9 +432,8 @@ pub mod reply {
         }
 
         pub fn send(self, size: u32) -> Result {
-            let mut out = WriteOut::default();
-            out.size(size);
-            self.sender.send(out.as_bytes())
+            self.sender
+                .send(fuse_write_out { size, padding: 0 }.as_bytes())
         }
     }
 
@@ -440,19 +505,25 @@ pub mod reply {
 
     pub struct ReplyOpen<'req> {
         sender: ReplySender<'req>,
-        out: OpenOut,
+        out: fuse_open_out,
     }
 
     impl<'req> ReplyOpen<'req> {
         pub(super) fn new(sender: ReplySender<'req>) -> Self {
             Self {
                 sender,
-                out: OpenOut::default(),
+                out: fuse_open_out::new_zeroed(),
             }
         }
 
-        pub fn out(&mut self) -> &mut OpenOut {
-            &mut self.out
+        /// Set the handle of opened file.
+        pub fn fh(&mut self, fh: FileID) {
+            self.out.fh = fh.into_raw();
+        }
+
+        /// Specify the flags for the opened file.
+        pub fn flags(&mut self, flags: OpenOutFlags) {
+            self.out.open_flags = flags.bits();
         }
 
         pub fn send(self) -> Result {
@@ -462,30 +533,90 @@ pub mod reply {
 
     pub struct ReplyCreate<'req> {
         sender: ReplySender<'req>,
-        entry_out: EntryOut,
-        open_out: OpenOut,
+        entry_out: fuse_entry_out,
+        open_out: fuse_open_out,
     }
 
     impl<'req> ReplyCreate<'req> {
         pub(super) fn new(sender: ReplySender<'req>) -> Self {
             Self {
                 sender,
-                entry_out: EntryOut::default(),
-                open_out: OpenOut::default(),
+                entry_out: fuse_entry_out::new_zeroed(),
+                open_out: fuse_open_out::new_zeroed(),
             }
         }
 
-        pub fn entry_out(&mut self) -> &mut EntryOut {
-            &mut self.entry_out
+        /// Set the inode number of this entry.
+        ///
+        /// See [`ReplyEntry::ino`] for details.
+        #[inline]
+        pub fn ino(&mut self, ino: NodeID) {
+            self.entry_out.nodeid = ino.into_raw();
         }
 
-        pub fn open_out(&mut self) -> &mut OpenOut {
-            &mut self.open_out
+        /// Fill attribute values about this entry.
+        #[inline]
+        pub fn attr(&mut self, attr: &FileAttr) {
+            fill_fuse_attr(&mut self.entry_out.attr, attr);
+        }
+
+        /// Set the generation of this entry.
+        ///
+        /// See [`ReplyEntry::generation`] for details.
+        pub fn generation(&mut self, generation: u64) {
+            self.entry_out.generation = generation;
+        }
+
+        /// Set the validity timeout for inode attributes.
+        ///
+        /// See [`ReplyEntry::ttl_attr`] for details.
+        pub fn ttl_attr(&mut self, ttl: Duration) {
+            self.entry_out.attr_valid = ttl.as_secs();
+            self.entry_out.attr_valid_nsec = ttl.subsec_nanos();
+        }
+
+        /// Set the validity timeout for the name.
+        ///
+        /// See [`ReplyEntry::ttl_entry`] for details.
+        pub fn ttl_entry(&mut self, ttl: Duration) {
+            self.entry_out.entry_valid = ttl.as_secs();
+            self.entry_out.entry_valid_nsec = ttl.subsec_nanos();
+        }
+
+        /// Set the handle of opened file.
+        pub fn fh(&mut self, fh: FileID) {
+            self.open_out.fh = fh.into_raw();
+        }
+
+        /// Specify the flags for the opened file.
+        pub fn flags(&mut self, flags: OpenOutFlags) {
+            self.open_out.open_flags = flags.bits();
         }
 
         pub fn send(self) -> Result {
             self.sender
                 .send((self.entry_out.as_bytes(), self.open_out.as_bytes()))
+        }
+    }
+
+    bitflags! {
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+        #[repr(transparent)]
+        pub struct OpenOutFlags: u32 {
+            /// Indicates that the direct I/O is used on this file.
+            const DIRECT_IO = FOPEN_DIRECT_IO;
+
+            /// Indicates that the currently cached file data in the kernel
+            /// need not be invalidated.
+            const KEEP_CACHE = FOPEN_KEEP_CACHE;
+
+            /// Indicates that the opened file is not seekable.
+            const NONSEEKABLE = FOPEN_NONSEEKABLE;
+
+            /// Enable caching of entries returned by `readdir`.
+            ///
+            /// This flag is meaningful only for `opendir` operations.
+            const CACHE_DIR = FOPEN_CACHE_DIR;
         }
     }
 
@@ -498,10 +629,24 @@ pub mod reply {
             Self { sender }
         }
 
-        pub fn send(self, st: Statfs) -> Result {
-            let mut out = StatfsOut::default();
-            out.statfs(st);
-            self.sender.send(out.as_bytes())
+        pub fn send(self, st: &Statfs) -> Result {
+            self.sender.send(
+                fuse_statfs_out {
+                    st: fuse_kstatfs {
+                        bsize: st.bsize,
+                        frsize: st.frsize,
+                        blocks: st.blocks,
+                        bfree: st.bfree,
+                        bavail: st.bavail,
+                        files: st.files,
+                        ffree: st.ffree,
+                        namelen: st.namelen,
+                        padding: 0,
+                        spare: [0; 6],
+                    },
+                }
+                .as_bytes(),
+            )
         }
     }
 
@@ -515,9 +660,8 @@ pub mod reply {
         }
 
         pub fn send_size(self, size: u32) -> Result {
-            let mut out = XattrOut::default();
-            out.size(size);
-            self.sender.send(out.as_bytes())
+            self.sender
+                .send(fuse_getxattr_out { size, padding: 0 }.as_bytes())
         }
 
         pub fn send_value<B>(self, data: B) -> Result
@@ -537,10 +681,18 @@ pub mod reply {
             Self { sender }
         }
 
-        pub fn send(self, lk: FileLock) -> Result {
-            let mut out = LkOut::default();
-            out.file_lock(&lk);
-            self.sender.send(out.as_bytes())
+        pub fn send(self, lk: &FileLock) -> Result {
+            self.sender.send(
+                fuse_lk_out {
+                    lk: fuse_file_lock {
+                        typ: lk.typ,
+                        start: lk.start,
+                        end: lk.end,
+                        pid: lk.pid.into_raw(),
+                    },
+                }
+                .as_bytes(),
+            )
         }
     }
 
@@ -554,9 +706,7 @@ pub mod reply {
         }
 
         pub fn send(self, block: u64) -> Result {
-            let mut out = BmapOut::default();
-            out.block(block);
-            self.sender.send(out.as_bytes())
+            self.sender.send(fuse_bmap_out { block }.as_bytes())
         }
     }
 
@@ -570,9 +720,13 @@ pub mod reply {
         }
 
         pub fn send(self, revents: PollEvents) -> Result {
-            let mut out = PollOut::default();
-            out.revents(revents);
-            self.sender.send(out.as_bytes())
+            self.sender.send(
+                fuse_poll_out {
+                    revents: revents.bits(),
+                    padding: 0,
+                }
+                .as_bytes(),
+            )
         }
     }
 
@@ -586,9 +740,7 @@ pub mod reply {
         }
 
         pub fn send(self, offset: u64) -> Result {
-            let mut out = LseekOut::default();
-            out.offset(offset);
-            self.sender.send(out.as_bytes())
+            self.sender.send(fuse_lseek_out { offset }.as_bytes())
         }
     }
 }

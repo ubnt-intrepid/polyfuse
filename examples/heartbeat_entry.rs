@@ -156,10 +156,10 @@ impl Filesystem for Heartbeat {
         let mut current = self.current.lock().await;
 
         if arg.name().as_bytes() == current.filename.as_bytes() {
-            reply.out().ino(self.file_attr.ino);
-            reply.out().attr(self.file_attr.clone());
-            reply.out().ttl_entry(self.ttl);
-            reply.out().ttl_attr(self.ttl);
+            reply.ino(self.file_attr.ino);
+            reply.attr(&self.file_attr);
+            reply.ttl_entry(self.ttl);
+            reply.ttl_attr(self.ttl);
             let res = reply.send()?;
 
             current.nlookup += 1;
@@ -186,13 +186,13 @@ impl Filesystem for Heartbeat {
         mut reply: ReplyAttr<'_>,
     ) -> reply::Result {
         let attr = match arg.ino() {
-            NodeID::ROOT => self.root_attr.clone(),
-            FILE_INO => self.file_attr.clone(),
+            NodeID::ROOT => &self.root_attr,
+            FILE_INO => &self.file_attr,
             _ => Err(ENOENT)?,
         };
 
-        reply.out().attr(attr);
-        reply.out().ttl(self.ttl);
+        reply.attr(attr);
+        reply.ttl(self.ttl);
         reply.send()
     }
 

@@ -156,16 +156,17 @@ impl Filesystem for PathThrough {
 
         let metadata = std::fs::symlink_metadata(self.source.join(&path))?;
 
-        reply.out().attr(metadata.try_into().expect("unreachable"));
+        let attr = metadata.try_into().unwrap();
+        reply.attr(&attr);
 
         match inodes.get_by_path_mut(&path) {
             Some(inode) => {
-                reply.out().ino(inode.ino);
+                reply.ino(inode.ino);
                 inode.refcount += 1;
             }
             None => {
                 let entry = inodes.vacant_entry();
-                reply.out().ino(entry.ino);
+                reply.ino(entry.ino);
                 let inode = INode {
                     ino: entry.ino,
                     path,
@@ -206,7 +207,8 @@ impl Filesystem for PathThrough {
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
-        reply.out().attr(metadata.try_into().expect("unreachable"));
+        let attr = metadata.try_into().unwrap();
+        reply.attr(&attr);
         reply.send()
     }
 
@@ -250,7 +252,8 @@ impl Filesystem for PathThrough {
 
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
-        reply.out().attr(metadata.try_into().expect("unreachable"));
+        let attr = metadata.try_into().unwrap();
+        reply.attr(&attr);
         reply.send()
     }
 
@@ -282,7 +285,7 @@ impl Filesystem for PathThrough {
             offset: 1,
         }) as u64;
 
-        reply.out().fh(FileID::from_raw(fh));
+        reply.fh(FileID::from_raw(fh));
         reply.send()
     }
 
@@ -381,7 +384,7 @@ impl Filesystem for PathThrough {
             file: options.open(self.source.join(&inode.path)).await?,
         }) as u64;
 
-        reply.out().fh(FileID::from_raw(fh));
+        reply.fh(FileID::from_raw(fh));
         reply.send()
     }
 

@@ -15,7 +15,6 @@ pub mod fs;
 pub mod mount;
 pub mod notify;
 pub mod op;
-pub mod out;
 pub mod types;
 
 pub use crate::{

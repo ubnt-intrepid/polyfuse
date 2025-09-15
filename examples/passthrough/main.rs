@@ -155,11 +155,11 @@ impl Passthrough {
             }
         }
 
-        reply.out().ino(ino);
-        reply.out().attr(stat.try_into().unwrap());
+        reply.ino(ino);
+        reply.attr(&stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
-            reply.out().ttl_entry(timeout);
-            reply.out().ttl_attr(timeout);
+            reply.ttl_entry(timeout);
+            reply.ttl_attr(timeout);
         }
         reply.send()
     }
@@ -241,9 +241,9 @@ impl Filesystem for Passthrough {
 
         let stat = inode.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
-        reply.out().attr(stat.try_into().unwrap());
+        reply.attr(&stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
-            reply.out().ttl(timeout);
+            reply.ttl(timeout);
         };
 
         reply.send()
@@ -344,9 +344,9 @@ impl Filesystem for Passthrough {
         // finally, acquiring the latest metadata from the source filesystem.
         let stat = task::block_in_place(|| fd.fstatat("", AT_SYMLINK_NOFOLLOW))?;
 
-        reply.out().attr(stat.try_into().unwrap());
+        reply.attr(&stat.try_into().unwrap());
         if let Some(timeout) = self.timeout {
-            reply.out().ttl(timeout);
+            reply.ttl(timeout);
         };
 
         reply.send()
@@ -401,11 +401,11 @@ impl Filesystem for Passthrough {
 
         let stat = task::block_in_place(|| source.fd.fstatat("", AT_SYMLINK_NOFOLLOW))?;
 
-        reply.out().ino(source.ino);
-        reply.out().attr(stat.try_into().unwrap());
+        reply.ino(source.ino);
+        reply.attr(&stat.try_into().unwrap());
         if let Some(ttl) = self.timeout {
-            reply.out().ttl_attr(ttl);
-            reply.out().ttl_entry(ttl);
+            reply.ttl_attr(ttl);
+            reply.ttl_entry(ttl);
         }
         let replied = reply.send()?;
 
@@ -538,7 +538,7 @@ impl Filesystem for Passthrough {
         let dir = task::block_in_place(|| inode.fd.read_dir())?;
         let fh = self.opened_dirs.insert(Mutex::new(dir)).await;
 
-        reply.out().fh(fh);
+        reply.fh(fh);
         reply.send()
     }
 
@@ -618,7 +618,7 @@ impl Filesystem for Passthrough {
         let file = task::block_in_place(|| options.open(inode.fd.procname()))?;
         let fh = self.opened_files.insert(Mutex::new(file)).await;
 
-        reply.out().fh(fh);
+        reply.fh(fh);
         reply.send()
     }
 
@@ -870,7 +870,7 @@ impl Filesystem for Passthrough {
 
         let st = task::block_in_place(|| nix::fstatvfs(&inode.fd))?;
 
-        reply.send(st.try_into().unwrap())
+        reply.send(&st.try_into().unwrap())
     }
 }
 
