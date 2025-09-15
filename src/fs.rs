@@ -1,11 +1,13 @@
 use crate::{
     bytes::Bytes,
-    conn::Connection,
-    mount::{Fusermount, MountOptions},
     op::{self, Forget, Operation},
+    raw::{
+        conn::Connection,
+        mount::{mount, Fusermount, MountOptions},
+        request::{RemainingData, RequestBuffer},
+        session::{KernelConfig, KernelFlags, Session},
+    },
     reply,
-    request::{RemainingData, RequestBuffer},
-    session::{KernelConfig, KernelFlags, Session},
     types::{NodeID, NotifyID, PollWakeupID, GID, PID, UID},
 };
 use libc::{EIO, ENOENT, ENOSYS};
@@ -394,7 +396,7 @@ impl Daemon {
         mountopts: MountOptions,
         mut config: KernelConfig,
     ) -> io::Result<Self> {
-        let (conn, fusermount) = crate::mount::mount(mountpoint, mountopts)?;
+        let (conn, fusermount) = mount(mountpoint, mountopts)?;
         let conn = Connection::from(conn);
 
         let mut session = Session::new();

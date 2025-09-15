@@ -6,20 +6,9 @@
 #[macro_use]
 pub mod nix;
 
-mod request;
-mod session;
-
 pub mod bytes;
-pub mod conn;
 pub mod fs;
-pub mod mount;
 pub mod op;
+pub mod raw;
 pub mod reply;
 pub mod types;
-
-pub use crate::{
-    conn::Connection,
-    op::Operation,
-    request::{RemainingData, RequestBuffer},
-    session::{KernelConfig, KernelFlags, ProtocolVersion, Session},
-};

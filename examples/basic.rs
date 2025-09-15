@@ -1,10 +1,14 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    mount::{mount, MountOptions},
-    op,
+    op::{self, Operation},
+    raw::{
+        conn::Connection,
+        mount::{mount, MountOptions},
+        request::RequestBuffer,
+        session::{KernelConfig, Session},
+    },
     types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
-    Connection, KernelConfig, Operation, RequestBuffer, Session,
 };
 use polyfuse_kernel::{fuse_attr, fuse_attr_out};
 

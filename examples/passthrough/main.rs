@@ -5,10 +5,12 @@ mod nix;
 
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
-    mount::MountOptions,
     op::{self, OpenFlags},
+    raw::{
+        mount::MountOptions,
+        session::{KernelConfig, KernelFlags},
+    },
     types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
-    KernelConfig, KernelFlags,
 };
 
 use crate::nix::{FileDesc, ReadDir};

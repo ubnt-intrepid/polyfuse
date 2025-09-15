@@ -1,8 +1,8 @@
 use crate::{
-    conn::SpliceRead,
     nix::{Pipe, PipeReader},
+    op::Operation,
+    raw::conn::SpliceRead,
     types::{RequestID, GID, PID, UID},
-    Operation,
 };
 use libc::{EINTR, ENODEV, ENOENT};
 use polyfuse_kernel::{fuse_in_header, fuse_opcode, fuse_write_in, FUSE_MIN_READ_BUFFER};
