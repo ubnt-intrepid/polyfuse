@@ -3,10 +3,8 @@
 use polyfuse::{
     op::{self, Operation},
     raw::{
-        conn::Connection,
-        mount::{mount, MountOptions},
-        request::{FallbackBuf, RequestBuf as _, RequestHeader},
-        session::{KernelConfig, Session},
+        mount, Connection, FallbackBuf, KernelConfig, MountOptions, RequestBuf as _, RequestHeader,
+        Session,
     },
     types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
 };
@@ -28,8 +26,7 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let (devfd, fusermount) = mount(mountpoint, MountOptions::default())?;
-    let mut conn = Connection::from(devfd);
+    let (mut conn, fusermount) = mount(mountpoint, MountOptions::default())?;
 
     // Initialize the FUSE session.
     let mut session = Session::new();

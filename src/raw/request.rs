@@ -1,6 +1,5 @@
 use crate::{
-    nix::{Pipe, PipeReader},
-    raw::conn::SpliceRead,
+    io::{Pipe, PipeReader, SpliceRead},
     types::{RequestID, GID, PID, UID},
 };
 use libc::{EINTR, ENODEV, ENOENT};
@@ -116,25 +115,22 @@ impl SpliceBuf {
                 vec.truncate(0);
                 vec
             },
-            pipe: crate::nix::pipe()?,
+            pipe: Pipe::new()?,
             bufsize,
         })
     }
 }
 
 impl RequestBuf for SpliceBuf {
-    type RemainingData<'a> = &'a PipeReader;
+    type RemainingData<'a> = &'a mut PipeReader;
 
     fn parts(&mut self) -> (&[u8], Self::RemainingData<'_>) {
-        (&self.arg[..], &self.pipe.reader)
+        (&self.arg[..], &mut self.pipe.reader)
     }
 
     fn reset(&mut self) -> io::Result<()> {
         self.arg.truncate(0);
-        if self.pipe.reader.remaining_bytes()? > 0 {
-            // パイプにデータが残っている可能性があるので、別パイプに差し替える
-            let _ = mem::replace(&mut self.pipe, crate::nix::pipe()?);
-        }
+        self.pipe.clear()?;
         Ok(())
     }
 
@@ -147,7 +143,7 @@ impl RequestBuf for SpliceBuf {
         T: SpliceRead,
     {
         let len = conn
-            .splice_read(&self.pipe.writer, self.bufsize)
+            .splice_read(&mut self.pipe, self.bufsize)
             .map_err(ReceiveError::from_read_operation)?;
 
         if len < mem::size_of::<fuse_in_header>() {

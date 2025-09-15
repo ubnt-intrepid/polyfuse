@@ -1,3 +1,4 @@
+use super::conn::Connection;
 use libc::{c_int, c_void};
 use std::{
     borrow::Cow,
@@ -214,7 +215,7 @@ impl PipedChild {
 }
 
 /// Acquire the connection to the FUSE kernel driver associated with the specified mountpoint.
-pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedFd, Fusermount)> {
+pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(Connection, Fusermount)> {
     tracing::debug!("Mount information:");
     tracing::debug!("  mountpoint: {:?}", mountpoint);
     tracing::debug!("  opts: {:?}", mountopts);
@@ -254,7 +255,7 @@ pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(OwnedF
     }
 
     Ok((
-        fd,
+        Connection::from(fd),
         Fusermount {
             child,
             mountpoint,

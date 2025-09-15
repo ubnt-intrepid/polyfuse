@@ -1,9 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
-    raw::{
-        conn::SpliceRead,
-        request::{ReceiveError, RequestBuf, RequestHeader},
-    },
+    io::SpliceRead,
+    raw::request::{ReceiveError, RequestBuf, RequestHeader},
     types::RequestID,
 };
 use libc::{ENODEV, ENOSYS, EPROTO};

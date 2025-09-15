@@ -1,4 +1,7 @@
-use crate::nix::{self, PipeWriter, SpliceFlags};
+use crate::{
+    io::{Pipe, SpliceFlags, SpliceRead},
+    nix,
+};
 use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
 use std::{ffi::CStr, io, os::unix::prelude::*};
 
@@ -92,30 +95,16 @@ impl io::Write for &Connection {
     }
 }
 
-pub trait SpliceRead: io::Read {
-    /// Splice the chunk of bytes to the specified buffer.
-    fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize>;
-}
-
-impl<R: ?Sized> SpliceRead for &mut R
-where
-    R: SpliceRead,
-{
-    #[inline]
-    fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize> {
-        (*self).splice_read(dst, bufsize)
-    }
-}
-
 impl SpliceRead for Connection {
     #[inline]
-    fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize> {
-        (&*self).splice_read(dst, bufsize)
+    fn splice_read(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
+        (&*self).splice_read(pipe, bufsize)
     }
 }
 
 impl SpliceRead for &Connection {
-    fn splice_read(&mut self, dst: &PipeWriter, bufsize: usize) -> io::Result<usize> {
-        dst.splice_from(self.fd.as_fd(), bufsize, SpliceFlags::NONBLOCK)
+    fn splice_read(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
+        pipe.writer
+            .splice_from(self.fd.as_fd(), bufsize, SpliceFlags::NONBLOCK)
     }
 }

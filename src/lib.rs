@@ -4,10 +4,11 @@
 #![forbid(clippy::todo, clippy::unimplemented)]
 
 #[macro_use]
-pub mod nix;
+mod nix;
 
 pub mod bytes;
 pub mod fs;
+pub mod io;
 pub mod op;
 pub mod raw;
 pub mod reply;

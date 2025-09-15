@@ -1,13 +1,7 @@
 use crate::{
     bytes::Bytes,
     op::{self, Forget, Operation},
-    raw::{
-        conn::Connection,
-        mount::{mount, Fusermount, MountOptions},
-        request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
-        session::{KernelConfig, KernelFlags, Session},
-    },
-    reply,
+    raw, reply,
     types::{NodeID, NotifyID, PollWakeupID, GID, PID, UID},
 };
 use libc::{EIO, ENOENT, ENOSYS};
@@ -138,8 +132,8 @@ pub trait Filesystem {
 }
 
 struct Global {
-    session: Session,
-    conn: Connection,
+    session: raw::Session,
+    conn: raw::Connection,
     notify_unique: AtomicU64,
 }
 
@@ -297,7 +291,7 @@ impl Spawner<'_> {
 /// The context for a single FUSE request used by the filesystem.
 pub struct Request<'req> {
     global: &'req Arc<Global>,
-    header: &'req RequestHeader,
+    header: &'req raw::RequestHeader,
     join_set: &'req mut JoinSet<io::Result<()>>,
 }
 
@@ -326,9 +320,9 @@ impl Request<'_> {
 }
 
 pub struct ReplySender<'req> {
-    session: &'req Session,
-    conn: &'req Connection,
-    header: &'req RequestHeader,
+    session: &'req raw::Session,
+    conn: &'req raw::Connection,
+    header: &'req raw::RequestHeader,
 }
 
 mod _priv {
@@ -371,21 +365,20 @@ pub type ReplyLseek<'req> = reply::ReplyLseek<ReplySender<'req>>;
 
 pub struct Daemon {
     global: Arc<Global>,
-    config: KernelConfig,
-    fusermount: Fusermount,
+    config: raw::KernelConfig,
+    fusermount: raw::Fusermount,
     join_set: JoinSet<io::Result<()>>,
 }
 
 impl Daemon {
     pub async fn mount(
         mountpoint: PathBuf,
-        mountopts: MountOptions,
-        mut config: KernelConfig,
+        mountopts: raw::MountOptions,
+        mut config: raw::KernelConfig,
     ) -> io::Result<Self> {
-        let (conn, fusermount) = mount(mountpoint, mountopts)?;
-        let conn = Connection::from(conn);
+        let (conn, fusermount) = raw::mount(mountpoint, mountopts)?;
 
-        let mut session = Session::new();
+        let mut session = raw::Session::new();
         session.init(&conn, &mut config)?;
 
         Ok(Self {
@@ -400,7 +393,7 @@ impl Daemon {
         })
     }
 
-    pub fn config(&self) -> &KernelConfig {
+    pub fn config(&self) -> &raw::KernelConfig {
         &self.config
     }
 
@@ -434,12 +427,12 @@ impl Daemon {
         for i in 0..num_workers {
             let worker = self.new_worker(i)?;
             let fs = fs.clone();
-            if self.config.flags.contains(KernelFlags::SPLICE_READ) {
-                let buf = SpliceBuf::new(self.config.request_buffer_size())?;
+            if self.config.flags.contains(raw::KernelFlags::SPLICE_READ) {
+                let buf = raw::SpliceBuf::new(self.config.request_buffer_size())?;
                 self.join_set
                     .spawn(async move { worker.run(buf, fs).await });
             } else {
-                let buf = FallbackBuf::new(self.config.request_buffer_size());
+                let buf = raw::FallbackBuf::new(self.config.request_buffer_size());
                 self.join_set
                     .spawn(async move { worker.run(buf, fs).await });
             }
@@ -464,7 +457,7 @@ impl Daemon {
 
 struct Worker {
     global: Arc<Global>,
-    conn: AsyncFd<Connection>,
+    conn: AsyncFd<raw::Connection>,
     join_set: JoinSet<io::Result<()>>,
 }
 
@@ -472,9 +465,9 @@ impl Worker {
     async fn run<T, B>(mut self, mut buf: B, fs: Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
-        B: RequestBuf,
+        B: raw::RequestBuf,
     {
-        let mut header = RequestHeader::new();
+        let mut header = raw::RequestHeader::new();
         while self.read_request(&mut header, &mut buf).await? {
             self.handle_request(&header, &mut buf, &fs).await?;
         }
@@ -482,9 +475,13 @@ impl Worker {
         Ok(())
     }
 
-    async fn read_request<B>(&self, header: &mut RequestHeader, buf: &mut B) -> io::Result<bool>
+    async fn read_request<B>(
+        &self,
+        header: &mut raw::RequestHeader,
+        buf: &mut B,
+    ) -> io::Result<bool>
     where
-        B: RequestBuf,
+        B: raw::RequestBuf,
     {
         loop {
             let mut guard = self.conn.readable().await?;
@@ -501,13 +498,13 @@ impl Worker {
 
     async fn handle_request<T, B>(
         &mut self,
-        header: &RequestHeader,
+        header: &raw::RequestHeader,
         buf: &mut B,
         fs: &Arc<T>,
     ) -> io::Result<()>
     where
         T: Filesystem,
-        B: RequestBuf,
+        B: raw::RequestBuf,
     {
         let span = tracing::debug_span!("handle_request", unique = ?header.unique());
         let _enter = span.enter();
