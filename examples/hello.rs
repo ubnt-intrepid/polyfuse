@@ -3,11 +3,7 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    fs::{
-        self,
-        reply::{self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry},
-        Daemon, Filesystem,
-    },
+    fs::{self, Daemon, Filesystem},
     op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
 };
@@ -110,8 +106,8 @@ impl Filesystem for Hello {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
-        mut reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         match op.parent() {
             NodeID::ROOT if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
                 reply.attr(&self.hello_attr());
@@ -128,8 +124,8 @@ impl Filesystem for Hello {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
-        mut reply: ReplyAttr<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         let attr = match op.ino() {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
@@ -145,8 +141,8 @@ impl Filesystem for Hello {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Read<'_>,
-        reply: ReplyData<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         match op.ino() {
             HELLO_INO => (),
             NodeID::ROOT => Err(EISDIR)?,
@@ -169,8 +165,8 @@ impl Filesystem for Hello {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
-        mut reply: ReplyDir<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyDir<'_>,
+    ) -> fs::Result {
         if op.ino() != NodeID::ROOT {
             Err(ENOTDIR)?
         }

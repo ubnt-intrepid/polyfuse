@@ -1,11 +1,8 @@
 use polyfuse::{
-    fs::{
-        self,
-        reply::{self, OpenOutFlags, ReplyAttr, ReplyData, ReplyOpen, ReplyPoll, ReplyUnit},
-        Daemon, Filesystem,
-    },
+    fs::{self, Daemon, Filesystem},
     notify,
     op::{self, AccessMode, OpenFlags},
+    reply::OpenOutFlags,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
         GID, UID,
@@ -71,8 +68,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         _: op::Getattr<'_>,
-        mut reply: ReplyAttr<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         let mut attr = FileAttr::new();
         attr.ino = NodeID::ROOT;
         attr.nlink = 1;
@@ -89,8 +86,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         mut req: fs::Request<'_>,
         op: op::Open<'_>,
-        mut reply: ReplyOpen<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyOpen<'_>,
+    ) -> fs::Result {
         if op.options().access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
@@ -143,8 +140,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Read<'_>,
-        reply: ReplyData<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
             handles.get(&op.fh()).cloned().ok_or(EINVAL)?
@@ -175,8 +172,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Poll<'_>,
-        reply: ReplyPoll<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyPoll<'_>,
+    ) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
             handles.get(&op.fh()).cloned().ok_or(EINVAL)?
@@ -199,8 +196,8 @@ impl Filesystem for PollFS {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Release<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         drop(self.handles.write().await.remove(&op.fh()));
         reply.send()
     }

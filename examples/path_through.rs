@@ -13,13 +13,7 @@
 // the path based filesystems such as libfuse's highlevel API.
 
 use polyfuse::{
-    fs::{
-        self,
-        reply::{
-            self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry, ReplyOpen, ReplyUnit, ReplyWrite,
-        },
-        Daemon, Filesystem,
-    },
+    fs::{self, Daemon, Filesystem},
     op::{self, Forget, OpenFlags},
     types::{FileID, FileType, NodeID},
 };
@@ -148,8 +142,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
-        mut reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
         let path = parent.path.join(op.name());
@@ -201,8 +195,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
-        mut reply: ReplyAttr<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
@@ -216,8 +210,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Setattr<'_>,
-        mut reply: ReplyAttr<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         let fh = op.fh().ok_or(ENOENT)?;
         let files = &mut *self.files.lock().await;
         let file = files.get(fh.into_raw() as usize).ok_or(EINVAL)?;
@@ -261,8 +255,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Readlink<'_>,
-        reply: ReplyData<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let path = std::fs::read_link(self.source.join(&inode.path))?;
@@ -273,8 +267,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Opendir<'_>,
-        mut reply: ReplyOpen<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyOpen<'_>,
+    ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
 
@@ -293,8 +287,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
-        mut reply: ReplyDir<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyDir<'_>,
+    ) -> fs::Result {
         if op.mode() == op::ReaddirMode::Plus {
             return Err(ENOSYS.into());
         }
@@ -361,8 +355,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Releasedir<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let dirs = &mut *self.dirs.lock().await;
         let _dir = dirs.remove(op.fh().into_raw() as usize);
         reply.send()
@@ -372,8 +366,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Open<'_>,
-        mut reply: ReplyOpen<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyOpen<'_>,
+    ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
 
@@ -392,8 +386,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Read<'_>,
-        reply: ReplyData<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         let files = &mut *self.files.lock().await;
         let file = Slab::get_mut(files, op.fh().into_raw() as usize).ok_or(EINVAL)?;
         let buf = file.read(op.offset(), op.size() as usize).await?;
@@ -405,8 +399,8 @@ impl Filesystem for PathThrough {
         _: fs::Request<'_>,
         op: op::Write<'_>,
         data: fs::Data<'_>,
-        reply: ReplyWrite<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyWrite<'_>,
+    ) -> fs::Result {
         let files = &mut *self.files.lock().await;
         let file = Slab::get_mut(files, op.fh().into_raw() as usize).ok_or(EINVAL)?;
         let offset = op.offset();
@@ -422,8 +416,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Flush<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let files = &mut *self.files.lock().await;
         let file = Slab::get_mut(files, op.fh().into_raw() as usize).ok_or(EINVAL)?;
         file.fsync(false).await?;
@@ -434,8 +428,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Fsync<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let files = &mut *self.files.lock().await;
         let file = Slab::get_mut(files, op.fh().into_raw() as usize).ok_or(EINVAL)?;
         file.fsync(op.datasync()).await?;
@@ -446,8 +440,8 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Release<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let files = &mut *self.files.lock().await;
         let _file = files.remove(op.fh().into_raw() as usize);
         reply.send()

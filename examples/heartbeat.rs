@@ -9,12 +9,9 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    fs::{
-        self,
-        reply::{self, OpenOutFlags, ReplyAttr, ReplyData, ReplyOpen},
-        Daemon, Filesystem,
-    },
+    fs::{self, Daemon, Filesystem},
     notify, op,
+    reply::OpenOutFlags,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
 };
 
@@ -160,8 +157,8 @@ impl Filesystem for Heartbeat {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         arg: op::Getattr<'_>,
-        mut reply: ReplyAttr<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
@@ -174,8 +171,8 @@ impl Filesystem for Heartbeat {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         arg: op::Open<'_>,
-        mut reply: ReplyOpen<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyOpen<'_>,
+    ) -> fs::Result {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?;
         }
@@ -187,8 +184,8 @@ impl Filesystem for Heartbeat {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         arg: op::Read<'_>,
-        reply: ReplyData<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         if arg.ino() != NodeID::ROOT {
             Err(ENOENT)?
         }

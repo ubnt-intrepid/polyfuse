@@ -9,11 +9,7 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    fs::{
-        self,
-        reply::{self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry},
-        Daemon, Filesystem,
-    },
+    fs::{self, Daemon, Filesystem},
     notify, op,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
@@ -147,8 +143,8 @@ impl Filesystem for Heartbeat {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         arg: op::Lookup<'_>,
-        mut reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         if arg.parent() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
@@ -183,8 +179,8 @@ impl Filesystem for Heartbeat {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         arg: op::Getattr<'_>,
-        mut reply: ReplyAttr<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         let attr = match arg.ino() {
             NodeID::ROOT => &self.root_attr,
             FILE_INO => &self.file_attr,
@@ -200,8 +196,8 @@ impl Filesystem for Heartbeat {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         arg: op::Read<'_>,
-        reply: ReplyData<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         match arg.ino() {
             NodeID::ROOT => Err(EISDIR)?,
             FILE_INO => reply.send(()),
@@ -213,8 +209,8 @@ impl Filesystem for Heartbeat {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         arg: op::Readdir<'_>,
-        mut reply: ReplyDir<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyDir<'_>,
+    ) -> fs::Result {
         if arg.ino() != NodeID::ROOT {
             Err(ENOTDIR)?;
         }

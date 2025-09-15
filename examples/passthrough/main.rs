@@ -4,14 +4,7 @@
 mod nix;
 
 use polyfuse::{
-    fs::{
-        self,
-        reply::{
-            self, ReplyAttr, ReplyData, ReplyDir, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyUnit,
-            ReplyWrite, ReplyXattr,
-        },
-        Daemon, Filesystem,
-    },
+    fs::{self, Daemon, Filesystem},
     mount::MountOptions,
     op::{self, OpenFlags},
     types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
@@ -115,8 +108,8 @@ impl Passthrough {
         &self,
         parent: NodeID,
         name: &OsStr,
-        mut reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         let mut inodes = self.inodes.lock().await;
         let inodes = &mut *inodes;
 
@@ -171,8 +164,8 @@ impl Passthrough {
         mode: FileMode,
         rdev: Option<DeviceID>,
         link: Option<&OsStr>,
-        reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         {
             let inodes = self.inodes.lock().await;
             let parent = inodes.get(parent).ok_or(ENOENT)?;
@@ -204,8 +197,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Lookup<'_>,
-        reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         self.do_lookup(op.parent(), op.name(), reply).await
     }
 
@@ -232,8 +225,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Getattr<'_>,
-        mut reply: ReplyAttr<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
 
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
@@ -254,8 +247,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Setattr<'_>,
-        mut reply: ReplyAttr<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyAttr<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -356,8 +349,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Readlink<'_>,
-        reply: ReplyData<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -369,8 +362,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Link<'_>,
-        mut reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
 
         let source = inodes.get(op.ino()).ok_or(ENOENT)?;
@@ -418,8 +411,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Mknod<'_>,
-        reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         self.make_node(
             op.parent(),
             op.name(),
@@ -435,8 +428,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Mkdir<'_>,
-        reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         self.make_node(
             op.parent(),
             op.name(),
@@ -452,8 +445,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Symlink<'_>,
-        reply: ReplyEntry<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyEntry<'_>,
+    ) -> fs::Result {
         self.make_node(
             op.parent(),
             op.name(),
@@ -469,8 +462,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Unlink<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
         let parent = parent.lock().await;
@@ -482,8 +475,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Rmdir<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
         let parent = parent.lock().await;
@@ -495,8 +488,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Rename<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         if !op.flags().is_empty() {
             // rename2 is not supported.
             return Err(EINVAL.into());
@@ -530,8 +523,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Opendir<'_>,
-        mut reply: ReplyOpen<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyOpen<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -546,8 +539,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Readdir<'_>,
-        mut reply: ReplyDir<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyDir<'_>,
+    ) -> fs::Result {
         if op.mode() == op::ReaddirMode::Plus {
             return Err(ENOSYS.into());
         }
@@ -579,8 +572,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Fsyncdir<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let read_dir = self.opened_dirs.get(op.fh()).await.ok_or(ENOENT)?;
         let read_dir = read_dir.lock().await;
 
@@ -597,8 +590,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Releasedir<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let _dir = self.opened_dirs.remove(op.fh()).await;
         reply.send()
     }
@@ -607,8 +600,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Open<'_>,
-        mut reply: ReplyOpen<'_>,
-    ) -> reply::Result {
+        mut reply: fs::ReplyOpen<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -626,8 +619,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Read<'_>,
-        reply: ReplyData<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyData<'_>,
+    ) -> fs::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let mut file = file.lock().await;
         let file = &mut *file;
@@ -645,8 +638,8 @@ impl Filesystem for Passthrough {
         _: fs::Request<'_>,
         op: op::Write<'_>,
         mut data: fs::Data<'_>,
-        reply: ReplyWrite<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyWrite<'_>,
+    ) -> fs::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let mut file = file.lock().await;
         let file = &mut *file;
@@ -674,8 +667,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Flush<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
@@ -688,8 +681,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Fsync<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
@@ -706,8 +699,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Flock<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
@@ -722,8 +715,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Fallocate<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         if !op.mode().is_empty() {
             return Err(EOPNOTSUPP.into());
         }
@@ -742,8 +735,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Release<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let _file = self.opened_files.remove(op.fh()).await;
         reply.send()
     }
@@ -752,8 +745,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Getxattr<'_>,
-        reply: ReplyXattr<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyXattr<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -784,8 +777,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Listxattr<'_>,
-        reply: ReplyXattr<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyXattr<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -815,8 +808,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Setxattr<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -842,8 +835,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Removexattr<'_>,
-        reply: ReplyUnit<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyUnit<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
@@ -862,8 +855,8 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Statfs<'_>,
-        reply: ReplyStatfs<'_>,
-    ) -> reply::Result {
+        reply: fs::ReplyStatfs<'_>,
+    ) -> fs::Result {
         let inodes = self.inodes.lock().await;
         let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
         let inode = inode.lock().await;
