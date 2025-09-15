@@ -19,12 +19,7 @@ use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
 use libc::ENOENT;
-use std::{
-    io::{self, prelude::*},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 #[tokio::main]
@@ -199,7 +194,7 @@ impl Filesystem for Heartbeat {
     async fn notify_reply(
         self: &Arc<Self>,
         arg: op::NotifyReply<'_>,
-        mut data: fs::Data<'_>,
+        mut data: impl io::Read,
     ) -> io::Result<()> {
         if let Some((_, original)) = self.retrieves.remove(&arg.unique()) {
             let data = {

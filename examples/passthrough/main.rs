@@ -641,7 +641,7 @@ impl Filesystem for Passthrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Write<'_>,
-        mut data: fs::Data<'_>,
+        mut data: impl io::Read + Send,
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
         let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;

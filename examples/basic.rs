@@ -5,7 +5,7 @@ use polyfuse::{
     raw::{
         conn::Connection,
         mount::{mount, MountOptions},
-        request::{RequestBuffer, RequestHeader},
+        request::{FallbackBuf, RequestBuf as _, RequestHeader},
         session::{KernelConfig, Session},
     },
     types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
@@ -37,13 +37,14 @@ fn main() -> Result<()> {
     session.init(&mut conn, &mut config)?;
 
     // Receive an incoming FUSE request from the kernel.
-    let mut buf = RequestBuffer::new_fallback(config.request_buffer_size())?;
-    while session.recv_request(&mut conn, &mut buf)? {
-        let (header, arg, _remains) = buf.parts();
-        match Operation::decode(header, arg)? {
+    let mut header = RequestHeader::new();
+    let mut buf = FallbackBuf::new(config.request_buffer_size());
+    while session.recv_request(&mut conn, &mut header, &mut buf)? {
+        let (arg, _remains) = buf.parts();
+        match Operation::decode(&header, arg)? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&session, &mut conn, header, op)?,
-            Operation::Read(op) => read(&session, &mut conn, header, op)?,
+            Operation::Getattr(op) => getattr(&session, &mut conn, &header, op)?,
+            Operation::Read(op) => read(&session, &mut conn, &header, op)?,
 
             // Or annotate that the operation is not supported.
             _ => session.send_reply(&mut conn, header.unique(), ENOSYS, ())?,

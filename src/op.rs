@@ -70,7 +70,7 @@ pub enum Operation<'op> {
 
 impl<'op> Operation<'op> {
     pub fn decode(header: &'op RequestHeader, arg: &'op [u8]) -> Result<Self, Error> {
-        let header = &header.raw;
+        let header = header.raw();
         let opcode = fuse_opcode::try_from(header.opcode).map_err(|_| Error::UnsupportedOpcode)?;
 
         let mut decoder = Decoder::new(arg);

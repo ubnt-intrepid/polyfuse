@@ -400,7 +400,7 @@ impl Filesystem for PathThrough {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Write<'_>,
-        data: fs::Data<'_>,
+        data: impl io::Read + Send + Unpin,
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
         let files = &mut *self.files.lock().await;

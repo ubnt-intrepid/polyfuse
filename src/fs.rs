@@ -4,7 +4,7 @@ use crate::{
     raw::{
         conn::Connection,
         mount::{mount, Fusermount, MountOptions},
-        request::{RemainingData, RequestBuffer, RequestHeader},
+        request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
         session::{KernelConfig, KernelFlags, Session},
     },
     reply,
@@ -116,7 +116,7 @@ pub trait Filesystem {
         self: &Arc<Self>,
         req: Request<'_>,
         op: op::Write<'_>,
-        data: Data<'_>,
+        data: impl io::Read + Send + Unpin,
         reply: ReplyWrite<'_>,
     ) -> impl Future<Output = Result> + Send {
         async { Err(Error::Code(ENOSYS)) }
@@ -131,7 +131,7 @@ pub trait Filesystem {
     fn notify_reply(
         self: &Arc<Self>,
         op: op::NotifyReply<'_>,
-        data: Data<'_>,
+        data: impl io::Read + Send + Unpin,
     ) -> impl Future<Output = io::Result<()>> + Send {
         async { Ok(()) }
     }
@@ -325,20 +325,6 @@ impl Request<'_> {
     }
 }
 
-pub struct Data<'req> {
-    inner: RemainingData<'req>,
-}
-
-impl io::Read for Data<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.read(buf)
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        self.inner.read_vectored(bufs)
-    }
-}
-
 pub struct ReplySender<'req> {
     session: &'req Session,
     conn: &'req Connection,
@@ -437,14 +423,6 @@ impl Daemon {
         })
     }
 
-    fn new_request_buffer(&self) -> io::Result<RequestBuffer> {
-        if self.config.flags.contains(KernelFlags::SPLICE_READ) {
-            RequestBuffer::new_splice(self.config.request_buffer_size())
-        } else {
-            RequestBuffer::new_fallback(self.config.request_buffer_size())
-        }
-    }
-
     pub async fn run<T>(mut self, fs: Arc<T>, num_workers: Option<NonZeroUsize>) -> io::Result<()>
     where
         T: Filesystem + Send + Sync + 'static,
@@ -456,9 +434,15 @@ impl Daemon {
         for i in 0..num_workers {
             let worker = self.new_worker(i)?;
             let fs = fs.clone();
-            let buf = self.new_request_buffer()?;
-            self.join_set
-                .spawn(async move { worker.run(buf, fs).await });
+            if self.config.flags.contains(KernelFlags::SPLICE_READ) {
+                let buf = SpliceBuf::new(self.config.request_buffer_size())?;
+                self.join_set
+                    .spawn(async move { worker.run(buf, fs).await });
+            } else {
+                let buf = FallbackBuf::new(self.config.request_buffer_size());
+                self.join_set
+                    .spawn(async move { worker.run(buf, fs).await });
+            }
         }
 
         while let Some(result) = self.join_set.join_next().await {
@@ -485,35 +469,50 @@ struct Worker {
 }
 
 impl Worker {
-    async fn run<T>(mut self, mut buf: RequestBuffer, fs: Arc<T>) -> io::Result<()>
+    async fn run<T, B>(mut self, mut buf: B, fs: Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
+        B: RequestBuf,
     {
-        while self.read_request(&mut buf).await? {
-            self.handle_request(&mut buf, &fs).await?;
+        let mut header = RequestHeader::new();
+        while self.read_request(&mut header, &mut buf).await? {
+            self.handle_request(&header, &mut buf, &fs).await?;
         }
         self.join_set.shutdown().await;
         Ok(())
     }
 
-    async fn read_request(&self, buf: &mut RequestBuffer) -> io::Result<bool> {
+    async fn read_request<B>(&self, header: &mut RequestHeader, buf: &mut B) -> io::Result<bool>
+    where
+        B: RequestBuf,
+    {
         loop {
             let mut guard = self.conn.readable().await?;
-            match guard.try_io(|conn| self.global.session.recv_request(conn.get_ref(), buf)) {
+            match guard.try_io(|conn| {
+                self.global
+                    .session
+                    .recv_request(conn.get_ref(), header, buf)
+            }) {
                 Ok(result) => return result,
                 Err(_would_block) => continue,
             }
         }
     }
 
-    async fn handle_request<T>(&mut self, buf: &mut RequestBuffer, fs: &Arc<T>) -> io::Result<()>
+    async fn handle_request<T, B>(
+        &mut self,
+        header: &RequestHeader,
+        buf: &mut B,
+        fs: &Arc<T>,
+    ) -> io::Result<()>
     where
         T: Filesystem,
+        B: RequestBuf,
     {
-        let span = tracing::debug_span!("handle_request", unique = ?buf.header().unique());
+        let span = tracing::debug_span!("handle_request", unique = ?header.unique());
         let _enter = span.enter();
 
-        let (header, arg, data) = buf.parts();
+        let (arg, data) = buf.parts();
         let op = Operation::decode(header, arg)
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
@@ -571,12 +570,9 @@ impl Worker {
             }
             Operation::Poll(op) => fs.poll(req, op, ReplyPoll::new(sender)).await,
             Operation::Lseek(op) => fs.lseek(req, op, ReplyLseek::new(sender)).await,
-            Operation::Write(op) => {
-                fs.write(req, op, Data { inner: data }, ReplyWrite::new(sender))
-                    .await
-            }
+            Operation::Write(op) => fs.write(req, op, data, ReplyWrite::new(sender)).await,
             Operation::NotifyReply(op) => {
-                fs.notify_reply(op, Data { inner: data }).await?;
+                fs.notify_reply(op, data).await?;
                 return Ok(());
             }
             Operation::Forget(forgets) => {
@@ -598,12 +594,11 @@ impl Worker {
                 }
                 _ => return Err(err),
             },
-            Err(Error::Code(errno)) => self.global.session.send_reply(
-                self.conn.get_ref(),
-                buf.header().unique(),
-                errno,
-                (),
-            )?,
+            Err(Error::Code(errno)) => {
+                self.global
+                    .session
+                    .send_reply(self.conn.get_ref(), header.unique(), errno, ())?
+            }
         }
 
         Ok(())

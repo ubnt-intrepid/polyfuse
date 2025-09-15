@@ -15,7 +15,7 @@ use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
     ffi::{OsStr, OsString},
-    io::prelude::*,
+    io,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -741,7 +741,7 @@ impl Filesystem for MemFS {
         self: &Arc<Self>,
         _: fs::Request<'_>,
         op: op::Write<'_>,
-        mut data: fs::Data<'_>,
+        mut data: impl io::Read + Send,
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
         let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;

@@ -2,7 +2,7 @@ use crate::{
     bytes::{Bytes, Decoder, POD},
     raw::{
         conn::SpliceRead,
-        request::{ReceiveError, RequestBuffer},
+        request::{ReceiveError, RequestBuf, RequestHeader},
     },
     types::RequestID,
 };
@@ -454,14 +454,21 @@ impl Session {
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub fn recv_request<T>(&self, mut conn: T, buf: &mut RequestBuffer) -> io::Result<bool>
+    pub fn recv_request<T, B>(
+        &self,
+        mut conn: T,
+        header: &mut RequestHeader,
+        buf: &mut B,
+    ) -> io::Result<bool>
     where
         T: SpliceRead + io::Write,
+        B: RequestBuf,
     {
         loop {
-            buf.clear()?; // パイプにデータが残っている可能性があるのでクリアしておく
+            header.reset();
+            buf.reset()?;
 
-            match buf.try_receive(&mut conn) {
+            let opcode = match buf.try_receive(&mut conn, header) {
                 Err(ReceiveError::Disconnected) => {
                     tracing::debug!("The connection is disconnected");
                     return Ok(false);
@@ -475,7 +482,7 @@ impl Session {
                         "The opcode `{}' is not recognized by the current version of polyfuse.",
                         code
                     );
-                    self.send_reply(&mut conn, buf.header().unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, header.unique(), ENOSYS, ())?;
                     continue;
                 }
                 Err(ReceiveError::Fatal(err)) => {
@@ -485,10 +492,10 @@ impl Session {
                     return Err(err);
                 }
 
-                Ok(()) => {}
-            }
+                Ok(opcode) => opcode,
+            };
 
-            match buf.opcode() {
+            match opcode {
                 fuse_opcode::FUSE_INIT => {
                     // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
                     tracing::error!("unexpected FUSE_INIT request received");
@@ -505,10 +512,10 @@ impl Session {
                 fuse_opcode::FUSE_IOCTL | fuse_opcode::FUSE_LSEEK | fuse_opcode::CUSE_INIT => {
                     tracing::warn!(
                         "unsupported opcode (unique={}, opcode={})",
-                        buf.header().unique(),
-                        buf.opcode() as u32
+                        header.unique(),
+                        opcode as u32
                     );
-                    self.send_reply(&mut conn, buf.header().unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, header.unique(), ENOSYS, ())?;
                     continue;
                 }
 
@@ -516,7 +523,7 @@ impl Session {
                     // FIXME: impl fmt::Debug for fuse_opcode
                     tracing::debug!(
                         "Got a request (unique={}, opcode={})",
-                        buf.header().unique(),
+                        header.unique(),
                         opcode as u32
                     );
                     break Ok(true);
