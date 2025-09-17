@@ -117,12 +117,16 @@ impl LockOwnerID {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct DeviceID {
+    // M: major
+    // m: minor
+    //
+    // mmm MMM mm
     raw: u32,
 }
 
 impl DeviceID {
-    const MAJOR_MAX: u32 = (0x1 << (32 - 20)) - 1;
-    const MINOR_MAX: u32 = (0x1 << 20) - 1;
+    const MAJOR_MAX: u32 = 0xfff;
+    const MINOR_MAX: u32 = 0xfffff;
 
     /// Create a `DeviceID` from the corresponding pair of major/minor versions.
     ///
@@ -136,21 +140,19 @@ impl DeviceID {
     pub const fn new(major: u32, minor: u32) -> Self {
         assert!(major <= Self::MAJOR_MAX, "DeviceID.major");
         assert!(minor <= Self::MINOR_MAX, "DeviceID.minor");
-        Self {
-            raw: ((major & 0xfff) << 20) | (minor & 0xfffff),
-        }
+        Self::from_kernel_dev((minor & 0xff) | ((major & 0xfff) << 8) | ((minor & 0xfff00) << 12))
     }
 
     /// Return the major number of this ID.
     #[inline]
     pub const fn major(&self) -> u32 {
-        self.raw >> 20
+        (self.raw >> 8) & 0xfff
     }
 
     /// Return the minor number of this ID.
     #[inline]
     pub const fn minor(&self) -> u32 {
-        self.raw & 0xfffff
+        (self.raw & 0xff) | ((self.raw >> 12) & 0xfff00)
     }
 
     /// Convert the value of userland `dev_t` to `DeviceID`.
@@ -480,4 +482,30 @@ pub struct FileLock {
     pub start: u64,
     pub end: u64,
     pub pid: PID,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_device_id() {
+        let rdev = DeviceID::new(0x42, 0x93817);
+        assert_eq!(rdev.raw, 0x93804217, "rdev.encode");
+        assert_eq!(rdev.major(), 0x42);
+        assert_eq!(rdev.minor(), 0x93817);
+        assert_eq!(rdev.into_userspace_dev(), libc::makedev(0x42, 0x93817));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_device_id_panic_1() {
+        let _ = DeviceID::new(0x1234, 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_device_id_panic_2() {
+        let _ = DeviceID::new(0x42, u32::MAX);
+    }
 }
