@@ -4,13 +4,7 @@
 
 #![allow(nonstandard_style, clippy::identity_op)]
 
-use std::convert::TryFrom;
-use std::error;
-use std::fmt;
-use zerocopy::FromBytes;
-use zerocopy::Immutable;
-use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes};
 
 /// The major version number of FUSE protocol.
 pub const FUSE_KERNEL_VERSION: u32 = 7;
@@ -192,26 +186,13 @@ macro_rules! define_opcode {
             pub const $VARIANT: u32 = $val;
         )*
 
-        #[derive(Clone, Copy, Hash, PartialEq)]
+        #[derive(Clone, Copy, Hash, PartialEq, TryFromBytes, IntoBytes, Immutable, KnownLayout)]
         #[repr(u32)]
         pub enum fuse_opcode {
             $(
                 $(#[$m])*
-                $VARIANT = self::$VARIANT,
+                $VARIANT = $val,
             )*
-        }
-
-        impl TryFrom<u32> for fuse_opcode {
-            type Error = UnknownOpcode;
-
-            fn try_from(opcode: u32) -> Result<Self, Self::Error> {
-                match opcode {
-                    $(
-                        $val => Ok(Self::$VARIANT),
-                    )*
-                    opcode => Err(UnknownOpcode(opcode)),
-                }
-            }
         }
     };
 }
@@ -267,18 +248,6 @@ define_opcode! {
 
     CUSE_INIT = 4096,
 }
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct UnknownOpcode(u32);
-
-impl fmt::Display for UnknownOpcode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "unknown opcode: {}", self.0)
-    }
-}
-
-impl error::Error for UnknownOpcode {}
 
 #[derive(Clone, Copy, Default, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
@@ -691,12 +660,12 @@ macro_rules! define_notify_code {
             pub const $VARIANT: u32 = $val;
         )*
 
-        #[derive(Clone, Copy, PartialEq, Hash)]
+        #[derive(Clone, Copy, PartialEq, Hash, TryFromBytes, IntoBytes, Immutable, KnownLayout)]
         #[repr(u32)]
         pub enum fuse_notify_code {
             $(
                 $(#[$m])*
-                $VARIANT = self::$VARIANT,
+                $VARIANT = $val,
             )*
         }
     };

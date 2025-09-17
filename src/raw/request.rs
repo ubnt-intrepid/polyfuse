@@ -8,7 +8,7 @@ use std::{
     io::{self, prelude::*},
     mem,
 };
-use zerocopy::{FromZeros as _, Immutable, IntoBytes, KnownLayout};
+use zerocopy::{try_transmute, FromZeros as _, Immutable, IntoBytes, KnownLayout};
 
 // MEMO: FUSE_MIN_READ_BUFFER に到達する or 超える可能性のある opcode の一覧 (要調査)
 // * FUSE_BATCH_FORGET
@@ -48,7 +48,7 @@ impl RequestHeader {
     }
 
     pub fn opcode(&self) -> Option<fuse_opcode> {
-        self.raw.opcode.try_into().ok()
+        try_transmute!(self.raw.opcode).ok()
     }
 
     /// Return the user ID of the calling process.
@@ -159,7 +159,7 @@ impl RequestBuf for SpliceBuf {
             ))?
         }
 
-        let opcode = fuse_opcode::try_from(header.raw.opcode)
+        let opcode = try_transmute!(header.raw.opcode)
             .map_err(|_| ReceiveError::UnrecognizedOpcode(header.raw.opcode))?;
 
         let arglen = arg_len(header, opcode);
@@ -218,7 +218,7 @@ impl RequestBuf for FallbackBuf {
             ))?
         }
 
-        let opcode = fuse_opcode::try_from(header.raw.opcode)
+        let opcode = try_transmute!(header.raw.opcode)
             .map_err(|_| ReceiveError::UnrecognizedOpcode(header.raw.opcode))?;
 
         self.pos = arg_len(header, opcode);

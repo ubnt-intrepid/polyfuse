@@ -7,12 +7,10 @@ use crate::{
 use libc::{ENODEV, ENOSYS, EPROTO};
 use polyfuse_kernel::*;
 use std::{
-    cmp,
-    convert::{TryFrom, TryInto as _},
-    io, mem,
+    cmp, io, mem,
     sync::atomic::{AtomicU32, Ordering},
 };
-use zerocopy::IntoBytes as _;
+use zerocopy::{try_transmute, IntoBytes as _};
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -297,10 +295,7 @@ impl Session {
                 ));
             }
 
-            if !matches!(
-                fuse_opcode::try_from(header_in.opcode),
-                Ok(fuse_opcode::FUSE_INIT)
-            ) {
+            if !matches!(try_transmute!(header_in.opcode), Ok(fuse_opcode::FUSE_INIT)) {
                 // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
                 // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
                 // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
