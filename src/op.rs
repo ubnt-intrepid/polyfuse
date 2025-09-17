@@ -739,9 +739,10 @@ impl<'op> Mknod<'op> {
         DeviceID::from_kernel_dev(self.arg.rdev)
     }
 
-    #[doc(hidden)] // TODO: dox
-    pub fn umask(&self) -> u32 {
-        self.arg.umask
+    /// Return the mask of permissions for the node to be created.
+    #[inline]
+    pub fn umask(&self) -> FilePermissions {
+        FilePermissions::from_bits_truncate(self.arg.umask).intersection(FilePermissions::MASK)
     }
 }
 
@@ -781,9 +782,10 @@ impl<'op> Mkdir<'op> {
         FilePermissions::from_bits_truncate(self.arg.mode)
     }
 
-    #[doc(hidden)] // TODO: dox
-    pub fn umask(&self) -> u32 {
-        self.arg.umask
+    /// Return the mask of permissions for the directory to be created.
+    #[inline]
+    pub fn umask(&self) -> FilePermissions {
+        FilePermissions::from_bits_truncate(self.arg.umask).intersection(FilePermissions::MASK)
     }
 }
 
@@ -1853,8 +1855,8 @@ impl<'op> Access<'op> {
 
     /// Return the requested access mode.
     #[inline]
-    pub fn mask(&self) -> u32 {
-        self.arg.mask
+    pub fn mask(&self) -> FilePermissions {
+        FilePermissions::from_bits_truncate(self.arg.mask).intersection(FilePermissions::MASK)
     }
 }
 
@@ -1911,10 +1913,10 @@ impl<'op> Create<'op> {
         OpenOptions::from_raw(self.arg.flags)
     }
 
-    #[doc(hidden)] // TODO: dox
+    /// Return the mask of permissions for the file to be created.
     #[inline]
-    pub fn umask(&self) -> u32 {
-        self.arg.umask
+    pub fn umask(&self) -> FilePermissions {
+        FilePermissions::from_bits_truncate(self.arg.umask).intersection(FilePermissions::MASK)
     }
 }
 

@@ -307,6 +307,8 @@ impl FilePermissions {
     pub const EXEC: Self = Self::EXEC_USER
         .union(Self::EXEC_GROUP)
         .union(Self::EXEC_OTHER);
+
+    pub const MASK: Self = Self::READ.union(Self::WRITE).union(Self::EXEC);
 }
 
 impl From<FilePermissions> for std::fs::Permissions {

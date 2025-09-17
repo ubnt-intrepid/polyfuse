@@ -176,7 +176,7 @@ bitflags::bitflags! {
         const EXPORT_SUPPORT = FUSE_EXPORT_SUPPORT;
 
         /// The kernel should not apply the umask to the file mode
-        /// on `create` operations.
+        /// on `mknod`, `mkdir` and `create` operations.
         const DONT_MASK = FUSE_DONT_MASK;
 
         /// The kernel should enable writeback caching.
