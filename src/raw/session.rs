@@ -10,7 +10,7 @@ use std::{
     cmp, io, mem,
     sync::atomic::{AtomicU32, Ordering},
 };
-use zerocopy::{try_transmute, IntoBytes as _};
+use zerocopy::{try_transmute, FromZeros as _, IntoBytes as _};
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -279,7 +279,7 @@ impl Session {
             return Ok(());
         }
 
-        let mut header_in = fuse_in_header::default();
+        let mut header_in = fuse_in_header::new_zeroed();
         let mut arg_in =
             vec![0u8; FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>()];
         loop {
@@ -322,16 +322,14 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                 );
                 tracing::debug!("  -> Wait for a second INIT request with an older version.");
-                let args = fuse_init_out {
-                    major: FUSE_KERNEL_VERSION,
-                    minor: FUSE_KERNEL_MINOR_VERSION,
-                    ..Default::default()
-                };
+                let mut out = fuse_init_out::new_zeroed();
+                out.major = FUSE_KERNEL_VERSION;
+                out.minor = FUSE_KERNEL_MINOR_VERSION;
                 self.send_reply(
                     &mut conn,
                     RequestID::from_raw(header_in.unique),
                     0,
-                    args.as_bytes(),
+                    out.as_bytes(),
                 )?;
                 continue;
             }
