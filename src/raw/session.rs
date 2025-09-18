@@ -502,20 +502,19 @@ impl Session {
 
                 fuse_opcode::FUSE_IOCTL | fuse_opcode::FUSE_LSEEK | fuse_opcode::CUSE_INIT => {
                     tracing::warn!(
-                        "unsupported opcode (unique={}, opcode={})",
+                        "unsupported opcode (unique={}, opcode={:?})",
                         header.unique(),
-                        opcode as u32
+                        opcode
                     );
                     self.send_reply(&mut conn, header.unique(), ENOSYS, ())?;
                     continue;
                 }
 
                 opcode => {
-                    // FIXME: impl fmt::Debug for fuse_opcode
                     tracing::debug!(
-                        "Got a request (unique={}, opcode={})",
+                        "Got a request (unique={}, opcode={:?})",
                         header.unique(),
-                        opcode as u32
+                        opcode
                     );
                     break Ok(true);
                 }
@@ -594,6 +593,7 @@ impl Session {
 mod tests {
     use super::*;
     use std::mem;
+    use zerocopy::transmute;
 
     #[test]
     fn proto_version_smoketest() {
@@ -672,7 +672,7 @@ mod tests {
         let input_len = mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>();
         let in_header = fuse_in_header {
             len: input_len as u32,
-            opcode: fuse_opcode::FUSE_INIT as u32,
+            opcode: transmute!(fuse_opcode::FUSE_INIT),
             unique: 2,
             nodeid: 0,
             uid: 100,

@@ -186,7 +186,7 @@ macro_rules! define_opcode {
             pub const $VARIANT: u32 = $val;
         )*
 
-        #[derive(Clone, Copy, Hash, PartialEq, TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        #[derive(Clone, Copy, Debug, Hash, PartialEq, TryFromBytes, IntoBytes, Immutable, KnownLayout)]
         #[repr(u32)]
         pub enum fuse_opcode {
             $(
@@ -642,7 +642,7 @@ macro_rules! define_notify_code {
             pub const $VARIANT: u32 = $val;
         )*
 
-        #[derive(Clone, Copy, PartialEq, Hash, TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        #[derive(Clone, Copy, Debug, PartialEq, Hash, TryFromBytes, IntoBytes, Immutable, KnownLayout)]
         #[repr(u32)]
         pub enum fuse_notify_code {
             $(
