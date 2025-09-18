@@ -7,12 +7,10 @@ use crate::{
 use libc::{ENODEV, ENOSYS, EPROTO};
 use polyfuse_kernel::*;
 use std::{
-    cmp,
-    convert::{TryFrom, TryInto as _},
-    io, mem,
+    cmp, io, mem,
     sync::atomic::{AtomicU32, Ordering},
 };
-use zerocopy::IntoBytes as _;
+use zerocopy::{try_transmute, FromZeros as _, IntoBytes as _};
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -281,7 +279,7 @@ impl Session {
             return Ok(());
         }
 
-        let mut header_in = fuse_in_header::default();
+        let mut header_in = fuse_in_header::new_zeroed();
         let mut arg_in =
             vec![0u8; FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>()];
         loop {
@@ -297,10 +295,7 @@ impl Session {
                 ));
             }
 
-            if !matches!(
-                fuse_opcode::try_from(header_in.opcode),
-                Ok(fuse_opcode::FUSE_INIT)
-            ) {
+            if !matches!(try_transmute!(header_in.opcode), Ok(fuse_opcode::FUSE_INIT)) {
                 // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
                 // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
                 // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
@@ -327,16 +322,14 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                 );
                 tracing::debug!("  -> Wait for a second INIT request with an older version.");
-                let args = fuse_init_out {
-                    major: FUSE_KERNEL_VERSION,
-                    minor: FUSE_KERNEL_MINOR_VERSION,
-                    ..Default::default()
-                };
+                let mut out = fuse_init_out::new_zeroed();
+                out.major = FUSE_KERNEL_VERSION;
+                out.minor = FUSE_KERNEL_MINOR_VERSION;
                 self.send_reply(
                     &mut conn,
                     RequestID::from_raw(header_in.unique),
                     0,
-                    args.as_bytes(),
+                    out.as_bytes(),
                 )?;
                 continue;
             }
@@ -509,20 +502,19 @@ impl Session {
 
                 fuse_opcode::FUSE_IOCTL | fuse_opcode::FUSE_LSEEK | fuse_opcode::CUSE_INIT => {
                     tracing::warn!(
-                        "unsupported opcode (unique={}, opcode={})",
+                        "unsupported opcode (unique={}, opcode={:?})",
                         header.unique(),
-                        opcode as u32
+                        opcode
                     );
                     self.send_reply(&mut conn, header.unique(), ENOSYS, ())?;
                     continue;
                 }
 
                 opcode => {
-                    // FIXME: impl fmt::Debug for fuse_opcode
                     tracing::debug!(
-                        "Got a request (unique={}, opcode={})",
+                        "Got a request (unique={}, opcode={:?})",
                         header.unique(),
-                        opcode as u32
+                        opcode
                     );
                     break Ok(true);
                 }
@@ -601,6 +593,7 @@ impl Session {
 mod tests {
     use super::*;
     use std::mem;
+    use zerocopy::transmute;
 
     #[test]
     fn proto_version_smoketest() {
@@ -679,7 +672,7 @@ mod tests {
         let input_len = mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>();
         let in_header = fuse_in_header {
             len: input_len as u32,
-            opcode: fuse_opcode::FUSE_INIT as u32,
+            opcode: transmute!(fuse_opcode::FUSE_INIT),
             unique: 2,
             nodeid: 0,
             uid: 100,

@@ -9,6 +9,7 @@ use crate::{
 use bitflags::bitflags;
 use polyfuse_kernel::*;
 use std::{ffi::OsStr, fmt, os::unix::fs::OpenOptionsExt, time::Duration};
+use zerocopy::try_transmute;
 
 const FUSE_INT_REQ_BIT: u64 = 1;
 
@@ -71,7 +72,7 @@ pub enum Operation<'op> {
 impl<'op> Operation<'op> {
     pub fn decode(header: &'op RequestHeader, arg: &'op [u8]) -> Result<Self, Error> {
         let header = header.raw();
-        let opcode = fuse_opcode::try_from(header.opcode).map_err(|_| Error::UnsupportedOpcode)?;
+        let opcode = try_transmute!(header.opcode).map_err(|_| Error::UnsupportedOpcode)?;
 
         let mut decoder = Decoder::new(arg);
 
