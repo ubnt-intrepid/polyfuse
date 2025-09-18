@@ -145,10 +145,11 @@ bitflags::bitflags! {
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(transparent)]
     pub struct KernelFlags: u32 {
-        /// The filesystem supports asynchronous read requests.
+        /// Indicates whether the kernel do readahead asynchronously or not.
         const ASYNC_READ = FUSE_ASYNC_READ;
 
-        /// The filesystem supports the `O_TRUNC` open flag.
+        /// Indicates whether the kernel does not filtered the `O_TRUNC` open_flag
+        /// out or not.
         const ATOMIC_O_TRUNC = FUSE_ATOMIC_O_TRUNC;
 
         /// The kernel check the validity of attributes on every read.
@@ -222,17 +223,12 @@ impl Default for KernelFlags {
 
 impl KernelFlags {
     pub const fn new() -> Self {
-        Self::from_bits_truncate(
-            FUSE_ASYNC_READ
-                | FUSE_PARALLEL_DIROPS
-                | FUSE_AUTO_INVAL_DATA
-                | FUSE_HANDLE_KILLPRIV
-                | FUSE_ASYNC_DIO
-                | FUSE_ATOMIC_O_TRUNC
-                | FUSE_NO_OPEN_SUPPORT
-                | FUSE_NO_OPENDIR_SUPPORT
-                | FUSE_SPLICE_READ,
-        )
+        Self::empty()
+            .union(Self::ATOMIC_O_TRUNC)
+            .union(Self::AUTO_INVAL_DATA)
+            .union(Self::NO_OPEN_SUPPORT)
+            .union(Self::NO_OPENDIR_SUPPORT)
+            .union(Self::SPLICE_READ)
     }
 }
 
