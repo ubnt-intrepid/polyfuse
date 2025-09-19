@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["FileType"],"struct":["DeviceID","FileAttr","FileID","FileLock","FileMode","FilePermissions","GID","LockOwnerID","NodeID","NotifyID","PID","PollEvents","PollWakeupID","RequestID","Statfs","UID"]};
