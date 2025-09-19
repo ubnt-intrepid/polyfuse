@@ -4,7 +4,7 @@ use crate::{
     raw::request::{ReceiveError, RequestBuf, RequestHeader},
     types::RequestID,
 };
-use libc::{ENODEV, ENOSYS, EPROTO};
+use libc::{ENODEV, ENOENT, ENOSYS, EPROTO};
 use polyfuse_kernel::*;
 use std::{
     cmp, io, mem,
@@ -522,10 +522,10 @@ impl Session {
         match err.raw_os_error() {
             Some(ENODEV) => {
                 // 切断済みであれば無視
-                tracing::debug!("disconnected");
                 self.exit();
                 Ok(())
             }
+            Some(ENOENT) => Ok(()),
             _ => Err(err),
         }
     }
