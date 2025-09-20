@@ -199,7 +199,7 @@ impl Filesystem for Passthrough {
         op: op::Lookup<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.do_lookup(op.parent(), op.name(), reply).await
+        self.do_lookup(op.parent, op.name, reply).await
     }
 
     async fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
@@ -229,7 +229,7 @@ impl Filesystem for Passthrough {
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
 
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
 
         let stat = inode.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
@@ -250,11 +250,11 @@ impl Filesystem for Passthrough {
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
         let fd = &inode.fd;
 
-        let mut file = if let Some(fh) = op.fh() {
+        let mut file = if let Some(fh) = op.fh {
             Some(self.opened_files.get(fh).await.ok_or(ENOENT)?)
         } else {
             None
@@ -265,7 +265,7 @@ impl Filesystem for Passthrough {
         };
 
         // chmod
-        if let Some(mode) = op.mode() {
+        if let Some(mode) = op.mode {
             if let Some(file) = file.as_mut() {
                 task::block_in_place(|| nix::fchmod(&**file, mode.into_raw()))?;
             } else {
@@ -274,7 +274,7 @@ impl Filesystem for Passthrough {
         }
 
         // chown
-        match (op.uid(), op.gid()) {
+        match (op.uid, op.gid) {
             (None, None) => (),
             (uid, gid) => {
                 task::block_in_place(|| {
@@ -289,7 +289,7 @@ impl Filesystem for Passthrough {
         }
 
         // truncate
-        if let Some(size) = op.size() {
+        if let Some(size) = op.size {
             if let Some(file) = file.as_mut() {
                 task::block_in_place(|| nix::ftruncate(&**file, size as libc::off_t))?;
             } else {
@@ -314,7 +314,7 @@ impl Filesystem for Passthrough {
                 },
             }
         }
-        match (op.atime(), op.mtime()) {
+        match (op.atime, op.mtime) {
             (None, None) => (),
             (atime, mtime) => {
                 let tv = [make_timespec(atime), make_timespec(mtime)];
@@ -352,7 +352,7 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
         let link = task::block_in_place(|| inode.fd.readlinkat(""))?;
         reply.send(link)
@@ -366,14 +366,14 @@ impl Filesystem for Passthrough {
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
 
-        let source = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let source = inodes.get(op.ino).ok_or(ENOENT)?;
         let mut source = source.lock().await;
 
-        let parent = inodes.get(op.newparent()).ok_or(ENOENT)?;
+        let parent = inodes.get(op.newparent).ok_or(ENOENT)?;
         let parent = parent.lock().await;
 
         if source.is_symlink {
-            task::block_in_place(|| source.fd.linkat("", &parent.fd, op.newname(), 0)) //
+            task::block_in_place(|| source.fd.linkat("", &parent.fd, op.newname, 0)) //
                 .map_err(|err| match err.raw_os_error() {
                     Some(ENOENT) | Some(EINVAL) => {
                         // no race-free way to hard-link a symlink.
@@ -386,7 +386,7 @@ impl Filesystem for Passthrough {
                 nix::link(
                     source.fd.procname(),
                     &parent.fd,
-                    op.newname(),
+                    op.newname,
                     AT_SYMLINK_FOLLOW,
                 )
             })?;
@@ -413,15 +413,8 @@ impl Filesystem for Passthrough {
         op: op::Mknod<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.make_node(
-            op.parent(),
-            op.name(),
-            op.mode(),
-            Some(op.rdev()),
-            None,
-            reply,
-        )
-        .await
+        self.make_node(op.parent, op.name, op.mode, Some(op.rdev), None, reply)
+            .await
     }
 
     async fn mkdir(
@@ -431,9 +424,9 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
         self.make_node(
-            op.parent(),
-            op.name(),
-            FileMode::new(FileType::Directory, op.permissions()),
+            op.parent,
+            op.name,
+            FileMode::new(FileType::Directory, op.permissions),
             None,
             None,
             reply,
@@ -448,11 +441,11 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
         self.make_node(
-            op.parent(),
-            op.name(),
+            op.parent,
+            op.name,
             FileMode::new(FileType::SymbolicLink, FilePermissions::empty()),
             None,
-            Some(op.link()),
+            Some(op.link),
             reply,
         )
         .await
@@ -465,9 +458,9 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
+        let parent = inodes.get(op.parent).ok_or(ENOENT)?;
         let parent = parent.lock().await;
-        task::block_in_place(|| parent.fd.unlinkat(op.name(), 0))?;
+        task::block_in_place(|| parent.fd.unlinkat(op.name, 0))?;
         reply.send()
     }
 
@@ -478,9 +471,9 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
+        let parent = inodes.get(op.parent).ok_or(ENOENT)?;
         let parent = parent.lock().await;
-        task::block_in_place(|| parent.fd.unlinkat(op.name(), AT_REMOVEDIR))?;
+        task::block_in_place(|| parent.fd.unlinkat(op.name, AT_REMOVEDIR))?;
         reply.send()
     }
 
@@ -490,30 +483,22 @@ impl Filesystem for Passthrough {
         op: op::Rename<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        if !op.flags().is_empty() {
+        if !op.flags.is_empty() {
             // rename2 is not supported.
             return Err(EINVAL.into());
         }
 
         let inodes = self.inodes.lock().await;
 
-        let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
-        let newparent = inodes.get(op.newparent()).ok_or(ENOENT)?;
+        let parent = inodes.get(op.parent).ok_or(ENOENT)?;
+        let newparent = inodes.get(op.newparent).ok_or(ENOENT)?;
 
         let parent = parent.lock().await;
-        if op.parent() == op.newparent() {
-            task::block_in_place(|| {
-                parent
-                    .fd
-                    .renameat(op.name(), None::<&FileDesc>, op.newname())
-            })?;
+        if op.parent == op.newparent {
+            task::block_in_place(|| parent.fd.renameat(op.name, None::<&FileDesc>, op.newname))?;
         } else {
             let newparent = newparent.lock().await;
-            task::block_in_place(|| {
-                parent
-                    .fd
-                    .renameat(op.name(), Some(&newparent.fd), op.newname())
-            })?;
+            task::block_in_place(|| parent.fd.renameat(op.name, Some(&newparent.fd), op.newname))?;
         }
 
         reply.send()
@@ -526,7 +511,7 @@ impl Filesystem for Passthrough {
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
         let dir = task::block_in_place(|| inode.fd.read_dir())?;
         let fh = self.opened_dirs.insert(Mutex::new(dir)).await;
@@ -541,17 +526,17 @@ impl Filesystem for Passthrough {
         op: op::Readdir<'_>,
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
-        if op.mode() == op::ReaddirMode::Plus {
+        if op.mode == op::ReaddirMode::Plus {
             return Err(ENOSYS.into());
         }
 
         let read_dir = self
             .opened_dirs
-            .get(op.fh())
+            .get(op.fh)
             .await
             .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
         let read_dir = &mut *read_dir.lock().await;
-        task::block_in_place(|| read_dir.seek(op.offset()));
+        task::block_in_place(|| read_dir.seek(op.offset));
 
         while let Some(entry) = task::block_in_place(|| read_dir.next()) {
             let entry = entry?;
@@ -574,10 +559,10 @@ impl Filesystem for Passthrough {
         op: op::Fsyncdir<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let read_dir = self.opened_dirs.get(op.fh()).await.ok_or(ENOENT)?;
+        let read_dir = self.opened_dirs.get(op.fh).await.ok_or(ENOENT)?;
         let read_dir = read_dir.lock().await;
 
-        if op.datasync() {
+        if op.datasync {
             task::block_in_place(|| read_dir.sync_data())?;
         } else {
             task::block_in_place(|| read_dir.sync_all())?;
@@ -592,7 +577,7 @@ impl Filesystem for Passthrough {
         op: op::Releasedir<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let _dir = self.opened_dirs.remove(op.fh()).await;
+        let _dir = self.opened_dirs.remove(op.fh).await;
         reply.send()
     }
 
@@ -603,10 +588,10 @@ impl Filesystem for Passthrough {
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
 
-        let options: OpenOptions = op.options().remove(OpenFlags::NOFOLLOW).into();
+        let options: OpenOptions = op.options.remove(OpenFlags::NOFOLLOW).into();
 
         let file = task::block_in_place(|| options.open(inode.fd.procname()))?;
         let fh = self.opened_files.insert(Mutex::new(file)).await;
@@ -622,14 +607,14 @@ impl Filesystem for Passthrough {
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
+        let file = self.opened_files.get(op.fh).await.ok_or(ENOENT)?;
         let mut file = file.lock().await;
         let file = &mut *file;
 
-        task::block_in_place(|| file.seek(io::SeekFrom::Start(op.offset())))?;
+        task::block_in_place(|| file.seek(io::SeekFrom::Start(op.offset)))?;
 
-        let mut buf = Vec::<u8>::with_capacity(op.size() as usize);
-        task::block_in_place(|| file.take(op.size() as u64).read_to_end(&mut buf))?;
+        let mut buf = Vec::<u8>::with_capacity(op.size as usize);
+        task::block_in_place(|| file.take(op.size as u64).read_to_end(&mut buf))?;
 
         reply.send(buf)
     }
@@ -641,11 +626,11 @@ impl Filesystem for Passthrough {
         mut data: impl io::Read + Send,
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
-        let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
+        let file = self.opened_files.get(op.fh).await.ok_or(ENOENT)?;
         let mut file = file.lock().await;
         let file = &mut *file;
 
-        task::block_in_place(|| file.seek(io::SeekFrom::Start(op.offset())))?;
+        task::block_in_place(|| file.seek(io::SeekFrom::Start(op.offset)))?;
 
         // At here, the data is transferred via the temporary buffer due to
         // the incompatibility between the I/O abstraction in `futures` and
@@ -654,11 +639,11 @@ impl Filesystem for Passthrough {
         // In order to efficiently transfer the large files, both of zero
         // copying support in `polyfuse` and resolution of impedance mismatch
         // between `futures::io` and `tokio::io` are required.
-        let mut buf = Vec::with_capacity(op.size() as usize);
+        let mut buf = Vec::with_capacity(op.size as usize);
         data.read_to_end(&mut buf)?;
 
         let mut buf = &buf[..];
-        let mut buf = Read::take(&mut buf, op.size() as u64);
+        let mut buf = Read::take(&mut buf, op.size as u64);
         let written = task::block_in_place(|| std::io::copy(&mut buf, &mut *file))?;
 
         reply.send(written as u32)
@@ -670,7 +655,7 @@ impl Filesystem for Passthrough {
         op: op::Flush<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
+        let file = self.opened_files.get(op.fh).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
         task::block_in_place(|| file.sync_all())?;
@@ -684,10 +669,10 @@ impl Filesystem for Passthrough {
         op: op::Fsync<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
+        let file = self.opened_files.get(op.fh).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
-        if op.datasync() {
+        if op.datasync {
             task::block_in_place(|| file.sync_data())?;
         } else {
             task::block_in_place(|| file.sync_all())?;
@@ -702,12 +687,10 @@ impl Filesystem for Passthrough {
         op: op::Flock<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
+        let file = self.opened_files.get(op.fh).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
-        let op = op.op().expect("invalid lock operation");
-
-        task::block_in_place(|| nix::flock(&*file, op.into_raw()))?;
+        task::block_in_place(|| nix::flock(&*file, op.op.into_raw()))?;
 
         reply.send()
     }
@@ -718,16 +701,14 @@ impl Filesystem for Passthrough {
         op: op::Fallocate<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        if !op.mode().is_empty() {
+        if !op.mode.is_empty() {
             return Err(EOPNOTSUPP.into());
         }
 
-        let file = self.opened_files.get(op.fh()).await.ok_or(ENOENT)?;
+        let file = self.opened_files.get(op.fh).await.ok_or(ENOENT)?;
         let file = file.lock().await;
 
-        task::block_in_place(|| {
-            nix::posix_fallocate(&*file, op.offset() as i64, op.length() as i64)
-        })?;
+        task::block_in_place(|| nix::posix_fallocate(&*file, op.offset as i64, op.length as i64))?;
 
         reply.send()
     }
@@ -738,7 +719,7 @@ impl Filesystem for Passthrough {
         op: op::Release<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let _file = self.opened_files.remove(op.fh()).await;
+        let _file = self.opened_files.remove(op.fh).await;
         reply.send()
     }
 
@@ -749,7 +730,7 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyXattr<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
 
         if inode.is_symlink {
@@ -757,16 +738,16 @@ impl Filesystem for Passthrough {
             return Err(ENOTSUP.into());
         }
 
-        match op.size() {
+        match op.size {
             0 => {
                 let size =
-                    task::block_in_place(|| nix::getxattr(inode.fd.procname(), op.name(), None))?;
+                    task::block_in_place(|| nix::getxattr(inode.fd.procname(), op.name, None))?;
                 reply.send_size(size as u32)
             }
             size => {
                 let mut value = vec![0u8; size as usize];
                 let n = task::block_in_place(|| {
-                    nix::getxattr(inode.fd.procname(), op.name(), Some(&mut value[..]))
+                    nix::getxattr(inode.fd.procname(), op.name, Some(&mut value[..]))
                 })?;
                 value.resize(n as usize, 0);
                 reply.send_value(value)
@@ -781,7 +762,7 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyXattr<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
 
         if inode.is_symlink {
@@ -789,7 +770,7 @@ impl Filesystem for Passthrough {
             return Err(ENOTSUP.into());
         }
 
-        match op.size() {
+        match op.size {
             0 => {
                 let size = task::block_in_place(|| nix::listxattr(inode.fd.procname(), None))?;
                 reply.send_size(size as u32)
@@ -812,7 +793,7 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
 
         if inode.is_symlink {
@@ -823,9 +804,9 @@ impl Filesystem for Passthrough {
         task::block_in_place(|| {
             nix::setxattr(
                 inode.fd.procname(),
-                op.name(),
-                op.value(),
-                op.flags().bits() as libc::c_int,
+                op.name,
+                op.value,
+                op.flags.bits() as libc::c_int,
             )
         })?;
 
@@ -839,7 +820,7 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
 
         if inode.is_symlink {
@@ -847,7 +828,7 @@ impl Filesystem for Passthrough {
             return Err(ENOTSUP.into());
         }
 
-        task::block_in_place(|| nix::removexattr(inode.fd.procname(), op.name()))?;
+        task::block_in_place(|| nix::removexattr(inode.fd.procname(), op.name))?;
 
         reply.send()
     }
@@ -859,7 +840,7 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyStatfs<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
 
         let st = task::block_in_place(|| nix::fstatvfs(&inode.fd))?;

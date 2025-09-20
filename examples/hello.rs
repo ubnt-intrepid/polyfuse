@@ -108,8 +108,8 @@ impl Filesystem for Hello {
         op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        match op.parent() {
-            NodeID::ROOT if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
+        match op.parent {
+            NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
                 reply.attr(&self.hello_attr());
                 reply.ino(HELLO_INO);
                 reply.ttl_attr(TTL);
@@ -126,7 +126,7 @@ impl Filesystem for Hello {
         op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let attr = match op.ino() {
+        let attr = match op.ino {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
             _ => Err(ENOENT)?,
@@ -143,7 +143,7 @@ impl Filesystem for Hello {
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        match op.ino() {
+        match op.ino {
             HELLO_INO => (),
             NodeID::ROOT => Err(EISDIR)?,
             _ => Err(ENOENT)?,
@@ -151,9 +151,9 @@ impl Filesystem for Hello {
 
         let mut data: &[u8] = &[];
 
-        let offset = op.offset() as usize;
+        let offset = op.offset as usize;
         if offset < HELLO_CONTENT.len() {
-            let size = op.size() as usize;
+            let size = op.size as usize;
             data = &HELLO_CONTENT[offset..];
             data = &data[..std::cmp::min(data.len(), size)];
         }
@@ -167,11 +167,11 @@ impl Filesystem for Hello {
         op: op::Readdir<'_>,
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
-        if op.ino() != NodeID::ROOT {
+        if op.ino != NodeID::ROOT {
             Err(ENOTDIR)?
         }
 
-        for (i, entry) in self.dir_entries().skip(op.offset() as usize) {
+        for (i, entry) in self.dir_entries().skip(op.offset as usize) {
             let full = reply.push_entry(
                 entry.name.as_ref(), //
                 entry.ino,

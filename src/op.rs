@@ -8,7 +8,10 @@ use crate::{
 };
 use bitflags::bitflags;
 use polyfuse_kernel::*;
-use std::{ffi::OsStr, fmt, os::unix::fs::OpenOptionsExt, time::Duration};
+use std::{
+    ffi::OsStr, fmt, marker::PhantomData, ops::Deref, os::unix::fs::OpenOptionsExt, slice,
+    time::Duration,
+};
 use zerocopy::try_transmute;
 
 const FUSE_INT_REQ_BIT: u64 = 1;
@@ -21,6 +24,12 @@ pub enum Error {
 
     #[error("unsupported opcode")]
     UnsupportedOpcode,
+
+    #[error("invalid `flock(2)` operation type")]
+    InvalidFlockType,
+
+    #[error("unknown `lseek(2)` whence")]
+    UnknownLseekWhence,
 }
 
 /// The kind of filesystem operation requested by the kernel.
@@ -79,208 +88,355 @@ impl<'op> Operation<'op> {
         match opcode {
             fuse_opcode::FUSE_FORGET => {
                 let arg: &fuse_forget_in = decoder.fetch()?;
-                let forget = fuse_forget_one {
-                    nodeid: header.nodeid,
-                    nlookup: arg.nlookup,
+                let forget = Forget {
+                    raw: fuse_forget_one {
+                        nodeid: header.nodeid,
+                        nlookup: arg.nlookup,
+                    },
                 };
-                Ok(Operation::Forget(Forgets {
-                    inner: ForgetsInner::Single(forget),
-                }))
+                Ok(Operation::Forget(Forgets::Single([forget; 1])))
             }
 
             fuse_opcode::FUSE_BATCH_FORGET => {
                 let arg: &fuse_batch_forget_in = decoder.fetch()?;
                 let forgets = decoder.fetch_array::<fuse_forget_one>(arg.count as usize)?;
-                Ok(Operation::Forget(Forgets {
-                    inner: ForgetsInner::Batch(forgets),
-                }))
+                let forgets = unsafe {
+                    // Safety: `Forget` has the same layout with `fuse_forget_one`.
+                    slice::from_raw_parts(forgets.as_ptr().cast(), forgets.len())
+                };
+                Ok(Operation::Forget(Forgets::Batch(forgets)))
             }
 
             fuse_opcode::FUSE_INTERRUPT => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Interrupt(Interrupt { header, arg }))
+                let arg: &fuse_interrupt_in = decoder.fetch()?;
+                Ok(Operation::Interrupt(Interrupt {
+                    unique: RequestID::from_raw(arg.unique & !FUSE_INT_REQ_BIT),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_NOTIFY_REPLY => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::NotifyReply(NotifyReply { header, arg }))
+                let arg: &fuse_notify_retrieve_in = decoder.fetch()?;
+                Ok(Operation::NotifyReply(NotifyReply {
+                    unique: NotifyID::from_raw(header.unique),
+                    ino: NodeID::from_raw(header.nodeid),
+                    offset: arg.offset,
+                    size: arg.size,
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_LOOKUP => {
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Lookup(Lookup { header, name }))
+                Ok(Operation::Lookup(Lookup {
+                    parent: NodeID::from_raw(header.nodeid),
+                    name,
+                }))
             }
 
             fuse_opcode::FUSE_GETATTR => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Getattr(Getattr { header, arg }))
+                let arg: &fuse_getattr_in = decoder.fetch()?;
+                Ok(Operation::Getattr(Getattr {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: (arg.getattr_flags & FUSE_GETATTR_FH != 0)
+                        .then_some(FileID::from_raw(arg.fh)),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_SETATTR => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Setattr(Setattr { header, arg }))
+                let arg: &fuse_setattr_in = decoder.fetch()?;
+                Ok(Operation::Setattr(Setattr {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: (arg.valid & FATTR_FH != 0).then(|| FileID::from_raw(arg.fh)),
+                    mode: (arg.valid & FATTR_MODE != 0).then(|| FileMode::from_raw(arg.mode)),
+                    uid: (arg.valid & FATTR_UID != 0).then(|| UID::from_raw(arg.uid)),
+                    gid: (arg.valid & FATTR_GID != 0).then(|| GID::from_raw(arg.gid)),
+                    size: (arg.valid & FATTR_SIZE != 0).then_some(arg.size),
+                    atime: (arg.valid & FATTR_ATIME != 0).then(|| {
+                        if arg.valid & FATTR_ATIME_NOW != 0 {
+                            SetAttrTime::Now
+                        } else {
+                            SetAttrTime::Timespec(Duration::new(arg.atime, arg.atimensec))
+                        }
+                    }),
+                    mtime: (arg.valid & FATTR_MTIME != 0).then(|| {
+                        if arg.valid & FATTR_MTIME_NOW != 0 {
+                            SetAttrTime::Now
+                        } else {
+                            SetAttrTime::Timespec(Duration::new(arg.mtime, arg.mtimensec))
+                        }
+                    }),
+                    ctime: (arg.valid & FATTR_CTIME != 0)
+                        .then(|| Duration::new(arg.ctime, arg.ctimensec)),
+                    lock_owner: (arg.valid & FATTR_LOCKOWNER != 0)
+                        .then(|| LockOwnerID::from_raw(arg.lock_owner)),
+                    _marker: PhantomData,
+                }))
             }
 
-            fuse_opcode::FUSE_READLINK => Ok(Operation::Readlink(Readlink { header })),
+            fuse_opcode::FUSE_READLINK => Ok(Operation::Readlink(Readlink {
+                ino: NodeID::from_raw(header.nodeid),
+                _marker: PhantomData,
+            })),
 
             fuse_opcode::FUSE_SYMLINK => {
                 let name = decoder.fetch_str()?;
                 let link = decoder.fetch_str()?;
-                Ok(Operation::Symlink(Symlink { header, name, link }))
+                Ok(Operation::Symlink(Symlink {
+                    parent: NodeID::from_raw(header.nodeid),
+                    name,
+                    link,
+                }))
             }
 
             fuse_opcode::FUSE_MKNOD => {
-                let arg = decoder.fetch()?;
+                let arg: &fuse_mknod_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Mknod(Mknod { header, arg, name }))
+                Ok(Operation::Mknod(Mknod {
+                    parent: NodeID::from_raw(header.nodeid),
+                    name,
+                    mode: FileMode::from_raw(arg.mode),
+                    rdev: DeviceID::from_kernel_dev(arg.rdev),
+                    umask: FilePermissions::from_bits_truncate(arg.umask) & FilePermissions::MASK,
+                }))
             }
 
             fuse_opcode::FUSE_MKDIR => {
-                let arg = decoder.fetch()?;
+                let arg: &fuse_mkdir_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Mkdir(Mkdir { header, arg, name }))
+                Ok(Operation::Mkdir(Mkdir {
+                    parent: NodeID::from_raw(header.nodeid),
+                    name,
+                    permissions: FilePermissions::from_bits_truncate(arg.mode),
+                    umask: FilePermissions::from_bits_truncate(arg.umask) & FilePermissions::MASK,
+                }))
             }
 
             fuse_opcode::FUSE_UNLINK => {
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Unlink(Unlink { header, name }))
+                Ok(Operation::Unlink(Unlink {
+                    parent: NodeID::from_raw(header.nodeid),
+                    name,
+                }))
             }
 
             fuse_opcode::FUSE_RMDIR => {
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Rmdir(Rmdir { header, name }))
+                Ok(Operation::Rmdir(Rmdir {
+                    parent: NodeID::from_raw(header.nodeid),
+                    name,
+                }))
             }
 
             fuse_opcode::FUSE_RENAME => {
-                let arg = decoder.fetch()?;
+                let arg: &fuse_rename_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let newname = decoder.fetch_str()?;
                 Ok(Operation::Rename(Rename {
-                    header,
-                    arg: RenameArg::V1(arg),
+                    parent: NodeID::from_raw(header.nodeid),
                     name,
+                    newparent: NodeID::from_raw(arg.newdir),
                     newname,
+                    flags: RenameFlags::empty(),
                 }))
             }
 
             fuse_opcode::FUSE_RENAME2 => {
-                let arg = decoder.fetch()?;
+                let arg: &fuse_rename2_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let newname = decoder.fetch_str()?;
                 Ok(Operation::Rename(Rename {
-                    header,
-                    arg: RenameArg::V2(arg),
+                    parent: NodeID::from_raw(header.nodeid),
                     name,
+                    newparent: NodeID::from_raw(arg.newdir),
                     newname,
+                    flags: RenameFlags::from_bits_truncate(arg.flags),
                 }))
             }
 
             fuse_opcode::FUSE_LINK => {
-                let arg = decoder.fetch()?;
+                let arg: &fuse_link_in = decoder.fetch()?;
                 let newname = decoder.fetch_str()?;
                 Ok(Operation::Link(Link {
-                    header,
-                    arg,
+                    ino: NodeID::from_raw(arg.oldnodeid),
+                    newparent: NodeID::from_raw(header.nodeid),
                     newname,
                 }))
             }
 
             fuse_opcode::FUSE_OPEN => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Open(Open { header, arg }))
+                let arg: &fuse_open_in = decoder.fetch()?;
+                Ok(Operation::Open(Open {
+                    ino: NodeID::from_raw(header.nodeid),
+                    options: OpenOptions::from_raw(arg.flags),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_READ => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Read(Read { header, arg }))
+                let arg: &fuse_read_in = decoder.fetch()?;
+                Ok(Operation::Read(Read {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    offset: arg.offset,
+                    size: arg.size,
+                    options: OpenOptions::from_raw(arg.flags),
+                    lock_owner: (arg.read_flags & FUSE_READ_LOCKOWNER != 0)
+                        .then(|| LockOwnerID::from_raw(arg.lock_owner)),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_WRITE => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Write(Write { header, arg }))
+                let arg: &fuse_write_in = decoder.fetch()?;
+                Ok(Operation::Write(Write {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    offset: arg.offset,
+                    size: arg.size,
+                    options: OpenOptions::from_raw(arg.flags),
+                    lock_owner: (arg.write_flags & FUSE_WRITE_LOCKOWNER != 0)
+                        .then(|| LockOwnerID::from_raw(arg.lock_owner)),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_RELEASE => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Release(Release { header, arg }))
+                let arg: &fuse_release_in = decoder.fetch()?;
+                Ok(Operation::Release(Release {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    options: OpenOptions::from_raw(arg.flags),
+                    lock_owner: LockOwnerID::from_raw(arg.lock_owner),
+                    flags: ReleaseFlags::from_bits_truncate(arg.release_flags),
+                    _marker: PhantomData,
+                }))
             }
 
-            fuse_opcode::FUSE_STATFS => Ok(Operation::Statfs(Statfs { header })),
+            fuse_opcode::FUSE_STATFS => Ok(Operation::Statfs(Statfs {
+                ino: NodeID::from_raw(header.nodeid),
+                _marker: PhantomData,
+            })),
 
             fuse_opcode::FUSE_FSYNC => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Fsync(Fsync { header, arg }))
+                let arg: &fuse_fsync_in = decoder.fetch()?;
+                Ok(Operation::Fsync(Fsync {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    datasync: arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0,
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_SETXATTR => {
-                let arg = decoder.fetch::<fuse_setxattr_in>()?;
+                let arg: &fuse_setxattr_in = decoder.fetch::<fuse_setxattr_in>()?;
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
                 Ok(Operation::Setxattr(Setxattr {
-                    header,
-                    arg,
+                    ino: NodeID::from_raw(header.nodeid),
                     name,
                     value,
+                    flags: SetxattrFlags::from_bits_truncate(arg.flags),
                 }))
             }
 
             fuse_opcode::FUSE_GETXATTR => {
-                let arg = decoder.fetch()?;
+                let arg: &fuse_getxattr_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Getxattr(Getxattr { header, arg, name }))
+                Ok(Operation::Getxattr(Getxattr {
+                    ino: NodeID::from_raw(header.nodeid),
+                    name,
+                    size: arg.size,
+                }))
             }
 
             fuse_opcode::FUSE_LISTXATTR => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Listxattr(Listxattr { header, arg }))
+                let arg: &fuse_getxattr_in = decoder.fetch()?;
+                Ok(Operation::Listxattr(Listxattr {
+                    ino: NodeID::from_raw(header.nodeid),
+                    size: arg.size,
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_REMOVEXATTR => {
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Removexattr(Removexattr { header, name }))
-            }
-
-            fuse_opcode::FUSE_FLUSH => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Flush(Flush { header, arg }))
-            }
-
-            fuse_opcode::FUSE_OPENDIR => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Opendir(Opendir { header, arg }))
-            }
-
-            fuse_opcode::FUSE_READDIR => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Readdir(Readdir {
-                    header,
-                    arg,
-                    mode: ReaddirMode::Normal,
+                Ok(Operation::Removexattr(Removexattr {
+                    ino: NodeID::from_raw(header.nodeid),
+                    name,
                 }))
             }
 
-            fuse_opcode::FUSE_READDIRPLUS => {
-                let arg = decoder.fetch()?;
+            fuse_opcode::FUSE_FLUSH => {
+                let arg: &fuse_flush_in = decoder.fetch()?;
+                Ok(Operation::Flush(Flush {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    lock_owner: LockOwnerID::from_raw(arg.lock_owner),
+                    _marker: PhantomData,
+                }))
+            }
+
+            fuse_opcode::FUSE_OPENDIR => {
+                let arg: &fuse_open_in = decoder.fetch()?;
+                Ok(Operation::Opendir(Opendir {
+                    ino: NodeID::from_raw(header.nodeid),
+                    options: OpenOptions::from_raw(arg.flags),
+                    _marker: PhantomData,
+                }))
+            }
+
+            opcode @ fuse_opcode::FUSE_READDIR | opcode @ fuse_opcode::FUSE_READDIRPLUS => {
+                let arg: &fuse_read_in = decoder.fetch()?;
                 Ok(Operation::Readdir(Readdir {
-                    header,
-                    arg,
-                    mode: ReaddirMode::Plus,
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    offset: arg.offset,
+                    size: arg.size,
+                    mode: if opcode == fuse_opcode::FUSE_READDIRPLUS {
+                        ReaddirMode::Plus
+                    } else {
+                        ReaddirMode::Normal
+                    },
+                    _marker: PhantomData,
                 }))
             }
 
             fuse_opcode::FUSE_RELEASEDIR => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Releasedir(Releasedir { header, arg }))
+                let arg: &fuse_release_in = decoder.fetch()?;
+                Ok(Operation::Releasedir(Releasedir {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    options: OpenOptions::from_raw(arg.flags),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_FSYNCDIR => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Fsyncdir(Fsyncdir { header, arg }))
+                let arg: &fuse_fsync_in = decoder.fetch()?;
+                Ok(Operation::Fsyncdir(Fsyncdir {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    datasync: arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0,
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_GETLK => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Getlk(Getlk { header, arg }))
+                let arg: &fuse_lk_in = decoder.fetch()?;
+                Ok(Operation::Getlk(Getlk {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    owner: LockOwnerID::from_raw(arg.owner),
+                    file_lock: FileLock {
+                        typ: arg.lk.typ,
+                        start: arg.lk.start,
+                        end: arg.lk.end,
+                        pid: PID::from_raw(arg.lk.pid),
+                    },
+                    _marker: PhantomData,
+                }))
             }
 
             opcode @ fuse_opcode::FUSE_SETLK | opcode @ fuse_opcode::FUSE_SETLKW => {
@@ -292,46 +448,122 @@ impl<'op> Operation<'op> {
                 };
 
                 if arg.lk_flags & FUSE_LK_FLOCK == 0 {
-                    Ok(Operation::Setlk(Setlk { header, arg, sleep }))
+                    Ok(Operation::Setlk(Setlk {
+                        ino: NodeID::from_raw(header.nodeid),
+                        fh: FileID::from_raw(arg.fh),
+                        file_lock: FileLock {
+                            typ: arg.lk.typ,
+                            start: arg.lk.start,
+                            end: arg.lk.end,
+                            pid: PID::from_raw(arg.lk.pid),
+                        },
+                        sleep,
+                        _marker: PhantomData,
+                    }))
                 } else {
-                    Ok(Operation::Flock(Flock { header, arg, sleep }))
+                    Ok(Operation::Flock(Flock {
+                        ino: NodeID::from_raw(header.nodeid),
+                        fh: FileID::from_raw(arg.fh),
+                        owner: LockOwnerID::from_raw(arg.owner),
+                        op: match arg.lk.typ as i32 {
+                            libc::F_RDLCK if sleep => FlockOp::Shared,
+                            libc::F_RDLCK => FlockOp::SharedNonblock,
+                            libc::F_WRLCK if sleep => FlockOp::Exclusive,
+                            libc::F_WRLCK => FlockOp::ExclusiveNonblock,
+                            libc::F_UNLCK => FlockOp::Unlock,
+                            _ => return Err(Error::InvalidFlockType),
+                        },
+                        _marker: PhantomData,
+                    }))
                 }
             }
 
             fuse_opcode::FUSE_ACCESS => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Access(Access { header, arg }))
+                let arg: &fuse_access_in = decoder.fetch()?;
+                Ok(Operation::Access(Access {
+                    ino: NodeID::from_raw(header.nodeid),
+                    mask: FilePermissions::from_bits_truncate(arg.mask) & FilePermissions::MASK,
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_CREATE => {
-                let arg = decoder.fetch()?;
+                let arg: &fuse_create_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Create(Create { header, arg, name }))
+                Ok(Operation::Create(Create {
+                    parent: NodeID::from_raw(header.nodeid),
+                    name,
+                    mode: FileMode::from_raw(arg.mode),
+                    umask: FilePermissions::from_bits_truncate(arg.umask) & FilePermissions::MASK,
+                    open_options: OpenOptions::from_raw(arg.flags),
+                }))
             }
 
             fuse_opcode::FUSE_BMAP => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Bmap(Bmap { header, arg }))
+                let arg: &fuse_bmap_in = decoder.fetch()?;
+                Ok(Operation::Bmap(Bmap {
+                    ino: NodeID::from_raw(header.nodeid),
+                    block: arg.block,
+                    blocksize: arg.blocksize,
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_FALLOCATE => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Fallocate(Fallocate { header, arg }))
+                let arg: &fuse_fallocate_in = decoder.fetch()?;
+                Ok(Operation::Fallocate(Fallocate {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    offset: arg.offset,
+                    length: arg.length,
+                    mode: FallocateFlags::from_bits_truncate(arg.mode),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_COPY_FILE_RANGE => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::CopyFileRange(CopyFileRange { header, arg }))
+                let arg: &fuse_copy_file_range_in = decoder.fetch()?;
+                Ok(Operation::CopyFileRange(CopyFileRange {
+                    ino_in: NodeID::from_raw(header.nodeid),
+                    fh_in: FileID::from_raw(arg.fh_in),
+                    offset_in: arg.off_in,
+                    ino_out: NodeID::from_raw(arg.nodeid_out),
+                    fh_out: FileID::from_raw(arg.fh_out),
+                    offset_out: arg.off_out,
+                    length: arg.len,
+                    flags: arg.flags,
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_POLL => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Poll(Poll { header, arg }))
+                let arg: &fuse_poll_in = decoder.fetch()?;
+                Ok(Operation::Poll(Poll {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    events: PollEvents::from_bits_truncate(arg.events),
+                    kh: (arg.flags & FUSE_POLL_SCHEDULE_NOTIFY != 0)
+                        .then(|| PollWakeupID::from_raw(arg.kh)),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_LSEEK => {
-                let arg = decoder.fetch()?;
-                Ok(Operation::Lseek(Lseek { header, arg }))
+                let arg: &fuse_lseek_in = decoder.fetch()?;
+                Ok(Operation::Lseek(Lseek {
+                    ino: NodeID::from_raw(header.nodeid),
+                    fh: FileID::from_raw(arg.fh),
+                    offset: arg.offset,
+                    whence: match arg.whence as i32 {
+                        libc::SEEK_SET => Whence::Set,
+                        libc::SEEK_CUR => Whence::Current,
+                        libc::SEEK_END => Whence::End,
+                        libc::SEEK_DATA => Whence::Data,
+                        libc::SEEK_HOLE => Whence::Hole,
+                        _ => return Err(Error::UnknownLseekWhence),
+                    },
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_INIT | fuse_opcode::FUSE_DESTROY => {
@@ -345,8 +577,9 @@ impl<'op> Operation<'op> {
 }
 
 /// A set of forget information removed from the kernel's internal caches.
-pub struct Forgets<'op> {
-    inner: ForgetsInner<'op>,
+pub enum Forgets<'op> {
+    Single([Forget; 1]),
+    Batch(&'op [Forget]),
 }
 
 impl fmt::Debug for Forgets<'_> {
@@ -355,23 +588,14 @@ impl fmt::Debug for Forgets<'_> {
     }
 }
 
-enum ForgetsInner<'op> {
-    Single(fuse_forget_one),
-    Batch(&'op [fuse_forget_one]),
-}
-
-impl<'op> std::ops::Deref for Forgets<'op> {
+impl<'op> Deref for Forgets<'op> {
     type Target = [Forget];
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        let (ptr, len) = match &self.inner {
-            ForgetsInner::Single(forget) => (forget as *const fuse_forget_one, 1),
-            ForgetsInner::Batch(forgets) => (forgets.as_ptr(), forgets.len()),
-        };
-        unsafe {
-            // Safety: Forget has the same layout with fuse_forget_one
-            std::slice::from_raw_parts(ptr as *const Forget, len)
+        match self {
+            Self::Single(forget) => forget,
+            Self::Batch(forgets) => forgets,
         }
     }
 }
@@ -379,13 +603,15 @@ impl<'op> std::ops::Deref for Forgets<'op> {
 /// A forget information.
 #[repr(transparent)]
 pub struct Forget {
-    forget: fuse_forget_one,
+    raw: fuse_forget_one,
 }
 
 impl fmt::Debug for Forget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Forget").finish()
+        f.debug_struct("Forget")
+            .field("ino", &self.ino())
+            .field("nlookup", &self.nlookup())
+            .finish()
     }
 }
 
@@ -393,75 +619,43 @@ impl Forget {
     /// Return the inode number of the target inode.
     #[inline]
     pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.forget.nodeid)
+        NodeID::from_raw(self.raw.nodeid)
     }
 
     /// Return the released lookup count of the target inode.
     #[inline]
     pub fn nlookup(&self) -> u64 {
-        self.forget.nlookup
+        self.raw.nlookup
     }
 }
 
 /// A reply to a `NOTIFY_RETRIEVE` notification.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct NotifyReply<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_notify_retrieve_in,
-}
+    /// The unique ID of the corresponding notification message.
+    pub unique: NotifyID,
 
-impl fmt::Debug for NotifyReply<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("NotifyReply").finish()
-    }
-}
+    /// The inode number corresponding with the cache data.
+    pub ino: NodeID,
 
-impl<'op> NotifyReply<'op> {
-    /// Return the unique ID of the corresponding notification message.
-    #[inline]
-    pub fn unique(&self) -> NotifyID {
-        NotifyID::from_raw(self.header.unique)
-    }
+    /// The starting position of the cache data.
+    pub offset: u64,
 
-    /// Return the inode number corresponding with the cache data.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The length of the retrieved cache data.
+    pub size: u32,
 
-    /// Return the starting position of the cache data.
-    #[inline]
-    pub fn offset(&self) -> u64 {
-        self.arg.offset
-    }
-
-    /// Return the length of the retrieved cache data.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Interrupt a previous FUSE request.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Interrupt<'op> {
-    #[allow(dead_code)]
-    header: &'op fuse_in_header,
-    arg: &'op fuse_interrupt_in,
-}
-
-impl fmt::Debug for Interrupt<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Interrupt").finish()
-    }
-}
-
-impl<'op> Interrupt<'op> {
     /// Return the target unique ID to be interrupted.
-    #[inline]
-    pub fn unique(&self) -> RequestID {
-        RequestID::from_raw(self.arg.unique & !FUSE_INT_REQ_BIT)
-    }
+    pub unique: RequestID,
+
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Lookup a directory entry by name.
@@ -471,28 +665,14 @@ impl<'op> Interrupt<'op> {
 /// of the corresponding inode is incremented on success.
 ///
 /// See also the documentation of `ReplyEntry` for tuning the reply parameters.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Lookup<'op> {
-    header: &'op fuse_in_header,
-    name: &'op OsStr,
-}
+    /// The inode number of the parent directory.
+    pub parent: NodeID,
 
-impl fmt::Debug for Lookup<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Lookup").finish()
-    }
-}
-
-impl<'op> Lookup<'op> {
-    /// Return the inode number of the parent directory.
-    pub fn parent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the name of the entry to be looked up.
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
+    /// The name of the entry to be looked up.
+    pub name: &'op OsStr,
 }
 
 /// Get file attributes.
@@ -501,134 +681,60 @@ impl<'op> Lookup<'op> {
 ///
 /// If writeback caching is enabled, the kernel might ignore
 /// some of the attribute values, such as `st_size`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Getattr<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_getattr_in,
-}
+    /// The inode number for obtaining the attribute value.
+    pub ino: NodeID,
 
-impl fmt::Debug for Getattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Getattr").finish()
-    }
-}
+    /// The handle of opened file, if specified.
+    pub fh: Option<FileID>,
 
-impl<'op> Getattr<'op> {
-    /// Return the inode number for obtaining the attribute value.
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the handle of opened file, if specified.
-    pub fn fh(&self) -> Option<FileID> {
-        if self.arg.getattr_flags & FUSE_GETATTR_FH != 0 {
-            Some(FileID::from_raw(self.arg.fh))
-        } else {
-            None
-        }
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Set file attributes.
 ///
 /// When the setting of attribute values succeeds, the filesystem replies its value
 /// to the kernel using `ReplyAttr`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Setattr<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_setattr_in,
-}
+    /// The inode number to be set the attribute values.
+    pub ino: NodeID,
 
-impl fmt::Debug for Setattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Setattr").finish()
-    }
-}
+    /// The handle of opened file, if specified.
+    pub fh: Option<FileID>,
 
-impl<'op> Setattr<'op> {
-    #[inline(always)]
-    fn get<R>(&self, flag: u32, f: impl FnOnce(&fuse_setattr_in) -> R) -> Option<R> {
-        if self.arg.valid & flag != 0 {
-            Some(f(self.arg))
-        } else {
-            None
-        }
-    }
+    /// The file mode to be set.
+    pub mode: Option<FileMode>,
 
-    /// Return the inode number to be set the attribute values.
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The user id to be set.
+    pub uid: Option<UID>,
 
-    /// Return the handle of opened file, if specified.
-    #[inline]
-    pub fn fh(&self) -> Option<FileID> {
-        self.get(FATTR_FH, |arg| FileID::from_raw(arg.fh))
-    }
+    /// The group id to be set.
+    pub gid: Option<GID>,
 
-    /// Return the file mode to be set.
-    #[inline]
-    pub fn mode(&self) -> Option<FileMode> {
-        self.get(FATTR_MODE, |arg| FileMode::from_raw(arg.mode))
-    }
+    /// The size of the file content to be set.
+    pub size: Option<u64>,
 
-    /// Return the user id to be set.
-    #[inline]
-    pub fn uid(&self) -> Option<UID> {
-        self.get(FATTR_UID, |arg| UID::from_raw(arg.uid))
-    }
+    /// The last accessed time to be set.
+    pub atime: Option<SetAttrTime>,
 
-    /// Return the group id to be set.
-    #[inline]
-    pub fn gid(&self) -> Option<GID> {
-        self.get(FATTR_GID, |arg| GID::from_raw(arg.gid))
-    }
+    /// The last modified time to be set.
+    pub mtime: Option<SetAttrTime>,
 
-    /// Return the size of the file content to be set.
-    #[inline]
-    pub fn size(&self) -> Option<u64> {
-        self.get(FATTR_SIZE, |arg| arg.size)
-    }
+    /// The last creation time to be set.
+    pub ctime: Option<Duration>,
 
-    /// Return the last accessed time to be set.
-    #[inline]
-    pub fn atime(&self) -> Option<SetAttrTime> {
-        self.get(FATTR_ATIME, |arg| {
-            if arg.valid & FATTR_ATIME_NOW != 0 {
-                SetAttrTime::Now
-            } else {
-                SetAttrTime::Timespec(Duration::new(arg.atime, arg.atimensec))
-            }
-        })
-    }
+    /// The identifier of lock owner.
+    pub lock_owner: Option<LockOwnerID>,
 
-    /// Return the last modified time to be set.
-    #[inline]
-    pub fn mtime(&self) -> Option<SetAttrTime> {
-        self.get(FATTR_MTIME, |arg| {
-            if arg.valid & FATTR_MTIME_NOW != 0 {
-                SetAttrTime::Now
-            } else {
-                SetAttrTime::Timespec(Duration::new(arg.mtime, arg.mtimensec))
-            }
-        })
-    }
-
-    /// Return the last creation time to be set.
-    #[inline]
-    pub fn ctime(&self) -> Option<Duration> {
-        self.get(FATTR_CTIME, |arg| Duration::new(arg.ctime, arg.ctimensec))
-    }
-
-    /// Return the identifier of lock owner.
-    #[inline]
-    pub fn lock_owner(&self) -> Option<LockOwnerID> {
-        self.get(FATTR_LOCKOWNER, |arg| LockOwnerID::from_raw(arg.lock_owner))
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// The time value requested to be set.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SetAttrTime {
     /// Set the specified time value.
@@ -639,271 +745,120 @@ pub enum SetAttrTime {
 }
 
 /// Read a symbolic link.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Readlink<'op> {
-    header: &'op fuse_in_header,
-}
+    /// The inode number to be read the link value.
+    pub ino: NodeID,
 
-impl fmt::Debug for Readlink<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Readlink").finish()
-    }
-}
-
-impl<'op> Readlink<'op> {
-    /// Return the inode number to be read the link value.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Create a symbolic link.
 ///
 /// When the link is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Symlink<'op> {
-    header: &'op fuse_in_header,
-    name: &'op OsStr,
-    link: &'op OsStr,
-}
+    /// The inode number of the parent directory.
+    pub parent: NodeID,
 
-impl fmt::Debug for Symlink<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Symlink").finish()
-    }
-}
+    /// The name of the symbolic link to create.
+    pub name: &'op OsStr,
 
-impl<'op> Symlink<'op> {
-    /// Return the inode number of the parent directory.
-    #[inline]
-    pub fn parent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the name of the symbolic link to create.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
-
-    /// Return the contents of the symbolic link.
-    #[inline]
-    pub fn link(&self) -> &OsStr {
-        self.link
-    }
+    /// The contents of the symbolic link.
+    pub link: &'op OsStr,
 }
 
 /// Create a file node.
 ///
 /// When the file node is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Mknod<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_mknod_in,
-    name: &'op OsStr,
-}
+    /// The inode number of the parent directory.
+    pub parent: NodeID,
 
-impl fmt::Debug for Mknod<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Mknod").finish()
-    }
-}
+    /// The file name to create.
+    pub name: &'op OsStr,
 
-impl<'op> Mknod<'op> {
-    /// Return the inode number of the parent directory.
-    #[inline]
-    pub fn parent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The file type and permissions used when creating the new file.
+    pub mode: FileMode,
 
-    /// Return the file name to create.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
-
-    /// Return the file type and permissions used when creating the new file.
-    #[inline]
-    pub fn mode(&self) -> FileMode {
-        FileMode::from_raw(self.arg.mode)
-    }
-
-    /// Return the device number for special file.
+    /// The device number for special file.
     ///
     /// This value is meaningful only if the created node is a device file
     /// (i.e. the file type is specified either `S_IFCHR` or `S_IFBLK`).
-    #[inline]
-    pub fn rdev(&self) -> DeviceID {
-        DeviceID::from_kernel_dev(self.arg.rdev)
-    }
+    pub rdev: DeviceID,
 
-    /// Return the mask of permissions for the node to be created.
-    #[inline]
-    pub fn umask(&self) -> FilePermissions {
-        FilePermissions::from_bits_truncate(self.arg.umask).intersection(FilePermissions::MASK)
-    }
+    /// The mask of permissions for the node to be created.
+    pub umask: FilePermissions,
 }
 
 /// Create a directory node.
 ///
 /// When the directory is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Mkdir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_mkdir_in,
-    name: &'op OsStr,
-}
+    /// The inode number of the parent directory where the directory is created.
+    pub parent: NodeID,
 
-impl fmt::Debug for Mkdir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Mkdir").finish()
-    }
-}
+    /// The name of the directory to be created.
+    pub name: &'op OsStr,
 
-impl<'op> Mkdir<'op> {
-    /// Return the inode number of the parent directory where the directory is created.
-    #[inline]
-    pub fn parent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The file permissions used when creating the new directory.
+    pub permissions: FilePermissions,
 
-    /// Return the name of the directory to be created.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
-
-    /// Return the file type and permissions used when creating the new directory.
-    #[inline]
-    pub fn permissions(&self) -> FilePermissions {
-        FilePermissions::from_bits_truncate(self.arg.mode)
-    }
-
-    /// Return the mask of permissions for the directory to be created.
-    #[inline]
-    pub fn umask(&self) -> FilePermissions {
-        FilePermissions::from_bits_truncate(self.arg.umask).intersection(FilePermissions::MASK)
-    }
+    /// The mask of permissions for the directory to be created.
+    pub umask: FilePermissions,
 }
 
 // TODO: description about lookup count.
 
 /// Remove a file.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Unlink<'op> {
-    header: &'op fuse_in_header,
-    name: &'op OsStr,
-}
+    /// The inode number of the parent directory.
+    pub parent: NodeID,
 
-impl fmt::Debug for Unlink<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Unlink").finish()
-    }
-}
-
-impl<'op> Unlink<'op> {
-    /// Return the inode number of the parent directory.
-    #[inline]
-    pub fn parent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the file name to be removed.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
+    /// The file name to be removed.
+    pub name: &'op OsStr,
 }
 
 /// Remove a directory.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Rmdir<'op> {
-    header: &'op fuse_in_header,
-    name: &'op OsStr,
-}
+    /// The inode number of the parent directory.
+    pub parent: NodeID,
 
-impl fmt::Debug for Rmdir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Rmdir").finish()
-    }
-}
-
-impl<'op> Rmdir<'op> {
-    // TODO: description about lookup count.
-
-    /// Return the inode number of the parent directory.
-    #[inline]
-    pub fn parent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the directory name to be removed.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
+    /// The directory name to be removed.
+    pub name: &'op OsStr,
 }
 
 /// Rename a file.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Rename<'op> {
-    header: &'op fuse_in_header,
-    arg: RenameArg<'op>,
-    name: &'op OsStr,
-    newname: &'op OsStr,
-}
+    /// The inode number of the old parent directory.
+    pub parent: NodeID,
 
-enum RenameArg<'op> {
-    V1(&'op fuse_rename_in),
-    V2(&'op fuse_rename2_in),
-}
+    /// The old name of the target node.
+    pub name: &'op OsStr,
 
-impl fmt::Debug for Rename<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Rename").finish()
-    }
-}
+    /// The inode number of the new parent directory.
+    pub newparent: NodeID,
 
-impl<'op> Rename<'op> {
-    /// Return the inode number of the old parent directory.
-    #[inline]
-    pub fn parent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The new name of the target node.
+    pub newname: &'op OsStr,
 
-    /// Return the old name of the target node.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
-
-    /// Return the inode number of the new parent directory.
-    #[inline]
-    pub fn newparent(&self) -> NodeID {
-        match self.arg {
-            RenameArg::V1(arg) => NodeID::from_raw(arg.newdir),
-            RenameArg::V2(arg) => NodeID::from_raw(arg.newdir),
-        }
-    }
-
-    /// Return the new name of the target node.
-    #[inline]
-    pub fn newname(&self) -> &OsStr {
-        self.newname
-    }
-
-    /// Return the rename flags.
-    #[inline]
-    pub fn flags(&self) -> RenameFlags {
-        match self.arg {
-            RenameArg::V1(..) => RenameFlags::empty(),
-            RenameArg::V2(arg) => RenameFlags::from_bits_truncate(arg.flags),
-        }
-    }
+    /// The rename flags.
+    pub flags: RenameFlags,
 }
 
 bitflags! {
@@ -920,37 +875,17 @@ bitflags! {
 ///
 /// When the link is successfully created, the filesystem must send
 /// its attribute values using `ReplyEntry`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Link<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_link_in,
-    newname: &'op OsStr,
-}
+    /// The *original* inode number which links to the created hard link.
+    pub ino: NodeID,
 
-impl fmt::Debug for Link<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Link").finish()
-    }
-}
+    /// The inode number of the parent directory where the hard link is created.
+    pub newparent: NodeID,
 
-impl<'op> Link<'op> {
-    /// Return the *original* inode number which links to the created hard link.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.arg.oldnodeid)
-    }
-
-    /// Return the inode number of the parent directory where the hard link is created.
-    #[inline]
-    pub fn newparent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the name of the hard link to be created.
-    #[inline]
-    pub fn newname(&self) -> &OsStr {
-        self.newname
-    }
+    /// The name of the hard link to be created.
+    pub newname: &'op OsStr,
 }
 
 /// Open a file.
@@ -962,32 +897,17 @@ impl<'op> Link<'op> {
 /// handling the opened file.
 ///
 /// See also the documentation of `ReplyOpen` for tuning the reply parameters.
+// TODO: Description of behavior when writeback caching is enabled.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Open<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_open_in,
-}
+    /// The inode number to be opened.
+    pub ino: NodeID,
 
-impl fmt::Debug for Open<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Open").finish()
-    }
-}
+    /// The access mode and creation/status flags of the opened file.
+    pub options: OpenOptions,
 
-impl<'op> Open<'op> {
-    // TODO: Description of behavior when writeback caching is enabled.
-
-    /// Return the inode number to be opened.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the access mode and creation/status flags of the opened file.
-    #[inline]
-    pub fn options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// The compound type of the access mode and auxiliary flags of opened files.
@@ -1109,58 +1029,28 @@ bitflags! {
 /// the filesystem should send *exactly* the specified range of file content to the
 /// kernel. If the length of the passed data is shorter than `size`, the rest of
 /// the data will be substituted with zeroes.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Read<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_read_in,
-}
+    /// The inode number to be read.
+    pub ino: NodeID,
 
-impl fmt::Debug for Read<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Read").finish()
-    }
-}
+    /// The handle of opened file.
+    pub fh: FileID,
 
-impl<'op> Read<'op> {
-    /// Return the inode number to be read.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The starting position of the content to be read.
+    pub offset: u64,
 
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
+    /// The length of the data to be read.
+    pub size: u32,
 
-    /// Return the starting position of the content to be read.
-    #[inline]
-    pub fn offset(&self) -> u64 {
-        self.arg.offset
-    }
+    /// The flags specified at opening the file.
+    pub options: OpenOptions,
 
-    /// Return the length of the data to be read.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
+    /// The identifier of lock owner.
+    pub lock_owner: Option<LockOwnerID>,
 
-    /// Return the flags specified at opening the file.
-    #[inline]
-    pub fn options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
-
-    /// Return the identifier of lock owner.
-    #[inline]
-    pub fn lock_owner(&self) -> Option<LockOwnerID> {
-        if self.arg.read_flags & FUSE_READ_LOCKOWNER != 0 {
-            Some(LockOwnerID::from_raw(self.arg.lock_owner))
-        } else {
-            None
-        }
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Write data to a file.
@@ -1173,207 +1063,109 @@ impl<'op> Read<'op> {
 ///
 /// When the file is not opened in `direct_io` mode (i.e. the page caching is enabled),
 /// the filesystem should receive *exactly* the specified range of file content from the kernel.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Write<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_write_in,
-}
+    /// The inode number to be written.
+    pub ino: NodeID,
 
-impl fmt::Debug for Write<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Write").finish()
-    }
-}
+    /// The handle of opened file.
+    pub fh: FileID,
 
-impl<'op> Write<'op> {
-    /// Return the inode number to be written.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The starting position of contents to be written.
+    pub offset: u64,
 
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
+    /// The length of contents to be written.
+    pub size: u32,
 
-    /// Return the starting position of contents to be written.
-    #[inline]
-    pub fn offset(&self) -> u64 {
-        self.arg.offset
-    }
+    /// The flags specified at opening the file.
+    pub options: OpenOptions,
 
-    /// Return the length of contents to be written.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
+    /// The identifier of lock owner.
+    pub lock_owner: Option<LockOwnerID>,
 
-    /// Return the flags specified at opening the file.
-    #[inline]
-    pub fn options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
-
-    /// Return the identifier of lock owner.
-    #[inline]
-    pub fn lock_owner(&self) -> Option<LockOwnerID> {
-        if self.arg.write_flags & FUSE_WRITE_LOCKOWNER != 0 {
-            Some(LockOwnerID::from_raw(self.arg.lock_owner))
-        } else {
-            None
-        }
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Release an opened file.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Release<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_release_in,
+    /// The inode number of opened file.
+    pub ino: NodeID,
+
+    /// The handle of opened file.
+    pub fh: FileID,
+
+    /// The flags specified at opening the file.
+    pub options: OpenOptions,
+
+    /// The identifier of lock owner.
+    pub lock_owner: LockOwnerID,
+
+    /// The flags of release operation.
+    pub flags: ReleaseFlags,
+
+    _marker: PhantomData<&'op ()>,
 }
 
-impl fmt::Debug for Release<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Release").finish()
-    }
-}
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct ReleaseFlags: u32 {
+        /// Indicates whether the operation indicates a flush.
+        const FLUSH = FUSE_RELEASE_FLUSH;
 
-impl<'op> Release<'op> {
-    /// Return the inode number of opened file.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return the flags specified at opening the file.
-    #[inline]
-    pub fn options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
-
-    /// Return the identifier of lock owner.
-    #[inline]
-    pub fn lock_owner(&self) -> LockOwnerID {
-        LockOwnerID::from_raw(self.arg.lock_owner)
-    }
-
-    /// Return whether the operation indicates a flush.
-    #[inline]
-    pub fn flush(&self) -> bool {
-        self.arg.release_flags & FUSE_RELEASE_FLUSH != 0
-    }
-
-    /// Return whether the `flock` locks for this file should be released.
-    #[inline]
-    pub fn flock_release(&self) -> bool {
-        self.arg.release_flags & FUSE_RELEASE_FLOCK_UNLOCK != 0
+        /// Indicates whether the `flock` locks for this file should be released.
+        const FLOCK_UNLOCK = FUSE_RELEASE_FLOCK_UNLOCK;
     }
 }
 
 /// Get the filesystem statistics.
 ///
 /// The obtained statistics must be sent to the kernel using `ReplyStatfs`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Statfs<'op> {
-    header: &'op fuse_in_header,
-}
+    /// The inode number or `0` which means "undefined".
+    pub ino: NodeID,
 
-impl fmt::Debug for Statfs<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Statfs").finish()
-    }
-}
-
-impl<'op> Statfs<'op> {
-    /// Return the inode number or `0` which means "undefined".
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Synchronize the file contents.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Fsync<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_fsync_in,
-}
+    /// The inode number to be synchronized.
+    pub ino: NodeID,
 
-impl fmt::Debug for Fsync<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Fsync").finish()
-    }
-}
+    /// The handle of opened file.
+    pub fh: FileID,
 
-impl<'op> Fsync<'op> {
-    /// Return the inode number to be synchronized.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return whether to synchronize only the file contents.
+    /// Indicates whether to synchronize only the file contents.
     ///
     /// When this method returns `true`, the metadata does not have to be flushed.
-    #[inline]
-    pub fn datasync(&self) -> bool {
-        self.arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
-    }
+    pub datasync: bool,
+
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Set an extended attribute.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Setxattr<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_setxattr_in,
-    name: &'op OsStr,
-    value: &'op [u8],
-}
+    /// The inode number to set the value of extended attribute.
+    pub ino: NodeID,
 
-impl fmt::Debug for Setxattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Setxattr").finish()
-    }
-}
+    /// The name of extended attribute to be set.
+    pub name: &'op OsStr,
 
-impl<'op> Setxattr<'op> {
-    /// Return the inode number to set the value of extended attribute.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The value of extended attribute.
+    pub value: &'op [u8],
 
-    /// Return the name of extended attribute to be set.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
-
-    /// Return the value of extended attribute.
-    #[inline]
-    pub fn value(&self) -> &[u8] {
-        self.value
-    }
-
-    /// Return the flags that specifies the meanings of this operation.
-    #[inline]
-    pub fn flags(&self) -> SetxattrFlags {
-        SetxattrFlags::from_bits_truncate(self.arg.flags)
-    }
+    /// The flags that specifies the meanings of this operation.
+    pub flags: SetxattrFlags,
 }
 
 bitflags! {
@@ -1396,37 +1188,17 @@ bitflags! {
 /// * Otherwise, returns the attribute value with the specified name.
 ///   The filesystem should send an `ERANGE` error if the specified
 ///   size is too small for the attribute value.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Getxattr<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_getxattr_in,
-    name: &'op OsStr,
-}
+    /// The inode number to be get the extended attribute.
+    pub ino: NodeID,
 
-impl fmt::Debug for Getxattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Getxattr").finish()
-    }
-}
+    /// The name of the extend attribute.
+    pub name: &'op OsStr,
 
-impl<'op> Getxattr<'op> {
-    /// Return the inode number to be get the extended attribute.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the name of the extend attribute.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
-
-    /// Return the maximum length of the attribute value to be replied.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
+    /// The maximum length of the attribute value to be replied.
+    pub size: u32,
 }
 
 /// List extended attribute names.
@@ -1434,57 +1206,27 @@ impl<'op> Getxattr<'op> {
 /// Each element of the attribute names list must be null-terminated.
 /// As with `Getxattr`, the filesystem must send the data length of the attribute
 /// names using `ReplyXattr` if `size` is zero.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Listxattr<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_getxattr_in,
-}
+    /// The inode number to be obtained the attribute names.
+    pub ino: NodeID,
 
-impl fmt::Debug for Listxattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Listxattr").finish()
-    }
-}
+    /// The maximum length of the attribute names to be replied.
+    pub size: u32,
 
-impl<'op> Listxattr<'op> {
-    /// Return the inode number to be obtained the attribute names.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the maximum length of the attribute names to be replied.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Remove an extended attribute.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Removexattr<'op> {
-    header: &'op fuse_in_header,
-    name: &'op OsStr,
-}
+    /// The inode number to remove the extended attribute.
+    pub ino: NodeID,
 
-impl fmt::Debug for Removexattr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Removexattr").finish()
-    }
-}
-
-impl<'op> Removexattr<'op> {
-    /// Return the inode number to remove the extended attribute.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the name of extended attribute to be removed.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
+    /// The name of extended attribute to be removed.
+    pub name: &'op OsStr,
 }
 
 /// Close a file descriptor.
@@ -1497,73 +1239,56 @@ impl<'op> Removexattr<'op> {
 /// flush operations might be issued for one `Open`.
 /// Also, it is not guaranteed that flush will always be issued
 /// after some writes.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Flush<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_flush_in,
-}
+    /// The inode number of target file.
+    pub ino: NodeID,
 
-impl fmt::Debug for Flush<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Flush").finish()
-    }
-}
+    /// The handle of opened file.
+    pub fh: FileID,
 
-impl<'op> Flush<'op> {
-    /// Return the inode number of target file.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The identifier of lock owner.
+    pub lock_owner: LockOwnerID,
 
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return the identifier of lock owner.
-    #[inline]
-    pub fn lock_owner(&self) -> LockOwnerID {
-        LockOwnerID::from_raw(self.arg.lock_owner)
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Open a directory.
 ///
 /// If the directory is successfully opened, the filesystem must send
 /// the identifier to the opened directory handle using `ReplyOpen`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Opendir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_open_in,
-}
+    /// The inode number to be opened.
+    pub ino: NodeID,
 
-impl fmt::Debug for Opendir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Opendir").finish()
-    }
-}
+    /// The open flags.
+    pub options: OpenOptions,
 
-impl<'op> Opendir<'op> {
-    /// Return the inode number to be opened.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the open flags.
-    #[inline]
-    pub fn options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Read contents from an opened directory.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Readdir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_read_in,
-    mode: ReaddirMode,
+    /// The inode number to be read.
+    pub ino: NodeID,
+
+    /// The handle of opened directory.
+    pub fh: FileID,
+
+    /// The *offset* value to continue reading the directory stream.
+    pub offset: u64,
+
+    /// The maximum length of returned data.
+    pub size: u32,
+
+    pub mode: ReaddirMode,
+
+    _marker: PhantomData<&'op ()>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1572,249 +1297,99 @@ pub enum ReaddirMode {
     Plus,
 }
 
-impl fmt::Debug for Readdir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Readdir").finish()
-    }
-}
-
-impl<'op> Readdir<'op> {
-    /// Return the inode number to be read.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the handle of opened directory.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return the *offset* value to continue reading the directory stream.
-    #[inline]
-    pub fn offset(&self) -> u64 {
-        self.arg.offset
-    }
-
-    /// Return the maximum length of returned data.
-    #[inline]
-    pub fn size(&self) -> u32 {
-        self.arg.size
-    }
-
-    pub fn mode(&self) -> ReaddirMode {
-        self.mode
-    }
-}
-
 /// Release an opened directory.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Releasedir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_release_in,
-}
+    /// The inode number of opened directory.
+    pub ino: NodeID,
 
-impl fmt::Debug for Releasedir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Releasedir").finish()
-    }
-}
+    /// The handle of opened directory.
+    pub fh: FileID,
 
-impl<'op> Releasedir<'op> {
-    /// Return the inode number of opened directory.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The open flags.
+    pub options: OpenOptions,
 
-    /// Return the handle of opened directory.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return the open flags.
-    #[inline]
-    pub fn options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Synchronize the directory contents.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Fsyncdir<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_fsync_in,
-}
+    /// The inode number to be synchronized.
+    pub ino: NodeID,
 
-impl fmt::Debug for Fsyncdir<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Fsyncdir").finish()
-    }
-}
+    /// The handle of opened directory.
+    pub fh: FileID,
 
-impl<'op> Fsyncdir<'op> {
-    /// Return the inode number to be synchronized.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the handle of opened directory.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return whether to synchronize only the directory contents.
+    /// Indicates whether to synchronize only the directory contents.
     ///
     /// When this method returns `true`, the metadata does not have to be flushed.
-    #[inline]
-    pub fn datasync(&self) -> bool {
-        self.arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0
-    }
+    pub datasync: bool,
+
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Test for a POSIX file lock.
 ///
 /// The lock result must be replied using `ReplyLk`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Getlk<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_lk_in,
-}
+    /// The inode number to be tested the lock.
+    pub ino: NodeID,
 
-impl fmt::Debug for Getlk<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Getlk").finish()
-    }
-}
+    /// The handle of opened file.
+    pub fh: FileID,
 
-impl<'op> Getlk<'op> {
-    /// Return the inode number to be tested the lock.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The identifier of lock owner.
+    pub owner: LockOwnerID,
 
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
+    pub file_lock: FileLock,
 
-    /// Return the identifier of lock owner.
-    #[inline]
-    pub fn owner(&self) -> LockOwnerID {
-        LockOwnerID::from_raw(self.arg.owner)
-    }
-
-    #[inline]
-    pub fn file_lock(&self) -> FileLock {
-        FileLock {
-            typ: self.arg.lk.typ,
-            start: self.arg.lk.start,
-            end: self.arg.lk.end,
-            pid: PID::from_raw(self.arg.lk.pid),
-        }
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Acquire, modify or release a POSIX file lock.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Setlk<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_lk_in,
-    sleep: bool,
-}
+    /// The inode number to be obtained the lock.
+    pub ino: NodeID,
 
-impl fmt::Debug for Setlk<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Setlk").finish()
-    }
-}
+    /// The handle of opened file.
+    pub fh: FileID,
 
-impl<'op> Setlk<'op> {
-    /// Return the inode number to be obtained the lock.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    pub file_lock: FileLock,
 
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
+    /// Indicates whether the locking operation might sleep until a lock is obtained.
+    pub sleep: bool,
 
-    #[inline]
-    pub fn file_lock(&self) -> FileLock {
-        FileLock {
-            typ: self.arg.lk.typ,
-            start: self.arg.lk.start,
-            end: self.arg.lk.end,
-            pid: PID::from_raw(self.arg.lk.pid),
-        }
-    }
-
-    /// Return whether the locking operation might sleep until a lock is obtained.
-    #[inline]
-    pub fn sleep(&self) -> bool {
-        self.sleep
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Acquire, modify or release a BSD file lock.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Flock<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_lk_in,
-    sleep: bool,
-}
+    /// The target inode number.
+    pub ino: NodeID,
 
-impl fmt::Debug for Flock<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Flock").finish()
-    }
-}
+    /// The handle of opened file.
+    pub fh: FileID,
 
-impl<'op> Flock<'op> {
-    /// Return the target inode number.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return the identifier of lock owner.
-    #[inline]
-    pub fn owner(&self) -> LockOwnerID {
-        LockOwnerID::from_raw(self.arg.owner)
-    }
+    /// The identifier of lock owner.
+    pub owner: LockOwnerID,
 
     /// Return the locking operation.
     ///
     /// See [`flock(2)`][flock] for details.
     ///
     /// [flock]: http://man7.org/linux/man-pages/man2/flock.2.html
-    #[inline]
-    pub fn op(&self) -> Option<FlockOp> {
-        match self.arg.lk.typ as i32 {
-            libc::F_RDLCK if self.sleep => Some(FlockOp::Shared),
-            libc::F_RDLCK => Some(FlockOp::SharedNonblock),
-            libc::F_WRLCK if self.sleep => Some(FlockOp::Exclusive),
-            libc::F_WRLCK => Some(FlockOp::ExclusiveNonblock),
-            libc::F_UNLCK => Some(FlockOp::Unlock),
-            _ => None,
-        }
-    }
+    pub op: FlockOp,
+
+    _marker: PhantomData<&'op ()>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -1835,30 +1410,16 @@ impl FlockOp {
 }
 
 /// Check file access permissions.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Access<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_access_in,
-}
+    /// The inode number subject to the access permission check.
+    pub ino: NodeID,
 
-impl fmt::Debug for Access<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Access").finish()
-    }
-}
+    /// The requested access mode.
+    pub mask: FilePermissions,
 
-impl<'op> Access<'op> {
-    /// Return the inode number subject to the access permission check.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    /// Return the requested access mode.
-    #[inline]
-    pub fn mask(&self) -> FilePermissions {
-        FilePermissions::from_bits_truncate(self.arg.mask).intersection(FilePermissions::MASK)
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Create and open a file.
@@ -1868,57 +1429,33 @@ impl<'op> Access<'op> {
 ///
 /// If the file is successfully created and opened, a pair of `ReplyEntry` and `ReplyOpen`
 /// with the corresponding attribute values and the file handle must be sent to the kernel.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Create<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_create_in,
-    name: &'op OsStr,
-}
-
-impl fmt::Debug for Create<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Create").finish()
-    }
-}
-
-impl<'op> Create<'op> {
-    /// Return the inode number of the parent directory.
+    /// The inode number of the parent directory.
     ///
-    /// This is the same as `Mknod::parent`.
-    #[inline]
-    pub fn parent(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// See also [`Mknod::parent`].
+    pub parent: NodeID,
 
-    /// Return the file name to crate.
+    /// The file name to crate.
     ///
-    /// This is the same as `Mknod::name`.
-    #[inline]
-    pub fn name(&self) -> &OsStr {
-        self.name
-    }
+    /// See also [`Mknod::name`].
+    pub name: &'op OsStr,
 
-    /// Return the file type and permissions used when creating the new file.
+    /// The file type and permissions used when creating the new file.
     ///
-    /// This is the same as `Mknod::mode`.
-    #[inline]
-    pub fn mode(&self) -> FileMode {
-        FileMode::from_raw(self.arg.mode)
-    }
+    /// See also [`Mknod::mode`].
+    pub mode: FileMode,
 
-    /// Return the open flags.
+    /// The mask of permissions for the file to be created.
     ///
-    /// This is the same as `Open::flags`.
-    #[inline]
-    pub fn open_options(&self) -> OpenOptions {
-        OpenOptions::from_raw(self.arg.flags)
-    }
+    /// See also [`Mknod::umask`].
+    pub umask: FilePermissions,
 
-    /// Return the mask of permissions for the file to be created.
-    #[inline]
-    pub fn umask(&self) -> FilePermissions {
-        FilePermissions::from_bits_truncate(self.arg.umask).intersection(FilePermissions::MASK)
-    }
+    /// The open flags.
+    ///
+    /// See also [`Open::options`].
+    pub open_options: OpenOptions,
 }
 
 /// Map block index within a file to block index within device.
@@ -1928,36 +1465,19 @@ impl<'op> Create<'op> {
 /// This operation makes sense only for filesystems that use
 /// block devices, and is called only when the mount options
 /// contains `blkdev`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Bmap<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_bmap_in,
-}
+    /// The inode number of the file node to be mapped.
+    pub ino: NodeID,
 
-impl fmt::Debug for Bmap<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Bmap").finish()
-    }
-}
+    /// The block index to be mapped.
+    pub block: u64,
 
-impl<'op> Bmap<'op> {
-    /// Return the inode number of the file node to be mapped.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The unit of block index.
+    pub blocksize: u32,
 
-    /// Return the block index to be mapped.
-    #[inline]
-    pub fn block(&self) -> u64 {
-        self.arg.block
-    }
-
-    /// Returns the unit of block index.
-    #[inline]
-    pub fn blocksize(&self) -> u32 {
-        self.arg.blocksize
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Allocate requested space.
@@ -1965,52 +1485,29 @@ impl<'op> Bmap<'op> {
 /// If this operation is successful, the filesystem shall not report
 /// the error caused by the lack of free spaces to subsequent write
 /// requests.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Fallocate<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_fallocate_in,
-}
+    /// The number of target inode to be allocated the space.
+    pub ino: NodeID,
 
-impl fmt::Debug for Fallocate<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("Fallocate").finish()
-    }
-}
+    /// The handle for opened file.
+    pub fh: FileID,
 
-impl<'op> Fallocate<'op> {
-    /// Return the number of target inode to be allocated the space.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The starting point of region to be allocated.
+    pub offset: u64,
 
-    /// Return the handle for opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
+    /// The length of region to be allocated.
+    pub length: u64,
 
-    /// Return the starting point of region to be allocated.
-    #[inline]
-    pub fn offset(&self) -> u64 {
-        self.arg.offset
-    }
-
-    /// Return the length of region to be allocated.
-    #[inline]
-    pub fn length(&self) -> u64 {
-        self.arg.length
-    }
-
-    /// Return the mode that specifies how to allocate the region.
+    /// The mode that specifies how to allocate the region.
     ///
     /// See [`fallocate(2)`][fallocate] for details.
     ///
     /// [fallocate]: http://man7.org/linux/man-pages/man2/fallocate.2.html
-    #[inline]
-    pub fn mode(&self) -> FallocateFlags {
-        FallocateFlags::from_bits_truncate(self.arg.mode)
-    }
+    pub mode: FallocateFlags,
+
+    _marker: PhantomData<&'op ()>,
 }
 
 bitflags! {
@@ -2029,118 +1526,58 @@ bitflags! {
 /// Copy a range of data from an opened file to another.
 ///
 /// The length of copied data must be replied using `ReplyWrite`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct CopyFileRange<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_copy_file_range_in,
-}
+    /// The inode number of source file.
+    pub ino_in: NodeID,
 
-impl fmt::Debug for CopyFileRange<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: add fields
-        f.debug_struct("CopyFileRange").finish()
-    }
-}
+    /// The file handle of source file.
+    pub fh_in: FileID,
 
-impl<'op> CopyFileRange<'op> {
-    /// Return the inode number of source file.
-    #[inline]
-    pub fn ino_in(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The starting point of source file where the data should be read.
+    pub offset_in: u64,
 
-    /// Return the file handle of source file.
-    #[inline]
-    pub fn fh_in(&self) -> FileID {
-        FileID::from_raw(self.arg.fh_in)
-    }
+    /// The inode number of target file.
+    pub ino_out: NodeID,
 
-    /// Return the starting point of source file where the data should be read.
-    #[inline]
-    pub fn offset_in(&self) -> u64 {
-        self.arg.off_in
-    }
+    /// The file handle of target file.
+    pub fh_out: FileID,
 
-    /// Return the inode number of target file.
-    #[inline]
-    pub fn ino_out(&self) -> NodeID {
-        NodeID::from_raw(self.arg.nodeid_out)
-    }
+    /// The starting point of target file where the data should be written.
+    pub offset_out: u64,
 
-    /// Return the file handle of target file.
-    #[inline]
-    pub fn fh_out(&self) -> FileID {
-        FileID::from_raw(self.arg.fh_out)
-    }
+    /// The maximum size of data to copy.
+    pub length: u64,
 
-    /// Return the starting point of target file where the data should be written.
-    #[inline]
-    pub fn offset_out(&self) -> u64 {
-        self.arg.off_out
-    }
+    /// The flag value for `copy_file_range` syscall.
+    pub flags: u64,
 
-    /// Return the maximum size of data to copy.
-    #[inline]
-    pub fn length(&self) -> u64 {
-        self.arg.len
-    }
-
-    /// Return the flag value for `copy_file_range` syscall.
-    #[inline]
-    pub fn flags(&self) -> u64 {
-        self.arg.flags
-    }
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Poll for readiness.
 ///
 /// The mask of ready poll events must be replied using `ReplyPoll`.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Poll<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_poll_in,
-}
+    /// The inode number to check the I/O readiness.
+    pub ino: NodeID,
 
-impl fmt::Debug for Poll<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Poll")
-            .field("ino", &self.ino())
-            .field("fh", &self.fh())
-            .field("events", &self.events())
-            .field("kh", &self.kh())
-            .finish()
-    }
-}
+    /// The handle of opened file.
+    pub fh: FileID,
 
-impl<'op> Poll<'op> {
-    /// Return the inode number to check the I/O readiness.
-    #[inline]
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
+    /// The requested poll events.
+    pub events: PollEvents,
 
-    /// Return the handle of opened file.
-    #[inline]
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    /// Return the requested poll events.
-    #[inline]
-    pub fn events(&self) -> PollEvents {
-        PollEvents::from_bits_truncate(self.arg.events)
-    }
-
-    /// Return the handle to this poll.
+    /// The handle to this poll.
     ///
     /// If the returned value is not `None`, the filesystem should send the notification
     /// when the corresponding I/O will be ready.
-    #[inline]
-    pub fn kh(&self) -> Option<PollWakeupID> {
-        if self.arg.flags & FUSE_POLL_SCHEDULE_NOTIFY != 0 {
-            Some(PollWakeupID::from_raw(self.arg.kh))
-        } else {
-            None
-        }
-    }
+    pub kh: Option<PollWakeupID>,
+
+    _marker: PhantomData<&'op ()>,
 }
 
 /// Reposition the offset of read/write operations.
@@ -2148,40 +1585,14 @@ impl<'op> Poll<'op> {
 /// See [`lseek(2)`][lseek] for details.
 ///
 /// [lseek]: https://man7.org/linux/man-pages/man2/lseek.2.html
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Lseek<'op> {
-    header: &'op fuse_in_header,
-    arg: &'op fuse_lseek_in,
-}
-
-impl fmt::Debug for Lseek<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Lseek").finish()
-    }
-}
-
-impl Lseek<'_> {
-    pub fn ino(&self) -> NodeID {
-        NodeID::from_raw(self.header.nodeid)
-    }
-
-    pub fn fh(&self) -> FileID {
-        FileID::from_raw(self.arg.fh)
-    }
-
-    pub fn offset(&self) -> u64 {
-        self.arg.offset
-    }
-
-    pub fn whence(&self) -> Option<Whence> {
-        match self.arg.whence as i32 {
-            libc::SEEK_SET => Some(Whence::Set),
-            libc::SEEK_CUR => Some(Whence::Current),
-            libc::SEEK_END => Some(Whence::End),
-            libc::SEEK_DATA => Some(Whence::Data),
-            libc::SEEK_HOLE => Some(Whence::Hole),
-            _ => None,
-        }
-    }
+    pub ino: NodeID,
+    pub fh: FileID,
+    pub offset: u64,
+    pub whence: Whence,
+    _marker: PhantomData<&'op ()>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

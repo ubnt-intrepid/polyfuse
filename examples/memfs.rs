@@ -288,10 +288,10 @@ impl Filesystem for MemFS {
         op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        let parent = self.inodes.get(op.parent()).ok_or(ENOENT)?;
+        let parent = self.inodes.get(op.parent).ok_or(ENOENT)?;
         let parent = parent.as_dir().ok_or(ENOTDIR)?;
 
-        let child_ino = parent.children.get(op.name()).copied().ok_or(ENOENT)?;
+        let child_ino = parent.children.get(op.name).copied().ok_or(ENOENT)?;
         let mut child = self
             .inodes
             .get_mut(child_ino)
@@ -323,7 +323,7 @@ impl Filesystem for MemFS {
         op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
 
         reply.attr(&inode.attr);
         reply.ttl(self.ttl);
@@ -336,7 +336,7 @@ impl Filesystem for MemFS {
         op: op::Setattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
 
         fn to_duration(t: op::SetAttrTime) -> Duration {
             match t {
@@ -347,25 +347,25 @@ impl Filesystem for MemFS {
             }
         }
 
-        if let Some(mode) = op.mode() {
+        if let Some(mode) = op.mode {
             inode.attr.mode = mode;
         }
-        if let Some(uid) = op.uid() {
+        if let Some(uid) = op.uid {
             inode.attr.uid = uid;
         }
-        if let Some(gid) = op.gid() {
+        if let Some(gid) = op.gid {
             inode.attr.gid = gid;
         }
-        if let Some(size) = op.size() {
+        if let Some(size) = op.size {
             inode.attr.size = size;
         }
-        if let Some(atime) = op.atime() {
+        if let Some(atime) = op.atime {
             inode.attr.atime = to_duration(atime);
         }
-        if let Some(mtime) = op.mtime() {
+        if let Some(mtime) = op.mtime {
             inode.attr.mtime = to_duration(mtime);
         }
-        if let Some(ctime) = op.ctime() {
+        if let Some(ctime) = op.ctime {
             inode.attr.ctime = ctime;
         }
 
@@ -380,7 +380,7 @@ impl Filesystem for MemFS {
         op: op::Readlink<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
         let link = inode.as_symlink().ok_or(EINVAL)?;
         reply.send(link)
     }
@@ -391,7 +391,7 @@ impl Filesystem for MemFS {
         op: op::Opendir<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
         if inode.attr.nlink == 0 {
             return Err(ENOENT.into());
         }
@@ -413,14 +413,14 @@ impl Filesystem for MemFS {
         op: op::Readdir<'_>,
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
-        if op.mode() == op::ReaddirMode::Plus {
+        if op.mode == op::ReaddirMode::Plus {
             Err(ENOSYS)?;
         }
 
         let dir_handles = &mut *self.dir_handles.lock().await;
-        let dir = dir_handles.get(op.fh().into_raw() as usize).ok_or(EINVAL)?;
+        let dir = dir_handles.get(op.fh.into_raw() as usize).ok_or(EINVAL)?;
 
-        for entry in dir.entries.iter().skip(op.offset() as usize) {
+        for entry in dir.entries.iter().skip(op.offset as usize) {
             if reply.push_entry(&entry.name, entry.ino, entry.typ, entry.off) {
                 break;
             }
@@ -437,7 +437,7 @@ impl Filesystem for MemFS {
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
         let dir_handles = &mut *self.dir_handles.lock().await;
-        dir_handles.remove(op.fh().into_raw() as usize);
+        dir_handles.remove(op.fh.into_raw() as usize);
         reply.send()
     }
 
@@ -447,17 +447,17 @@ impl Filesystem for MemFS {
         op: op::Mknod<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        match op.mode().file_type() {
+        match op.mode.file_type() {
             Some(FileType::Regular) => (),
             _ => Err(ENOTSUP)?,
         }
 
-        self.make_node(reply, op.parent(), op.name(), |entry| INode {
+        self.make_node(reply, op.parent, op.name, |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
                 attr.ino = *entry.key();
                 attr.nlink = 1;
-                attr.mode = op.mode();
+                attr.mode = op.mode;
                 attr
             },
             xattrs: HashMap::new(),
@@ -473,12 +473,12 @@ impl Filesystem for MemFS {
         op: op::Mkdir<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.make_node(reply, op.parent(), op.name(), |entry| INode {
+        self.make_node(reply, op.parent, op.name, |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
                 attr.ino = *entry.key();
                 attr.nlink = 2;
-                attr.mode = FileMode::new(FileType::Directory, op.permissions());
+                attr.mode = FileMode::new(FileType::Directory, op.permissions);
                 attr
             },
             xattrs: HashMap::new(),
@@ -486,7 +486,7 @@ impl Filesystem for MemFS {
             links: 1,
             kind: INodeKind::Directory(Directory {
                 children: HashMap::new(),
-                parent: Some(op.parent()),
+                parent: Some(op.parent),
             }),
         })
     }
@@ -497,7 +497,7 @@ impl Filesystem for MemFS {
         op: op::Symlink<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.make_node(reply, op.parent(), op.name(), |entry| INode {
+        self.make_node(reply, op.parent, op.name, |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
                 attr.ino = *entry.key();
@@ -511,7 +511,7 @@ impl Filesystem for MemFS {
             xattrs: HashMap::new(),
             refcount: 1,
             links: 1,
-            kind: INodeKind::Symlink(Arc::new(op.link().into())),
+            kind: INodeKind::Symlink(Arc::new(op.link.into())),
         })
     }
 
@@ -521,23 +521,23 @@ impl Filesystem for MemFS {
         op: op::Link<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
 
-        debug_assert!(op.ino() != op.newparent());
-        let mut newparent = self.inodes.get_mut(op.newparent()).ok_or(ENOENT)?;
+        debug_assert!(op.ino != op.newparent);
+        let mut newparent = self.inodes.get_mut(op.newparent).ok_or(ENOENT)?;
         let newparent = newparent.as_dir_mut().ok_or(ENOTDIR)?;
 
-        match newparent.children.entry(op.newname().into()) {
+        match newparent.children.entry(op.newname.into()) {
             Entry::Occupied(..) => return Err(EEXIST.into()),
             Entry::Vacant(entry) => {
-                entry.insert(op.ino());
+                entry.insert(op.ino);
                 inode.links += 1;
                 inode.attr.nlink += 1;
                 inode.refcount += 1;
             }
         }
 
-        reply.ino(op.ino());
+        reply.ino(op.ino);
         reply.attr(&inode.attr);
         reply.ttl_entry(self.ttl);
         reply.send()
@@ -549,7 +549,7 @@ impl Filesystem for MemFS {
         op: op::Unlink<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        self.unlink_node(op.parent(), op.name())?;
+        self.unlink_node(op.parent, op.name)?;
         reply.send()
     }
 
@@ -559,7 +559,7 @@ impl Filesystem for MemFS {
         op: op::Rmdir<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        self.unlink_node(op.parent(), op.name())?;
+        self.unlink_node(op.parent, op.name)?;
         reply.send()
     }
 
@@ -569,22 +569,22 @@ impl Filesystem for MemFS {
         op: op::Rename<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        if !op.flags().is_empty() {
+        if !op.flags.is_empty() {
             // TODO: handle RENAME_NOREPLACE and RENAME_EXCHANGE.
             Err(EINVAL)?;
         }
 
-        let mut parent = self.inodes.get_mut(op.parent()).ok_or(ENOENT)?;
+        let mut parent = self.inodes.get_mut(op.parent).ok_or(ENOENT)?;
         let parent = parent.as_dir_mut().ok_or(ENOTDIR)?;
 
-        match op.newparent() {
-            newparent if newparent == op.parent() => {
-                let ino = match parent.children.get(op.name()) {
+        match op.newparent {
+            newparent if newparent == op.parent => {
+                let ino = match parent.children.get(op.name) {
                     Some(&ino) => ino,
                     None => return Err(ENOENT.into()),
                 };
 
-                match parent.children.entry(op.newname().into()) {
+                match parent.children.entry(op.newname.into()) {
                     Entry::Occupied(..) => return Err(EEXIST.into()),
                     Entry::Vacant(entry) => {
                         entry.insert(ino);
@@ -592,7 +592,7 @@ impl Filesystem for MemFS {
                 }
                 parent
                     .children
-                    .remove(op.name())
+                    .remove(op.name)
                     .unwrap_or_else(|| unreachable!());
             }
 
@@ -600,11 +600,11 @@ impl Filesystem for MemFS {
                 let mut newparent = self.inodes.get_mut(newparent).ok_or(ENOENT)?;
                 let newparent = newparent.as_dir_mut().ok_or(ENOTDIR)?;
 
-                let entry = match newparent.children.entry(op.newname().into()) {
+                let entry = match newparent.children.entry(op.newname.into()) {
                     Entry::Occupied(..) => return Err(EEXIST.into()),
                     Entry::Vacant(entry) => entry,
                 };
-                let ino = parent.children.remove(op.name()).ok_or(ENOENT)?;
+                let ino = parent.children.remove(op.name).ok_or(ENOENT)?;
                 entry.insert(ino);
             }
         }
@@ -618,9 +618,9 @@ impl Filesystem for MemFS {
         op: op::Getxattr<'_>,
         reply: fs::ReplyXattr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
-        let value = inode.xattrs.get(op.name()).ok_or(ENODATA)?;
-        match op.size() {
+        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
+        let value = inode.xattrs.get(op.name).ok_or(ENODATA)?;
+        match op.size {
             0 => reply.send_size(value.len() as u32),
             size => {
                 if value.len() as u32 > size {
@@ -637,21 +637,21 @@ impl Filesystem for MemFS {
         op: op::Setxattr<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let create = op.flags().contains(SetxattrFlags::CREATE);
-        let replace = op.flags().contains(SetxattrFlags::REPLACE);
+        let create = op.flags.contains(SetxattrFlags::CREATE);
+        let replace = op.flags.contains(SetxattrFlags::REPLACE);
         if create && replace {
             return Err(EINVAL.into());
         }
 
-        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
 
-        match inode.xattrs.entry(op.name().into()) {
+        match inode.xattrs.entry(op.name.into()) {
             Entry::Occupied(entry) => {
                 if create {
                     return Err(EEXIST.into());
                 }
                 let value = Arc::make_mut(entry.into_mut());
-                *value = op.value().into();
+                *value = op.value.into();
             }
             Entry::Vacant(entry) => {
                 if replace {
@@ -660,7 +660,7 @@ impl Filesystem for MemFS {
                 if create {
                     entry.insert(Arc::default());
                 } else {
-                    entry.insert(Arc::new(op.value().into()));
+                    entry.insert(Arc::new(op.value.into()));
                 }
             }
         }
@@ -674,9 +674,9 @@ impl Filesystem for MemFS {
         op: op::Listxattr<'_>,
         reply: fs::ReplyXattr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
 
-        match op.size() {
+        match op.size {
             0 => {
                 let total_len = inode.xattrs.keys().map(|name| name.len() as u32 + 1).sum();
                 reply.send_size(total_len)
@@ -706,9 +706,9 @@ impl Filesystem for MemFS {
         op: op::Removexattr<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
 
-        match inode.xattrs.entry(op.name().into()) {
+        match inode.xattrs.entry(op.name.into()) {
             Entry::Occupied(entry) => {
                 entry.remove();
             }
@@ -724,12 +724,12 @@ impl Filesystem for MemFS {
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
 
         let content = inode.as_file().ok_or(EINVAL)?;
 
-        let offset = op.offset() as usize;
-        let size = op.size() as usize;
+        let offset = op.offset as usize;
+        let size = op.size as usize;
 
         let content = content.get(offset..).unwrap_or(&[]);
         let content = &content[..std::cmp::min(content.len(), size)];
@@ -744,12 +744,12 @@ impl Filesystem for MemFS {
         mut data: impl io::Read + Send,
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
 
         let content = inode.as_file_mut().ok_or(EINVAL)?;
 
-        let offset = op.offset() as usize;
-        let size = op.size() as usize;
+        let offset = op.offset as usize;
+        let size = op.size as usize;
 
         content.resize(std::cmp::max(content.len(), offset + size), 0);
 
@@ -757,6 +757,6 @@ impl Filesystem for MemFS {
 
         inode.attr.size = (offset + size) as u64;
 
-        reply.send(op.size())
+        reply.send(op.size)
     }
 }
