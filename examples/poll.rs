@@ -87,11 +87,11 @@ impl Filesystem for PollFS {
         op: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        if op.options().access_mode() != Some(AccessMode::ReadOnly) {
+        if op.options.access_mode() != Some(AccessMode::ReadOnly) {
             Err(EACCES)?;
         }
 
-        let is_nonblock = op.options().flags().contains(OpenFlags::NONBLOCK);
+        let is_nonblock = op.options.flags().contains(OpenFlags::NONBLOCK);
 
         let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
         let deadline = Instant::now() + self.wakeup_interval;
@@ -143,7 +143,7 @@ impl Filesystem for PollFS {
     ) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
-            handles.get(&op.fh()).cloned().ok_or(EINVAL)?
+            handles.get(&op.fh).cloned().ok_or(EINVAL)?
         };
         if handle.is_nonblock {
             if handle.deadline > Instant::now() {
@@ -160,8 +160,8 @@ impl Filesystem for PollFS {
 
         tracing::info!("ready to read contents");
 
-        let offset = op.offset() as usize;
-        let bufsize = op.size() as usize;
+        let offset = op.offset as usize;
+        let bufsize = op.size as usize;
         let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
         reply.send(&content[..std::cmp::min(content.len(), bufsize)])
@@ -175,15 +175,15 @@ impl Filesystem for PollFS {
     ) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
-            handles.get(&op.fh()).cloned().ok_or(EINVAL)?
+            handles.get(&op.fh).cloned().ok_or(EINVAL)?
         };
         let now = Instant::now();
 
         let mut revents = PollEvents::empty();
         if handle.deadline <= now {
             tracing::info!("file is ready to read");
-            revents = op.events() & PollEvents::IN;
-        } else if let Some(kh) = op.kh() {
+            revents = op.events & PollEvents::IN;
+        } else if let Some(kh) = op.kh {
             tracing::info!("register the poll handle for notification: kh={}", kh);
             let _ = handle.kh.set(kh);
         }
@@ -197,7 +197,7 @@ impl Filesystem for PollFS {
         op: op::Release<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        drop(self.handles.write().await.remove(&op.fh()));
+        drop(self.handles.write().await.remove(&op.fh));
         reply.send()
     }
 }

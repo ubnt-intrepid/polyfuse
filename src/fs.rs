@@ -550,7 +550,7 @@ impl Worker {
             Operation::Flush(op) => fs.flush(req, op, ReplyUnit::new(sender)).await,
             Operation::Opendir(op) => fs.opendir(req, op, ReplyOpen::new(sender)).await,
             Operation::Readdir(op) => {
-                let capacity = op.size() as usize;
+                let capacity = op.size as usize;
                 fs.readdir(req, op, ReplyDir::new(sender, capacity)).await
             }
             Operation::Releasedir(op) => fs.releasedir(req, op, ReplyUnit::new(sender)).await,
@@ -577,7 +577,7 @@ impl Worker {
                 return Ok(());
             }
             Operation::Interrupt(op) => {
-                tracing::warn!("interrupted(unique={})", op.unique());
+                tracing::warn!("interrupted(unique={})", op.unique);
                 // TODO: handle interrupt requests.
                 Err(ENOSYS.into())
             }

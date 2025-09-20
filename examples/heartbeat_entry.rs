@@ -145,13 +145,13 @@ impl Filesystem for Heartbeat {
         arg: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        if arg.parent() != NodeID::ROOT {
+        if arg.parent != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
 
         let mut current = self.current.lock().await;
 
-        if arg.name().as_bytes() == current.filename.as_bytes() {
+        if arg.name.as_bytes() == current.filename.as_bytes() {
             reply.ino(self.file_attr.ino);
             reply.attr(&self.file_attr);
             reply.ttl_entry(self.ttl);
@@ -181,7 +181,7 @@ impl Filesystem for Heartbeat {
         arg: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let attr = match arg.ino() {
+        let attr = match arg.ino {
             NodeID::ROOT => &self.root_attr,
             FILE_INO => &self.file_attr,
             _ => Err(ENOENT)?,
@@ -198,7 +198,7 @@ impl Filesystem for Heartbeat {
         arg: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        match arg.ino() {
+        match arg.ino {
             NodeID::ROOT => Err(EISDIR)?,
             FILE_INO => reply.send(()),
             _ => Err(ENOENT)?,
@@ -211,10 +211,10 @@ impl Filesystem for Heartbeat {
         arg: op::Readdir<'_>,
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
-        if arg.ino() != NodeID::ROOT {
+        if arg.ino != NodeID::ROOT {
             Err(ENOTDIR)?;
         }
-        if arg.offset() > 0 {
+        if arg.offset > 0 {
             return reply.send();
         }
 
