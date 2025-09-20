@@ -577,7 +577,7 @@ impl Worker {
                 return Ok(());
             }
             Operation::Interrupt(op) => {
-                tracing::warn!("interrupted(unique={})", op.unique());
+                tracing::warn!("interrupted(unique={})", op.unique);
                 // TODO: handle interrupt requests.
                 Err(ENOSYS.into())
             }

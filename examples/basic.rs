@@ -59,7 +59,7 @@ fn getattr(
     header: &RequestHeader,
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
-    if op.ino() != NodeID::ROOT {
+    if op.ino != NodeID::ROOT {
         return session.send_reply(conn, header.unique(), ENOENT, ());
     }
 
@@ -96,15 +96,15 @@ fn read(
     header: &RequestHeader,
     op: op::Read<'_>,
 ) -> io::Result<()> {
-    if op.ino() != NodeID::ROOT {
+    if op.ino != NodeID::ROOT {
         return session.send_reply(conn, header.unique(), ENOENT, ());
     }
 
     let mut data: &[u8] = &[];
 
-    let offset = op.offset() as usize;
+    let offset = op.offset as usize;
     if offset < CONTENT.len() {
-        let size = op.size() as usize;
+        let size = op.size as usize;
         data = &CONTENT[offset..];
         data = &data[..std::cmp::min(data.len(), size)];
     }

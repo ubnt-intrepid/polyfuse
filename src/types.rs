@@ -202,6 +202,18 @@ impl FileMode {
         Self::from_raw(typ.into_raw() | perm.bits())
     }
 
+    pub const fn regular(perm: FilePermissions) -> Self {
+        Self::new(FileType::Regular, perm)
+    }
+
+    pub const fn directory(perm: FilePermissions) -> Self {
+        Self::new(FileType::Directory, perm)
+    }
+
+    pub const fn symlink() -> Self {
+        Self::new(FileType::SymbolicLink, FilePermissions::empty())
+    }
+
     pub(crate) const fn from_raw(raw: u32) -> Self {
         Self { raw }
     }
