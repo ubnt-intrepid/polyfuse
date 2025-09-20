@@ -143,7 +143,7 @@ impl Filesystem for Hello {
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        match op.ino() {
+        match op.ino {
             HELLO_INO => (),
             NodeID::ROOT => Err(EISDIR)?,
             _ => Err(ENOENT)?,
@@ -151,9 +151,9 @@ impl Filesystem for Hello {
 
         let mut data: &[u8] = &[];
 
-        let offset = op.offset() as usize;
+        let offset = op.offset as usize;
         if offset < HELLO_CONTENT.len() {
-            let size = op.size() as usize;
+            let size = op.size as usize;
             data = &HELLO_CONTENT[offset..];
             data = &data[..std::cmp::min(data.len(), size)];
         }

@@ -161,7 +161,7 @@ impl Filesystem for Heartbeat {
         arg: op::Open<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        if arg.ino() != NodeID::ROOT {
+        if arg.ino != NodeID::ROOT {
             Err(ENOENT)?;
         }
         reply.flags(OpenOutFlags::KEEP_CACHE);
@@ -174,18 +174,18 @@ impl Filesystem for Heartbeat {
         arg: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        if arg.ino() != NodeID::ROOT {
+        if arg.ino != NodeID::ROOT {
             Err(ENOENT)?
         }
 
         let inner = self.inner.lock().await;
 
-        let offset = arg.offset() as usize;
+        let offset = arg.offset as usize;
         if offset >= inner.content.len() {
             return reply.send(());
         }
 
-        let size = arg.size() as usize;
+        let size = arg.size as usize;
         let data = &inner.content.as_bytes()[offset..];
         let data = &data[..std::cmp::min(data.len(), size)];
         reply.send(data)

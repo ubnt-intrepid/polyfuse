@@ -198,7 +198,7 @@ impl Filesystem for Heartbeat {
         arg: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        match arg.ino() {
+        match arg.ino {
             NodeID::ROOT => Err(EISDIR)?,
             FILE_INO => reply.send(()),
             _ => Err(ENOENT)?,
