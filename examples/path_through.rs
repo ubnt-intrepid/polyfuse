@@ -146,8 +146,8 @@ impl Filesystem for PathThrough {
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
-        let parent = inodes.get(op.parent()).ok_or(ENOENT)?;
-        let path = parent.path.join(op.name());
+        let parent = inodes.get(op.parent).ok_or(ENOENT)?;
+        let path = parent.path.join(op.name);
 
         let metadata = std::fs::symlink_metadata(self.source.join(&path))?;
 
@@ -199,7 +199,7 @@ impl Filesystem for PathThrough {
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
         let attr = metadata.try_into().unwrap();
@@ -213,28 +213,28 @@ impl Filesystem for PathThrough {
         op: op::Setattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let fh = op.fh().ok_or(ENOENT)?;
+        let fh = op.fh.ok_or(ENOENT)?;
         let files = &mut *self.files.lock().await;
         let file = files.get(fh.into_raw() as usize).ok_or(EINVAL)?;
 
         file.file.sync_all().await?;
 
         let inodes = &mut *self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let path = self.source.join(&inode.path);
 
         // chmod
-        if let Some(mode) = op.mode() {
+        if let Some(mode) = op.mode {
             file.file.set_permissions(mode.permissions().into()).await?;
         }
 
         // truncate
-        if let Some(size) = op.size() {
+        if let Some(size) = op.size {
             file.file.set_len(size).await?;
         }
 
         // chown
-        match (op.uid(), op.gid()) {
+        match (op.uid, op.gid) {
             (None, None) => (),
             (uid, gid) => {
                 let uid = uid.map(|id| nix::unistd::Uid::from_raw(id.into_raw()));
@@ -259,7 +259,7 @@ impl Filesystem for PathThrough {
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let path = std::fs::read_link(self.source.join(&inode.path))?;
         reply.send(path.as_os_str())
     }

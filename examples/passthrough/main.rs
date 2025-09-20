@@ -8,7 +8,7 @@ use polyfuse::{
     op::{self, OpenFlags},
     raw::{KernelConfig, KernelFlags, MountOptions},
     reply::OpenOutFlags,
-    types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    types::{DeviceID, FileID, FileMode, FileType, NodeID, GID, UID},
 };
 
 use crate::nix::{FileDesc, ReadDir};
@@ -199,7 +199,7 @@ impl Filesystem for Passthrough {
         op: op::Lookup<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.do_lookup(op.parent(), op.name(), reply).await
+        self.do_lookup(op.parent, op.name, reply).await
     }
 
     async fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
@@ -229,7 +229,7 @@ impl Filesystem for Passthrough {
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
 
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
 
         let stat = inode.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
@@ -250,11 +250,11 @@ impl Filesystem for Passthrough {
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
         let fd = &inode.fd;
 
-        let mut file = if let Some(fh) = op.fh() {
+        let mut file = if let Some(fh) = op.fh {
             Some(self.opened_files.get(fh).await.ok_or(ENOENT)?)
         } else {
             None
@@ -265,7 +265,7 @@ impl Filesystem for Passthrough {
         };
 
         // chmod
-        if let Some(mode) = op.mode() {
+        if let Some(mode) = op.mode {
             if let Some(file) = file.as_mut() {
                 task::block_in_place(|| nix::fchmod(&**file, mode.into_raw()))?;
             } else {
@@ -274,7 +274,7 @@ impl Filesystem for Passthrough {
         }
 
         // chown
-        match (op.uid(), op.gid()) {
+        match (op.uid, op.gid) {
             (None, None) => (),
             (uid, gid) => {
                 task::block_in_place(|| {
@@ -289,7 +289,7 @@ impl Filesystem for Passthrough {
         }
 
         // truncate
-        if let Some(size) = op.size() {
+        if let Some(size) = op.size {
             if let Some(file) = file.as_mut() {
                 task::block_in_place(|| nix::ftruncate(&**file, size as libc::off_t))?;
             } else {
@@ -314,7 +314,7 @@ impl Filesystem for Passthrough {
                 },
             }
         }
-        match (op.atime(), op.mtime()) {
+        match (op.atime, op.mtime) {
             (None, None) => (),
             (atime, mtime) => {
                 let tv = [make_timespec(atime), make_timespec(mtime)];
@@ -352,7 +352,7 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
         let inodes = self.inodes.lock().await;
-        let inode = inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
         let inode = inode.lock().await;
         let link = task::block_in_place(|| inode.fd.readlinkat(""))?;
         reply.send(link)
@@ -413,15 +413,8 @@ impl Filesystem for Passthrough {
         op: op::Mknod<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.make_node(
-            op.parent(),
-            op.name(),
-            op.mode(),
-            Some(op.rdev()),
-            None,
-            reply,
-        )
-        .await
+        self.make_node(op.parent, op.name, op.mode, Some(op.rdev), None, reply)
+            .await
     }
 
     async fn mkdir(
@@ -433,7 +426,7 @@ impl Filesystem for Passthrough {
         self.make_node(
             op.parent(),
             op.name(),
-            FileMode::new(FileType::Directory, op.permissions()),
+            FileMode::directory(op.permissions()),
             None,
             None,
             reply,
@@ -448,11 +441,11 @@ impl Filesystem for Passthrough {
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
         self.make_node(
-            op.parent(),
-            op.name(),
-            FileMode::new(FileType::SymbolicLink, FilePermissions::empty()),
+            op.parent,
+            op.name,
+            FileMode::symlink(),
             None,
-            Some(op.link()),
+            Some(op.link),
             reply,
         )
         .await

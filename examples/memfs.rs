@@ -21,7 +21,7 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use tokio::sync::Mutex;
 
@@ -288,10 +288,10 @@ impl Filesystem for MemFS {
         op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        let parent = self.inodes.get(op.parent()).ok_or(ENOENT)?;
+        let parent = self.inodes.get(op.parent).ok_or(ENOENT)?;
         let parent = parent.as_dir().ok_or(ENOTDIR)?;
 
-        let child_ino = parent.children.get(op.name()).copied().ok_or(ENOENT)?;
+        let child_ino = parent.children.get(op.name).copied().ok_or(ENOENT)?;
         let mut child = self
             .inodes
             .get_mut(child_ino)
@@ -323,7 +323,7 @@ impl Filesystem for MemFS {
         op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
 
         reply.attr(&inode.attr);
         reply.ttl(self.ttl);
@@ -336,36 +336,27 @@ impl Filesystem for MemFS {
         op: op::Setattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino()).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
 
-        fn to_duration(t: op::SetAttrTime) -> Duration {
-            match t {
-                op::SetAttrTime::Timespec(ts) => ts,
-                _ => SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap(),
-            }
-        }
-
-        if let Some(mode) = op.mode() {
+        if let Some(mode) = op.mode {
             inode.attr.mode = mode;
         }
-        if let Some(uid) = op.uid() {
+        if let Some(uid) = op.uid {
             inode.attr.uid = uid;
         }
-        if let Some(gid) = op.gid() {
+        if let Some(gid) = op.gid {
             inode.attr.gid = gid;
         }
-        if let Some(size) = op.size() {
+        if let Some(size) = op.size {
             inode.attr.size = size;
         }
-        if let Some(atime) = op.atime() {
-            inode.attr.atime = to_duration(atime);
+        if let Some(atime) = op.atime {
+            inode.attr.atime = atime.duration_since_unix_epoch();
         }
-        if let Some(mtime) = op.mtime() {
-            inode.attr.mtime = to_duration(mtime);
+        if let Some(mtime) = op.mtime {
+            inode.attr.mtime = mtime.duration_since_unix_epoch();
         }
-        if let Some(ctime) = op.ctime() {
+        if let Some(ctime) = op.ctime {
             inode.attr.ctime = ctime;
         }
 
@@ -380,7 +371,7 @@ impl Filesystem for MemFS {
         op: op::Readlink<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino()).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
         let link = inode.as_symlink().ok_or(EINVAL)?;
         reply.send(link)
     }
@@ -447,17 +438,17 @@ impl Filesystem for MemFS {
         op: op::Mknod<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        match op.mode().file_type() {
+        match op.mode.file_type() {
             Some(FileType::Regular) => (),
             _ => Err(ENOTSUP)?,
         }
 
-        self.make_node(reply, op.parent(), op.name(), |entry| INode {
+        self.make_node(reply, op.parent, op.name, |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
                 attr.ino = *entry.key();
                 attr.nlink = 1;
-                attr.mode = op.mode();
+                attr.mode = op.mode;
                 attr
             },
             xattrs: HashMap::new(),
@@ -497,7 +488,7 @@ impl Filesystem for MemFS {
         op: op::Symlink<'_>,
         reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        self.make_node(reply, op.parent(), op.name(), |entry| INode {
+        self.make_node(reply, op.parent, op.name, |entry| INode {
             attr: {
                 let mut attr = FileAttr::new();
                 attr.ino = *entry.key();
@@ -511,7 +502,7 @@ impl Filesystem for MemFS {
             xattrs: HashMap::new(),
             refcount: 1,
             links: 1,
-            kind: INodeKind::Symlink(Arc::new(op.link().into())),
+            kind: INodeKind::Symlink(Arc::new(op.link.into())),
         })
     }
 

@@ -59,7 +59,7 @@ fn getattr(
     header: &RequestHeader,
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
-    if op.ino() != NodeID::ROOT {
+    if op.ino != NodeID::ROOT {
         return session.send_reply(conn, header.unique(), ENOENT, ());
     }
 

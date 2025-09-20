@@ -108,8 +108,8 @@ impl Filesystem for Hello {
         op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        match op.parent() {
-            NodeID::ROOT if op.name().as_bytes() == HELLO_FILENAME.as_bytes() => {
+        match op.parent {
+            NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
                 reply.attr(&self.hello_attr());
                 reply.ino(HELLO_INO);
                 reply.ttl_attr(TTL);
@@ -126,7 +126,7 @@ impl Filesystem for Hello {
         op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let attr = match op.ino() {
+        let attr = match op.ino {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
             _ => Err(ENOENT)?,
