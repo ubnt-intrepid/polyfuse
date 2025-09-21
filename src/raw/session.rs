@@ -205,13 +205,41 @@ bitflags::bitflags! {
         /// See the documentation of `no_open_support` for details.
         const NO_OPENDIR_SUPPORT = FUSE_NO_OPENDIR_SUPPORT;
 
-        /// Specify whether the kernel supports for splice reading.
+        /// Indicates whether the content of `FUSE_READLINK` replies are cached or not.
+        const CACHE_SYMLINKS = FUSE_CACHE_SYMLINKS;
+
+        /// Indicates whether the kernel invalidate the page caches only on explicit
+        /// requests.
+        const EXPLICIT_INVAL_DATA = FUSE_EXPLICIT_INVAL_DATA;
+
+        /// The kernel supports `splice(2)` read on the device.
         ///
-        /// When this flag is enabled, the system call `splice(2)` is used
-        /// to read requests from the kernel, and the request data is
-        /// temporarily transferred to the pipe buffer before being copied
-        /// to user space.
+        /// This flag is read-only.
         const SPLICE_READ = FUSE_SPLICE_READ;
+
+        /// The kernel supports `splice(2)` write on the device.
+        ///
+        /// This flag is read-only.
+        const SPLICE_WRITE = FUSE_SPLICE_WRITE;
+
+        /// The kernel supports `splice(2)` move on the device.
+        ///
+        /// This flag is read-only.
+        const SPLICE_MOVE = FUSE_SPLICE_MOVE;
+
+        /// The filesystem can handle `FUSE_WRITE` requests with the size larger
+        /// than 4KB.
+        ///
+        /// This flag is read-only.
+        const BIG_WRITES = FUSE_BIG_WRITES;
+
+        const MAX_PAGES = FUSE_MAX_PAGES;
+
+        /// Reading from device will return `ECONNABORTED` rather than `ENODEV`
+        /// if the connection is aborted via `fusectl`.
+        ///
+        /// This flag is read-only.
+        const ABORT_ERROR = FUSE_ABORT_ERROR;
     }
 }
 
@@ -228,8 +256,15 @@ impl KernelFlags {
             .union(Self::AUTO_INVAL_DATA)
             .union(Self::NO_OPEN_SUPPORT)
             .union(Self::NO_OPENDIR_SUPPORT)
-            .union(Self::SPLICE_READ)
     }
+
+    const READ_ONLY: Self = Self::empty()
+        .union(Self::SPLICE_READ)
+        .union(Self::SPLICE_WRITE)
+        .union(Self::SPLICE_MOVE)
+        .union(Self::BIG_WRITES)
+        .union(Self::MAX_PAGES)
+        .union(Self::ABORT_ERROR);
 }
 
 // ==== Session ====
@@ -354,6 +389,7 @@ impl Session {
             let minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
 
             let capable = KernelFlags::from_bits_truncate(init_in.flags);
+            config.flags |= KernelFlags::READ_ONLY;
             config.flags &= capable;
 
             config.max_readahead = cmp::min(config.max_readahead, init_in.max_readahead);
@@ -370,9 +406,7 @@ impl Session {
                     - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32,
             );
 
-            let mut additional_flags = 0;
-            if init_in.flags & FUSE_MAX_PAGES != 0 {
-                additional_flags |= FUSE_MAX_PAGES;
+            if config.flags.contains(KernelFlags::MAX_PAGES) {
                 config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * pagesize()) as u32);
                 config.max_pages = cmp::min(
                     config.max_write.div_ceil(pagesize() as u32),
@@ -411,8 +445,7 @@ impl Session {
                 major,
                 minor,
                 max_readahead: config.max_readahead,
-                // * the flag `FUSE_BIG_WRITE` was superseded by `max_write`
-                flags: config.flags.bits() | additional_flags | FUSE_BIG_WRITES,
+                flags: config.flags.bits(),
                 max_background: config.max_background,
                 time_gran: config.time_gran,
                 congestion_threshold: config.congestion_threshold,
