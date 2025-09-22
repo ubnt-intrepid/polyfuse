@@ -34,14 +34,13 @@ fn main() -> Result<()> {
     session.init(&mut conn, &mut config)?;
 
     // Receive an incoming FUSE request from the kernel.
-    let mut header = RequestHeader::new();
     let mut buf = FallbackBuf::new(config.request_buffer_size());
-    while session.recv_request(&mut conn, &mut header, &mut buf)? {
-        let (arg, _remains) = buf.parts();
-        match Operation::decode(&header, arg)? {
+    while session.recv_request(&mut conn, &mut buf)? {
+        let (header, arg, _remains) = buf.parts();
+        match Operation::decode(header, arg)? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&session, &mut conn, &header, op)?,
-            Operation::Read(op) => read(&session, &mut conn, &header, op)?,
+            Operation::Getattr(op) => getattr(&session, &mut conn, header, op)?,
+            Operation::Read(op) => read(&session, &mut conn, header, op)?,
 
             // Or annotate that the operation is not supported.
             _ => session.send_reply(&mut conn, header.unique(), ENOSYS, ())?,

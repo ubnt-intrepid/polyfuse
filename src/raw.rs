@@ -8,6 +8,6 @@ mod session;
 pub use self::{
     conn::Connection,
     mount::{mount, Fusermount, MountOptions},
-    request::{FallbackBuf, ReceiveError, RequestBuf, RequestHeader, SpliceBuf},
+    request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
     session::{KernelConfig, KernelFlags, ProtocolVersion, Session},
 };
