@@ -750,7 +750,10 @@ mod tests {
         assert_eq!(config.max_write, DEFAULT_MAX_WRITE);
         assert_eq!(config.max_pages, expected_max_pages);
         assert_eq!(config.time_gran, 1);
-        assert_eq!(config.flags, KernelFlags::default());
+        assert_eq!(
+            config.flags,
+            KernelFlags::default() | KernelFlags::READ_ONLY
+        );
 
         let output_len = mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>();
         let out_header = fuse_out_header {
@@ -762,7 +765,7 @@ mod tests {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 40,
-            flags: KernelFlags::default().bits() | FUSE_MAX_PAGES | FUSE_BIG_WRITES,
+            flags: (KernelFlags::default() | KernelFlags::READ_ONLY).bits(),
             max_background: 0,
             congestion_threshold: 0,
             max_write: DEFAULT_MAX_WRITE,
