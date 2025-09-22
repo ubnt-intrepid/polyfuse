@@ -466,6 +466,7 @@ impl Worker {
     where
         T: Filesystem,
         B: raw::RequestBuf,
+        for<'req> B::RemainingData<'req>: Send + Unpin,
     {
         let mut header = raw::RequestHeader::new();
         while self.read_request(&mut header, &mut buf).await? {
@@ -505,6 +506,7 @@ impl Worker {
     where
         T: Filesystem,
         B: raw::RequestBuf,
+        for<'req> B::RemainingData<'req>: Send + Unpin,
     {
         let span = tracing::debug_span!("handle_request", unique = ?header.unique());
         let _enter = span.enter();

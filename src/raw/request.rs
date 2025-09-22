@@ -80,7 +80,7 @@ impl RequestHeader {
 
 /// The buffer to store a processing FUSE request received from the kernel driver.
 pub trait RequestBuf {
-    type RemainingData<'a>: io::Read + Send + Unpin
+    type RemainingData<'a>: io::Read
     where
         Self: 'a;
 
