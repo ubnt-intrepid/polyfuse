@@ -1,10 +1,10 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
     io::SpliceRead,
-    raw::request::{ReceiveError, RequestBuf, RequestHeader},
+    raw::request::RequestBuf,
     types::RequestID,
 };
-use libc::{ENODEV, ENOENT, ENOSYS, EPROTO};
+use libc::{EAGAIN, EINTR, ENODEV, ENOENT, ENOSYS, EPROTO, EWOULDBLOCK};
 use polyfuse_kernel::*;
 use std::{
     cmp, io, mem,
@@ -474,62 +474,54 @@ impl Session {
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub fn recv_request<T, B>(
-        &self,
-        mut conn: T,
-        header: &mut RequestHeader,
-        buf: &mut B,
-    ) -> io::Result<bool>
+    pub fn recv_request<T, B>(&self, mut conn: T, buf: &mut B) -> io::Result<bool>
     where
         T: SpliceRead + io::Write,
         B: RequestBuf,
     {
         loop {
-            header.reset();
             buf.reset()?;
 
-            let opcode = match buf.try_receive(&mut conn, header) {
-                Err(ReceiveError::Disconnected) => {
-                    tracing::debug!("The connection is disconnected");
-                    return Ok(false);
-                }
-                Err(ReceiveError::Interrupted) => {
-                    tracing::debug!("The read operation is interrupted");
-                    continue;
-                }
-                Err(ReceiveError::UnrecognizedOpcode(code)) => {
-                    tracing::warn!(
-                        "The opcode `{}' is not recognized by the current version of polyfuse.",
-                        code
-                    );
-                    self.send_reply(&mut conn, header.unique(), ENOSYS, ())?;
-                    continue;
-                }
-                Err(ReceiveError::Fatal(err)) => {
-                    if err.kind() != io::ErrorKind::WouldBlock {
-                        tracing::error!("failed to receive the FUSE request: {}", err);
+            let header = match buf.try_receive(&mut conn) {
+                // ref: https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/fuse_lowlevel.c#L2865
+                Err(err) => match err.raw_os_error() {
+                    Some(ENODEV) => {
+                        tracing::debug!("The connection has already been disconnected");
+                        self.exit();
+                        return Ok(false);
                     }
-                    return Err(err);
-                }
+                    Some(EINTR) => {
+                        tracing::debug!("The read operation is interrupted");
+                        continue;
+                    }
+                    #[allow(unreachable_patterns)]
+                    Some(EAGAIN) | Some(EWOULDBLOCK) => {
+                        return Err(err);
+                    }
+                    _ => {
+                        tracing::error!("failed to receive the FUSE request: {}", err);
+                        return Err(err);
+                    }
+                },
 
-                Ok(opcode) => opcode,
+                Ok(header) => header,
             };
 
-            match opcode {
-                fuse_opcode::FUSE_INIT => {
+            match header.opcode() {
+                Ok(fuse_opcode::FUSE_INIT) => {
                     // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
                     tracing::error!("unexpected FUSE_INIT request received");
                     continue;
                 }
 
-                fuse_opcode::FUSE_DESTROY => {
+                Ok(fuse_opcode::FUSE_DESTROY) => {
                     // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
                     tracing::debug!("FUSE_DESTROY received");
                     self.exit();
                     return Ok(false);
                 }
 
-                fuse_opcode::FUSE_IOCTL | fuse_opcode::FUSE_LSEEK | fuse_opcode::CUSE_INIT => {
+                Ok(opcode @ fuse_opcode::FUSE_IOCTL) | Ok(opcode @ fuse_opcode::CUSE_INIT) => {
                     tracing::warn!(
                         "unsupported opcode (unique={}, opcode={:?})",
                         header.unique(),
@@ -539,7 +531,16 @@ impl Session {
                     continue;
                 }
 
-                opcode => {
+                Err(opcode) => {
+                    tracing::warn!(
+                        "The opcode `{}' is not recognized by the current version of polyfuse.",
+                        opcode
+                    );
+                    self.send_reply(&mut conn, header.unique(), ENOSYS, ())?;
+                    continue;
+                }
+
+                Ok(opcode) => {
                     tracing::debug!(
                         "Got a request (unique={}, opcode={:?})",
                         header.unique(),

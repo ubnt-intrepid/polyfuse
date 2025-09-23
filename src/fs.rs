@@ -466,50 +466,39 @@ impl Worker {
     where
         T: Filesystem,
         B: raw::RequestBuf,
+        for<'req> B::RemainingData<'req>: Send + Unpin,
     {
-        let mut header = raw::RequestHeader::new();
-        while self.read_request(&mut header, &mut buf).await? {
-            self.handle_request(&header, &mut buf, &fs).await?;
+        while self.read_request(&mut buf).await? {
+            self.handle_request(&mut buf, &fs).await?;
         }
         self.join_set.shutdown().await;
         Ok(())
     }
 
-    async fn read_request<B>(
-        &self,
-        header: &mut raw::RequestHeader,
-        buf: &mut B,
-    ) -> io::Result<bool>
+    async fn read_request<B>(&self, buf: &mut B) -> io::Result<bool>
     where
         B: raw::RequestBuf,
     {
         loop {
             let mut guard = self.conn.readable().await?;
-            match guard.try_io(|conn| {
-                self.global
-                    .session
-                    .recv_request(conn.get_ref(), header, buf)
-            }) {
+            match guard.try_io(|conn| self.global.session.recv_request(conn.get_ref(), buf)) {
                 Ok(result) => return result,
                 Err(_would_block) => continue,
             }
         }
     }
 
-    async fn handle_request<T, B>(
-        &mut self,
-        header: &raw::RequestHeader,
-        buf: &mut B,
-        fs: &Arc<T>,
-    ) -> io::Result<()>
+    async fn handle_request<T, B>(&mut self, buf: &mut B, fs: &Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
         B: raw::RequestBuf,
+        for<'req> B::RemainingData<'req>: Send + Unpin,
     {
+        let (header, arg, data) = buf.parts();
+
         let span = tracing::debug_span!("handle_request", unique = ?header.unique());
         let _enter = span.enter();
 
-        let (arg, data) = buf.parts();
         let op = Operation::decode(header, arg)
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
