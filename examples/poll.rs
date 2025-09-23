@@ -4,12 +4,12 @@ use polyfuse::{
     reply::OpenOutFlags,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
-        GID, UID,
     },
 };
 
 use anyhow::{ensure, Context as _, Result};
 use libc::{EACCES, EAGAIN, EINVAL};
+use rustix::process::{getgid, getuid};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -73,8 +73,8 @@ impl Filesystem for PollFS {
         attr.ino = NodeID::ROOT;
         attr.nlink = 1;
         attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-        attr.uid = UID::current();
-        attr.gid = GID::current();
+        attr.uid = getuid();
+        attr.gid = getgid();
 
         reply.attr(&attr);
         reply.ttl(Duration::from_secs(u64::max_value() / 2));

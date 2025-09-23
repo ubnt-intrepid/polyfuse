@@ -2,10 +2,14 @@ use crate::{
     bytes::Bytes,
     op::{self, Forget, Operation},
     raw, reply,
-    types::{NodeID, NotifyID, PollWakeupID, GID, PID, UID},
+    types::{NodeID, NotifyID, PollWakeupID},
 };
 use libc::{EIO, ENOENT, ENOSYS};
 use polyfuse_kernel::*;
+use rustix::{
+    fs::{Gid, Uid},
+    process::Pid,
+};
 use std::{
     ffi::OsStr,
     future::Future,
@@ -296,15 +300,15 @@ pub struct Request<'req> {
 }
 
 impl Request<'_> {
-    pub fn uid(&self) -> UID {
+    pub fn uid(&self) -> Uid {
         self.header.uid()
     }
 
-    pub fn gid(&self) -> GID {
+    pub fn gid(&self) -> Gid {
         self.header.gid()
     }
 
-    pub fn pid(&self) -> PID {
+    pub fn pid(&self) -> Option<Pid> {
         self.header.pid()
     }
 

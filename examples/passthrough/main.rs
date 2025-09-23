@@ -8,7 +8,7 @@ use polyfuse::{
     op::{self, OpenFlags},
     raw::{KernelConfig, KernelFlags, MountOptions},
     reply::OpenOutFlags,
-    types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID},
 };
 
 use crate::nix::{FileDesc, ReadDir};
@@ -280,8 +280,8 @@ impl Filesystem for Passthrough {
                 task::block_in_place(|| {
                     fd.fchownat(
                         "",
-                        uid.map(UID::into_raw),
-                        gid.map(GID::into_raw),
+                        uid.map(|id| id.as_raw()),
+                        gid.map(|id| id.as_raw()),
                         AT_SYMLINK_NOFOLLOW,
                     )
                 })?;

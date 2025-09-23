@@ -6,12 +6,13 @@ use polyfuse::{
         mount, Connection, FallbackBuf, KernelConfig, MountOptions, RequestBuf as _, RequestHeader,
         Session,
     },
-    types::{FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    types::{FileMode, FilePermissions, FileType, NodeID},
 };
 use polyfuse_kernel::{fuse_attr, fuse_attr_out};
 
 use anyhow::{ensure, Context as _, Result};
 use libc::{ENOENT, ENOSYS};
+use rustix::process::{getgid, getuid};
 use std::{io, path::PathBuf};
 use zerocopy::IntoBytes as _;
 
@@ -78,8 +79,8 @@ fn getattr(
             ctimensec: 0,
             mode: FileMode::new(FileType::Regular, FilePermissions::READ).into_raw(),
             nlink: 1,
-            uid: UID::current().into_raw(),
-            gid: GID::current().into_raw(),
+            uid: getuid().as_raw(),
+            gid: getgid().as_raw(),
             rdev: 0,
             blksize: 0,
             padding: 0,

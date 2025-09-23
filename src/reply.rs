@@ -19,8 +19,8 @@ fn fill_fuse_attr(slot: &mut fuse_attr, attr: &FileAttr) {
     slot.ctimensec = attr.ctime.subsec_nanos();
     slot.mode = attr.mode.into_raw();
     slot.nlink = attr.nlink;
-    slot.uid = attr.uid.into_raw();
-    slot.gid = attr.gid.into_raw();
+    slot.uid = attr.uid.as_raw();
+    slot.gid = attr.gid.as_raw();
     slot.rdev = attr.rdev.into_kernel_dev();
     slot.blksize = attr.blksize;
 }
@@ -459,7 +459,7 @@ where
                     typ: lk.typ,
                     start: lk.start,
                     end: lk.end,
-                    pid: lk.pid.into_raw(),
+                    pid: lk.pid.as_raw_pid() as u32,
                 },
             }
             .as_bytes(),

@@ -237,8 +237,8 @@ impl Filesystem for PathThrough {
         match (op.uid, op.gid) {
             (None, None) => (),
             (uid, gid) => {
-                let uid = uid.map(|id| nix::unistd::Uid::from_raw(id.into_raw()));
-                let gid = gid.map(|id| nix::unistd::Gid::from_raw(id.into_raw()));
+                let uid = uid.map(|id| nix::unistd::Uid::from_raw(id.as_raw()));
+                let gid = gid.map(|id| nix::unistd::Gid::from_raw(id.as_raw()));
                 nix::unistd::chown(&*path, uid, gid).map_err(|err| err as i32)?;
             }
         }

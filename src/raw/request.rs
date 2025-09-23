@@ -1,9 +1,13 @@
 use crate::{
     io::{Pipe, SpliceRead},
-    types::{RequestID, GID, PID, UID},
+    types::RequestID,
 };
 use polyfuse_kernel::{
     fuse_in_header, fuse_notify_retrieve_in, fuse_opcode, fuse_write_in, FUSE_MIN_READ_BUFFER,
+};
+use rustix::{
+    fs::{Gid, Uid},
+    process::Pid,
 };
 use std::{
     io::{self, prelude::*},
@@ -42,20 +46,20 @@ impl RequestHeader {
 
     /// Return the user ID of the calling process.
     #[inline]
-    pub const fn uid(&self) -> UID {
-        UID::from_raw(self.raw.uid)
+    pub fn uid(&self) -> Uid {
+        Uid::from_raw(self.raw.uid)
     }
 
     /// Return the group ID of the calling process.
     #[inline]
-    pub const fn gid(&self) -> GID {
-        GID::from_raw(self.raw.gid)
+    pub fn gid(&self) -> Gid {
+        Gid::from_raw(self.raw.gid)
     }
 
     /// Return the process ID of the calling process.
     #[inline]
-    pub const fn pid(&self) -> PID {
-        PID::from_raw(self.raw.pid)
+    pub fn pid(&self) -> Option<Pid> {
+        Pid::from_raw(self.raw.pid as i32)
     }
 
     pub(crate) fn raw(&self) -> &fuse_in_header {

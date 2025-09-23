@@ -5,11 +5,15 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op,
-    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
 
 use anyhow::{ensure, Context as _, Result};
 use libc::{EISDIR, ENOENT, ENOTDIR};
+use rustix::{
+    fs::{Gid, Uid},
+    process::{getgid, getuid},
+};
 use std::{os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -34,8 +38,8 @@ async fn main() -> Result<()> {
 
 struct Hello {
     entries: Vec<DirEntry>,
-    uid: UID,
-    gid: GID,
+    uid: Uid,
+    gid: Gid,
 }
 
 struct DirEntry {
@@ -64,8 +68,8 @@ impl Hello {
                     typ: Some(FileType::Regular),
                 },
             ],
-            uid: UID::current(),
-            gid: GID::current(),
+            uid: getuid(),
+            gid: getgid(),
         }
     }
 
