@@ -1,11 +1,7 @@
 //! Additional I/O primitives for FUSE implementation.
 
 use crate::nix;
-use std::{
-    cmp,
-    io::{self, prelude::*},
-    os::unix::prelude::*,
-};
+use std::{io, os::unix::prelude::*};
 
 pub use crate::nix::SpliceFlags;
 
@@ -111,11 +107,70 @@ where
     }
 }
 
-impl SpliceRead for &[u8] {
-    fn splice_read(&mut self, dst: &mut Pipe, bufsize: usize) -> io::Result<usize> {
-        let count = cmp::min(self.len(), bufsize);
-        let amount = dst.write(&self[..count])?;
-        *self = &self[amount..];
-        Ok(amount)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::prelude::*;
+
+    #[test]
+    fn test_read_write() -> io::Result<()> {
+        let mut pipe = Pipe::new()?;
+        assert_eq!(pipe.len(), 0);
+        assert!(pipe.is_empty());
+
+        let n = pipe.write(b"foo bar baz")?;
+        assert_eq!(n, 11);
+        assert_eq!(pipe.len(), 11);
+        assert!(!pipe.is_empty());
+
+        let mut buf = [0u8; 32];
+        let n = pipe.read(&mut buf[..])?;
+        assert_eq!(n, 11);
+        assert_eq!(pipe.len(), 0);
+        assert_eq!(buf[..n], *b"foo bar baz");
+
+        Ok(())
+    }
+
+    #[test]
+    fn splice_from() -> io::Result<()> {
+        const CONTENT: &[u8] = b"hello, splice world";
+
+        let mut src = tempfile::tempfile()?;
+        src.write_all(CONTENT)?;
+        src.seek(io::SeekFrom::Start(0))?;
+        src.flush()?;
+
+        let mut pipe = Pipe::new()?;
+        let n = pipe.splice_from(src.as_fd(), None, 1024, SpliceFlags::NONBLOCK)?;
+        assert_eq!(n, CONTENT.len());
+        assert_eq!(pipe.len(), CONTENT.len());
+
+        let mut dst = [0u8; 32];
+        let n = pipe.read(&mut dst[..])?;
+        assert_eq!(n, CONTENT.len());
+        assert_eq!(dst[..n], *CONTENT);
+
+        Ok(())
+    }
+
+    #[test]
+    fn splice_to() -> io::Result<()> {
+        const CONTENT: &[u8] = b"hello, splice world";
+
+        let mut pipe = Pipe::new()?;
+        pipe.write_all(CONTENT)?;
+
+        let mut dst = tempfile::tempfile()?;
+        let n = pipe.splice_to(dst.as_fd(), None, 1024, SpliceFlags::NONBLOCK)?;
+        assert_eq!(n, CONTENT.len());
+
+        dst.seek(io::SeekFrom::Start(0))?;
+
+        let mut buf = Vec::new();
+        dst.read_to_end(&mut buf)?;
+        assert_eq!(buf[..], *CONTENT);
+
+        Ok(())
     }
 }
