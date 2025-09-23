@@ -1,5 +1,5 @@
 use crate::{
-    io::{Pipe, PipeReader, SpliceRead},
+    io::{Pipe, SpliceRead},
     types::{RequestID, GID, PID, UID},
 };
 use polyfuse_kernel::{
@@ -119,15 +119,18 @@ impl SpliceBuf {
 }
 
 impl RequestBuf for SpliceBuf {
-    type RemainingData<'a> = &'a mut PipeReader;
+    type RemainingData<'a> = &'a mut Pipe;
 
     fn parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
-        (&self.header, &self.arg[..], &mut self.pipe.reader)
+        (&self.header, &self.arg[..], &mut self.pipe)
     }
 
     fn reset(&mut self) -> io::Result<()> {
         self.arg.truncate(0);
-        self.pipe.clear()?;
+        if !self.pipe.is_empty() {
+            let new_pipe = Pipe::new()?;
+            drop(mem::replace(&mut self.pipe, new_pipe));
+        }
         Ok(())
     }
 
@@ -140,9 +143,7 @@ impl RequestBuf for SpliceBuf {
         if len < mem::size_of_val(&self.header.raw) {
             Err(invalid_data("dequeued request message is too short"))?
         }
-        self.pipe
-            .reader
-            .read_exact(self.header.raw.as_mut_bytes())?;
+        self.pipe.read_exact(self.header.raw.as_mut_bytes())?;
 
         if len != self.header.raw.len as usize {
             Err(invalid_data(
@@ -151,7 +152,7 @@ impl RequestBuf for SpliceBuf {
         }
 
         self.arg.resize(self.header.arg_len(), 0);
-        self.pipe.reader.read_exact(&mut self.arg[..])?;
+        self.pipe.read_exact(&mut self.arg[..])?;
 
         Ok(&self.header)
     }

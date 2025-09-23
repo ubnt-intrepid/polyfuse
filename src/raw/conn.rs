@@ -104,7 +104,6 @@ impl SpliceRead for Connection {
 
 impl SpliceRead for &Connection {
     fn splice_read(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
-        pipe.writer
-            .splice_from(self.fd.as_fd(), bufsize, SpliceFlags::NONBLOCK)
+        pipe.splice_from(self.fd.as_fd(), None, bufsize, SpliceFlags::NONBLOCK)
     }
 }
