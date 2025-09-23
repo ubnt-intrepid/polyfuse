@@ -1,9 +1,7 @@
 //! Additional I/O primitives for FUSE implementation.
 
-use crate::nix;
+use rustix::pipe::{PipeFlags, SpliceFlags};
 use std::{io, os::unix::prelude::*};
-
-pub use crate::nix::SpliceFlags;
 
 /// A pair of anonymous pipe.
 #[derive(Debug)]
@@ -16,11 +14,10 @@ pub struct Pipe {
 impl Pipe {
     /// Create a pair of anonymous pipe.
     pub fn new() -> io::Result<Self> {
-        let mut fds = [0; 2];
-        syscall! { pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+        let (reader, writer) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK)?;
         Ok(Self {
-            reader: unsafe { OwnedFd::from_raw_fd(fds[0]) },
-            writer: unsafe { OwnedFd::from_raw_fd(fds[1]) },
+            reader,
+            writer,
             len: 0,
         })
     }
@@ -39,11 +36,11 @@ impl Pipe {
     pub fn splice_to(
         &mut self,
         fd: BorrowedFd<'_>,
-        offset: Option<i64>,
+        offset: Option<&mut u64>,
         len: usize,
         flags: SpliceFlags,
     ) -> io::Result<usize> {
-        let amount = nix::splice(self.reader.as_fd(), None, fd, offset, len, flags)?;
+        let amount = rustix::pipe::splice(self.reader.as_fd(), None, fd, offset, len, flags)?;
         self.len = self.len.saturating_sub(amount);
         Ok(amount)
     }
@@ -52,11 +49,11 @@ impl Pipe {
     pub fn splice_from(
         &mut self,
         fd: BorrowedFd<'_>,
-        offset: Option<i64>,
+        offset: Option<&mut u64>,
         len: usize,
         flags: SpliceFlags,
     ) -> io::Result<usize> {
-        let amount = nix::splice(fd, offset, self.writer.as_fd(), None, len, flags)?;
+        let amount = rustix::pipe::splice(fd, offset, self.writer.as_fd(), None, len, flags)?;
         self.len += amount;
         Ok(amount)
     }
@@ -68,7 +65,7 @@ impl io::Read for Pipe {
     }
 
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        let amount = nix::readv(self.reader.as_fd(), bufs)?;
+        let amount = rustix::io::readv(self.reader.as_fd(), bufs)?;
         self.len = self.len.saturating_sub(amount);
         Ok(amount)
     }
@@ -80,7 +77,7 @@ impl io::Write for Pipe {
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        let amount = nix::writev(self.writer.as_fd(), bufs)?;
+        let amount = rustix::io::writev(self.writer.as_fd(), bufs)?;
         self.len += amount;
         Ok(amount)
     }

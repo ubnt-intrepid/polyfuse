@@ -1,8 +1,6 @@
-use crate::{
-    io::{Pipe, SpliceFlags, SpliceRead},
-    nix,
-};
+use crate::io::{Pipe, SpliceRead};
 use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
+use rustix::pipe::SpliceFlags;
 use std::{ffi::CStr, io, os::unix::prelude::*};
 
 const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
@@ -73,21 +71,21 @@ impl io::Write for Connection {
 
 impl io::Read for &Connection {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        nix::read(self.fd.as_fd(), buf)
+        rustix::io::read(self.fd.as_fd(), buf).map_err(Into::into)
     }
 
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        nix::readv(self.fd.as_fd(), bufs)
+        rustix::io::readv(self.fd.as_fd(), bufs).map_err(Into::into)
     }
 }
 
 impl io::Write for &Connection {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        nix::write(self.fd.as_fd(), buf)
+        rustix::io::write(self.fd.as_fd(), buf).map_err(Into::into)
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        nix::writev(self.fd.as_fd(), bufs)
+        rustix::io::writev(self.fd.as_fd(), bufs).map_err(Into::into)
     }
 
     fn flush(&mut self) -> io::Result<()> {
