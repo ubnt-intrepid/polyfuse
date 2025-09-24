@@ -4,8 +4,8 @@ use crate::{
     raw::request::RequestBuf,
     types::RequestID,
 };
-use libc::{EAGAIN, EINTR, ENODEV, ENOENT, ENOSYS, EPROTO, EWOULDBLOCK};
 use polyfuse_kernel::*;
+use rustix::{io::Errno, param::page_size};
 use std::{
     cmp, io, mem,
     sync::atomic::{AtomicU32, Ordering},
@@ -21,11 +21,6 @@ const MAX_MAX_PAGES: usize = 256;
 const DEFAULT_MAX_WRITE: u32 = (FUSE_MIN_READ_BUFFER as usize
     - mem::size_of::<fuse_in_header>()
     - mem::size_of::<fuse_write_in>()) as u32;
-
-#[inline]
-fn pagesize() -> usize {
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
-}
 
 // ==== KernelConfig ====
 
@@ -359,7 +354,7 @@ impl Session {
                 self.send_reply(
                     &mut conn,
                     RequestID::from_raw(header_in.unique),
-                    0,
+                    None,
                     out.as_bytes(),
                 )?;
                 continue;
@@ -375,7 +370,12 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                self.send_reply(&mut conn, RequestID::from_raw(header_in.unique), EPROTO, ())?;
+                self.send_reply(
+                    &mut conn,
+                    RequestID::from_raw(header_in.unique),
+                    Some(Errno::PROTO),
+                    (),
+                )?;
                 continue;
             }
 
@@ -407,15 +407,15 @@ impl Session {
             );
 
             if config.flags.contains(KernelFlags::MAX_PAGES) {
-                config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * pagesize()) as u32);
+                config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * page_size()) as u32);
                 config.max_pages = cmp::min(
-                    config.max_write.div_ceil(pagesize() as u32),
+                    config.max_write.div_ceil(page_size() as u32),
                     u16::max_value() as u32,
                 ) as u16;
             } else {
                 config.max_write = cmp::min(
                     config.max_write,
-                    (DEFAULT_MAX_PAGES_PER_REQ * pagesize()) as u32,
+                    (DEFAULT_MAX_PAGES_PER_REQ * page_size()) as u32,
                 );
                 config.max_pages = 0;
             }
@@ -457,7 +457,7 @@ impl Session {
             self.send_reply(
                 &mut conn,
                 RequestID::from_raw(header_in.unique),
-                0,
+                None,
                 init_out.as_bytes(),
             )?;
 
@@ -484,18 +484,18 @@ impl Session {
 
             let header = match buf.try_receive(&mut conn) {
                 // ref: https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/fuse_lowlevel.c#L2865
-                Err(err) => match err.raw_os_error() {
-                    Some(ENODEV) => {
+                Err(err) => match Errno::from_io_error(&err) {
+                    Some(Errno::NODEV) => {
                         tracing::debug!("The connection has already been disconnected");
                         self.exit();
                         return Ok(false);
                     }
-                    Some(EINTR) => {
+                    Some(Errno::INTR) => {
                         tracing::debug!("The read operation is interrupted");
                         continue;
                     }
                     #[allow(unreachable_patterns)]
-                    Some(EAGAIN) | Some(EWOULDBLOCK) => {
+                    Some(Errno::AGAIN) | Some(Errno::WOULDBLOCK) => {
                         return Err(err);
                     }
                     _ => {
@@ -527,7 +527,7 @@ impl Session {
                         header.unique(),
                         opcode
                     );
-                    self.send_reply(&mut conn, header.unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?;
                     continue;
                 }
 
@@ -536,7 +536,7 @@ impl Session {
                         "The opcode `{}' is not recognized by the current version of polyfuse.",
                         opcode
                     );
-                    self.send_reply(&mut conn, header.unique(), ENOSYS, ())?;
+                    self.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?;
                     continue;
                 }
 
@@ -553,13 +553,13 @@ impl Session {
     }
 
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
-        match err.raw_os_error() {
-            Some(ENODEV) => {
+        match Errno::from_io_error(&err) {
+            Some(Errno::NODEV) => {
                 // 切断済みであれば無視
                 self.exit();
                 Ok(())
             }
-            Some(ENOENT) => Ok(()),
+            Some(Errno::NOENT) => Ok(()),
             _ => Err(err),
         }
     }
@@ -571,7 +571,13 @@ impl Session {
     /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
     /// the corresponding kernel processing will be isolated, and the process
     /// that issued the associated syscall may enter a deadlock state.
-    pub fn send_reply<T, B>(&self, conn: T, unique: RequestID, error: i32, arg: B) -> io::Result<()>
+    pub fn send_reply<T, B>(
+        &self,
+        conn: T,
+        unique: RequestID,
+        error: Option<Errno>,
+        arg: B,
+    ) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
@@ -585,7 +591,7 @@ impl Session {
             (
                 POD(fuse_out_header {
                     len,
-                    error: -error,
+                    error: -error.map_or(0, |err| err.raw_os_error()),
                     unique: unique.into_raw(),
                 }),
                 arg,
@@ -736,7 +742,7 @@ mod tests {
             )
             .expect("initialization failed");
 
-        let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(pagesize() as u32) as u16;
+        let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(page_size() as u32) as u16;
 
         assert_eq!(
             config.protocol_version,
@@ -819,10 +825,10 @@ mod tests {
         let session = Session::new();
         let mut buf = vec![0u8; 0];
         session
-            .send_reply(&mut buf, RequestID::from_raw(42), -4, ())
+            .send_reply(&mut buf, RequestID::from_raw(42), Some(Errno::INTR), ())
             .unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(buf[4..8], b![0x04, 0x00, 0x00, 0x00], "header.error");
+        assert_eq!(buf[4..8], b![0xfc, 0xff, 0xff, 0xff], "header.error");
         assert_eq!(
             buf[8..16],
             b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
@@ -835,7 +841,7 @@ mod tests {
         let session = Session::default();
         let mut buf = vec![0u8; 0];
         session
-            .send_reply(&mut buf, RequestID::from_raw(42), 0, "hello")
+            .send_reply(&mut buf, RequestID::from_raw(42), None, "hello")
             .unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
@@ -858,7 +864,7 @@ mod tests {
         ];
         let mut buf = vec![0u8; 0];
         session
-            .send_reply(&mut buf, RequestID::from_raw(26), 0, payload)
+            .send_reply(&mut buf, RequestID::from_raw(26), None, payload)
             .unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");

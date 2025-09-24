@@ -16,7 +16,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
-use libc::{EISDIR, ENOENT, ENOTDIR};
+use rustix::io::Errno;
 use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
@@ -146,7 +146,7 @@ impl Filesystem for Heartbeat {
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
         if arg.parent != NodeID::ROOT {
-            Err(ENOTDIR)?;
+            Err(Errno::NOTDIR)?;
         }
 
         let mut current = self.current.lock().await;
@@ -162,7 +162,7 @@ impl Filesystem for Heartbeat {
 
             Ok(res)
         } else {
-            Err(ENOENT)?
+            Err(Errno::NOENT)?
         }
     }
 
@@ -184,7 +184,7 @@ impl Filesystem for Heartbeat {
         let attr = match arg.ino {
             NodeID::ROOT => &self.root_attr,
             FILE_INO => &self.file_attr,
-            _ => Err(ENOENT)?,
+            _ => Err(Errno::NOENT)?,
         };
 
         reply.attr(attr);
@@ -199,9 +199,9 @@ impl Filesystem for Heartbeat {
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
         match arg.ino {
-            NodeID::ROOT => Err(EISDIR)?,
+            NodeID::ROOT => Err(Errno::ISDIR)?,
             FILE_INO => reply.send(()),
-            _ => Err(ENOENT)?,
+            _ => Err(Errno::NOENT)?,
         }
     }
 
@@ -212,7 +212,7 @@ impl Filesystem for Heartbeat {
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
         if arg.ino != NodeID::ROOT {
-            Err(ENOTDIR)?;
+            Err(Errno::NOTDIR)?;
         }
         if arg.offset > 0 {
             return reply.send();

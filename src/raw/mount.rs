@@ -1,16 +1,18 @@
 use super::conn::Connection;
-use libc::{c_int, c_void};
+use rustix::{
+    io::FdFlags,
+    net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags},
+};
 use std::{
     borrow::Cow,
     fmt, io,
-    mem::{self, MaybeUninit},
+    mem::{ManuallyDrop, MaybeUninit},
     os::{
-        fd::{AsRawFd, OwnedFd},
+        fd::OwnedFd,
         unix::{net::UnixStream, prelude::*},
     },
     path::{Path, PathBuf},
     process::{Child, Command},
-    ptr,
 };
 
 // refs:
@@ -230,14 +232,13 @@ pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(Connec
     fusermount.arg("--").arg(&mountpoint);
 
     let (input, output) = UnixStream::pair()?;
-    let output = output.into_raw_fd();
 
-    fusermount.env(FUSE_COMMFD_ENV, output.to_string());
+    fusermount.env(FUSE_COMMFD_ENV, output.as_raw_fd().to_string());
 
     unsafe {
+        let output = ManuallyDrop::new(output);
         fusermount.pre_exec(move || {
-            syscall! { fcntl(output, libc::F_SETFD, 0) };
-            Ok(())
+            rustix::io::fcntl_setfd(&*output, FdFlags::empty()).map_err(Into::into)
         });
     }
 
@@ -266,49 +267,29 @@ pub fn mount(mountpoint: PathBuf, mountopts: MountOptions) -> io::Result<(Connec
 
 fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
     let mut buf = [0u8; 1];
-    let mut iov = libc::iovec {
-        iov_base: buf.as_mut_ptr() as *mut c_void,
-        iov_len: 1,
-    };
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut cmsg_buffer = RecvAncillaryBuffer::new(&mut space);
 
-    #[repr(C)]
-    struct Cmsg {
-        header: libc::cmsghdr,
-        fd: c_int,
-    }
-    let mut cmsg = MaybeUninit::<Cmsg>::uninit();
+    let _msg = rustix::net::recvmsg(
+        reader,
+        &mut [io::IoSliceMut::new(&mut buf[..])],
+        &mut cmsg_buffer,
+        RecvFlags::empty(),
+    );
 
-    let mut msg = libc::msghdr {
-        msg_name: ptr::null_mut(),
-        msg_namelen: 0,
-        msg_iov: &mut iov,
-        msg_iovlen: 1,
-        msg_control: cmsg.as_mut_ptr() as *mut c_void,
-        msg_controllen: mem::size_of_val(&cmsg),
-        msg_flags: 0,
-    };
+    let fd = cmsg_buffer
+        .drain()
+        .flat_map(|msg| match msg {
+            RecvAncillaryMessage::ScmRights(fds) => Some(fds),
+            _ => None,
+        })
+        .flatten()
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "recv_fd"))?;
 
-    syscall! { recvmsg(reader.as_raw_fd(), &mut msg, 0) };
+    rustix::io::fcntl_setfd(&fd, FdFlags::CLOEXEC)?;
 
-    if msg.msg_controllen < mem::size_of_val(&cmsg) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "too short control message length",
-        ));
-    }
-    let cmsg = unsafe { cmsg.assume_init() };
-
-    if cmsg.header.cmsg_type != libc::SCM_RIGHTS {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "got control message with unknown type",
-        ));
-    }
-
-    let fd = cmsg.fd;
-    syscall! { fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    Ok(fd)
 }
 
 fn unmount(mountpoint: &Path, mountopts: &MountOptions) -> io::Result<()> {

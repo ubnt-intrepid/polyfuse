@@ -3,11 +3,15 @@ use crate::{
     raw::RequestHeader,
     types::{
         DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
-        PollEvents, PollWakeupID, RequestID, GID, PID, UID,
+        PollEvents, PollWakeupID, RequestID,
     },
 };
 use bitflags::bitflags;
 use polyfuse_kernel::*;
+use rustix::{
+    fs::{Gid, Uid},
+    process::Pid,
+};
 use std::{
     ffi::OsStr, fmt, marker::PhantomData, ops::Deref, os::unix::fs::OpenOptionsExt, slice,
     time::Duration,
@@ -27,6 +31,9 @@ pub enum Error {
 
     #[error("invalid `flock(2)` operation type")]
     InvalidFlockType,
+
+    #[error("invalid PID value")]
+    InvalidPid,
 
     #[error("unknown `lseek(2)` whence")]
     UnknownLseekWhence,
@@ -150,8 +157,8 @@ impl<'op> Operation<'op> {
                     ino: NodeID::from_raw(header.nodeid),
                     fh: (arg.valid & FATTR_FH != 0).then(|| FileID::from_raw(arg.fh)),
                     mode: (arg.valid & FATTR_MODE != 0).then(|| FileMode::from_raw(arg.mode)),
-                    uid: (arg.valid & FATTR_UID != 0).then(|| UID::from_raw(arg.uid)),
-                    gid: (arg.valid & FATTR_GID != 0).then(|| GID::from_raw(arg.gid)),
+                    uid: (arg.valid & FATTR_UID != 0).then(|| Uid::from_raw(arg.uid)),
+                    gid: (arg.valid & FATTR_GID != 0).then(|| Gid::from_raw(arg.gid)),
                     size: (arg.valid & FATTR_SIZE != 0).then_some(arg.size),
                     atime: (arg.valid & FATTR_ATIME != 0).then(|| {
                         if arg.valid & FATTR_ATIME_NOW != 0 {
@@ -433,7 +440,7 @@ impl<'op> Operation<'op> {
                         typ: arg.lk.typ,
                         start: arg.lk.start,
                         end: arg.lk.end,
-                        pid: PID::from_raw(arg.lk.pid),
+                        pid: Pid::from_raw(arg.lk.pid as i32).ok_or(Error::InvalidPid)?,
                     },
                     _marker: PhantomData,
                 }))
@@ -455,7 +462,7 @@ impl<'op> Operation<'op> {
                             typ: arg.lk.typ,
                             start: arg.lk.start,
                             end: arg.lk.end,
-                            pid: PID::from_raw(arg.lk.pid),
+                            pid: Pid::from_raw(arg.lk.pid as i32).ok_or(Error::InvalidPid)?,
                         },
                         sleep,
                         _marker: PhantomData,
@@ -710,10 +717,10 @@ pub struct Setattr<'op> {
     pub mode: Option<FileMode>,
 
     /// The user id to be set.
-    pub uid: Option<UID>,
+    pub uid: Option<Uid>,
 
     /// The group id to be set.
-    pub gid: Option<GID>,
+    pub gid: Option<Gid>,
 
     /// The size of the file content to be set.
     pub size: Option<u64>,

@@ -5,11 +5,15 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op,
-    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, GID, UID},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{EISDIR, ENOENT, ENOTDIR};
+use rustix::{
+    fs::{Gid, Uid},
+    io::Errno,
+    process::{getgid, getuid},
+};
 use std::{os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -34,8 +38,8 @@ async fn main() -> Result<()> {
 
 struct Hello {
     entries: Vec<DirEntry>,
-    uid: UID,
-    gid: GID,
+    uid: Uid,
+    gid: Gid,
 }
 
 struct DirEntry {
@@ -64,8 +68,8 @@ impl Hello {
                     typ: Some(FileType::Regular),
                 },
             ],
-            uid: UID::current(),
-            gid: GID::current(),
+            uid: getuid(),
+            gid: getgid(),
         }
     }
 
@@ -116,7 +120,7 @@ impl Filesystem for Hello {
                 reply.ttl_entry(TTL);
                 reply.send()
             }
-            _ => Err(ENOENT)?,
+            _ => Err(Errno::NOENT)?,
         }
     }
 
@@ -129,7 +133,7 @@ impl Filesystem for Hello {
         let attr = match op.ino {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
-            _ => Err(ENOENT)?,
+            _ => Err(Errno::NOENT)?,
         };
 
         reply.attr(&attr);
@@ -145,8 +149,8 @@ impl Filesystem for Hello {
     ) -> fs::Result {
         match op.ino {
             HELLO_INO => (),
-            NodeID::ROOT => Err(EISDIR)?,
-            _ => Err(ENOENT)?,
+            NodeID::ROOT => Err(Errno::ISDIR)?,
+            _ => Err(Errno::NOENT)?,
         }
 
         let mut data: &[u8] = &[];
@@ -168,7 +172,7 @@ impl Filesystem for Hello {
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
         if op.ino != NodeID::ROOT {
-            Err(ENOTDIR)?
+            Err(Errno::NOTDIR)?
         }
 
         for (i, entry) in self.dir_entries().skip(op.offset as usize) {

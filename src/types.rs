@@ -2,6 +2,10 @@
 
 use bitflags::bitflags;
 use libc::dev_t;
+use rustix::{
+    fs::{Gid, Uid},
+    process::Pid,
+};
 use std::{fmt, fs::Metadata, os::unix::prelude::*, time::Duration};
 
 macro_rules! define_id_type {
@@ -53,45 +57,12 @@ define_id_type! {
     /// The file handle.
     pub type FileID = u64;
 
-    /// The user ID.
-    pub type UID = u32;
-
-    /// The group ID.
-    pub type GID = u32;
-
-    /// The process ID.
-    pub type PID = u32;
-
     /// The poll wakeup ID.
     pub type PollWakeupID = u64;
 }
 
 impl NodeID {
     pub const ROOT: Self = Self::from_raw(1);
-}
-
-impl UID {
-    pub const ROOT: Self = Self::from_raw(0);
-
-    pub fn current() -> Self {
-        Self::from_raw(unsafe { libc::getuid() })
-    }
-
-    pub fn effective() -> Self {
-        Self::from_raw(unsafe { libc::geteuid() })
-    }
-}
-
-impl GID {
-    pub const ROOT: Self = Self::from_raw(0);
-
-    pub fn current() -> Self {
-        Self::from_raw(unsafe { libc::getgid() })
-    }
-
-    pub fn effective() -> Self {
-        Self::from_raw(unsafe { libc::getegid() })
-    }
 }
 
 /// The lock owner ID.
@@ -344,8 +315,8 @@ pub struct FileAttr {
     pub size: u64,
     pub mode: FileMode,
     pub nlink: u32,
-    pub uid: UID,
-    pub gid: GID,
+    pub uid: Uid,
+    pub gid: Gid,
     pub rdev: DeviceID,
     pub blksize: u32,
     pub blocks: u64,
@@ -367,8 +338,8 @@ impl FileAttr {
             size: 0,
             mode: FileMode::new(FileType::Regular, FilePermissions::READ),
             nlink: 1,
-            uid: UID::ROOT,
-            gid: GID::ROOT,
+            uid: Uid::ROOT,
+            gid: Gid::ROOT,
             rdev: DeviceID::new(0, 0),
             blksize: 0,
             blocks: 0,
@@ -397,8 +368,8 @@ impl TryFrom<&libc::stat> for FileAttr {
             size: st.st_size as _,
             mode: FileMode::from_raw(st.st_mode),
             nlink: st.st_nlink as _,
-            uid: UID::from_raw(st.st_uid),
-            gid: GID::from_raw(st.st_gid),
+            uid: Uid::from_raw(st.st_uid),
+            gid: Gid::from_raw(st.st_gid),
             rdev: DeviceID::from_userspace_dev(st.st_rdev),
             blksize: st.st_blksize as _,
             blocks: st.st_blocks as _,
@@ -427,8 +398,8 @@ impl TryFrom<&Metadata> for FileAttr {
             size: m.size(),
             mode: FileMode::from_raw(m.mode()),
             nlink: m.nlink() as _,
-            uid: UID::from_raw(m.uid()),
-            gid: GID::from_raw(m.gid()),
+            uid: Uid::from_raw(m.uid()),
+            gid: Gid::from_raw(m.gid()),
             rdev: DeviceID::from_userspace_dev(m.rdev()),
             blksize: m.blksize() as _,
             blocks: m.blocks(),
@@ -483,7 +454,7 @@ pub struct FileLock {
     pub typ: u32,
     pub start: u64,
     pub end: u64,
-    pub pid: PID,
+    pub pid: Pid,
 }
 
 #[cfg(test)]

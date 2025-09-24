@@ -1,11 +1,19 @@
-use crate::{
-    io::{Pipe, SpliceFlags, SpliceRead},
-    nix,
+use crate::io::{Pipe, SpliceRead};
+use rustix::{
+    fs::{Mode, OFlags},
+    ioctl::{self, ioctl},
+    pipe::SpliceFlags,
 };
-use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
 use std::{ffi::CStr, io, os::unix::prelude::*};
 
 const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
+
+// FIXME: move to polyfuse-kernel
+const FUSE_DEV_IOC_MAGIC: u8 = 229;
+const FUSE_DEV_IOC_CLONE: u32 = ioctl::opcode::read::<u32>(FUSE_DEV_IOC_MAGIC, 0);
+
+#[cfg(test)]
+const _: [(); polyfuse_kernel::FUSE_DEV_IOC_CLONE as usize] = [(); FUSE_DEV_IOC_CLONE as usize];
 
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
@@ -21,11 +29,14 @@ impl From<OwnedFd> for Connection {
 
 impl Connection {
     pub fn try_ioc_clone(&self) -> io::Result<Self> {
-        let newfd = syscall! { open(FUSE_DEV_NAME.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-        syscall! { ioctl(newfd, FUSE_DEV_IOC_CLONE, &self.fd.as_raw_fd()) };
-        Ok(Self {
-            fd: unsafe { OwnedFd::from_raw_fd(newfd) },
-        })
+        let newfd = rustix::fs::open(FUSE_DEV_NAME, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())?;
+        unsafe {
+            ioctl(
+                &newfd,
+                ioctl::Setter::<FUSE_DEV_IOC_CLONE, _>::new(self.fd.as_raw_fd()),
+            )?;
+        }
+        Ok(Self { fd: newfd })
     }
 }
 
@@ -73,21 +84,21 @@ impl io::Write for Connection {
 
 impl io::Read for &Connection {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        nix::read(self.fd.as_fd(), buf)
+        rustix::io::read(self.fd.as_fd(), buf).map_err(Into::into)
     }
 
     fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-        nix::readv(self.fd.as_fd(), bufs)
+        rustix::io::readv(self.fd.as_fd(), bufs).map_err(Into::into)
     }
 }
 
 impl io::Write for &Connection {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        nix::write(self.fd.as_fd(), buf)
+        rustix::io::write(self.fd.as_fd(), buf).map_err(Into::into)
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        nix::writev(self.fd.as_fd(), bufs)
+        rustix::io::writev(self.fd.as_fd(), bufs).map_err(Into::into)
     }
 
     fn flush(&mut self) -> io::Result<()> {

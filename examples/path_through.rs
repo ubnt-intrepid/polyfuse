@@ -20,7 +20,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{EINVAL, ENOENT, ENOSYS, ERANGE};
+use rustix::io::Errno;
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -146,7 +146,7 @@ impl Filesystem for PathThrough {
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
-        let parent = inodes.get(op.parent).ok_or(ENOENT)?;
+        let parent = inodes.get(op.parent).ok_or(Errno::NOENT)?;
         let path = parent.path.join(op.name);
 
         let metadata = std::fs::symlink_metadata(self.source.join(&path))?;
@@ -199,7 +199,7 @@ impl Filesystem for PathThrough {
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
-        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let metadata = std::fs::symlink_metadata(self.source.join(&inode.path))?;
 
         let attr = metadata.try_into().unwrap();
@@ -213,14 +213,14 @@ impl Filesystem for PathThrough {
         op: op::Setattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let fh = op.fh.ok_or(ENOENT)?;
+        let fh = op.fh.ok_or(Errno::NOENT)?;
         let files = &mut *self.files.lock().await;
-        let file = files.get(fh.into_raw() as usize).ok_or(EINVAL)?;
+        let file = files.get(fh.into_raw() as usize).ok_or(Errno::INVAL)?;
 
         file.file.sync_all().await?;
 
         let inodes = &mut *self.inodes.lock().await;
-        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let path = self.source.join(&inode.path);
 
         // chmod
@@ -237,9 +237,7 @@ impl Filesystem for PathThrough {
         match (op.uid, op.gid) {
             (None, None) => (),
             (uid, gid) => {
-                let uid = uid.map(|id| nix::unistd::Uid::from_raw(id.into_raw()));
-                let gid = gid.map(|id| nix::unistd::Gid::from_raw(id.into_raw()));
-                nix::unistd::chown(&*path, uid, gid).map_err(|err| err as i32)?;
+                rustix::fs::chown(&*path, uid, gid)?;
             }
         }
 
@@ -259,7 +257,7 @@ impl Filesystem for PathThrough {
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
-        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let path = std::fs::read_link(self.source.join(&inode.path))?;
         reply.send(path.as_os_str())
     }
@@ -271,7 +269,7 @@ impl Filesystem for PathThrough {
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
-        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
         let dirs = &mut *self.dirs.lock().await;
         let fh = dirs.insert(DirHandle {
@@ -291,11 +289,11 @@ impl Filesystem for PathThrough {
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
         if op.mode == op::ReaddirMode::Plus {
-            return Err(ENOSYS.into());
+            return Err(Errno::NOSYS.into());
         }
 
         let dirs = &mut *self.dirs.lock().await;
-        let dir = Slab::get_mut(dirs, op.fh.into_raw() as usize).ok_or(EINVAL)?;
+        let dir = Slab::get_mut(dirs, op.fh.into_raw() as usize).ok_or(Errno::INVAL)?;
 
         let mut at_least_one_entry = false;
 
@@ -303,7 +301,7 @@ impl Filesystem for PathThrough {
             let full = reply.push_entry(entry.name.as_ref(), entry.ino, entry.typ, dir.offset);
             if full {
                 dir.last_entry.replace(entry);
-                return Err(ERANGE.into());
+                return Err(Errno::RANGE.into());
             }
             at_least_one_entry = true;
             dir.offset += 1;
@@ -340,7 +338,7 @@ impl Filesystem for PathThrough {
                     typ,
                 });
                 if !at_least_one_entry {
-                    return Err(ERANGE.into());
+                    return Err(Errno::RANGE.into());
                 }
                 break;
             }
@@ -370,7 +368,7 @@ impl Filesystem for PathThrough {
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
         let inodes = &mut *self.inodes.lock().await;
-        let inode = inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
         let options: OpenOptions = op.options.remove(OpenFlags::NOFOLLOW).into();
 
@@ -391,7 +389,7 @@ impl Filesystem for PathThrough {
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
         let files = &mut *self.files.lock().await;
-        let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(EINVAL)?;
+        let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(Errno::INVAL)?;
         let buf = file.read(op.offset, op.size as usize).await?;
         reply.send(buf)
     }
@@ -404,7 +402,7 @@ impl Filesystem for PathThrough {
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
         let files = &mut *self.files.lock().await;
-        let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(EINVAL)?;
+        let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(Errno::INVAL)?;
         let offset = op.offset;
         let size = op.size;
         let written = file
@@ -421,7 +419,7 @@ impl Filesystem for PathThrough {
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
         let files = &mut *self.files.lock().await;
-        let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(EINVAL)?;
+        let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(Errno::INVAL)?;
         file.fsync(false).await?;
         reply.send()
     }
@@ -433,7 +431,7 @@ impl Filesystem for PathThrough {
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
         let files = &mut *self.files.lock().await;
-        let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(EINVAL)?;
+        let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(Errno::INVAL)?;
         file.fsync(op.datasync).await?;
         reply.send()
     }

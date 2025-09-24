@@ -4,12 +4,14 @@ use polyfuse::{
     reply::OpenOutFlags,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
-        GID, UID,
     },
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{EACCES, EAGAIN, EINVAL};
+use rustix::{
+    io::Errno,
+    process::{getgid, getuid},
+};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -73,8 +75,8 @@ impl Filesystem for PollFS {
         attr.ino = NodeID::ROOT;
         attr.nlink = 1;
         attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-        attr.uid = UID::current();
-        attr.gid = GID::current();
+        attr.uid = getuid();
+        attr.gid = getgid();
 
         reply.attr(&attr);
         reply.ttl(Duration::from_secs(u64::max_value() / 2));
@@ -88,7 +90,7 @@ impl Filesystem for PollFS {
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
         if op.options.access_mode() != Some(AccessMode::ReadOnly) {
-            Err(EACCES)?;
+            Err(Errno::ACCESS)?;
         }
 
         let is_nonblock = op.options.flags().contains(OpenFlags::NONBLOCK);
@@ -143,12 +145,12 @@ impl Filesystem for PollFS {
     ) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
-            handles.get(&op.fh).cloned().ok_or(EINVAL)?
+            handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
         };
         if handle.is_nonblock {
             if handle.deadline > Instant::now() {
                 tracing::info!("send EAGAIN immediately");
-                Err(EAGAIN)?;
+                Err(Errno::AGAIN)?;
             }
         } else {
             tracing::info!("wait for the completion of background task");
@@ -175,7 +177,7 @@ impl Filesystem for PollFS {
     ) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
-            handles.get(&op.fh).cloned().ok_or(EINVAL)?
+            handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
         };
         let now = Instant::now();
 

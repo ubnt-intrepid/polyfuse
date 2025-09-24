@@ -10,7 +10,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP, ERANGE};
+use rustix::io::Errno;
 use slab::Slab;
 use std::{
     collections::hash_map::{Entry, HashMap},
@@ -233,14 +233,14 @@ impl MemFS {
     where
         F: FnOnce(&VacantEntry<'_>) -> INode,
     {
-        let mut parent = self.inodes.get_mut(parent).ok_or(ENOENT)?;
+        let mut parent = self.inodes.get_mut(parent).ok_or(Errno::NOENT)?;
         let parent = match parent.kind {
             INodeKind::Directory(ref mut dir) => dir,
-            _ => return Err(ENOTDIR.into()),
+            _ => return Err(Errno::NOTDIR.into()),
         };
 
         let map_entry = match parent.children.entry(name.into()) {
-            Entry::Occupied(..) => return Err(EEXIST.into()),
+            Entry::Occupied(..) => return Err(Errno::EXIST.into()),
             Entry::Vacant(map_entry) => map_entry,
         };
         let inode_entry = self.inodes.vacant_entry().expect("inode number conflict");
@@ -257,15 +257,15 @@ impl MemFS {
     }
 
     fn unlink_node(&self, parent: NodeID, name: &OsStr) -> fs::Result<()> {
-        let mut parent = self.inodes.get_mut(parent).ok_or(ENOENT)?;
-        let parent = parent.as_dir_mut().ok_or(ENOTDIR)?;
+        let mut parent = self.inodes.get_mut(parent).ok_or(Errno::NOENT)?;
+        let parent = parent.as_dir_mut().ok_or(Errno::NOTDIR)?;
 
-        let ino = parent.children.get(name).copied().ok_or(ENOENT)?;
+        let ino = parent.children.get(name).copied().ok_or(Errno::NOENT)?;
 
         let mut inode = self.inodes.get_mut(ino).unwrap_or_else(|| unreachable!());
         if let Some(dir) = inode.as_dir_mut() {
             if !dir.children.is_empty() {
-                return Err(ENOTEMPTY.into());
+                return Err(Errno::NOTEMPTY.into());
             }
         }
 
@@ -288,10 +288,10 @@ impl Filesystem for MemFS {
         op: op::Lookup<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        let parent = self.inodes.get(op.parent).ok_or(ENOENT)?;
-        let parent = parent.as_dir().ok_or(ENOTDIR)?;
+        let parent = self.inodes.get(op.parent).ok_or(Errno::NOENT)?;
+        let parent = parent.as_dir().ok_or(Errno::NOTDIR)?;
 
-        let child_ino = parent.children.get(op.name).copied().ok_or(ENOENT)?;
+        let child_ino = parent.children.get(op.name).copied().ok_or(Errno::NOENT)?;
         let mut child = self
             .inodes
             .get_mut(child_ino)
@@ -323,7 +323,7 @@ impl Filesystem for MemFS {
         op: op::Getattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
         reply.attr(&inode.attr);
         reply.ttl(self.ttl);
@@ -336,7 +336,7 @@ impl Filesystem for MemFS {
         op: op::Setattr<'_>,
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 
         fn to_duration(t: op::SetAttrTime) -> Duration {
             match t {
@@ -380,8 +380,8 @@ impl Filesystem for MemFS {
         op: op::Readlink<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
-        let link = inode.as_symlink().ok_or(EINVAL)?;
+        let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
+        let link = inode.as_symlink().ok_or(Errno::INVAL)?;
         reply.send(link)
     }
 
@@ -391,11 +391,11 @@ impl Filesystem for MemFS {
         op: op::Opendir<'_>,
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
         if inode.attr.nlink == 0 {
-            return Err(ENOENT.into());
+            return Err(Errno::NOENT.into());
         }
-        let dir = inode.as_dir().ok_or(ENOTDIR)?;
+        let dir = inode.as_dir().ok_or(Errno::NOTDIR)?;
 
         let dir_handles = &mut *self.dir_handles.lock().await;
         let key = dir_handles.insert(DirHandle {
@@ -414,11 +414,13 @@ impl Filesystem for MemFS {
         mut reply: fs::ReplyDir<'_>,
     ) -> fs::Result {
         if op.mode == op::ReaddirMode::Plus {
-            Err(ENOSYS)?;
+            Err(Errno::NOSYS)?;
         }
 
         let dir_handles = &mut *self.dir_handles.lock().await;
-        let dir = dir_handles.get(op.fh.into_raw() as usize).ok_or(EINVAL)?;
+        let dir = dir_handles
+            .get(op.fh.into_raw() as usize)
+            .ok_or(Errno::INVAL)?;
 
         for entry in dir.entries.iter().skip(op.offset as usize) {
             if reply.push_entry(&entry.name, entry.ino, entry.typ, entry.off) {
@@ -449,7 +451,7 @@ impl Filesystem for MemFS {
     ) -> fs::Result {
         match op.mode.file_type() {
             Some(FileType::Regular) => (),
-            _ => Err(ENOTSUP)?,
+            _ => Err(Errno::NOTSUP)?,
         }
 
         self.make_node(reply, op.parent, op.name, |entry| INode {
@@ -521,14 +523,14 @@ impl Filesystem for MemFS {
         op: op::Link<'_>,
         mut reply: fs::ReplyEntry<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 
         debug_assert!(op.ino != op.newparent);
-        let mut newparent = self.inodes.get_mut(op.newparent).ok_or(ENOENT)?;
-        let newparent = newparent.as_dir_mut().ok_or(ENOTDIR)?;
+        let mut newparent = self.inodes.get_mut(op.newparent).ok_or(Errno::NOENT)?;
+        let newparent = newparent.as_dir_mut().ok_or(Errno::NOTDIR)?;
 
         match newparent.children.entry(op.newname.into()) {
-            Entry::Occupied(..) => return Err(EEXIST.into()),
+            Entry::Occupied(..) => return Err(Errno::EXIST.into()),
             Entry::Vacant(entry) => {
                 entry.insert(op.ino);
                 inode.links += 1;
@@ -571,21 +573,21 @@ impl Filesystem for MemFS {
     ) -> fs::Result {
         if !op.flags.is_empty() {
             // TODO: handle RENAME_NOREPLACE and RENAME_EXCHANGE.
-            Err(EINVAL)?;
+            Err(Errno::INVAL)?;
         }
 
-        let mut parent = self.inodes.get_mut(op.parent).ok_or(ENOENT)?;
-        let parent = parent.as_dir_mut().ok_or(ENOTDIR)?;
+        let mut parent = self.inodes.get_mut(op.parent).ok_or(Errno::NOENT)?;
+        let parent = parent.as_dir_mut().ok_or(Errno::NOTDIR)?;
 
         match op.newparent {
             newparent if newparent == op.parent => {
                 let ino = match parent.children.get(op.name) {
                     Some(&ino) => ino,
-                    None => return Err(ENOENT.into()),
+                    None => return Err(Errno::NOENT.into()),
                 };
 
                 match parent.children.entry(op.newname.into()) {
-                    Entry::Occupied(..) => return Err(EEXIST.into()),
+                    Entry::Occupied(..) => return Err(Errno::EXIST.into()),
                     Entry::Vacant(entry) => {
                         entry.insert(ino);
                     }
@@ -597,14 +599,14 @@ impl Filesystem for MemFS {
             }
 
             newparent => {
-                let mut newparent = self.inodes.get_mut(newparent).ok_or(ENOENT)?;
-                let newparent = newparent.as_dir_mut().ok_or(ENOTDIR)?;
+                let mut newparent = self.inodes.get_mut(newparent).ok_or(Errno::NOENT)?;
+                let newparent = newparent.as_dir_mut().ok_or(Errno::NOTDIR)?;
 
                 let entry = match newparent.children.entry(op.newname.into()) {
-                    Entry::Occupied(..) => return Err(EEXIST.into()),
+                    Entry::Occupied(..) => return Err(Errno::EXIST.into()),
                     Entry::Vacant(entry) => entry,
                 };
-                let ino = parent.children.remove(op.name).ok_or(ENOENT)?;
+                let ino = parent.children.remove(op.name).ok_or(Errno::NOENT)?;
                 entry.insert(ino);
             }
         }
@@ -618,13 +620,13 @@ impl Filesystem for MemFS {
         op: op::Getxattr<'_>,
         reply: fs::ReplyXattr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
-        let value = inode.xattrs.get(op.name).ok_or(ENODATA)?;
+        let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
+        let value = inode.xattrs.get(op.name).ok_or(Errno::NODATA)?;
         match op.size {
             0 => reply.send_size(value.len() as u32),
             size => {
                 if value.len() as u32 > size {
-                    return Err(ERANGE.into());
+                    return Err(Errno::RANGE.into());
                 }
                 reply.send_value(value)
             }
@@ -640,22 +642,22 @@ impl Filesystem for MemFS {
         let create = op.flags.contains(SetxattrFlags::CREATE);
         let replace = op.flags.contains(SetxattrFlags::REPLACE);
         if create && replace {
-            return Err(EINVAL.into());
+            return Err(Errno::INVAL.into());
         }
 
-        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 
         match inode.xattrs.entry(op.name.into()) {
             Entry::Occupied(entry) => {
                 if create {
-                    return Err(EEXIST.into());
+                    return Err(Errno::EXIST.into());
                 }
                 let value = Arc::make_mut(entry.into_mut());
                 *value = op.value.into();
             }
             Entry::Vacant(entry) => {
                 if replace {
-                    return Err(ENODATA.into());
+                    return Err(Errno::NODATA.into());
                 }
                 if create {
                     entry.insert(Arc::default());
@@ -674,7 +676,7 @@ impl Filesystem for MemFS {
         op: op::Listxattr<'_>,
         reply: fs::ReplyXattr<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
         match op.size {
             0 => {
@@ -692,7 +694,7 @@ impl Filesystem for MemFS {
                 });
 
                 if total_len > size {
-                    return Err(ERANGE.into());
+                    return Err(Errno::RANGE.into());
                 }
 
                 reply.send_value(names)
@@ -706,13 +708,13 @@ impl Filesystem for MemFS {
         op: op::Removexattr<'_>,
         reply: fs::ReplyUnit<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 
         match inode.xattrs.entry(op.name.into()) {
             Entry::Occupied(entry) => {
                 entry.remove();
             }
-            Entry::Vacant(..) => return Err(ENODATA.into()),
+            Entry::Vacant(..) => return Err(Errno::NODATA.into()),
         }
 
         reply.send()
@@ -724,9 +726,9 @@ impl Filesystem for MemFS {
         op: op::Read<'_>,
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
-        let inode = self.inodes.get(op.ino).ok_or(ENOENT)?;
+        let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
-        let content = inode.as_file().ok_or(EINVAL)?;
+        let content = inode.as_file().ok_or(Errno::INVAL)?;
 
         let offset = op.offset as usize;
         let size = op.size as usize;
@@ -744,9 +746,9 @@ impl Filesystem for MemFS {
         mut data: impl io::Read + Send,
         reply: fs::ReplyWrite<'_>,
     ) -> fs::Result {
-        let mut inode = self.inodes.get_mut(op.ino).ok_or(ENOENT)?;
+        let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 
-        let content = inode.as_file_mut().ok_or(EINVAL)?;
+        let content = inode.as_file_mut().ok_or(Errno::INVAL)?;
 
         let offset = op.offset as usize;
         let size = op.size as usize;

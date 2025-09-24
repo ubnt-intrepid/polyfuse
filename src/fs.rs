@@ -2,10 +2,14 @@ use crate::{
     bytes::Bytes,
     op::{self, Forget, Operation},
     raw, reply,
-    types::{NodeID, NotifyID, PollWakeupID, GID, PID, UID},
+    types::{NodeID, NotifyID, PollWakeupID},
 };
-use libc::{EIO, ENOENT, ENOSYS};
 use polyfuse_kernel::*;
+use rustix::{
+    fs::{Gid, Uid},
+    io::Errno,
+    process::Pid,
+};
 use std::{
     ffi::OsStr,
     future::Future,
@@ -30,21 +34,21 @@ const NUM_WORKERS_PER_THREAD: usize = 4;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("operation failed with error code {}", _0)]
-    Code(i32),
+    Code(Errno),
 
     #[error("fatal error: {}", _0)]
     Fatal(#[source] io::Error),
 }
 
-impl From<i32> for Error {
-    fn from(code: i32) -> Self {
-        Self::Code(code)
+impl From<Errno> for Error {
+    fn from(errno: Errno) -> Self {
+        Self::Code(errno)
     }
 }
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Self::Code(err.raw_os_error().unwrap_or(EIO))
+        Self::Code(Errno::from_io_error(&err).unwrap_or(Errno::IO))
     }
 }
 
@@ -60,7 +64,7 @@ macro_rules! define_ops {
             reply: $Reply<'_>,
         ) -> impl Future<Output = Result> + Send {
             async {
-                Err(Error::Code(ENOSYS))
+                Err(Error::Code(Errno::NOSYS))
             }
         }
     )*};
@@ -113,7 +117,7 @@ pub trait Filesystem {
         data: impl io::Read + Send + Unpin,
         reply: ReplyWrite<'_>,
     ) -> impl Future<Output = Result> + Send {
-        async { Err(Error::Code(ENOSYS)) }
+        async { Err(Error::Code(Errno::NOSYS)) }
     }
 
     #[allow(unused_variables)]
@@ -296,15 +300,15 @@ pub struct Request<'req> {
 }
 
 impl Request<'_> {
-    pub fn uid(&self) -> UID {
+    pub fn uid(&self) -> Uid {
         self.header.uid()
     }
 
-    pub fn gid(&self) -> GID {
+    pub fn gid(&self) -> Gid {
         self.header.gid()
     }
 
-    pub fn pid(&self) -> PID {
+    pub fn pid(&self) -> Pid {
         self.header.pid()
     }
 
@@ -341,7 +345,7 @@ mod _priv {
             B: Bytes,
         {
             self.session
-                .send_reply(self.conn, self.header.unique(), 0, arg)
+                .send_reply(self.conn, self.header.unique(), None, arg)
                 .map_err(Error::Fatal)?;
             Ok(Replied { _priv: () })
         }
@@ -568,23 +572,24 @@ impl Worker {
             Operation::Interrupt(op) => {
                 tracing::warn!("interrupted(unique={})", op.unique);
                 // TODO: handle interrupt requests.
-                Err(ENOSYS.into())
+                Err(Error::Code(Errno::NOSYS))
             }
         };
 
         match result {
             Ok(..) => {}
-            Err(Error::Fatal(err)) => match err.raw_os_error() {
-                Some(ENOENT) => {
+            Err(Error::Fatal(err)) => match Errno::from_io_error(&err) {
+                Some(Errno::NOENT) => {
                     // missing in processing queue
                 }
                 _ => return Err(err),
             },
-            Err(Error::Code(errno)) => {
-                self.global
-                    .session
-                    .send_reply(self.conn.get_ref(), header.unique(), errno, ())?
-            }
+            Err(Error::Code(errno)) => self.global.session.send_reply(
+                self.conn.get_ref(),
+                header.unique(),
+                Some(errno),
+                (),
+            )?,
         }
 
         Ok(())
