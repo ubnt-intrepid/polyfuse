@@ -11,8 +11,10 @@ use polyfuse::{
 use polyfuse_kernel::{fuse_attr, fuse_attr_out};
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{ENOENT, ENOSYS};
-use rustix::process::{getgid, getuid};
+use rustix::{
+    io::Errno,
+    process::{getgid, getuid},
+};
 use std::{io, path::PathBuf};
 use zerocopy::IntoBytes as _;
 
@@ -44,7 +46,7 @@ fn main() -> Result<()> {
             Operation::Read(op) => read(&session, &mut conn, header, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => session.send_reply(&mut conn, header.unique(), ENOSYS, ())?,
+            _ => session.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?,
         };
     }
 
@@ -60,7 +62,7 @@ fn getattr(
     op: op::Getattr<'_>,
 ) -> io::Result<()> {
     if op.ino != NodeID::ROOT {
-        return session.send_reply(conn, header.unique(), ENOENT, ());
+        return session.send_reply(conn, header.unique(), Some(Errno::NOENT), ());
     }
 
     let out = fuse_attr_out {
@@ -87,7 +89,7 @@ fn getattr(
         },
     };
 
-    session.send_reply(conn, header.unique(), 0, out.as_bytes())
+    session.send_reply(conn, header.unique(), None, out.as_bytes())
 }
 
 fn read(
@@ -97,7 +99,7 @@ fn read(
     op: op::Read<'_>,
 ) -> io::Result<()> {
     if op.ino != NodeID::ROOT {
-        return session.send_reply(conn, header.unique(), ENOENT, ());
+        return session.send_reply(conn, header.unique(), Some(Errno::NOENT), ());
     }
 
     let mut data: &[u8] = &[];
@@ -109,5 +111,5 @@ fn read(
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    session.send_reply(conn, header.unique(), 0, data)
+    session.send_reply(conn, header.unique(), None, data)
 }
