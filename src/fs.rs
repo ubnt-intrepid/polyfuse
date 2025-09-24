@@ -314,7 +314,7 @@ impl Request<'_> {
         self.header.gid()
     }
 
-    pub fn pid(&self) -> Option<Pid> {
+    pub fn pid(&self) -> Pid {
         self.header.pid()
     }
 
