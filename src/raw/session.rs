@@ -5,7 +5,7 @@ use crate::{
     types::RequestID,
 };
 use polyfuse_kernel::*;
-use rustix::io::Errno;
+use rustix::{io::Errno, param::page_size};
 use std::{
     cmp, io, mem,
     sync::atomic::{AtomicU32, Ordering},
@@ -21,11 +21,6 @@ const MAX_MAX_PAGES: usize = 256;
 const DEFAULT_MAX_WRITE: u32 = (FUSE_MIN_READ_BUFFER as usize
     - mem::size_of::<fuse_in_header>()
     - mem::size_of::<fuse_write_in>()) as u32;
-
-#[inline]
-fn pagesize() -> usize {
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
-}
 
 // ==== KernelConfig ====
 
@@ -412,15 +407,15 @@ impl Session {
             );
 
             if config.flags.contains(KernelFlags::MAX_PAGES) {
-                config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * pagesize()) as u32);
+                config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * page_size()) as u32);
                 config.max_pages = cmp::min(
-                    config.max_write.div_ceil(pagesize() as u32),
+                    config.max_write.div_ceil(page_size() as u32),
                     u16::max_value() as u32,
                 ) as u16;
             } else {
                 config.max_write = cmp::min(
                     config.max_write,
-                    (DEFAULT_MAX_PAGES_PER_REQ * pagesize()) as u32,
+                    (DEFAULT_MAX_PAGES_PER_REQ * page_size()) as u32,
                 );
                 config.max_pages = 0;
             }
@@ -747,7 +742,7 @@ mod tests {
             )
             .expect("initialization failed");
 
-        let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(pagesize() as u32) as u16;
+        let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(page_size() as u32) as u16;
 
         assert_eq!(
             config.protocol_version,

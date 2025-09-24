@@ -1,9 +1,19 @@
 use crate::io::{Pipe, SpliceRead};
-use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
-use rustix::pipe::SpliceFlags;
+use rustix::{
+    fs::{Mode, OFlags},
+    ioctl::{self, ioctl},
+    pipe::SpliceFlags,
+};
 use std::{ffi::CStr, io, os::unix::prelude::*};
 
 const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
+
+// FIXME: move to polyfuse-kernel
+const FUSE_DEV_IOC_MAGIC: u8 = 229;
+const FUSE_DEV_IOC_CLONE: u32 = ioctl::opcode::read::<u32>(FUSE_DEV_IOC_MAGIC, 0);
+
+#[cfg(test)]
+const _: [(); polyfuse_kernel::FUSE_DEV_IOC_CLONE as usize] = [(); FUSE_DEV_IOC_CLONE as usize];
 
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
@@ -19,11 +29,14 @@ impl From<OwnedFd> for Connection {
 
 impl Connection {
     pub fn try_ioc_clone(&self) -> io::Result<Self> {
-        let newfd = syscall! { open(FUSE_DEV_NAME.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-        syscall! { ioctl(newfd, FUSE_DEV_IOC_CLONE, &self.fd.as_raw_fd()) };
-        Ok(Self {
-            fd: unsafe { OwnedFd::from_raw_fd(newfd) },
-        })
+        let newfd = rustix::fs::open(FUSE_DEV_NAME, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())?;
+        unsafe {
+            ioctl(
+                &newfd,
+                ioctl::Setter::<FUSE_DEV_IOC_CLONE, _>::new(self.fd.as_raw_fd()),
+            )?;
+        }
+        Ok(Self { fd: newfd })
     }
 }
 
