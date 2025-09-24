@@ -33,7 +33,6 @@ zerocopy = "0.8.26"
 anyhow = "1"
 chrono = "0.4.41"
 dashmap = "6.1"
-nix = { version = "0.30", features = [ "user", "fs" ] }
 pico-args = "0.5"
 pin-project-lite = "0.2"
 slab = ">=0.4.11"
