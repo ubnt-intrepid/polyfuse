@@ -8,8 +8,10 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{EACCES, EAGAIN, EINVAL};
-use rustix::process::{getgid, getuid};
+use rustix::{
+    io::Errno,
+    process::{getgid, getuid},
+};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -88,7 +90,7 @@ impl Filesystem for PollFS {
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
         if op.options.access_mode() != Some(AccessMode::ReadOnly) {
-            Err(EACCES)?;
+            Err(Errno::ACCESS)?;
         }
 
         let is_nonblock = op.options.flags().contains(OpenFlags::NONBLOCK);
@@ -143,12 +145,12 @@ impl Filesystem for PollFS {
     ) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
-            handles.get(&op.fh).cloned().ok_or(EINVAL)?
+            handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
         };
         if handle.is_nonblock {
             if handle.deadline > Instant::now() {
                 tracing::info!("send EAGAIN immediately");
-                Err(EAGAIN)?;
+                Err(Errno::AGAIN)?;
             }
         } else {
             tracing::info!("wait for the completion of background task");
@@ -175,7 +177,7 @@ impl Filesystem for PollFS {
     ) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
-            handles.get(&op.fh).cloned().ok_or(EINVAL)?
+            handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
         };
         let now = Instant::now();
 

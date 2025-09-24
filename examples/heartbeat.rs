@@ -18,7 +18,7 @@ use polyfuse::{
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
-use libc::ENOENT;
+use rustix::io::Errno;
 use std::{io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
@@ -148,7 +148,7 @@ impl Filesystem for Heartbeat {
         mut reply: fs::ReplyAttr<'_>,
     ) -> fs::Result {
         if arg.ino != NodeID::ROOT {
-            Err(ENOENT)?;
+            Err(Errno::NOENT)?;
         }
         let inner = self.inner.lock().await;
         reply.attr(&inner.attr);
@@ -162,7 +162,7 @@ impl Filesystem for Heartbeat {
         mut reply: fs::ReplyOpen<'_>,
     ) -> fs::Result {
         if arg.ino != NodeID::ROOT {
-            Err(ENOENT)?;
+            Err(Errno::NOENT)?;
         }
         reply.flags(OpenOutFlags::KEEP_CACHE);
         reply.send()
@@ -175,7 +175,7 @@ impl Filesystem for Heartbeat {
         reply: fs::ReplyData<'_>,
     ) -> fs::Result {
         if arg.ino != NodeID::ROOT {
-            Err(ENOENT)?
+            Err(Errno::NOENT)?
         }
 
         let inner = self.inner.lock().await;

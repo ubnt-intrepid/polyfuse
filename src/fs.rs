@@ -40,12 +40,6 @@ pub enum Error {
     Fatal(#[source] io::Error),
 }
 
-impl From<i32> for Error {
-    fn from(code: i32) -> Self {
-        Self::Code(Errno::from_raw_os_error(code))
-    }
-}
-
 impl From<Errno> for Error {
     fn from(errno: Errno) -> Self {
         Self::Code(errno)
