@@ -36,6 +36,7 @@ jobs:
     - name: Build API docs
       run: |
         set -ex
+        cargo doc -p rustix --no-deps
         cargo doc -p polyfuse-kernel --no-deps
         cargo doc -p polyfuse --no-deps
         echo '<meta http-equiv="refresh" content="0;url=polyfuse">' > ./target/doc/index.html
