@@ -1,7 +1,6 @@
 use anyhow::Context as _;
-use libc::{AT_EMPTY_PATH, O_NONBLOCK, O_RDONLY};
+use rustix::fs::{Mode, OFlags};
 use std::{
-    ffi::{CString, OsStr}, //
     io,
     os::unix::prelude::*,
     path::PathBuf,
@@ -24,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
     let path: PathBuf = args.opt_free_from_str()?.context("missing path")?;
 
     let content = if is_nonblocking {
-        let mut fd = FileDesc::open(&path, O_RDONLY | O_NONBLOCK).await?;
+        let mut fd = FileDesc::open(path, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty()).await?;
 
         let mut buf = String::new();
         fd.read_to_string(&mut buf).await?;
@@ -38,38 +37,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// copied from https://github.com/tokio-rs/mio/blob/master/mio/src/sys/unix/mod.rs
-macro_rules! syscall {
-    ($name:ident ( $($args:expr),* $(,)? )) => {
-        match unsafe { libc::$name($($args),*) } {
-            -1 => Err(io::Error::last_os_error()),
-            ret => Ok(ret),
-        }
-    }
-}
-
 struct FileDesc {
-    inner: AsyncFd<RawFd>,
-}
-
-impl Drop for FileDesc {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.inner.as_raw_fd());
-        }
-    }
+    inner: AsyncFd<OwnedFd>,
 }
 
 impl FileDesc {
-    async fn open(path: impl AsRef<OsStr>, mut flags: libc::c_int) -> io::Result<Self> {
-        let path = path.as_ref();
-        if path.is_empty() {
-            flags |= AT_EMPTY_PATH;
-        }
-        let c_path = CString::new(path.as_bytes())?;
-
-        let fd =
-            tokio::task::spawn_blocking(move || syscall!(open(c_path.as_ptr(), flags))).await??;
+    async fn open<A>(path: A, flags: OFlags, mode: Mode) -> io::Result<Self>
+    where
+        A: rustix::path::Arg + Send + 'static,
+    {
+        let fd = tokio::task::spawn_blocking(move || rustix::fs::open(path, flags, mode)).await??;
 
         Ok(Self {
             inner: AsyncFd::new(fd)?,
@@ -88,14 +65,9 @@ impl AsyncRead for FileDesc {
 
             let unfilled = buf.initialize_unfilled();
             #[allow(clippy::blocks_in_conditions)]
-            match guard.try_io(|inner| {
-                let len = syscall!(read(
-                    inner.as_raw_fd(),
-                    unfilled.as_mut_ptr().cast(),
-                    unfilled.len()
-                ))?;
-                Ok(len as usize)
-            }) {
+            match guard
+                .try_io(|inner| rustix::io::read(inner.get_ref(), unfilled).map_err(Into::into))
+            {
                 Ok(Ok(len)) => {
                     buf.advance(len);
                     return Poll::Ready(Ok(()));
