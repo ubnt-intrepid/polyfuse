@@ -108,26 +108,36 @@ impl io::Write for &Connection {
 
 impl SpliceRead for Connection {
     #[inline]
-    fn splice_read(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
-        (&*self).splice_read(pipe, bufsize)
+    fn splice_read(&mut self, dst: &mut Pipe, len: usize, flags: SpliceFlags) -> io::Result<usize> {
+        (&*self).splice_read(dst, len, flags)
     }
 }
 
 impl SpliceRead for &Connection {
-    fn splice_read(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
-        pipe.splice_from(self.fd.as_fd(), None, bufsize, SpliceFlags::NONBLOCK)
+    fn splice_read(&mut self, dst: &mut Pipe, len: usize, flags: SpliceFlags) -> io::Result<usize> {
+        dst.splice_from(self.fd.as_fd(), None, len, flags)
     }
 }
 
 impl SpliceWrite for Connection {
     #[inline]
-    fn splice_write(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
-        (&*self).splice_write(pipe, bufsize)
+    fn splice_write(
+        &mut self,
+        dst: &mut Pipe,
+        len: usize,
+        flags: SpliceFlags,
+    ) -> io::Result<usize> {
+        (&*self).splice_write(dst, len, flags)
     }
 }
 
 impl SpliceWrite for &Connection {
-    fn splice_write(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
-        pipe.splice_to(self.fd.as_fd(), None, bufsize, SpliceFlags::NONBLOCK)
+    fn splice_write(
+        &mut self,
+        src: &mut Pipe,
+        len: usize,
+        flags: SpliceFlags,
+    ) -> io::Result<usize> {
+        src.splice_to(self.fd.as_fd(), None, len, flags)
     }
 }

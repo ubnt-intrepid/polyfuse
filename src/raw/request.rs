@@ -7,6 +7,7 @@ use polyfuse_kernel::{
 };
 use rustix::{
     fs::{Gid, Uid},
+    pipe::{PipeFlags, SpliceFlags},
     process::Pid,
 };
 use std::{
@@ -116,7 +117,7 @@ impl SpliceBuf {
                 vec.truncate(0);
                 vec
             },
-            pipe: Pipe::new()?,
+            pipe: Pipe::new(PipeFlags::NONBLOCK)?,
             bufsize,
         })
     }
@@ -132,7 +133,7 @@ impl RequestBuf for SpliceBuf {
     fn reset(&mut self) -> io::Result<()> {
         self.arg.truncate(0);
         if !self.pipe.is_empty() {
-            let new_pipe = Pipe::new()?;
+            let new_pipe = Pipe::new(PipeFlags::NONBLOCK)?;
             drop(mem::replace(&mut self.pipe, new_pipe));
         }
         Ok(())
@@ -142,7 +143,7 @@ impl RequestBuf for SpliceBuf {
     where
         T: SpliceRead,
     {
-        let len = conn.splice_read(&mut self.pipe, self.bufsize)?;
+        let len = conn.splice_read(&mut self.pipe, self.bufsize, SpliceFlags::NONBLOCK)?;
 
         if len < mem::size_of_val(&self.header.raw) {
             Err(invalid_data("dequeued request message is too short"))?
