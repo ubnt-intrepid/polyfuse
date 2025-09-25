@@ -89,8 +89,6 @@ impl io::Write for Pipe {
 
 pub trait SpliceRead: io::Read {
     /// Splice the chunk of bytes to the specified pipe buffer.
-    ///
-    ///
     fn splice_read(&mut self, dst: &mut Pipe, bufsize: usize) -> io::Result<usize>;
 }
 
@@ -101,6 +99,37 @@ where
     #[inline]
     fn splice_read(&mut self, dst: &mut Pipe, bufsize: usize) -> io::Result<usize> {
         (**self).splice_read(dst, bufsize)
+    }
+}
+
+impl SpliceRead for Pipe {
+    fn splice_read(&mut self, dst: &mut Pipe, bufsize: usize) -> io::Result<usize> {
+        let amount = dst.splice_from(self.reader.as_fd(), None, bufsize, SpliceFlags::NONBLOCK)?;
+        self.len = self.len.saturating_sub(amount);
+        Ok(amount)
+    }
+}
+
+pub trait SpliceWrite: io::Write {
+    /// Splice the chunk of bytes from the specified pipe buffer.
+    fn splice_write(&mut self, src: &mut Pipe, bufsize: usize) -> io::Result<usize>;
+}
+
+impl<W: ?Sized> SpliceWrite for &mut W
+where
+    W: SpliceWrite,
+{
+    #[inline]
+    fn splice_write(&mut self, src: &mut Pipe, bufsize: usize) -> io::Result<usize> {
+        (**self).splice_write(src, bufsize)
+    }
+}
+
+impl SpliceWrite for Pipe {
+    fn splice_write(&mut self, src: &mut Pipe, bufsize: usize) -> io::Result<usize> {
+        let amount = src.splice_to(self.writer.as_fd(), None, bufsize, SpliceFlags::NONBLOCK)?;
+        self.len += amount;
+        Ok(amount)
     }
 }
 
@@ -169,5 +198,45 @@ mod tests {
         assert_eq!(buf[..], *CONTENT);
 
         Ok(())
+    }
+
+    #[test]
+    fn pipe_splice_read() {
+        const CONTENT: &[u8] = b"The Martian Chronicles";
+
+        let mut pipe1 = Pipe::new().unwrap();
+        let n = pipe1.write(CONTENT).unwrap();
+        assert_eq!(n, CONTENT.len());
+
+        let mut pipe2 = Pipe::new().unwrap();
+        let n = SpliceRead::splice_read(&mut &mut pipe1, &mut pipe2, CONTENT.len()).unwrap();
+        assert_eq!(n, CONTENT.len());
+        assert_eq!(pipe2.len(), CONTENT.len());
+        assert!(pipe1.is_empty());
+
+        let mut buf = [0u8; 32];
+        let n = pipe2.read(&mut buf).unwrap();
+        assert_eq!(n, CONTENT.len());
+        assert_eq!(buf[..n], *CONTENT);
+    }
+
+    #[test]
+    fn pipe_splice_write() {
+        const CONTENT: &[u8] = b"The Martian Chronicles";
+
+        let mut pipe1 = Pipe::new().unwrap();
+        let n = pipe1.write(CONTENT).unwrap();
+        assert_eq!(n, CONTENT.len());
+
+        let mut pipe2 = Pipe::new().unwrap();
+        let n = SpliceWrite::splice_write(&mut &mut pipe2, &mut pipe1, CONTENT.len()).unwrap();
+        assert_eq!(n, CONTENT.len());
+        assert_eq!(pipe2.len(), CONTENT.len());
+        assert!(pipe1.is_empty());
+
+        let mut buf = [0u8; 32];
+        let n = pipe2.read(&mut buf).unwrap();
+        assert_eq!(n, CONTENT.len());
+        assert_eq!(buf[..n], *CONTENT);
     }
 }

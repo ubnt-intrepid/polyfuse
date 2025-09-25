@@ -1,4 +1,4 @@
-use crate::io::{Pipe, SpliceRead};
+use crate::io::{Pipe, SpliceRead, SpliceWrite};
 use rustix::{
     fs::{Mode, OFlags},
     ioctl::{self, ioctl},
@@ -116,5 +116,18 @@ impl SpliceRead for Connection {
 impl SpliceRead for &Connection {
     fn splice_read(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
         pipe.splice_from(self.fd.as_fd(), None, bufsize, SpliceFlags::NONBLOCK)
+    }
+}
+
+impl SpliceWrite for Connection {
+    #[inline]
+    fn splice_write(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
+        (&*self).splice_write(pipe, bufsize)
+    }
+}
+
+impl SpliceWrite for &Connection {
+    fn splice_write(&mut self, pipe: &mut Pipe, bufsize: usize) -> io::Result<usize> {
+        pipe.splice_to(self.fd.as_fd(), None, bufsize, SpliceFlags::NONBLOCK)
     }
 }
