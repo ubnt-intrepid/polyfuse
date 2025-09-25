@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
     io::SpliceRead,
-    raw::request::RequestBuf,
+    raw::{request::RequestBuf, FallbackBuf},
     types::RequestID,
 };
 use polyfuse_kernel::*;
@@ -10,7 +10,7 @@ use std::{
     cmp, io, mem,
     sync::atomic::{AtomicU32, Ordering},
 };
-use zerocopy::{try_transmute, FromZeros as _, IntoBytes as _};
+use zerocopy::{FromZeros as _, IntoBytes as _};
 
 // The minimum supported ABI minor version by polyfuse.
 const MINIMUM_SUPPORTED_MINOR_VERSION: u32 = 23;
@@ -305,39 +305,26 @@ impl Session {
             return Ok(());
         }
 
-        let mut header_in = fuse_in_header::new_zeroed();
-        let mut arg_in =
-            vec![0u8; FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>()];
+        let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
         loop {
-            let len = conn.read_vectored(&mut [
-                io::IoSliceMut::new(header_in.as_mut_bytes()),
-                io::IoSliceMut::new(&mut arg_in[..]),
-            ])?;
-
-            if len < mem::size_of::<fuse_in_header>() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "request message is too short",
-                ));
-            }
-
-            if !matches!(try_transmute!(header_in.opcode), Ok(fuse_opcode::FUSE_INIT)) {
+            buf.reset()?;
+            let header = buf.receive_fallback(&mut conn)?;
+            if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
                 // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
                 // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
                 // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
                 tracing::error!(
-                    "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={})",
-                    header_in.unique,
-                    header_in.opcode,
+                    "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={:?})",
+                    header.unique(),
+                    header.opcode(),
                 );
                 continue;
             }
 
-            let init_in = Decoder::new(&arg_in[..len - mem::size_of::<fuse_in_header>()])
+            let (header, arg, _remains) = buf.parts();
+            let init_in = Decoder::new(arg)
                 .fetch::<fuse_init_in>() //
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::Other, "failed to decode fuse_init_in")
-                })?;
+                .map_err(|_| Errno::INVAL)?;
 
             if init_in.major > 7 {
                 // major version が大きい場合、カーネルにダウングレードを要求する
@@ -351,12 +338,7 @@ impl Session {
                 let mut out = fuse_init_out::new_zeroed();
                 out.major = FUSE_KERNEL_VERSION;
                 out.minor = FUSE_KERNEL_MINOR_VERSION;
-                self.send_reply(
-                    &mut conn,
-                    RequestID::from_raw(header_in.unique),
-                    None,
-                    out.as_bytes(),
-                )?;
+                self.send_reply(&mut conn, header.unique(), None, out.as_bytes())?;
                 continue;
             }
 
@@ -370,12 +352,7 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                self.send_reply(
-                    &mut conn,
-                    RequestID::from_raw(header_in.unique),
-                    Some(Errno::PROTO),
-                    (),
-                )?;
+                self.send_reply(&mut conn, header.unique(), Some(Errno::PROTO), ())?;
                 continue;
             }
 
@@ -454,12 +431,7 @@ impl Session {
                 padding: 0,
                 unused: [0; 8],
             };
-            self.send_reply(
-                &mut conn,
-                RequestID::from_raw(header_in.unique),
-                None,
-                init_out.as_bytes(),
-            )?;
+            self.send_reply(&mut conn, header.unique(), None, init_out.as_bytes())?;
 
             *self.state.get_mut() = Self::RUNNING;
 

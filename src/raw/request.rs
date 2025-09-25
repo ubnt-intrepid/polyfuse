@@ -183,24 +183,10 @@ impl FallbackBuf {
             pos: 0,
         }
     }
-}
 
-impl RequestBuf for FallbackBuf {
-    type RemainingData<'a> = &'a [u8];
-
-    fn parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
-        let (arg, remains) = self.arg.split_at(self.pos);
-        (&self.header, arg, remains)
-    }
-
-    fn reset(&mut self) -> io::Result<()> {
-        self.pos = 0;
-        Ok(())
-    }
-
-    fn try_receive<T>(&mut self, mut conn: T) -> io::Result<&RequestHeader>
+    pub fn receive_fallback<T>(&mut self, mut conn: T) -> io::Result<&RequestHeader>
     where
-        T: SpliceRead,
+        T: io::Read,
     {
         let len = conn.read_vectored(&mut [
             io::IoSliceMut::new(self.header.raw.as_mut_bytes()),
@@ -220,6 +206,27 @@ impl RequestBuf for FallbackBuf {
         self.pos = self.header.arg_len();
 
         Ok(&self.header)
+    }
+}
+
+impl RequestBuf for FallbackBuf {
+    type RemainingData<'a> = &'a [u8];
+
+    fn parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
+        let (arg, remains) = self.arg.split_at(self.pos);
+        (&self.header, arg, remains)
+    }
+
+    fn reset(&mut self) -> io::Result<()> {
+        self.pos = 0;
+        Ok(())
+    }
+
+    fn try_receive<T>(&mut self, conn: T) -> io::Result<&RequestHeader>
+    where
+        T: SpliceRead,
+    {
+        self.receive_fallback(conn)
     }
 }
 
