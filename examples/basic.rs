@@ -3,8 +3,8 @@
 use polyfuse::{
     op::{self, Operation},
     raw::{
-        mount, Connection, FallbackBuf, KernelConfig, MountOptions, RequestBuf as _, RequestHeader,
-        Session,
+        self, mount, Connection, FallbackBuf, KernelConfig, MountOptions, RequestBuf as _,
+        RequestHeader,
     },
     types::{FileMode, FilePermissions, FileType, NodeID},
 };
@@ -32,21 +32,20 @@ fn main() -> Result<()> {
     let (mut conn, fusermount) = mount(mountpoint, MountOptions::default())?;
 
     // Initialize the FUSE session.
-    let mut session = Session::new();
     let mut config = KernelConfig::default();
-    session.init(&mut conn, &mut config)?;
+    raw::init(&mut conn, &mut config)?;
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = FallbackBuf::new(config.request_buffer_size());
-    while session.recv_request(&mut conn, &mut buf)? {
+    while raw::recv_request(&mut conn, &mut buf)? {
         let (header, arg, _remains) = buf.parts();
         match Operation::decode(header, arg)? {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&session, &mut conn, header, op)?,
-            Operation::Read(op) => read(&session, &mut conn, header, op)?,
+            Operation::Getattr(op) => getattr(&mut conn, header, op)?,
+            Operation::Read(op) => read(&mut conn, header, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => session.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?,
+            _ => raw::send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?,
         };
     }
 
@@ -55,14 +54,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn getattr(
-    session: &Session,
-    conn: &mut Connection,
-    header: &RequestHeader,
-    op: op::Getattr<'_>,
-) -> io::Result<()> {
+fn getattr(conn: &mut Connection, header: &RequestHeader, op: op::Getattr<'_>) -> io::Result<()> {
     if op.ino != NodeID::ROOT {
-        return session.send_reply(conn, header.unique(), Some(Errno::NOENT), ());
+        return raw::send_reply(conn, header.unique(), Some(Errno::NOENT), ());
     }
 
     let out = fuse_attr_out {
@@ -89,17 +83,12 @@ fn getattr(
         },
     };
 
-    session.send_reply(conn, header.unique(), None, out.as_bytes())
+    raw::send_reply(conn, header.unique(), None, out.as_bytes())
 }
 
-fn read(
-    session: &Session,
-    conn: &mut Connection,
-    header: &RequestHeader,
-    op: op::Read<'_>,
-) -> io::Result<()> {
+fn read(conn: &mut Connection, header: &RequestHeader, op: op::Read<'_>) -> io::Result<()> {
     if op.ino != NodeID::ROOT {
-        return session.send_reply(conn, header.unique(), Some(Errno::NOENT), ());
+        return raw::send_reply(conn, header.unique(), Some(Errno::NOENT), ());
     }
 
     let mut data: &[u8] = &[];
@@ -111,5 +100,5 @@ fn read(
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    session.send_reply(conn, header.unique(), None, data)
+    raw::send_reply(conn, header.unique(), None, data)
 }

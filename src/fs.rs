@@ -136,7 +136,6 @@ pub trait Filesystem {
 }
 
 struct Global {
-    session: raw::Session,
     conn: raw::Connection,
     notify_unique: AtomicU64,
 }
@@ -152,7 +151,7 @@ impl Global {
     where
         B: Bytes,
     {
-        self.session.send_notify(&self.conn, code, arg)
+        raw::send_notify(&self.conn, code, arg)
     }
 }
 
@@ -248,7 +247,7 @@ impl Notifier {
     pub fn retrieve(&self, ino: NodeID, offset: u64, size: u32) -> io::Result<NotifyID> {
         let global = self.global()?;
         let unique = global.notify_unique.fetch_add(1, Ordering::AcqRel);
-        global.session.send_notify(
+        raw::send_notify(
             &global.conn,
             fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
             fuse_notify_retrieve_out {
@@ -324,7 +323,6 @@ impl Request<'_> {
 }
 
 pub struct ReplySender<'req> {
-    session: &'req raw::Session,
     conn: &'req raw::Connection,
     header: &'req raw::RequestHeader,
 }
@@ -344,9 +342,7 @@ mod _priv {
         where
             B: Bytes,
         {
-            self.session
-                .send_reply(self.conn, self.header.unique(), None, arg)
-                .map_err(Error::Fatal)?;
+            raw::send_reply(self.conn, self.header.unique(), None, arg).map_err(Error::Fatal)?;
             Ok(Replied { _priv: () })
         }
     }
@@ -382,12 +378,10 @@ impl Daemon {
     ) -> io::Result<Self> {
         let (conn, fusermount) = raw::mount(mountpoint, mountopts)?;
 
-        let mut session = raw::Session::new();
-        session.init(&conn, &mut config)?;
+        raw::init(&conn, &mut config)?;
 
         Ok(Self {
             global: Arc::new(Global {
-                session,
                 conn,
                 notify_unique: AtomicU64::new(0),
             }),
@@ -485,7 +479,7 @@ impl Worker {
     {
         loop {
             let mut guard = self.conn.readable().await?;
-            match guard.try_io(|conn| self.global.session.recv_request(conn.get_ref(), buf)) {
+            match guard.try_io(|conn| raw::recv_request(conn.get_ref(), buf)) {
                 Ok(result) => return result,
                 Err(_would_block) => continue,
             }
@@ -514,7 +508,6 @@ impl Worker {
         };
 
         let sender = ReplySender {
-            session: &self.global.session,
             conn: self.conn.get_ref(),
             header,
         };
@@ -584,12 +577,9 @@ impl Worker {
                 }
                 _ => return Err(err),
             },
-            Err(Error::Code(errno)) => self.global.session.send_reply(
-                self.conn.get_ref(),
-                header.unique(),
-                Some(errno),
-                (),
-            )?,
+            Err(Error::Code(errno)) => {
+                raw::send_reply(self.conn.get_ref(), header.unique(), Some(errno), ())?
+            }
         }
 
         Ok(())

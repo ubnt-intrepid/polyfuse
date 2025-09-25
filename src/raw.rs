@@ -9,5 +9,7 @@ pub use self::{
     conn::Connection,
     mount::{mount, Fusermount, MountOptions},
     request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
-    session::{KernelConfig, KernelFlags, ProtocolVersion, Session},
+    session::{
+        init, recv_request, send_notify, send_reply, KernelConfig, KernelFlags, ProtocolVersion,
+    },
 };

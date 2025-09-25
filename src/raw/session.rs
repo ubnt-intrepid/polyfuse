@@ -6,10 +6,7 @@ use crate::{
 };
 use polyfuse_kernel::*;
 use rustix::{io::Errno, param::page_size};
-use std::{
-    cmp, io, mem,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use std::{cmp, io, mem};
 use zerocopy::{FromZeros as _, IntoBytes as _};
 
 // The minimum supported ABI minor version by polyfuse.
@@ -264,337 +261,283 @@ impl KernelFlags {
 
 // ==== Session ====
 
-/// The object containing the contextrual information about a FUSE session.
-#[derive(Debug)]
-pub struct Session {
-    state: AtomicU32,
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        self.exit();
-    }
-}
-
-impl Default for Session {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Session {
-    const UNINIT: u32 = 0;
-    const RUNNING: u32 = 1;
-    const EXITED: u32 = 2;
-
-    /// Create new instance of `Session`.
-    pub const fn new() -> Self {
-        Self {
-            state: AtomicU32::new(Self::UNINIT),
-        }
-    }
-
-    /// Initialize a FUSE session by communicating with the kernel driver over
-    /// the established channel.
-    pub fn init<T>(&mut self, mut conn: T, config: &mut KernelConfig) -> io::Result<()>
-    where
-        T: io::Read + io::Write,
-    {
-        if *self.state.get_mut() != Self::UNINIT {
-            tracing::warn!("The session has already been initialized.");
-            return Ok(());
-        }
-
-        let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
-        loop {
-            buf.reset()?;
-            let header = buf.receive_fallback(&mut conn)?;
-            if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
-                // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
-                // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
-                // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
-                tracing::error!(
+/// Initialize a FUSE session by communicating with the kernel driver over
+/// the established channel.
+pub fn init<T>(mut conn: T, config: &mut KernelConfig) -> io::Result<()>
+where
+    T: io::Read + io::Write,
+{
+    let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
+    loop {
+        buf.reset()?;
+        let header = buf.receive_fallback(&mut conn)?;
+        if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
+            // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
+            // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
+            // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
+            tracing::error!(
                     "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={:?})",
                     header.unique(),
                     header.opcode(),
                 );
-                continue;
-            }
+            continue;
+        }
 
-            let (header, arg, _remains) = buf.parts();
-            let init_in = Decoder::new(arg)
-                .fetch::<fuse_init_in>() //
-                .map_err(|_| Errno::INVAL)?;
+        let (header, arg, _remains) = buf.parts();
+        let init_in = Decoder::new(arg)
+            .fetch::<fuse_init_in>() //
+            .map_err(|_| Errno::INVAL)?;
 
-            if init_in.major > 7 {
-                // major version が大きい場合、カーネルにダウングレードを要求する
-                tracing::debug!(
-                    "The requested ABI version {}.{} is too large (expected version is {}.x)\n",
-                    init_in.major,
-                    init_in.minor,
-                    FUSE_KERNEL_VERSION,
-                );
-                tracing::debug!("  -> Wait for a second INIT request with an older version.");
-                let mut out = fuse_init_out::new_zeroed();
-                out.major = FUSE_KERNEL_VERSION;
-                out.minor = FUSE_KERNEL_MINOR_VERSION;
-                self.send_reply(&mut conn, header.unique(), None, out.as_bytes())?;
-                continue;
-            }
+        if init_in.major > 7 {
+            // major version が大きい場合、カーネルにダウングレードを要求する
+            tracing::debug!(
+                "The requested ABI version {}.{} is too large (expected version is {}.x)\n",
+                init_in.major,
+                init_in.minor,
+                FUSE_KERNEL_VERSION,
+            );
+            tracing::debug!("  -> Wait for a second INIT request with an older version.");
+            let mut out = fuse_init_out::new_zeroed();
+            out.major = FUSE_KERNEL_VERSION;
+            out.minor = FUSE_KERNEL_MINOR_VERSION;
+            send_reply(&mut conn, header.unique(), None, out.as_bytes())?;
+            continue;
+        }
 
-            if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
-                // バージョンが小さすぎる場合は、プロコトルエラーを報告する。
-                // minor version の下限を指定しているのは polyfuse 独自のものであり、古いバージョンへの対応を回避するための策。
-                tracing::error!(
+        if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
+            // バージョンが小さすぎる場合は、プロコトルエラーを報告する。
+            // minor version の下限を指定しているのは polyfuse 独自のものであり、古いバージョンへの対応を回避するための策。
+            tracing::error!(
                     "The requested ABI version {}.{} is too small (expected version is {}.{} or higher)",
                     init_in.major,
                     init_in.minor,
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                self.send_reply(&mut conn, header.unique(), Some(Errno::PROTO), ())?;
+            send_reply(&mut conn, header.unique(), Some(Errno::PROTO), ())?;
+            continue;
+        }
+
+        debug_assert_eq!(init_in.major, 7, "The kernel version");
+        debug_assert!(
+            init_in.minor >= MINIMUM_SUPPORTED_MINOR_VERSION,
+            "The minor kernel version"
+        );
+
+        let major = FUSE_KERNEL_VERSION;
+        let minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
+
+        let capable = KernelFlags::from_bits_truncate(init_in.flags);
+        config.flags |= KernelFlags::READ_ONLY;
+        config.flags &= capable;
+
+        config.max_readahead = cmp::min(config.max_readahead, init_in.max_readahead);
+
+        if config.congestion_threshold == 0 {
+            config.congestion_threshold = config.max_background * 3 / 4;
+        }
+        config.congestion_threshold = cmp::min(config.congestion_threshold, config.max_background);
+
+        config.max_write = cmp::max(
+            config.max_write,
+            FUSE_MIN_READ_BUFFER
+                - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32,
+        );
+
+        if config.flags.contains(KernelFlags::MAX_PAGES) {
+            config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * page_size()) as u32);
+            config.max_pages = cmp::min(
+                config.max_write.div_ceil(page_size() as u32),
+                u16::max_value() as u32,
+            ) as u16;
+        } else {
+            config.max_write = cmp::min(
+                config.max_write,
+                (DEFAULT_MAX_PAGES_PER_REQ * page_size()) as u32,
+            );
+            config.max_pages = 0;
+        }
+
+        tracing::debug!("INIT request:");
+        tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
+        tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
+        tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
+        tracing::debug!(
+            "  max_pages_enabled = {}",
+            init_in.flags & FUSE_MAX_PAGES != 0
+        );
+
+        tracing::debug!("Reply to INIT:");
+        tracing::debug!("  proto = {}.{}:", major, minor);
+        tracing::debug!("  flags = {:?}", config.flags);
+        tracing::debug!("  max_readahead = 0x{:08X}", config.max_readahead);
+        tracing::debug!("  max_write = 0x{:08X}", config.max_write);
+        tracing::debug!("  max_background = 0x{:04X}", config.max_background);
+        tracing::debug!(
+            "  congestion_threshold = 0x{:04X}",
+            config.congestion_threshold
+        );
+        tracing::debug!("  time_gran = {}", config.time_gran);
+
+        let init_out = fuse_init_out {
+            major,
+            minor,
+            max_readahead: config.max_readahead,
+            flags: config.flags.bits(),
+            max_background: config.max_background,
+            time_gran: config.time_gran,
+            congestion_threshold: config.congestion_threshold,
+            max_write: config.max_write,
+            max_pages: config.max_pages,
+            padding: 0,
+            unused: [0; 8],
+        };
+        send_reply(&mut conn, header.unique(), None, init_out.as_bytes())?;
+
+        return Ok(());
+    }
+}
+
+/// Receive an incoming FUSE request from the kernel.
+pub fn recv_request<T, B>(mut conn: T, buf: &mut B) -> io::Result<bool>
+where
+    T: SpliceRead + io::Write,
+    B: RequestBuf,
+{
+    loop {
+        buf.reset()?;
+
+        let header = match buf.try_receive(&mut conn) {
+            // ref: https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/fuse_lowlevel.c#L2865
+            Err(err) => match Errno::from_io_error(&err) {
+                Some(Errno::NODEV) => {
+                    tracing::debug!("The connection has already been disconnected");
+                    return Ok(false);
+                }
+                Some(Errno::INTR) => {
+                    tracing::debug!("The read operation is interrupted");
+                    continue;
+                }
+                #[allow(unreachable_patterns)]
+                Some(Errno::AGAIN) | Some(Errno::WOULDBLOCK) => {
+                    return Err(err);
+                }
+                _ => {
+                    tracing::error!("failed to receive the FUSE request: {}", err);
+                    return Err(err);
+                }
+            },
+
+            Ok(header) => header,
+        };
+
+        match header.opcode() {
+            Ok(fuse_opcode::FUSE_INIT) => {
+                // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
+                tracing::error!("unexpected FUSE_INIT request received");
                 continue;
             }
 
-            debug_assert_eq!(init_in.major, 7, "The kernel version");
-            debug_assert!(
-                init_in.minor >= MINIMUM_SUPPORTED_MINOR_VERSION,
-                "The minor kernel version"
-            );
-
-            let major = FUSE_KERNEL_VERSION;
-            let minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
-
-            let capable = KernelFlags::from_bits_truncate(init_in.flags);
-            config.flags |= KernelFlags::READ_ONLY;
-            config.flags &= capable;
-
-            config.max_readahead = cmp::min(config.max_readahead, init_in.max_readahead);
-
-            if config.congestion_threshold == 0 {
-                config.congestion_threshold = config.max_background * 3 / 4;
+            Ok(fuse_opcode::FUSE_DESTROY) => {
+                // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
+                tracing::debug!("FUSE_DESTROY received");
+                return Ok(false);
             }
-            config.congestion_threshold =
-                cmp::min(config.congestion_threshold, config.max_background);
 
-            config.max_write = cmp::max(
-                config.max_write,
-                FUSE_MIN_READ_BUFFER
-                    - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32,
-            );
-
-            if config.flags.contains(KernelFlags::MAX_PAGES) {
-                config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * page_size()) as u32);
-                config.max_pages = cmp::min(
-                    config.max_write.div_ceil(page_size() as u32),
-                    u16::max_value() as u32,
-                ) as u16;
-            } else {
-                config.max_write = cmp::min(
-                    config.max_write,
-                    (DEFAULT_MAX_PAGES_PER_REQ * page_size()) as u32,
+            Ok(opcode @ fuse_opcode::FUSE_IOCTL) | Ok(opcode @ fuse_opcode::CUSE_INIT) => {
+                tracing::warn!(
+                    "unsupported opcode (unique={}, opcode={:?})",
+                    header.unique(),
+                    opcode
                 );
-                config.max_pages = 0;
+                send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?;
+                continue;
             }
 
-            tracing::debug!("INIT request:");
-            tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
-            tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
-            tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
-            tracing::debug!(
-                "  max_pages_enabled = {}",
-                init_in.flags & FUSE_MAX_PAGES != 0
-            );
+            Err(opcode) => {
+                tracing::warn!(
+                    "The opcode `{}' is not recognized by the current version of polyfuse.",
+                    opcode
+                );
+                send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?;
+                continue;
+            }
 
-            tracing::debug!("Reply to INIT:");
-            tracing::debug!("  proto = {}.{}:", major, minor);
-            tracing::debug!("  flags = {:?}", config.flags);
-            tracing::debug!("  max_readahead = 0x{:08X}", config.max_readahead);
-            tracing::debug!("  max_write = 0x{:08X}", config.max_write);
-            tracing::debug!("  max_background = 0x{:04X}", config.max_background);
-            tracing::debug!(
-                "  congestion_threshold = 0x{:04X}",
-                config.congestion_threshold
-            );
-            tracing::debug!("  time_gran = {}", config.time_gran);
-
-            let init_out = fuse_init_out {
-                major,
-                minor,
-                max_readahead: config.max_readahead,
-                flags: config.flags.bits(),
-                max_background: config.max_background,
-                time_gran: config.time_gran,
-                congestion_threshold: config.congestion_threshold,
-                max_write: config.max_write,
-                max_pages: config.max_pages,
-                padding: 0,
-                unused: [0; 8],
-            };
-            self.send_reply(&mut conn, header.unique(), None, init_out.as_bytes())?;
-
-            *self.state.get_mut() = Self::RUNNING;
-
-            return Ok(());
-        }
-    }
-
-    #[inline]
-    fn exit(&self) {
-        // FIXME: choose appropriate atomic ordering.
-        self.state.store(Self::EXITED, Ordering::SeqCst)
-    }
-
-    /// Receive an incoming FUSE request from the kernel.
-    pub fn recv_request<T, B>(&self, mut conn: T, buf: &mut B) -> io::Result<bool>
-    where
-        T: SpliceRead + io::Write,
-        B: RequestBuf,
-    {
-        loop {
-            buf.reset()?;
-
-            let header = match buf.try_receive(&mut conn) {
-                // ref: https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/fuse_lowlevel.c#L2865
-                Err(err) => match Errno::from_io_error(&err) {
-                    Some(Errno::NODEV) => {
-                        tracing::debug!("The connection has already been disconnected");
-                        self.exit();
-                        return Ok(false);
-                    }
-                    Some(Errno::INTR) => {
-                        tracing::debug!("The read operation is interrupted");
-                        continue;
-                    }
-                    #[allow(unreachable_patterns)]
-                    Some(Errno::AGAIN) | Some(Errno::WOULDBLOCK) => {
-                        return Err(err);
-                    }
-                    _ => {
-                        tracing::error!("failed to receive the FUSE request: {}", err);
-                        return Err(err);
-                    }
-                },
-
-                Ok(header) => header,
-            };
-
-            match header.opcode() {
-                Ok(fuse_opcode::FUSE_INIT) => {
-                    // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
-                    tracing::error!("unexpected FUSE_INIT request received");
-                    continue;
-                }
-
-                Ok(fuse_opcode::FUSE_DESTROY) => {
-                    // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
-                    tracing::debug!("FUSE_DESTROY received");
-                    self.exit();
-                    return Ok(false);
-                }
-
-                Ok(opcode @ fuse_opcode::FUSE_IOCTL) | Ok(opcode @ fuse_opcode::CUSE_INIT) => {
-                    tracing::warn!(
-                        "unsupported opcode (unique={}, opcode={:?})",
-                        header.unique(),
-                        opcode
-                    );
-                    self.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?;
-                    continue;
-                }
-
-                Err(opcode) => {
-                    tracing::warn!(
-                        "The opcode `{}' is not recognized by the current version of polyfuse.",
-                        opcode
-                    );
-                    self.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?;
-                    continue;
-                }
-
-                Ok(opcode) => {
-                    tracing::debug!(
-                        "Got a request (unique={}, opcode={:?})",
-                        header.unique(),
-                        opcode
-                    );
-                    break Ok(true);
-                }
+            Ok(opcode) => {
+                tracing::debug!(
+                    "Got a request (unique={}, opcode={:?})",
+                    header.unique(),
+                    opcode
+                );
+                break Ok(true);
             }
         }
     }
+}
 
-    fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
-        match Errno::from_io_error(&err) {
-            Some(Errno::NODEV) => {
-                // 切断済みであれば無視
-                self.exit();
-                Ok(())
-            }
-            Some(Errno::NOENT) => Ok(()),
-            _ => Err(err),
+fn handle_reply_error(err: io::Error) -> io::Result<()> {
+    match Errno::from_io_error(&err) {
+        Some(Errno::NODEV) => {
+            // 切断済みであれば無視
+            Ok(())
         }
+        Some(Errno::NOENT) => Ok(()),
+        _ => Err(err),
     }
+}
 
-    /// Send a reply message of completed request to the kernel.
-    ///
-    /// Note that the instance of `conn` must be the same as the one used
-    /// when the corresponding request was received via `read_request`.
-    /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
-    /// the corresponding kernel processing will be isolated, and the process
-    /// that issued the associated syscall may enter a deadlock state.
-    pub fn send_reply<T, B>(
-        &self,
-        conn: T,
-        unique: RequestID,
-        error: Option<Errno>,
-        arg: B,
-    ) -> io::Result<()>
-    where
-        T: io::Write,
-        B: Bytes,
-    {
-        let len = (mem::size_of::<fuse_out_header>() + arg.size())
-            .try_into()
-            .expect("Argument size is too large");
+/// Send a reply message of completed request to the kernel.
+///
+/// Note that the instance of `conn` must be the same as the one used
+/// when the corresponding request was received via `read_request`.
+/// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
+/// the corresponding kernel processing will be isolated, and the process
+/// that issued the associated syscall may enter a deadlock state.
+pub fn send_reply<T, B>(conn: T, unique: RequestID, error: Option<Errno>, arg: B) -> io::Result<()>
+where
+    T: io::Write,
+    B: Bytes,
+{
+    let len = (mem::size_of::<fuse_out_header>() + arg.size())
+        .try_into()
+        .expect("Argument size is too large");
 
-        crate::bytes::write_bytes(
-            conn,
-            (
-                POD(fuse_out_header {
-                    len,
-                    error: -error.map_or(0, |err| err.raw_os_error()),
-                    unique: unique.into_raw(),
-                }),
-                arg,
-            ),
-        )
-        .or_else(|err| self.handle_reply_error(err))
-    }
+    crate::bytes::write_bytes(
+        conn,
+        (
+            POD(fuse_out_header {
+                len,
+                error: -error.map_or(0, |err| err.raw_os_error()),
+                unique: unique.into_raw(),
+            }),
+            arg,
+        ),
+    )
+    .or_else(handle_reply_error)
+}
 
-    /// Send a notification message to the kernel.
-    pub fn send_notify<T, B>(&self, conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
-    where
-        T: io::Write,
-        B: Bytes,
-    {
-        let len = (mem::size_of::<fuse_out_header>() + arg.size())
-            .try_into()
-            .expect("Argument size is too large");
+/// Send a notification message to the kernel.
+pub fn send_notify<T, B>(conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
+where
+    T: io::Write,
+    B: Bytes,
+{
+    let len = (mem::size_of::<fuse_out_header>() + arg.size())
+        .try_into()
+        .expect("Argument size is too large");
 
-        crate::bytes::write_bytes(
-            conn,
-            (
-                POD(fuse_out_header {
-                    len,
-                    error: code as i32,
-                    unique: 0, // unique=0 indicates that the message is a notification.
-                }),
-                arg,
-            ),
-        )
-        .or_else(|err| self.handle_reply_error(err))
-    }
+    crate::bytes::write_bytes(
+        conn,
+        (
+            POD(fuse_out_header {
+                len,
+                error: code as i32,
+                unique: 0, // unique=0 indicates that the message is a notification.
+            }),
+            arg,
+        ),
+    )
+    .or_else(handle_reply_error)
 }
 
 #[cfg(test)]
@@ -702,17 +645,15 @@ mod tests {
 
         let mut output = Vec::<u8>::new();
 
-        let mut session = Session::new();
         let mut config = KernelConfig::default();
-        session
-            .init(
-                Unite {
-                    reader: &input[..],
-                    writer: &mut output,
-                },
-                &mut config,
-            )
-            .expect("initialization failed");
+        init(
+            Unite {
+                reader: &input[..],
+                writer: &mut output,
+            },
+            &mut config,
+        )
+        .expect("initialization failed");
 
         let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(page_size() as u32) as u16;
 
@@ -794,11 +735,8 @@ mod tests {
 
     #[test]
     fn send_reply_empty() {
-        let session = Session::new();
         let mut buf = vec![0u8; 0];
-        session
-            .send_reply(&mut buf, RequestID::from_raw(42), Some(Errno::INTR), ())
-            .unwrap();
+        send_reply(&mut buf, RequestID::from_raw(42), Some(Errno::INTR), ()).unwrap();
         assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0xfc, 0xff, 0xff, 0xff], "header.error");
         assert_eq!(
@@ -810,11 +748,8 @@ mod tests {
 
     #[test]
     fn send_reply_single_data() {
-        let session = Session::default();
         let mut buf = vec![0u8; 0];
-        session
-            .send_reply(&mut buf, RequestID::from_raw(42), None, "hello")
-            .unwrap();
+        send_reply(&mut buf, RequestID::from_raw(42), None, "hello").unwrap();
         assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
@@ -827,7 +762,6 @@ mod tests {
 
     #[test]
     fn send_msg_chunked_data() {
-        let session = Session::default();
         let payload: &[&[u8]] = &[
             "hello, ".as_ref(), //
             "this ".as_ref(),
@@ -835,9 +769,7 @@ mod tests {
             "message.".as_ref(),
         ];
         let mut buf = vec![0u8; 0];
-        session
-            .send_reply(&mut buf, RequestID::from_raw(26), None, payload)
-            .unwrap();
+        send_reply(&mut buf, RequestID::from_raw(26), None, payload).unwrap();
         assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
         assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
         assert_eq!(
