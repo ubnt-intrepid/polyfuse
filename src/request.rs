@@ -59,8 +59,8 @@ impl RequestHeader {
 
     /// Return the process ID of the calling process.
     #[inline]
-    pub fn pid(&self) -> Pid {
-        Pid::from_raw(self.raw.pid as i32).expect("invalid Pid")
+    pub fn pid(&self) -> Option<Pid> {
+        Pid::from_raw(self.raw.pid as i32)
     }
 
     pub(crate) fn raw(&self) -> &fuse_in_header {
@@ -150,10 +150,6 @@ impl RequestBuf for SpliceBuf {
         }
         self.pipe.read_exact(self.header.raw.as_mut_bytes())?;
 
-        if Pid::from_raw(self.header.raw.pid as i32).is_none() {
-            return Err(invalid_data("The value in_header.pid is not a valid Pid"));
-        }
-
         if len != self.header.raw.len as usize {
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of splice(2)",
@@ -198,10 +194,6 @@ impl FallbackBuf {
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of splice(2)",
             ))?
-        }
-
-        if Pid::from_raw(self.header.raw.pid as i32).is_none() {
-            return Err(invalid_data("The value in_header.pid is not a valid Pid"));
         }
 
         self.pos = self.header.arg_len();

@@ -318,10 +318,9 @@ fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
     let fd = cmsg_buffer
         .drain()
         .flat_map(|msg| match msg {
-            RecvAncillaryMessage::ScmRights(fds) => Some(fds),
+            RecvAncillaryMessage::ScmRights(mut fds) => fds.next(),
             _ => None,
         })
-        .flatten()
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "recv_fd"))?;
 
