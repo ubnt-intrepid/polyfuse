@@ -1,7 +1,11 @@
 use crate::{
     bytes::Bytes,
+    conn::Connection,
+    mount::{Fusermount, MountOptions},
     op::{self, Forget, Operation},
-    raw, reply,
+    reply,
+    request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
+    session::{KernelConfig, KernelFlags, Session},
     types::{NodeID, NotifyID, PollWakeupID},
 };
 use polyfuse_kernel::*;
@@ -136,8 +140,8 @@ pub trait Filesystem {
 }
 
 struct Global {
-    session: raw::Session,
-    conn: raw::Connection,
+    session: Session,
+    conn: Connection,
     notify_unique: AtomicU64,
 }
 
@@ -295,7 +299,7 @@ impl Spawner<'_> {
 /// The context for a single FUSE request used by the filesystem.
 pub struct Request<'req> {
     global: &'req Arc<Global>,
-    header: &'req raw::RequestHeader,
+    header: &'req RequestHeader,
     join_set: &'req mut JoinSet<io::Result<()>>,
 }
 
@@ -324,9 +328,9 @@ impl Request<'_> {
 }
 
 pub struct ReplySender<'req> {
-    session: &'req raw::Session,
-    conn: &'req raw::Connection,
-    header: &'req raw::RequestHeader,
+    session: &'req Session,
+    conn: &'req Connection,
+    header: &'req RequestHeader,
 }
 
 mod _priv {
@@ -369,20 +373,20 @@ pub type ReplyLseek<'req> = reply::ReplyLseek<ReplySender<'req>>;
 
 pub struct Daemon {
     global: Arc<Global>,
-    config: raw::KernelConfig,
-    fusermount: raw::Fusermount,
+    config: KernelConfig,
+    fusermount: Fusermount,
     join_set: JoinSet<io::Result<()>>,
 }
 
 impl Daemon {
     pub async fn mount(
         mountpoint: PathBuf,
-        mountopts: raw::MountOptions,
-        mut config: raw::KernelConfig,
+        mountopts: MountOptions,
+        mut config: KernelConfig,
     ) -> io::Result<Self> {
-        let (conn, fusermount) = raw::mount(mountpoint, mountopts)?;
+        let (conn, fusermount) = crate::mount::mount(mountpoint, mountopts)?;
 
-        let mut session = raw::Session::new();
+        let mut session = Session::new();
         session.init(&conn, &mut config)?;
 
         Ok(Self {
@@ -397,7 +401,7 @@ impl Daemon {
         })
     }
 
-    pub fn config(&self) -> &raw::KernelConfig {
+    pub fn config(&self) -> &KernelConfig {
         &self.config
     }
 
@@ -431,12 +435,12 @@ impl Daemon {
         for i in 0..num_workers {
             let worker = self.new_worker(i)?;
             let fs = fs.clone();
-            if self.config.flags.contains(raw::KernelFlags::SPLICE_READ) {
-                let buf = raw::SpliceBuf::new(self.config.request_buffer_size())?;
+            if self.config.flags.contains(KernelFlags::SPLICE_READ) {
+                let buf = SpliceBuf::new(self.config.request_buffer_size())?;
                 self.join_set
                     .spawn(async move { worker.run(buf, fs).await });
             } else {
-                let buf = raw::FallbackBuf::new(self.config.request_buffer_size());
+                let buf = FallbackBuf::new(self.config.request_buffer_size());
                 self.join_set
                     .spawn(async move { worker.run(buf, fs).await });
             }
@@ -461,7 +465,7 @@ impl Daemon {
 
 struct Worker {
     global: Arc<Global>,
-    conn: AsyncFd<raw::Connection>,
+    conn: AsyncFd<Connection>,
     join_set: JoinSet<io::Result<()>>,
 }
 
@@ -469,7 +473,7 @@ impl Worker {
     async fn run<T, B>(mut self, mut buf: B, fs: Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
-        B: raw::RequestBuf,
+        B: RequestBuf,
         for<'req> B::RemainingData<'req>: Send + Unpin,
     {
         while self.read_request(&mut buf).await? {
@@ -481,7 +485,7 @@ impl Worker {
 
     async fn read_request<B>(&self, buf: &mut B) -> io::Result<bool>
     where
-        B: raw::RequestBuf,
+        B: RequestBuf,
     {
         loop {
             let mut guard = self.conn.readable().await?;
@@ -495,7 +499,7 @@ impl Worker {
     async fn handle_request<T, B>(&mut self, buf: &mut B, fs: &Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
-        B: raw::RequestBuf,
+        B: RequestBuf,
         for<'req> B::RemainingData<'req>: Send + Unpin,
     {
         let (header, arg, data) = buf.parts();

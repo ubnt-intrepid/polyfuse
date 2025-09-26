@@ -5,9 +5,10 @@ mod nix;
 
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
+    mount::MountOptions,
     op::{self, OpenFlags},
-    raw::{KernelConfig, KernelFlags, MountOptions},
     reply::OpenOutFlags,
+    session::{KernelConfig, KernelFlags},
     types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID},
 };
 

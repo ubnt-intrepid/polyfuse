@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, Decoder, POD},
     io::SpliceRead,
-    raw::{request::RequestBuf, FallbackBuf},
+    request::{FallbackBuf, RequestBuf},
     types::RequestID,
 };
 use polyfuse_kernel::*;

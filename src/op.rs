@@ -1,6 +1,6 @@
 use crate::{
     bytes::{DecodeError, Decoder},
-    raw::RequestHeader,
+    request::RequestHeader,
     types::{
         DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
         PollEvents, PollWakeupID, RequestID,

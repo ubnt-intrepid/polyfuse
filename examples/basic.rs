@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
+    mount::{mount, MountOptions},
     op::{self, Operation},
-    raw::{
-        mount, Connection, FallbackBuf, KernelConfig, MountOptions, RequestBuf as _, RequestHeader,
-        Session,
-    },
+    request::{FallbackBuf, RequestBuf as _, RequestHeader},
+    session::{KernelConfig, Session},
     types::{FileMode, FilePermissions, FileType, NodeID},
+    Connection,
 };
 use polyfuse_kernel::{fuse_attr, fuse_attr_out};
 
