@@ -370,7 +370,11 @@ impl Filesystem for PathThrough {
         let inodes = &mut *self.inodes.lock().await;
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
-        let options: OpenOptions = op.options.remove(OpenFlags::NOFOLLOW).into();
+        let options: OpenOptions = {
+            let mut options = op.options;
+            options.set_flags(options.flags() & !OpenFlags::NOFOLLOW);
+            options.into()
+        };
 
         let files = &mut *self.files.lock().await;
         let fh = files.insert(FileHandle {

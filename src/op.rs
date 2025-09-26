@@ -926,10 +926,19 @@ pub struct Open<'op> {
 ///   error when provided access mode is invalid.
 /// * Some parts of the creating flags (`O_CREAT`, `O_EXCL` and `O_NOCTTY`) are
 ///   removed and these flags are handled by the kernel.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct OpenOptions {
     raw: u32,
+}
+
+impl fmt::Debug for OpenOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenOptions")
+            .field("access_mode", &self.access_mode())
+            .field("flags", &self.flags())
+            .finish()
+    }
 }
 
 impl OpenOptions {
@@ -950,9 +959,9 @@ impl OpenOptions {
         OpenFlags::from_bits_truncate(self.raw)
     }
 
-    pub const fn remove(mut self, flags: OpenFlags) -> Self {
-        self.raw &= !flags.bits();
-        self
+    pub fn set_flags(&mut self, flags: OpenFlags) {
+        self.raw &= !OpenFlags::all().bits();
+        self.raw |= flags.bits();
     }
 }
 

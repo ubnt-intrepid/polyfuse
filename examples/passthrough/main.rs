@@ -587,7 +587,11 @@ impl Filesystem for Passthrough {
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let inode = inode.lock().await;
 
-        let options: OpenOptions = op.options.remove(OpenFlags::NOFOLLOW).into();
+        let options: OpenOptions = {
+            let mut options = op.options;
+            options.set_flags(options.flags() & !OpenFlags::NOFOLLOW);
+            options.into()
+        };
 
         let file = task::block_in_place(|| options.open(inode.fd.procname()))?;
         let fh = self.opened_files.insert(Mutex::new(file)).await;
