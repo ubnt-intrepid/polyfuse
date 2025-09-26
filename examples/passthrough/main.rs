@@ -5,7 +5,7 @@ mod nix;
 
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
-    mount::MountOptions,
+    mount::{MountFlags, MountOptions},
     op::{self, OpenFlags},
     reply::OpenOutFlags,
     session::{KernelConfig, KernelFlags},
@@ -52,11 +52,9 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let mountopts = MountOptions {
-        default_permissions: true,
-        fsname: Some("passthrough".into()),
-        ..Default::default()
-    };
+    let mut mountopts = MountOptions::new();
+    mountopts.flags |= MountFlags::DEFAULT_PERMISSIONS;
+    mountopts.fsname = Some("passthrough".into());
 
     let mut config = KernelConfig::default();
     config.flags |= KernelFlags::EXPORT_SUPPORT;
