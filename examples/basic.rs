@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    mount::{mount, MountOptions},
+    mount::{mount_unpriv, MountOptions},
     op::{self, Operation},
     request::{FallbackBuf, RequestBuf as _, RequestHeader},
     session::{KernelConfig, Session},
@@ -29,7 +29,8 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let (mut conn, fusermount) = mount(mountpoint, MountOptions::default())?;
+    let mountopts = MountOptions::new();
+    let (mut conn, fusermount) = mount_unpriv(mountpoint.into(), &mountopts)?;
 
     // Initialize the FUSE session.
     let mut session = Session::new();
