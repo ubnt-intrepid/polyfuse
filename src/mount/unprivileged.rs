@@ -82,7 +82,7 @@ pub fn mount(
     if !mountpoint.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "The specified mountpoint is not exist",
+            "The specified mountpoint does not exist",
         ));
     }
 
