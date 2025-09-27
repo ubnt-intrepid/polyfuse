@@ -70,7 +70,7 @@ impl Drop for Fusermount {
 }
 
 /// Establish a connection with the FUSE kernel driver in non-privileged mode.
-pub fn mount_unpriv(
+pub fn mount_unprivileged(
     mountpoint: Cow<'static, Path>,
     mountopts: &MountOptions,
 ) -> io::Result<(Connection, Fusermount)> {

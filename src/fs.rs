@@ -1,7 +1,7 @@
 use crate::{
     bytes::Bytes,
     conn::Connection,
-    mount::{unpriv::Fusermount, MountOptions},
+    mount::{unprivileged::Fusermount, MountOptions},
     op::{self, Forget, Operation},
     reply,
     request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
@@ -385,7 +385,7 @@ impl Daemon {
         mountopts: MountOptions,
         mut config: KernelConfig,
     ) -> io::Result<Self> {
-        let (conn, fusermount) = crate::mount::mount_unpriv(mountpoint.into(), &mountopts)?;
+        let (conn, fusermount) = crate::mount::mount_unprivileged(mountpoint.into(), &mountopts)?;
 
         let mut session = Session::new();
         session.init(&conn, &mut config)?;

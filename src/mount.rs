@@ -1,9 +1,9 @@
-pub mod unpriv;
+pub mod unprivileged;
 
 use bitflags::{bitflags, bitflags_match};
 use std::{borrow::Cow, fmt, path::Path};
 
-pub use unpriv::mount_unpriv;
+pub use unprivileged::mount_unprivileged;
 
 // refs:
 // * https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/mount.c
