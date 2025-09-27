@@ -14,12 +14,12 @@ use std::{borrow::Cow, ffi::CString, io, os::unix::prelude::*, path::Path};
 
 #[derive(Debug)]
 #[must_use]
-pub struct Mount {
+pub struct SysMount {
     mountpoint: Cow<'static, Path>,
     unmounted: bool,
 }
 
-impl Mount {
+impl SysMount {
     fn unmount_(&mut self) -> io::Result<()> {
         if !self.unmounted {
             rustix::mount::unmount(
@@ -36,23 +36,24 @@ impl Mount {
     }
 }
 
-impl Drop for Mount {
+impl Drop for SysMount {
     fn drop(&mut self) {
         let _ = self.unmount_();
     }
 }
 
 /// Establish a connection with the FUSE kernel driver in privileged mode.
-pub fn mount_privileged(
-    mountpoint: Cow<'static, Path>,
+#[allow(clippy::ptr_arg)]
+pub fn mount(
+    mountpoint: &Cow<'static, Path>,
     mountopts: &MountOptions,
-) -> io::Result<(Connection, Mount)> {
+) -> io::Result<(Connection, SysMount)> {
     let caps = rustix::thread::capabilities(None)?;
     if !caps.effective.contains(CapabilitySet::SYS_ADMIN) {
         return Err(Errno::PERM.into());
     }
 
-    let stat = rustix::fs::stat(&*mountpoint)?;
+    let stat = rustix::fs::stat(&**mountpoint)?;
 
     let fd = rustix::fs::open(FUSE_DEV_NAME, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())?;
 
@@ -73,7 +74,7 @@ pub fn mount_privileged(
 
     rustix::mount::mount(
         source,
-        &*mountpoint,
+        &**mountpoint,
         fstype,
         MountFlags::empty(),
         data.as_deref(),
@@ -81,8 +82,8 @@ pub fn mount_privileged(
 
     Ok((
         Connection::from(fd),
-        Mount {
-            mountpoint,
+        SysMount {
+            mountpoint: mountpoint.clone(),
             unmounted: false,
         },
     ))

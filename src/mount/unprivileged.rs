@@ -70,8 +70,9 @@ impl Drop for Fusermount {
 }
 
 /// Establish a connection with the FUSE kernel driver in non-privileged mode.
-pub fn mount_unprivileged(
-    mountpoint: Cow<'static, Path>,
+#[allow(clippy::ptr_arg)]
+pub fn mount(
+    mountpoint: &Cow<'static, Path>,
     mountopts: &MountOptions,
 ) -> io::Result<(Connection, Fusermount)> {
     tracing::debug!("Mount information:");
@@ -101,7 +102,7 @@ pub fn mount_unprivileged(
         fusermount.arg("-o").arg(opts);
     }
 
-    fusermount.arg("--").arg(&*mountpoint);
+    fusermount.arg("--").arg(&**mountpoint);
 
     let (input, output) = UnixStream::pair()?;
 
@@ -129,7 +130,7 @@ pub fn mount_unprivileged(
             tracing::error!("The child `fusermount` exists with failure");
             tracing::error!("  stdout: {:?}", String::from_utf8_lossy(&output.stdout));
             tracing::error!("  stderr: {:?}", String::from_utf8_lossy(&output.stderr));
-            umount(&mountpoint, &fusermount_path)?;
+            umount(mountpoint, &fusermount_path)?;
             return Err(Errno::INVAL.into());
         }
 

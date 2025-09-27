@@ -1,7 +1,7 @@
 use crate::{
     bytes::Bytes,
     conn::Connection,
-    mount::{unprivileged::Fusermount, MountOptions},
+    mount::{Mount, MountOptions},
     op::{self, Forget, Operation},
     reply,
     request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
@@ -375,7 +375,7 @@ pub type ReplyLseek<'req> = reply::ReplyLseek<ReplySender<'req>>;
 pub struct Daemon {
     global: Arc<Global>,
     config: KernelConfig,
-    fusermount: Fusermount,
+    fusermount: Mount,
     join_set: JoinSet<io::Result<()>>,
 }
 
@@ -385,7 +385,7 @@ impl Daemon {
         mountopts: MountOptions,
         mut config: KernelConfig,
     ) -> io::Result<Self> {
-        let (conn, fusermount) = crate::mount::mount_unprivileged(mountpoint.into(), &mountopts)?;
+        let (conn, fusermount) = crate::mount::mount(&mountpoint.into(), &mountopts)?;
 
         let mut session = Session::new();
         session.init(&conn, &mut config)?;

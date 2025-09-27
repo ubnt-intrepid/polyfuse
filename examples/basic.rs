@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    mount::{mount_unprivileged, MountOptions},
+    mount::{mount, MountOptions},
     op::{self, Operation},
     request::{FallbackBuf, RequestBuf as _, RequestHeader},
     session::{KernelConfig, Session},
@@ -30,7 +30,7 @@ fn main() -> Result<()> {
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
     let mountopts = MountOptions::new();
-    let (mut conn, fusermount) = mount_unprivileged(mountpoint.into(), &mountopts)?;
+    let (mut conn, fusermount) = mount(&mountpoint.into(), &mountopts)?;
 
     // Initialize the FUSE session.
     let mut session = Session::new();

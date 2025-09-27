@@ -1,11 +1,10 @@
 pub mod privileged;
 pub mod unprivileged;
 
+use crate::Connection;
 use bitflags::{bitflags, bitflags_match};
-use std::{borrow::Cow, path::Path};
-
-pub use privileged::mount_privileged;
-pub use unprivileged::mount_unprivileged;
+use rustix::io::Errno;
+use std::{borrow::Cow, io, path::Path};
 
 // refs:
 // * https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/mount.c
@@ -224,6 +223,45 @@ where
         acc.push_str(elem.as_ref().trim());
         acc
     })
+}
+
+#[derive(Debug)]
+pub enum Mount {
+    Priv(privileged::SysMount),
+    Unpriv(unprivileged::Fusermount),
+}
+
+impl Mount {
+    pub fn unmount(self) -> io::Result<()> {
+        match self {
+            Self::Priv(mount) => mount.unmount(),
+            Self::Unpriv(fusermount) => fusermount.unmount(),
+        }
+    }
+}
+
+#[allow(clippy::ptr_arg)]
+pub fn mount(
+    mountpoint: &Cow<'static, Path>,
+    mountopts: &MountOptions,
+) -> io::Result<(Connection, Mount)> {
+    match privileged::mount(mountpoint, mountopts) {
+        Ok((conn, mount)) => {
+            tracing::trace!("use privileged mount");
+            return Ok((conn, Mount::Priv(mount)));
+        }
+        Err(err) => match Errno::from_io_error(&err) {
+            Some(Errno::PERM) => {
+                tracing::warn!("The privileged mount is failed. Fallback to unprivileged mount...");
+            }
+            _ => return Err(err),
+        },
+    }
+
+    let (conn, fusermount) = unprivileged::mount(mountpoint, mountopts)?;
+
+    tracing::trace!("use unprivileged mount");
+    Ok((conn, Mount::Unpriv(fusermount)))
 }
 
 #[cfg(test)]
