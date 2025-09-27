@@ -22,10 +22,7 @@ pub struct SysMount {
 impl SysMount {
     fn unmount_(&mut self) -> io::Result<()> {
         if !self.unmounted {
-            rustix::mount::unmount(
-                &*self.mountpoint,
-                UnmountFlags::FORCE | UnmountFlags::DETACH,
-            )?;
+            rustix::mount::unmount(&*self.mountpoint, UnmountFlags::DETACH)?;
             self.unmounted = true;
         }
         Ok(())
