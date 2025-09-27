@@ -1,7 +1,7 @@
 pub mod unprivileged;
 
 use bitflags::{bitflags, bitflags_match};
-use std::{borrow::Cow, fmt, path::Path};
+use std::{borrow::Cow, path::Path};
 
 pub use unprivileged::mount_unprivileged;
 
@@ -126,55 +126,6 @@ impl Default for MountOptions {
     }
 }
 
-impl fmt::Display for MountOptions {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use std::fmt::Write as _;
-
-        let opts = std::iter::empty()
-            .chain(
-                self.flags
-                    .iter()
-                    .flat_map(|flag| {
-                        bitflags_match!(flag, {
-                            MountFlags::RDONLY => Some("ro"),
-                            MountFlags::NOSUID => Some("nosuid"),
-                            MountFlags::NODEV => Some("nodev"),
-                            MountFlags::NOEXEC => Some("noexec"),
-                            MountFlags::SYNCHRONOUS => Some("sync"),
-                            MountFlags::DIRSYNC => Some("dirsync"),
-                            MountFlags::NOATIME => Some("noatime"),
-                            MountFlags::DEFAULT_PERMISSIONS => Some("default_permissions"),
-                            MountFlags::ALLOW_OTHER => Some("allow_other"),
-                            MountFlags::AUTO_UNMOUNT => Some("auto_unmount"),
-                            MountFlags::BLKDEV => Some("blkdev"),
-                            _ => None,
-                        })
-                    })
-                    .map(Cow::Borrowed),
-            )
-            .chain(self.blksize.map(|n| format!("blksize={}", n).into()))
-            .chain(self.max_read.map(|n| format!("max_read={}", n).into()))
-            .chain(
-                self.subtype
-                    .as_deref()
-                    .map(|s| format!("subtype={}", s).into()),
-            )
-            .chain(
-                self.fsname
-                    .as_deref()
-                    .map(|fsname| Cow::Owned(format!("fsname={}", fsname))),
-            );
-
-        for (i, opts) in opts.enumerate() {
-            if i > 0 {
-                f.write_char(',')?;
-            }
-            f.write_str(&opts)?;
-        }
-        Ok(())
-    }
-}
-
 impl MountOptions {
     pub const fn new() -> Self {
         Self {
@@ -186,6 +137,64 @@ impl MountOptions {
             fusermount_path: None,
         }
     }
+
+    fn iter_flags(&self, unpriv: bool) -> impl Iterator<Item = Cow<'_, str>> + '_ {
+        self.flags
+            .iter()
+            .flat_map(move |flag| {
+                bitflags_match!(flag, {
+                    MountFlags::RDONLY => Some("ro"),
+                    MountFlags::NOSUID => Some("nosuid"),
+                    MountFlags::NODEV => Some("nodev"),
+                    MountFlags::NOEXEC => Some("noexec"),
+                    MountFlags::SYNCHRONOUS => Some("sync"),
+                    MountFlags::DIRSYNC => Some("dirsync"),
+                    MountFlags::NOATIME => Some("noatime"),
+                    MountFlags::DEFAULT_PERMISSIONS => Some("default_permissions"),
+                    MountFlags::ALLOW_OTHER => Some("allow_other"),
+                    MountFlags::AUTO_UNMOUNT => Some("auto_unmount"),
+                    MountFlags::BLKDEV => unpriv.then_some("blkdev"),
+                    _ => None,
+                })
+            })
+            .map(Cow::Borrowed)
+    }
+
+    fn iter_common_opts(&self) -> impl Iterator<Item = Cow<'_, str>> + '_ {
+        std::iter::empty()
+            .chain(self.blksize.map(|n| format!("blksize={}", n).into()))
+            .chain(self.max_read.map(|n| format!("max_read={}", n).into()))
+    }
+
+    pub fn unprivileged_options(&self) -> String {
+        join(
+            self.iter_flags(true)
+                .chain(self.iter_common_opts())
+                .chain(
+                    self.subtype
+                        .as_deref()
+                        .map(|s| format!("subtype={}", s).into()),
+                )
+                .chain(
+                    self.fsname
+                        .as_deref()
+                        .map(|fsname| Cow::Owned(format!("fsname={}", fsname))),
+                ),
+        )
+    }
+}
+
+fn join<T>(iter: impl Iterator<Item = T>) -> String
+where
+    T: AsRef<str>,
+{
+    iter.enumerate().fold(String::new(), |mut acc, (i, elem)| {
+        if i > 0 {
+            acc.push(',');
+        }
+        acc.push_str(elem.as_ref().trim());
+        acc
+    })
 }
 
 #[cfg(test)]
@@ -195,16 +204,19 @@ mod tests {
     #[test]
     fn mount_opts_encode() {
         let opts = MountOptions::default();
-        assert_eq!(opts.to_string(), "auto_unmount");
+        assert_eq!(opts.unprivileged_options(), "auto_unmount");
 
         let mut opts = MountOptions::new();
         opts.flags = MountFlags::empty();
-        assert_eq!(opts.to_string(), "");
+        assert_eq!(opts.unprivileged_options(), "");
 
         let mut opts = MountOptions::new();
         opts.flags |= MountFlags::BLKDEV;
         opts.fsname = Some("bradbury".into());
-        assert_eq!(opts.to_string(), "auto_unmount,blkdev,fsname=bradbury");
+        assert_eq!(
+            opts.unprivileged_options(),
+            "auto_unmount,blkdev,fsname=bradbury"
+        );
 
         let mut opts = MountOptions::new();
         opts.flags |= MountFlags::RDONLY
@@ -216,7 +228,7 @@ mod tests {
             | MountFlags::NOATIME
             | MountFlags::DEFAULT_PERMISSIONS;
         assert_eq!(
-            opts.to_string(),
+            opts.unprivileged_options(),
             "ro,nosuid,nodev,noexec,sync,dirsync,noatime,default_permissions,auto_unmount"
         );
 
@@ -225,16 +237,19 @@ mod tests {
         opts.blksize = Some(32);
         opts.max_read = Some(11);
         assert_eq!(
-            opts.to_string(),
+            opts.unprivileged_options(),
             "default_permissions,allow_other,auto_unmount,blksize=32,max_read=11"
         );
 
         let mut opts = MountOptions::new();
         opts.subtype = Some("myfs".into());
-        assert_eq!(opts.to_string(), "auto_unmount,subtype=myfs");
+        assert_eq!(opts.unprivileged_options(), "auto_unmount,subtype=myfs");
 
         let mut opts = MountOptions::new();
         opts.flags |= MountFlags::RDONLY | MountFlags::DEFAULT_PERMISSIONS;
-        assert_eq!(opts.to_string(), "ro,default_permissions,auto_unmount");
+        assert_eq!(
+            opts.unprivileged_options(),
+            "ro,default_permissions,auto_unmount"
+        );
     }
 }

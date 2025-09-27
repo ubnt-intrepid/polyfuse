@@ -96,7 +96,7 @@ pub fn mount_unprivileged(
     fusermount.stdout(Stdio::piped());
     fusermount.stderr(Stdio::piped());
 
-    let opts = mountopts.to_string();
+    let opts = mountopts.unprivileged_options();
     if !opts.is_empty() {
         fusermount.arg("-o").arg(opts);
     }
