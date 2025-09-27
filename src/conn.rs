@@ -6,7 +6,7 @@ use rustix::{
 };
 use std::{ffi::CStr, io, os::unix::prelude::*};
 
-const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
+pub(crate) const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
 
 // FIXME: move to polyfuse-kernel
 const FUSE_DEV_IOC_MAGIC: u8 = 229;

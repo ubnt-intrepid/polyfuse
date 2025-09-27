@@ -1,8 +1,10 @@
+pub mod privileged;
 pub mod unprivileged;
 
 use bitflags::{bitflags, bitflags_match};
 use std::{borrow::Cow, path::Path};
 
+pub use privileged::mount_privileged;
 pub use unprivileged::mount_unprivileged;
 
 // refs:
@@ -152,8 +154,8 @@ impl MountOptions {
                     MountFlags::NOATIME => Some("noatime"),
                     MountFlags::DEFAULT_PERMISSIONS => Some("default_permissions"),
                     MountFlags::ALLOW_OTHER => Some("allow_other"),
-                    MountFlags::AUTO_UNMOUNT => Some("auto_unmount"),
-                    MountFlags::BLKDEV => unpriv.then_some("blkdev"),
+                    MountFlags::AUTO_UNMOUNT => unpriv.then_some("auto_unmount"), // ignored
+                    MountFlags::BLKDEV => unpriv.then_some("blkdev"), // handled by source/fstype
                     _ => None,
                 })
             })
@@ -182,6 +184,33 @@ impl MountOptions {
                 ),
         )
     }
+
+    pub fn privileged_options(&self, prefix: Option<&str>) -> PrivilegedOptions {
+        let mut fstype: String = if self.flags.contains(MountFlags::BLKDEV) {
+            "fuseblk".into()
+        } else {
+            "fuse".into()
+        };
+        if let Some(subtype) = &self.subtype {
+            fstype.push('.');
+            fstype.push_str(subtype.trim());
+        }
+
+        let opts = join(
+            prefix
+                .map(Cow::Borrowed)
+                .into_iter()
+                .chain(self.iter_flags(false))
+                .chain(self.iter_common_opts()),
+        );
+
+        PrivilegedOptions { fstype, opts }
+    }
+}
+
+pub struct PrivilegedOptions {
+    pub fstype: String,
+    pub opts: String,
 }
 
 fn join<T>(iter: impl Iterator<Item = T>) -> String
@@ -202,7 +231,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mount_opts_encode() {
+    fn mount_opts_encode_unprivileged() {
         let opts = MountOptions::default();
         assert_eq!(opts.unprivileged_options(), "auto_unmount");
 
@@ -250,6 +279,40 @@ mod tests {
         assert_eq!(
             opts.unprivileged_options(),
             "ro,default_permissions,auto_unmount"
+        );
+    }
+
+    #[test]
+    fn mount_opts_encode_privileged_default() {
+        let opts = MountOptions::new();
+        let dst = opts.privileged_options(None);
+        assert_eq!(dst.fstype, "fuse");
+        assert_eq!(dst.opts, "");
+    }
+
+    #[test]
+    fn mount_opts_encode_privileged_blkdev() {
+        let mut opts = MountOptions::new();
+        opts.flags |= MountFlags::BLKDEV;
+
+        let dst = opts.privileged_options(None);
+        assert_eq!(dst.fstype, "fuseblk");
+        assert_eq!(dst.opts, "");
+    }
+
+    #[test]
+    fn mount_opts_encode_privileged_subtype() {
+        let mut opts = MountOptions::new();
+        opts.flags |= MountFlags::DEFAULT_PERMISSIONS | MountFlags::ALLOW_OTHER;
+        opts.subtype = Some("myfs".into());
+        opts.max_read = Some(12);
+        opts.blksize = Some(1024);
+
+        let dst = opts.privileged_options(Some("fd=9987,rootmode=444,user_id=0,group_id=0"));
+        assert_eq!(dst.fstype, "fuse.myfs");
+        assert_eq!(
+            dst.opts,
+            "fd=9987,rootmode=444,user_id=0,group_id=0,default_permissions,allow_other,blksize=1024,max_read=12"
         );
     }
 }
