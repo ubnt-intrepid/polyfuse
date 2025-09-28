@@ -33,12 +33,10 @@ fn main() -> Result<()> {
     let (mut conn, mount) = mount(&mountpoint.into(), &mountopts)?;
 
     // Initialize the FUSE session.
-    let mut session = Session::new();
-    let mut config = KernelConfig::default();
-    session.init(&mut conn, &mut config)?;
+    let session = Session::init(&mut conn, KernelConfig::default())?;
 
     // Receive an incoming FUSE request from the kernel.
-    let mut buf = FallbackBuf::new(config.request_buffer_size());
+    let mut buf = FallbackBuf::new(session.config().request_buffer_size());
     while session.recv_request(&mut conn, &mut buf)? {
         let (header, arg, _remains) = buf.parts();
         match Operation::decode(header, arg)? {

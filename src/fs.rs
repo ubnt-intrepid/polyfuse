@@ -374,7 +374,6 @@ pub type ReplyLseek<'req> = reply::ReplyLseek<ReplySender<'req>>;
 
 pub struct Daemon {
     global: Arc<Global>,
-    config: KernelConfig,
     fusermount: Mount,
     join_set: JoinSet<io::Result<()>>,
 }
@@ -383,12 +382,11 @@ impl Daemon {
     pub async fn mount(
         mountpoint: impl Into<Cow<'static, Path>>,
         mountopts: MountOptions,
-        mut config: KernelConfig,
+        config: KernelConfig,
     ) -> io::Result<Self> {
         let (conn, fusermount) = crate::mount::mount(&mountpoint.into(), &mountopts)?;
 
-        let mut session = Session::new();
-        session.init(&conn, &mut config)?;
+        let session = Session::init(&conn, config)?;
 
         Ok(Self {
             global: Arc::new(Global {
@@ -396,14 +394,13 @@ impl Daemon {
                 conn,
                 notify_unique: AtomicU64::new(0),
             }),
-            config,
             fusermount,
             join_set: JoinSet::new(),
         })
     }
 
     pub fn config(&self) -> &KernelConfig {
-        &self.config
+        self.global.session.config()
     }
 
     pub fn notifier(&self) -> Notifier {
@@ -436,12 +433,12 @@ impl Daemon {
         for i in 0..num_workers {
             let worker = self.new_worker(i)?;
             let fs = fs.clone();
-            if self.config.flags.contains(KernelFlags::SPLICE_READ) {
-                let buf = SpliceBuf::new(self.config.request_buffer_size())?;
+            if self.config().flags.contains(KernelFlags::SPLICE_READ) {
+                let buf = SpliceBuf::new(self.config().request_buffer_size())?;
                 self.join_set
                     .spawn(async move { worker.run(buf, fs).await });
             } else {
-                let buf = FallbackBuf::new(self.config.request_buffer_size());
+                let buf = FallbackBuf::new(self.config().request_buffer_size());
                 self.join_set
                     .spawn(async move { worker.run(buf, fs).await });
             }

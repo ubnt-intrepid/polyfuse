@@ -9,7 +9,7 @@ use polyfuse_kernel::*;
 use rustix::{io::Errno, param::page_size};
 use std::{
     cmp, io, mem,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use zerocopy::{FromZeros as _, IntoBytes as _};
 
@@ -60,6 +60,7 @@ impl Ord for ProtocolVersion {
 
 /// Parameters for setting up the connection with FUSE driver
 /// and the kernel side behavior.
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct KernelConfig {
     /// The protocol version.
@@ -268,7 +269,8 @@ impl KernelFlags {
 /// The object containing the contextrual information about a FUSE session.
 #[derive(Debug)]
 pub struct Session {
-    state: AtomicU32,
+    config: KernelConfig,
+    exited: AtomicBool,
 }
 
 impl Drop for Session {
@@ -277,35 +279,13 @@ impl Drop for Session {
     }
 }
 
-impl Default for Session {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Session {
-    const UNINIT: u32 = 0;
-    const RUNNING: u32 = 1;
-    const EXITED: u32 = 2;
-
-    /// Create new instance of `Session`.
-    pub const fn new() -> Self {
-        Self {
-            state: AtomicU32::new(Self::UNINIT),
-        }
-    }
-
     /// Initialize a FUSE session by communicating with the kernel driver over
     /// the established channel.
-    pub fn init<T>(&mut self, mut conn: T, config: &mut KernelConfig) -> io::Result<()>
+    pub fn init<T>(mut conn: T, mut config: KernelConfig) -> io::Result<Self>
     where
         T: io::Read + io::Write,
     {
-        if *self.state.get_mut() != Self::UNINIT {
-            tracing::warn!("The session has already been initialized.");
-            return Ok(());
-        }
-
         let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
         loop {
             buf.reset()?;
@@ -339,7 +319,14 @@ impl Session {
                 let mut out = fuse_init_out::new_zeroed();
                 out.major = FUSE_KERNEL_VERSION;
                 out.minor = FUSE_KERNEL_MINOR_VERSION;
-                self.send_reply(&mut conn, header.unique(), None, out.as_bytes())?;
+                send_msg(
+                    &mut conn,
+                    MessageKind::Reply {
+                        unique: header.unique(),
+                        error: None,
+                    },
+                    out.as_bytes(),
+                )?;
                 continue;
             }
 
@@ -353,7 +340,14 @@ impl Session {
                     FUSE_KERNEL_VERSION,
                     FUSE_KERNEL_MINOR_VERSION,
                 );
-                self.send_reply(&mut conn, header.unique(), Some(Errno::PROTO), ())?;
+                send_msg(
+                    &mut conn,
+                    MessageKind::Reply {
+                        unique: header.unique(),
+                        error: Some(Errno::PROTO),
+                    },
+                    (),
+                )?;
                 continue;
             }
 
@@ -363,8 +357,8 @@ impl Session {
                 "The minor kernel version"
             );
 
-            let major = FUSE_KERNEL_VERSION;
-            let minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
+            config.protocol_version.major = FUSE_KERNEL_VERSION;
+            config.protocol_version.minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
 
             let capable = KernelFlags::from_bits_truncate(init_in.flags);
             config.flags |= KernelFlags::READ_ONLY;
@@ -408,7 +402,11 @@ impl Session {
             );
 
             tracing::debug!("Reply to INIT:");
-            tracing::debug!("  proto = {}.{}:", major, minor);
+            tracing::debug!(
+                "  proto = {}.{}:",
+                config.protocol_version.major,
+                config.protocol_version.minor
+            );
             tracing::debug!("  flags = {:?}", config.flags);
             tracing::debug!("  max_readahead = 0x{:08X}", config.max_readahead);
             tracing::debug!("  max_write = 0x{:08X}", config.max_write);
@@ -420,8 +418,8 @@ impl Session {
             tracing::debug!("  time_gran = {}", config.time_gran);
 
             let init_out = fuse_init_out {
-                major,
-                minor,
+                major: config.protocol_version.major,
+                minor: config.protocol_version.minor,
                 max_readahead: config.max_readahead,
                 flags: config.flags.bits(),
                 max_background: config.max_background,
@@ -432,18 +430,35 @@ impl Session {
                 padding: 0,
                 unused: [0; 8],
             };
-            self.send_reply(&mut conn, header.unique(), None, init_out.as_bytes())?;
+            send_msg(
+                &mut conn,
+                MessageKind::Reply {
+                    unique: header.unique(),
+                    error: None,
+                },
+                init_out.as_bytes(),
+            )?;
 
-            *self.state.get_mut() = Self::RUNNING;
-
-            return Ok(());
+            return Ok(Self {
+                config,
+                exited: AtomicBool::new(false),
+            });
         }
     }
 
     #[inline]
-    fn exit(&self) {
-        // FIXME: choose appropriate atomic ordering.
-        self.state.store(Self::EXITED, Ordering::SeqCst)
+    pub fn config(&self) -> &KernelConfig {
+        &self.config
+    }
+
+    #[inline]
+    pub fn exited(&self) -> bool {
+        self.exited.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn exit(&self) {
+        self.exited.store(true, Ordering::Release)
     }
 
     /// Receive an incoming FUSE request from the kernel.
@@ -452,7 +467,7 @@ impl Session {
         T: SpliceRead + io::Write,
         B: RequestBuf,
     {
-        loop {
+        while !self.exited() {
             buf.reset()?;
 
             let header = match buf.try_receive(&mut conn) {
@@ -519,10 +534,12 @@ impl Session {
                         header.unique(),
                         opcode
                     );
-                    break Ok(true);
+                    return Ok(true);
                 }
             }
         }
+
+        Ok(false)
     }
 
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
@@ -675,35 +692,32 @@ mod tests {
 
         let mut output = Vec::<u8>::new();
 
-        let mut session = Session::new();
-        let mut config = KernelConfig::default();
-        session
-            .init(
-                Unite {
-                    reader: &input[..],
-                    writer: &mut output,
-                },
-                &mut config,
-            )
-            .expect("initialization failed");
+        let session = Session::init(
+            Unite {
+                reader: &input[..],
+                writer: &mut output,
+            },
+            KernelConfig::default(),
+        )
+        .expect("initialization failed");
 
         let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(page_size() as u32) as u16;
 
         assert_eq!(
-            config.protocol_version,
+            session.config.protocol_version,
             ProtocolVersion {
                 major: FUSE_KERNEL_VERSION,
                 minor: FUSE_KERNEL_MINOR_VERSION
             }
         );
-        assert_eq!(config.max_readahead, 40);
-        assert_eq!(config.max_background, 0);
-        assert_eq!(config.congestion_threshold, 0);
-        assert_eq!(config.max_write, DEFAULT_MAX_WRITE);
-        assert_eq!(config.max_pages, expected_max_pages);
-        assert_eq!(config.time_gran, 1);
+        assert_eq!(session.config.max_readahead, 40);
+        assert_eq!(session.config.max_background, 0);
+        assert_eq!(session.config.congestion_threshold, 0);
+        assert_eq!(session.config.max_write, DEFAULT_MAX_WRITE);
+        assert_eq!(session.config.max_pages, expected_max_pages);
+        assert_eq!(session.config.time_gran, 1);
         assert_eq!(
-            config.flags,
+            session.config.flags,
             KernelFlags::default() | KernelFlags::READ_ONLY
         );
 
