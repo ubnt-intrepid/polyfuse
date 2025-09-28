@@ -25,48 +25,20 @@ const DEFAULT_MAX_WRITE: u32 = (FUSE_MIN_READ_BUFFER as usize
 
 // ==== KernelConfig ====
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub struct ProtocolVersion {
-    major: u32,
-    minor: u32,
-}
-
-impl ProtocolVersion {
-    pub const fn major(&self) -> u32 {
-        self.major
-    }
-
-    pub const fn minor(&self) -> u32 {
-        self.minor
-    }
-}
-
-impl PartialOrd for ProtocolVersion {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ProtocolVersion {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        match Ord::cmp(&self.major, &other.major) {
-            cmp::Ordering::Equal => Ord::cmp(&self.minor, &other.minor),
-            cmp => cmp,
-        }
-    }
-}
-
 /// Parameters for setting up the connection with FUSE driver
 /// and the kernel side behavior.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct KernelConfig {
-    /// The protocol version.
+    /// The major number of protocol version.
     ///
-    /// This field is automatically updated in `Session::init`.
-    pub protocol_version: ProtocolVersion,
+    /// This field is automatically updated during initialize process.
+    pub major: u32,
+
+    /// The minor number of protocol version.
+    ///
+    /// This field is automatically updated during initialize process.
+    pub minor: u32,
 
     /// Set the maximum readahead.
     pub max_readahead: u32,
@@ -118,10 +90,8 @@ impl Default for KernelConfig {
 impl KernelConfig {
     pub const fn new() -> Self {
         Self {
-            protocol_version: ProtocolVersion {
-                major: FUSE_KERNEL_VERSION,
-                minor: FUSE_KERNEL_MINOR_VERSION,
-            },
+            major: FUSE_KERNEL_VERSION,
+            minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: u32::MAX,
             max_background: 0,
             congestion_threshold: 0,
@@ -357,8 +327,8 @@ impl Session {
                 "The minor kernel version"
             );
 
-            config.protocol_version.major = FUSE_KERNEL_VERSION;
-            config.protocol_version.minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
+            config.major = FUSE_KERNEL_VERSION;
+            config.minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
 
             let capable = KernelFlags::from_bits_truncate(init_in.flags);
             config.flags |= KernelFlags::READ_ONLY;
@@ -402,11 +372,7 @@ impl Session {
             );
 
             tracing::debug!("Reply to INIT:");
-            tracing::debug!(
-                "  proto = {}.{}:",
-                config.protocol_version.major,
-                config.protocol_version.minor
-            );
+            tracing::debug!("  proto = {}.{}:", config.major, config.minor);
             tracing::debug!("  flags = {:?}", config.flags);
             tracing::debug!("  max_readahead = 0x{:08X}", config.max_readahead);
             tracing::debug!("  max_write = 0x{:08X}", config.max_write);
@@ -418,8 +384,8 @@ impl Session {
             tracing::debug!("  time_gran = {}", config.time_gran);
 
             let init_out = fuse_init_out {
-                major: config.protocol_version.major,
-                minor: config.protocol_version.minor,
+                major: config.major,
+                minor: config.minor,
                 max_readahead: config.max_readahead,
                 flags: config.flags.bits(),
                 max_background: config.max_background,
@@ -594,32 +560,6 @@ mod tests {
     use zerocopy::transmute;
 
     #[test]
-    fn proto_version_smoketest() {
-        let ver1 = ProtocolVersion {
-            major: 7,
-            minor: 31,
-        };
-        assert_eq!(ver1.major(), 7);
-        assert_eq!(ver1.minor(), 31);
-        assert_eq!(ver1, ver1);
-
-        let ver2 = ProtocolVersion {
-            major: 6,
-            minor: 99,
-        };
-        assert!(ver1 > ver2);
-
-        let ver3 = ProtocolVersion {
-            major: 7,
-            minor: 99,
-        };
-        assert!(ver1 < ver3);
-
-        let ver4 = ProtocolVersion { major: 8, minor: 0 };
-        assert!(ver1 < ver4);
-    }
-
-    #[test]
     fn kernel_config_smoketest() {
         let config = KernelConfig::default();
         assert_eq!(
@@ -680,7 +620,7 @@ mod tests {
         };
         let init_in = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
-            minor: FUSE_KERNEL_MINOR_VERSION,
+            minor: FUSE_KERNEL_MINOR_VERSION.saturating_add(20),
             max_readahead: 40,
             flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
         };
@@ -703,13 +643,8 @@ mod tests {
 
         let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(page_size() as u32) as u16;
 
-        assert_eq!(
-            session.config.protocol_version,
-            ProtocolVersion {
-                major: FUSE_KERNEL_VERSION,
-                minor: FUSE_KERNEL_MINOR_VERSION
-            }
-        );
+        assert_eq!(session.config.major, FUSE_KERNEL_VERSION);
+        assert_eq!(session.config.minor, FUSE_KERNEL_MINOR_VERSION);
         assert_eq!(session.config.max_readahead, 40);
         assert_eq!(session.config.max_background, 0);
         assert_eq!(session.config.congestion_threshold, 0);
