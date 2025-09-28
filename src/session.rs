@@ -101,6 +101,83 @@ impl KernelConfig {
             flags: KernelFlags::new(),
         }
     }
+
+    fn negotiate(&mut self, init_in: &fuse_init_in) -> Result<(), NegotiationError> {
+        if init_in.major > 7 {
+            return Err(NegotiationError::TooLargeProtocolVersion);
+        }
+
+        if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
+            return Err(NegotiationError::TooSmallProtocolVersion);
+        }
+
+        debug_assert_eq!(init_in.major, 7, "The kernel version");
+        debug_assert!(
+            init_in.minor >= MINIMUM_SUPPORTED_MINOR_VERSION,
+            "The minor kernel version"
+        );
+
+        self.major = FUSE_KERNEL_VERSION;
+        self.minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
+
+        let capable = KernelFlags::from_bits_truncate(init_in.flags);
+        self.flags |= KernelFlags::READ_ONLY;
+        self.flags &= capable;
+
+        self.max_readahead = cmp::min(self.max_readahead, init_in.max_readahead);
+
+        if self.congestion_threshold == 0 {
+            self.congestion_threshold = self.max_background * 3 / 4;
+        }
+        self.congestion_threshold = cmp::min(self.congestion_threshold, self.max_background);
+
+        self.max_write = cmp::max(
+            self.max_write,
+            FUSE_MIN_READ_BUFFER
+                - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32,
+        );
+
+        if self.flags.contains(KernelFlags::MAX_PAGES) {
+            self.max_write = cmp::min(self.max_write, (MAX_MAX_PAGES * page_size()) as u32);
+            self.max_pages = cmp::min(
+                self.max_write.div_ceil(page_size() as u32),
+                u16::max_value() as u32,
+            ) as u16;
+        } else {
+            self.max_write = cmp::min(
+                self.max_write,
+                (DEFAULT_MAX_PAGES_PER_REQ * page_size()) as u32,
+            );
+            self.max_pages = 0;
+        }
+
+        Ok(())
+    }
+
+    const fn to_arg(&self) -> fuse_init_out {
+        fuse_init_out {
+            major: self.major,
+            minor: self.minor,
+            max_readahead: self.max_readahead,
+            flags: self.flags.bits(),
+            max_background: self.max_background,
+            time_gran: self.time_gran,
+            congestion_threshold: self.congestion_threshold,
+            max_write: self.max_write,
+            max_pages: self.max_pages,
+            padding: 0,
+            unused: [0; 8],
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum NegotiationError {
+    #[error("The requested protocol is too large")]
+    TooLargeProtocolVersion,
+
+    #[error("The requested protocol is too small")]
+    TooSmallProtocolVersion,
 }
 
 // TODO: add FUSE_IOCTL_DIR
@@ -273,99 +350,59 @@ impl Session {
                 .fetch::<fuse_init_in>() //
                 .map_err(|_| Errno::INVAL)?;
 
-            if init_in.major > 7 {
-                // major version が大きい場合、カーネルにダウングレードを要求する
-                tracing::debug!(
-                    "The requested ABI version {}.{} is too large (expected version is {}.x)\n",
-                    init_in.major,
-                    init_in.minor,
-                    FUSE_KERNEL_VERSION,
-                );
-                tracing::debug!("  -> Wait for a second INIT request with an older version.");
-                let mut out = fuse_init_out::new_zeroed();
-                out.major = FUSE_KERNEL_VERSION;
-                out.minor = FUSE_KERNEL_MINOR_VERSION;
-                send_msg(
-                    &mut conn,
-                    MessageKind::Reply {
-                        unique: header.unique(),
-                        error: None,
-                    },
-                    out.as_bytes(),
-                )?;
-                continue;
-            }
-
-            if init_in.major < 7 || init_in.minor < MINIMUM_SUPPORTED_MINOR_VERSION {
-                // バージョンが小さすぎる場合は、プロコトルエラーを報告する。
-                // minor version の下限を指定しているのは polyfuse 独自のものであり、古いバージョンへの対応を回避するための策。
-                tracing::error!(
-                    "The requested ABI version {}.{} is too small (expected version is {}.{} or higher)",
-                    init_in.major,
-                    init_in.minor,
-                    FUSE_KERNEL_VERSION,
-                    FUSE_KERNEL_MINOR_VERSION,
-                );
-                send_msg(
-                    &mut conn,
-                    MessageKind::Reply {
-                        unique: header.unique(),
-                        error: Some(Errno::PROTO),
-                    },
-                    (),
-                )?;
-                continue;
-            }
-
-            debug_assert_eq!(init_in.major, 7, "The kernel version");
-            debug_assert!(
-                init_in.minor >= MINIMUM_SUPPORTED_MINOR_VERSION,
-                "The minor kernel version"
-            );
-
-            config.major = FUSE_KERNEL_VERSION;
-            config.minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
-
-            let capable = KernelFlags::from_bits_truncate(init_in.flags);
-            config.flags |= KernelFlags::READ_ONLY;
-            config.flags &= capable;
-
-            config.max_readahead = cmp::min(config.max_readahead, init_in.max_readahead);
-
-            if config.congestion_threshold == 0 {
-                config.congestion_threshold = config.max_background * 3 / 4;
-            }
-            config.congestion_threshold =
-                cmp::min(config.congestion_threshold, config.max_background);
-
-            config.max_write = cmp::max(
-                config.max_write,
-                FUSE_MIN_READ_BUFFER
-                    - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32,
-            );
-
-            if config.flags.contains(KernelFlags::MAX_PAGES) {
-                config.max_write = cmp::min(config.max_write, (MAX_MAX_PAGES * page_size()) as u32);
-                config.max_pages = cmp::min(
-                    config.max_write.div_ceil(page_size() as u32),
-                    u16::max_value() as u32,
-                ) as u16;
-            } else {
-                config.max_write = cmp::min(
-                    config.max_write,
-                    (DEFAULT_MAX_PAGES_PER_REQ * page_size()) as u32,
-                );
-                config.max_pages = 0;
-            }
-
             tracing::debug!("INIT request:");
-            tracing::debug!("  proto = {}.{}:", init_in.major, init_in.minor);
-            tracing::debug!("  flags = 0x{:08x} ({:?})", init_in.flags, capable);
-            tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
+            tracing::debug!("  version = {}.{}:", init_in.major, init_in.minor);
             tracing::debug!(
-                "  max_pages_enabled = {}",
-                init_in.flags & FUSE_MAX_PAGES != 0
+                "  capable flags = {:?}",
+                KernelFlags::from_bits_truncate(init_in.flags)
             );
+            tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
+
+            match config.negotiate(init_in) {
+                Ok(()) => (),
+                Err(NegotiationError::TooLargeProtocolVersion) => {
+                    // major version が大きい場合、カーネルにダウングレードを要求する
+                    tracing::debug!(
+                        "The requested ABI version {}.{} is too large (expected version is {}.x)\n",
+                        init_in.major,
+                        init_in.minor,
+                        FUSE_KERNEL_VERSION,
+                    );
+                    tracing::debug!("  -> Wait for a second INIT request with an older version.");
+                    let mut out = fuse_init_out::new_zeroed();
+                    out.major = FUSE_KERNEL_VERSION;
+                    out.minor = FUSE_KERNEL_MINOR_VERSION;
+                    send_msg(
+                        &mut conn,
+                        MessageKind::Reply {
+                            unique: header.unique(),
+                            error: None,
+                        },
+                        out.as_bytes(),
+                    )?;
+                    continue;
+                }
+                Err(NegotiationError::TooSmallProtocolVersion) => {
+                    // バージョンが小さすぎる場合は、プロコトルエラーを報告する。
+                    // minor version の下限を指定しているのは polyfuse 独自のものであり、古いバージョンへの対応を回避するための策。
+                    tracing::error!(
+                        "The requested ABI version {}.{} is too small (expected version is {}.{} or higher)",
+                        init_in.major,
+                        init_in.minor,
+                        FUSE_KERNEL_VERSION,
+                        FUSE_KERNEL_MINOR_VERSION,
+                    );
+                    send_msg(
+                        &mut conn,
+                        MessageKind::Reply {
+                            unique: header.unique(),
+                            error: Some(Errno::PROTO),
+                        },
+                        (),
+                    )?;
+                    continue;
+                }
+            }
 
             tracing::debug!("Reply to INIT:");
             tracing::debug!("  proto = {}.{}:", config.major, config.minor);
@@ -379,19 +416,7 @@ impl Session {
             );
             tracing::debug!("  time_gran = {}", config.time_gran);
 
-            let init_out = fuse_init_out {
-                major: config.major,
-                minor: config.minor,
-                max_readahead: config.max_readahead,
-                flags: config.flags.bits(),
-                max_background: config.max_background,
-                time_gran: config.time_gran,
-                congestion_threshold: config.congestion_threshold,
-                max_write: config.max_write,
-                max_pages: config.max_pages,
-                padding: 0,
-                unused: [0; 8],
-            };
+            let init_out = config.to_arg();
             send_msg(
                 &mut conn,
                 MessageKind::Reply {
@@ -559,57 +584,9 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem;
-    use zerocopy::transmute;
-
-    struct Unite<R, W> {
-        reader: R,
-        writer: W,
-    }
-
-    impl<R, W> io::Read for Unite<R, W>
-    where
-        R: io::Read,
-    {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            self.reader.read(buf)
-        }
-
-        fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
-            self.reader.read_vectored(bufs)
-        }
-    }
-
-    impl<R, W> io::Write for Unite<R, W>
-    where
-        W: io::Write,
-    {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.writer.write(buf)
-        }
-
-        fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-            self.writer.write_vectored(bufs)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.writer.flush()
-        }
-    }
 
     #[test]
-    fn session_init() {
-        let input_len = mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_init_in>();
-        let in_header = fuse_in_header {
-            len: input_len as u32,
-            opcode: transmute!(fuse_opcode::FUSE_INIT),
-            unique: 2,
-            nodeid: 0,
-            uid: 100,
-            gid: 100,
-            pid: 12,
-            padding: 0,
-        };
+    fn negotiate_default() {
         let init_in = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION.saturating_add(20),
@@ -617,84 +594,106 @@ mod tests {
             flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
         };
 
-        let mut input = Vec::with_capacity(input_len);
-        input.extend_from_slice(in_header.as_bytes());
-        input.extend_from_slice(init_in.as_bytes());
-        assert_eq!(input.len(), input_len);
-
-        let mut output = Vec::<u8>::new();
-
-        let session = Session::init(
-            Unite {
-                reader: &input[..],
-                writer: &mut output,
-            },
-            KernelConfig::default(),
-        )
-        .expect("initialization failed");
+        let mut config = KernelConfig::default();
+        config.negotiate(&init_in).unwrap();
 
         let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(page_size() as u32) as u16;
 
-        assert_eq!(session.config.major, FUSE_KERNEL_VERSION);
-        assert_eq!(session.config.minor, FUSE_KERNEL_MINOR_VERSION);
-        assert_eq!(session.config.max_readahead, 40);
-        assert_eq!(session.config.max_background, 0);
-        assert_eq!(session.config.congestion_threshold, 0);
-        assert_eq!(session.config.max_write, DEFAULT_MAX_WRITE);
-        assert_eq!(session.config.max_pages, expected_max_pages);
-        assert_eq!(session.config.time_gran, 1);
+        assert_eq!(config.major, FUSE_KERNEL_VERSION);
+        assert_eq!(config.minor, FUSE_KERNEL_MINOR_VERSION);
+        assert_eq!(config.max_readahead, 40);
+        assert_eq!(config.max_background, 0);
+        assert_eq!(config.congestion_threshold, 0);
+        assert_eq!(config.max_write, DEFAULT_MAX_WRITE);
+        assert_eq!(config.max_pages, expected_max_pages);
+        assert_eq!(config.time_gran, 1);
         assert_eq!(
-            session.config.flags,
+            config.flags,
             KernelFlags::default() | KernelFlags::READ_ONLY
         );
+    }
 
-        let output_len = mem::size_of::<fuse_out_header>() + mem::size_of::<fuse_init_out>();
-        let out_header = fuse_out_header {
-            len: output_len as u32,
-            error: 0,
-            unique: 2,
+    #[test]
+    fn negotiate_mismatched_protocol_version() {
+        let init_in = fuse_init_in {
+            major: FUSE_KERNEL_VERSION + 1,
+            minor: 9999,
+            max_readahead: 0,
+            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
         };
-        let init_out = fuse_init_out {
+        let mut config = KernelConfig::default();
+        assert!(matches!(
+            config.negotiate(&init_in),
+            Err(NegotiationError::TooLargeProtocolVersion)
+        ));
+
+        let init_in = fuse_init_in {
+            major: FUSE_KERNEL_VERSION - 1,
+            minor: 9999,
+            max_readahead: 0,
+            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
+        };
+        let mut config = KernelConfig::default();
+        assert!(matches!(
+            config.negotiate(&init_in),
+            Err(NegotiationError::TooSmallProtocolVersion)
+        ));
+
+        let init_in = fuse_init_in {
+            major: FUSE_KERNEL_VERSION,
+            minor: MINIMUM_SUPPORTED_MINOR_VERSION.saturating_sub(1),
+            max_readahead: 0,
+            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
+        };
+        let mut config = KernelConfig::default();
+        assert!(matches!(
+            config.negotiate(&init_in),
+            Err(NegotiationError::TooSmallProtocolVersion)
+        ));
+    }
+
+    #[test]
+    fn test_disabled_max_pages() {
+        let init_in = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 40,
-            flags: (KernelFlags::default() | KernelFlags::READ_ONLY).bits(),
-            max_background: 0,
-            congestion_threshold: 0,
-            max_write: DEFAULT_MAX_WRITE,
-            time_gran: 1,
-            max_pages: expected_max_pages,
-            padding: 0,
-            unused: [0; 8],
+            flags: (KernelFlags::all().bits() | FUSE_MAX_PAGES) & !FUSE_MAX_PAGES,
         };
 
-        let mut expected = Vec::with_capacity(output_len);
-        expected.extend_from_slice(out_header.as_bytes());
-        expected.extend_from_slice(init_out.as_bytes());
-        assert_eq!(output.len(), output_len);
+        let mut config = KernelConfig {
+            max_pages: 42,
+            ..Default::default()
+        };
+        config.negotiate(&init_in).unwrap();
 
-        assert_eq!(expected[0..4], output[0..4], "out_header.len");
-        assert_eq!(expected[4..8], output[4..8], "out_header.error");
-        assert_eq!(expected[8..16], output[8..16], "out_header.unique");
-
-        let expected = &expected[mem::size_of::<fuse_out_header>()..];
-        let output = &output[mem::size_of::<fuse_out_header>()..];
-        assert_eq!(expected[0..4], output[0..4], "init_out.major");
-        assert_eq!(expected[4..8], output[4..8], "init_out.minor");
-        assert_eq!(expected[8..12], output[8..12], "init_out.max_readahead");
-        assert_eq!(expected[12..16], output[12..16], "init_out.flags");
-        assert_eq!(expected[16..18], output[16..18], "init_out.max_background");
+        assert_eq!(config.major, FUSE_KERNEL_VERSION);
+        assert_eq!(config.minor, FUSE_KERNEL_MINOR_VERSION);
+        assert_eq!(config.max_readahead, 40);
+        assert_eq!(config.max_background, 0);
+        assert_eq!(config.congestion_threshold, 0);
+        assert_eq!(config.max_write, DEFAULT_MAX_WRITE);
+        assert_eq!(config.max_pages, 0);
+        assert_eq!(config.time_gran, 1);
         assert_eq!(
-            expected[18..20],
-            output[18..20],
-            "init_out.congestion_threshold"
+            config.flags,
+            (KernelFlags::default() | KernelFlags::READ_ONLY) & !KernelFlags::MAX_PAGES
         );
-        assert_eq!(expected[20..24], output[20..24], "init_out.max_write");
-        assert_eq!(expected[24..28], output[24..28], "init_out.time_gran");
-        assert_eq!(expected[28..30], output[28..30], "init_out.max_pages");
-        assert!(
-            output[30..30 + 2 + 4 * 8].iter().all(|&b| b == 0x00),
-            "init_out.paddings"
-        );
+    }
+
+    #[test]
+    fn config_to_args() {
+        let config = KernelConfig::default();
+        let arg = config.to_arg();
+
+        assert_eq!(arg.major, config.major);
+        assert_eq!(arg.minor, config.minor);
+        assert_eq!(arg.max_pages, config.max_pages);
+        assert_eq!(arg.max_background, config.max_background);
+        assert_eq!(arg.congestion_threshold, config.congestion_threshold);
+        assert_eq!(arg.max_write, config.max_write);
+        assert_eq!(arg.max_pages, config.max_pages);
+        assert_eq!(arg.time_gran, config.time_gran);
+        assert_eq!(arg.flags, config.flags.bits());
     }
 }
