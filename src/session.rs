@@ -688,7 +688,7 @@ mod tests {
 
         assert_eq!(arg.major, config.major);
         assert_eq!(arg.minor, config.minor);
-        assert_eq!(arg.max_pages, config.max_pages);
+        assert_eq!(arg.max_readahead, config.max_readahead);
         assert_eq!(arg.max_background, config.max_background);
         assert_eq!(arg.congestion_threshold, config.congestion_threshold);
         assert_eq!(arg.max_write, config.max_write);
