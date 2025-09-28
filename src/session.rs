@@ -1,6 +1,7 @@
 use crate::{
-    bytes::{Bytes, Decoder, POD},
+    bytes::{Bytes, Decoder},
     io::SpliceRead,
+    msg::{send_msg, MessageKind},
     request::{FallbackBuf, RequestBuf},
     types::RequestID,
 };
@@ -554,22 +555,8 @@ impl Session {
         T: io::Write,
         B: Bytes,
     {
-        let len = (mem::size_of::<fuse_out_header>() + arg.size())
-            .try_into()
-            .expect("Argument size is too large");
-
-        crate::bytes::write_bytes(
-            conn,
-            (
-                POD(fuse_out_header {
-                    len,
-                    error: -error.map_or(0, |err| err.raw_os_error()),
-                    unique: unique.into_raw(),
-                }),
-                arg,
-            ),
-        )
-        .or_else(|err| self.handle_reply_error(err))
+        send_msg(conn, MessageKind::Reply { unique, error }, arg)
+            .or_else(|err| self.handle_reply_error(err))
     }
 
     /// Send a notification message to the kernel.
@@ -578,22 +565,8 @@ impl Session {
         T: io::Write,
         B: Bytes,
     {
-        let len = (mem::size_of::<fuse_out_header>() + arg.size())
-            .try_into()
-            .expect("Argument size is too large");
-
-        crate::bytes::write_bytes(
-            conn,
-            (
-                POD(fuse_out_header {
-                    len,
-                    error: code as i32,
-                    unique: 0, // unique=0 indicates that the message is a notification.
-                }),
-                arg,
-            ),
-        )
-        .or_else(|err| self.handle_reply_error(err))
+        send_msg(conn, MessageKind::Notify { code }, arg)
+            .or_else(|err| self.handle_reply_error(err))
     }
 }
 
@@ -782,69 +755,5 @@ mod tests {
             output[30..30 + 2 + 4 * 8].iter().all(|&b| b == 0x00),
             "init_out.paddings"
         );
-    }
-
-    #[inline]
-    fn bytes(bytes: &[u8]) -> &[u8] {
-        bytes
-    }
-    macro_rules! b {
-        ($($b:expr),*$(,)?) => ( *bytes(&[$($b),*]) );
-    }
-
-    #[test]
-    fn send_reply_empty() {
-        let session = Session::new();
-        let mut buf = vec![0u8; 0];
-        session
-            .send_reply(&mut buf, RequestID::from_raw(42), Some(Errno::INTR), ())
-            .unwrap();
-        assert_eq!(buf[0..4], b![0x10, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(buf[4..8], b![0xfc, 0xff, 0xff, 0xff], "header.error");
-        assert_eq!(
-            buf[8..16],
-            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-    }
-
-    #[test]
-    fn send_reply_single_data() {
-        let session = Session::default();
-        let mut buf = vec![0u8; 0];
-        session
-            .send_reply(&mut buf, RequestID::from_raw(42), None, "hello")
-            .unwrap();
-        assert_eq!(buf[0..4], b![0x15, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
-        assert_eq!(
-            buf[8..16],
-            b![0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-        assert_eq!(buf[16..], b![0x68, 0x65, 0x6c, 0x6c, 0x6f], "payload");
-    }
-
-    #[test]
-    fn send_msg_chunked_data() {
-        let session = Session::default();
-        let payload: &[&[u8]] = &[
-            "hello, ".as_ref(), //
-            "this ".as_ref(),
-            "is a ".as_ref(),
-            "message.".as_ref(),
-        ];
-        let mut buf = vec![0u8; 0];
-        session
-            .send_reply(&mut buf, RequestID::from_raw(26), None, payload)
-            .unwrap();
-        assert_eq!(buf[0..4], b![0x29, 0x00, 0x00, 0x00], "header.len");
-        assert_eq!(buf[4..8], b![0x00, 0x00, 0x00, 0x00], "header.error");
-        assert_eq!(
-            buf[8..16],
-            b![0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            "header.unique"
-        );
-        assert_eq!(buf[16..], *b"hello, this is a message.", "payload");
     }
 }
