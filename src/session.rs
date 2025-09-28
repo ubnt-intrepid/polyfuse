@@ -101,10 +101,6 @@ impl KernelConfig {
             flags: KernelFlags::new(),
         }
     }
-
-    pub fn request_buffer_size(&self) -> usize {
-        mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>() + self.max_write as usize
-    }
 }
 
 // TODO: add FUSE_IOCTL_DIR
@@ -418,6 +414,13 @@ impl Session {
     }
 
     #[inline]
+    pub fn request_buffer_size(&self) -> usize {
+        mem::size_of::<fuse_in_header>()
+            + mem::size_of::<fuse_write_in>()
+            + self.config.max_write as usize
+    }
+
+    #[inline]
     pub fn exited(&self) -> bool {
         self.exited.load(Ordering::Acquire)
     }
@@ -558,17 +561,6 @@ mod tests {
     use super::*;
     use std::mem;
     use zerocopy::transmute;
-
-    #[test]
-    fn kernel_config_smoketest() {
-        let config = KernelConfig::default();
-        assert_eq!(
-            config.request_buffer_size(),
-            config.max_write as usize
-                + mem::size_of::<fuse_in_header>()
-                + mem::size_of::<fuse_write_in>()
-        );
-    }
 
     struct Unite<R, W> {
         reader: R,

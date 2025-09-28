@@ -433,12 +433,13 @@ impl Daemon {
         for i in 0..num_workers {
             let worker = self.new_worker(i)?;
             let fs = fs.clone();
+            let bufsize = self.global.session.request_buffer_size();
             if self.config().flags.contains(KernelFlags::SPLICE_READ) {
-                let buf = SpliceBuf::new(self.config().request_buffer_size())?;
+                let buf = SpliceBuf::new(bufsize)?;
                 self.join_set
                     .spawn(async move { worker.run(buf, fs).await });
             } else {
-                let buf = FallbackBuf::new(self.config().request_buffer_size());
+                let buf = FallbackBuf::new(bufsize);
                 self.join_set
                     .spawn(async move { worker.run(buf, fs).await });
             }
