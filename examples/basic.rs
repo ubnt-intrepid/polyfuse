@@ -3,20 +3,19 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op::{self, Operation},
+    reply::AttrOut,
     request::{FallbackBuf, RequestBuf as _, RequestHeader},
     session::{KernelConfig, Session},
-    types::{FileMode, FilePermissions, FileType, NodeID},
+    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     Connection,
 };
-use polyfuse_kernel::{fuse_attr, fuse_attr_out};
 
 use anyhow::{ensure, Context as _, Result};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
-use std::{io, path::PathBuf};
-use zerocopy::IntoBytes as _;
+use std::{borrow::Cow, io, path::PathBuf, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
 
@@ -64,31 +63,23 @@ fn getattr(
         return session.send_reply(conn, header.unique(), Some(Errno::NOENT), ());
     }
 
-    let out = fuse_attr_out {
-        attr_valid: 1,
-        attr_valid_nsec: 0,
-        dummy: 0,
-        attr: fuse_attr {
-            ino: NodeID::ROOT.into_raw(),
-            size: CONTENT.len() as u64,
-            blocks: 0,
-            atime: 0,
-            mtime: 0,
-            ctime: 0,
-            atimensec: 0,
-            mtimensec: 0,
-            ctimensec: 0,
-            mode: FileMode::new(FileType::Regular, FilePermissions::READ).into_raw(),
-            nlink: 1,
-            uid: getuid().as_raw(),
-            gid: getgid().as_raw(),
-            rdev: 0,
-            blksize: 0,
-            padding: 0,
-        },
-    };
+    let mut attr = FileAttr::new();
+    attr.ino = NodeID::ROOT;
+    attr.size = CONTENT.len() as u64;
+    attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+    attr.nlink = 1;
+    attr.uid = getuid();
+    attr.gid = getgid();
 
-    session.send_reply(conn, header.unique(), None, out.as_bytes())
+    session.send_reply(
+        conn,
+        header.unique(),
+        None,
+        AttrOut {
+            attr: Cow::Owned(attr),
+            valid: Some(Duration::from_secs(1)),
+        },
+    )
 }
 
 fn read(
