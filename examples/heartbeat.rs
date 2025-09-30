@@ -11,15 +11,15 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op,
-    reply::OpenOutFlags,
-    types::{FileAttr, FileMode, FilePermissions, FileType, NodeID, NotifyID},
+    reply::{AttrOut, OpenOut, OpenOutFlags},
+    types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, NotifyID},
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
 use rustix::io::Errno;
-use std::{io, path::PathBuf, sync::Arc, time::Duration};
+use std::{borrow::Cow, io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 #[tokio::main]
@@ -141,54 +141,43 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    async fn getattr(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        arg: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
-        if arg.ino != NodeID::ROOT {
+    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
+        if op.ino != NodeID::ROOT {
             Err(Errno::NOENT)?;
         }
         let inner = self.inner.lock().await;
-        reply.attr(&inner.attr);
-        reply.send()
+        req.reply(AttrOut {
+            attr: Cow::Borrowed(&inner.attr),
+            valid: None,
+        })
     }
 
-    async fn open(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        arg: op::Open<'_>,
-        mut reply: fs::ReplyOpen<'_>,
-    ) -> fs::Result {
-        if arg.ino != NodeID::ROOT {
+    async fn open(self: &Arc<Self>, req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
+        if op.ino != NodeID::ROOT {
             Err(Errno::NOENT)?;
         }
-        reply.flags(OpenOutFlags::KEEP_CACHE);
-        reply.send()
+        req.reply(OpenOut {
+            fh: FileID::from_raw(0),
+            open_flags: OpenOutFlags::KEEP_CACHE,
+        })
     }
 
-    async fn read(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        arg: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
-        if arg.ino != NodeID::ROOT {
+    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
+        if op.ino != NodeID::ROOT {
             Err(Errno::NOENT)?
         }
 
         let inner = self.inner.lock().await;
 
-        let offset = arg.offset as usize;
+        let offset = op.offset as usize;
         if offset >= inner.content.len() {
-            return reply.send(());
+            return req.reply(());
         }
 
-        let size = arg.size as usize;
+        let size = op.size as usize;
         let data = &inner.content.as_bytes()[offset..];
         let data = &data[..std::cmp::min(data.len(), size)];
-        reply.send(data)
+        req.reply(data)
     }
 
     async fn notify_reply(

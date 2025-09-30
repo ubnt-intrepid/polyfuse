@@ -1,7 +1,7 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op::{self, AccessMode, OpenFlags},
-    reply::OpenOutFlags,
+    reply::{AttrOut, OpenOut, OpenOutFlags, PollOut},
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
     },
@@ -13,6 +13,7 @@ use rustix::{
     process::{getgid, getuid},
 };
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::PathBuf,
     sync::{
@@ -65,30 +66,22 @@ impl PollFS {
 }
 
 impl Filesystem for PollFS {
-    async fn getattr(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        _: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
-        let mut attr = FileAttr::new();
-        attr.ino = NodeID::ROOT;
-        attr.nlink = 1;
-        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-        attr.uid = getuid();
-        attr.gid = getgid();
-
-        reply.attr(&attr);
-        reply.ttl(Duration::from_secs(u64::max_value() / 2));
-        reply.send()
+    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, _: op::Getattr<'_>) -> fs::Result {
+        req.reply(AttrOut {
+            attr: {
+                let mut attr = FileAttr::new();
+                attr.ino = NodeID::ROOT;
+                attr.nlink = 1;
+                attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
+                attr.uid = getuid();
+                attr.gid = getgid();
+                Cow::Owned(attr)
+            },
+            valid: Some(Duration::from_secs(u64::MAX / 2)),
+        })
     }
 
-    async fn open(
-        self: &Arc<Self>,
-        mut req: fs::Request<'_>,
-        op: op::Open<'_>,
-        mut reply: fs::ReplyOpen<'_>,
-    ) -> fs::Result {
+    async fn open(self: &Arc<Self>, mut req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
         if op.options.access_mode() != Some(AccessMode::ReadOnly) {
             Err(Errno::ACCESS)?;
         }
@@ -132,17 +125,13 @@ impl Filesystem for PollFS {
         let fh = FileID::from_raw(fh);
         self.handles.write().await.insert(fh, handle);
 
-        reply.fh(fh);
-        reply.flags(OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE);
-        reply.send()
+        req.reply(OpenOut {
+            fh,
+            open_flags: OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
+        })
     }
 
-    async fn read(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        op: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
+    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
             handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
@@ -166,15 +155,10 @@ impl Filesystem for PollFS {
         let bufsize = op.size as usize;
         let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-        reply.send(&content[..std::cmp::min(content.len(), bufsize)])
+        req.reply(&content[..std::cmp::min(content.len(), bufsize)])
     }
 
-    async fn poll(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        op: op::Poll<'_>,
-        reply: fs::ReplyPoll<'_>,
-    ) -> fs::Result {
+    async fn poll(self: &Arc<Self>, req: fs::Request<'_>, op: op::Poll<'_>) -> fs::Result {
         let handle = {
             let handles = self.handles.read().await;
             handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
@@ -190,17 +174,12 @@ impl Filesystem for PollFS {
             let _ = handle.kh.set(kh);
         }
 
-        reply.send(revents)
+        req.reply(PollOut::new(revents))
     }
 
-    async fn release(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        op: op::Release<'_>,
-        reply: fs::ReplyUnit<'_>,
-    ) -> fs::Result {
+    async fn release(self: &Arc<Self>, req: fs::Request<'_>, op: op::Release<'_>) -> fs::Result {
         drop(self.handles.write().await.remove(&op.fh));
-        reply.send()
+        req.reply(())
     }
 }
 

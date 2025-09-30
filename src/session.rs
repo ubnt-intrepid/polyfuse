@@ -1,5 +1,5 @@
 use crate::{
-    bytes::{Bytes, Decoder},
+    bytes::{Decoder, ToBytes},
     io::SpliceRead,
     msg::{send_msg, MessageKind},
     request::{FallbackBuf, RequestBuf},
@@ -564,9 +564,9 @@ impl Session {
     ) -> io::Result<()>
     where
         T: io::Write,
-        B: Bytes,
+        B: ToBytes,
     {
-        send_msg(conn, MessageKind::Reply { unique, error }, arg)
+        send_msg(conn, MessageKind::Reply { unique, error }, arg.to_bytes())
             .or_else(|err| self.handle_reply_error(err))
     }
 
@@ -574,9 +574,9 @@ impl Session {
     pub fn send_notify<T, B>(&self, conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
     where
         T: io::Write,
-        B: Bytes,
+        B: ToBytes,
     {
-        send_msg(conn, MessageKind::Notify { code }, arg)
+        send_msg(conn, MessageKind::Notify { code }, arg.to_bytes())
             .or_else(|err| self.handle_reply_error(err))
     }
 }

@@ -1,207 +1,318 @@
 use crate::{
-    bytes::Bytes,
+    bytes::{Bytes, ToBytes, POD},
     types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
 };
 use bitflags::bitflags;
 use polyfuse_kernel::*;
-use std::{ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
-use zerocopy::{FromZeros as _, IntoBytes as _};
+use std::{borrow::Cow, ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
-fn fill_fuse_attr(slot: &mut fuse_attr, attr: &FileAttr) {
-    slot.ino = attr.ino.into_raw();
-    slot.size = attr.size;
-    slot.blocks = attr.blocks;
-    slot.atime = attr.atime.as_secs();
-    slot.mtime = attr.mtime.as_secs();
-    slot.ctime = attr.ctime.as_secs();
-    slot.atimensec = attr.atime.subsec_nanos();
-    slot.mtimensec = attr.mtime.subsec_nanos();
-    slot.ctimensec = attr.ctime.subsec_nanos();
-    slot.mode = attr.mode.into_raw();
-    slot.nlink = attr.nlink;
-    slot.uid = attr.uid.as_raw();
-    slot.gid = attr.gid.as_raw();
-    slot.rdev = attr.rdev.into_kernel_dev();
-    slot.blksize = attr.blksize;
-}
-
-pub trait ReplySender {
-    type Ok;
-    type Error;
-
-    fn send<B>(self, arg: B) -> Result<Self::Ok, Self::Error>
-    where
-        B: Bytes;
-}
-
-pub struct ReplyUnit<T> {
-    sender: T,
-}
-
-impl<T> ReplyUnit<T>
-where
-    T: ReplySender,
-{
-    pub(crate) const fn new(sender: T) -> Self {
-        Self { sender }
-    }
-
-    pub fn send(self) -> Result<T::Ok, T::Error> {
-        self.sender.send(())
+const fn to_fuse_attr(attr: &FileAttr) -> fuse_attr {
+    fuse_attr {
+        ino: attr.ino.into_raw(),
+        size: attr.size,
+        blocks: attr.blocks,
+        atime: attr.atime.as_secs(),
+        mtime: attr.mtime.as_secs(),
+        ctime: attr.ctime.as_secs(),
+        atimensec: attr.atime.subsec_nanos(),
+        mtimensec: attr.mtime.subsec_nanos(),
+        ctimensec: attr.ctime.subsec_nanos(),
+        mode: attr.mode.into_raw(),
+        nlink: attr.nlink,
+        uid: attr.uid.as_raw(),
+        gid: attr.gid.as_raw(),
+        rdev: attr.rdev.into_kernel_dev(),
+        blksize: attr.blksize,
+        padding: 0,
     }
 }
 
-pub struct ReplyEntry<T> {
-    sender: T,
-    out: fuse_entry_out,
-}
-
-impl<T> ReplyEntry<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self {
-            sender,
-            out: fuse_entry_out::new_zeroed(),
-        }
-    }
-
-    /// Set the inode number of this entry.
+#[derive(Debug)]
+pub struct EntryOut<'a> {
+    /// The inode number of this entry.
     ///
     /// If the value is not set, it means that the entry is *negative*.
     /// Returning a negative entry is also possible with the `ENOENT` error,
     /// but the *zeroed* entries also have the ability to specify the lifetime
     /// of the entry cache by using the `ttl_entry` parameter.
-    #[inline]
-    pub fn ino(&mut self, ino: NodeID) {
-        self.out.nodeid = ino.into_raw();
-    }
+    pub ino: NodeID,
 
-    /// Fill attribute values about this entry.
-    #[inline]
-    pub fn attr(&mut self, attr: &FileAttr) {
-        fill_fuse_attr(&mut self.out.attr, attr);
-    }
+    /// The Attribute values about this entry.
+    pub attr: Cow<'a, FileAttr>,
 
-    /// Set the generation of this entry.
+    /// The generation of this entry.
     ///
     /// This parameter is used to distinguish the inode from the past one
     /// when the filesystem reuse inode numbers.  That is, the operations
     /// must ensure that the pair of entry's inode number and generation
     /// are unique for the lifetime of the filesystem.
-    pub fn generation(&mut self, generation: u64) {
-        self.out.generation = generation;
-    }
+    pub generation: u64,
 
     /// Set the validity timeout for inode attributes.
     ///
     /// The operations should set this value to very large
     /// when the changes of inode attributes are caused
     /// only by FUSE requests.
-    pub fn ttl_attr(&mut self, ttl: Duration) {
-        self.out.attr_valid = ttl.as_secs();
-        self.out.attr_valid_nsec = ttl.subsec_nanos();
-    }
+    pub attr_valid: Option<Duration>,
 
-    /// Set the validity timeout for the name.
+    /// The validity timeout for the entry name.
     ///
     /// The operations should set this value to very large
     /// when the changes/deletions of directory entries are
     /// caused only by FUSE requests.
-    pub fn ttl_entry(&mut self, ttl: Duration) {
-        self.out.entry_valid = ttl.as_secs();
-        self.out.entry_valid_nsec = ttl.subsec_nanos();
-    }
+    pub entry_valid: Option<Duration>,
+}
 
-    pub fn send(self) -> Result<T::Ok, T::Error> {
-        self.sender.send(self.out.as_bytes())
+impl ToBytes for EntryOut<'_> {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        let entry_valid = self.entry_valid.unwrap_or_default();
+        let attr_valid = self.attr_valid.unwrap_or_default();
+        POD(fuse_entry_out {
+            nodeid: self.ino.into_raw(),
+            generation: self.generation,
+            entry_valid: entry_valid.as_secs(),
+            attr_valid: attr_valid.as_secs(),
+            entry_valid_nsec: entry_valid.subsec_nanos(),
+            attr_valid_nsec: attr_valid.subsec_nanos(),
+            attr: to_fuse_attr(&self.attr),
+        })
     }
 }
 
-pub struct ReplyAttr<T> {
-    sender: T,
-    out: fuse_attr_out,
+#[derive(Debug)]
+pub struct AttrOut<'a> {
+    pub attr: Cow<'a, FileAttr>,
+    pub valid: Option<Duration>,
 }
 
-impl<T> ReplyAttr<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
+impl ToBytes for AttrOut<'_> {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        let valid = self.valid.unwrap_or_default();
+        POD(fuse_attr_out {
+            attr_valid: valid.as_secs(),
+            attr_valid_nsec: valid.subsec_nanos(),
+            dummy: 0,
+            attr: to_fuse_attr(&self.attr),
+        })
+    }
+}
+
+#[derive(IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
+pub struct WriteOut {
+    raw: fuse_write_out,
+}
+
+impl ToBytes for WriteOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        self.raw.as_bytes()
+    }
+}
+
+impl WriteOut {
+    pub const fn new(size: u32) -> Self {
         Self {
-            sender,
-            out: fuse_attr_out::new_zeroed(),
+            raw: fuse_write_out { size, padding: 0 },
         }
     }
+}
 
-    /// Return the object to fill attribute values.
-    #[inline]
-    pub fn attr(&mut self, attr: &FileAttr) {
-        fill_fuse_attr(&mut self.out.attr, attr);
-    }
+#[derive(Debug)]
+pub struct OpenOut {
+    /// The handle of opened file.
+    pub fh: FileID,
 
-    /// Set the validity timeout for this attribute.
-    pub fn ttl(&mut self, ttl: Duration) {
-        self.out.attr_valid = ttl.as_secs();
-        self.out.attr_valid_nsec = ttl.subsec_nanos();
-    }
+    /// The flags for the opened file.
+    pub open_flags: OpenOutFlags,
+}
 
-    pub fn send(self) -> Result<T::Ok, T::Error> {
-        self.sender.send(self.out.as_bytes())
+impl ToBytes for OpenOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        POD(fuse_open_out {
+            fh: self.fh.into_raw(),
+            open_flags: self.open_flags.bits(),
+            padding: 0,
+        })
     }
 }
 
-pub struct ReplyData<T> {
-    sender: T,
-}
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct OpenOutFlags: u32 {
+        /// Indicates that the direct I/O is used on this file.
+        const DIRECT_IO = FOPEN_DIRECT_IO;
 
-impl<T> ReplyData<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self { sender }
-    }
+        /// Indicates that the currently cached file data in the kernel
+        /// need not be invalidated.
+        const KEEP_CACHE = FOPEN_KEEP_CACHE;
 
-    pub fn send<B>(self, bytes: B) -> Result<T::Ok, T::Error>
-    where
-        B: Bytes,
-    {
-        self.sender.send(bytes)
-    }
-}
+        /// Indicates that the opened file is not seekable.
+        const NONSEEKABLE = FOPEN_NONSEEKABLE;
 
-pub struct ReplyWrite<T> {
-    sender: T,
-}
-
-impl<T> ReplyWrite<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self { sender }
-    }
-
-    pub fn send(self, size: u32) -> Result<T::Ok, T::Error> {
-        self.sender
-            .send(fuse_write_out { size, padding: 0 }.as_bytes())
+        /// Enable caching of entries returned by `readdir`.
+        ///
+        /// This flag is meaningful only for `opendir` operations.
+        const CACHE_DIR = FOPEN_CACHE_DIR;
     }
 }
 
-pub struct ReplyDir<T> {
-    sender: T,
+#[derive(IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
+pub struct StatfsOut {
+    raw: fuse_statfs_out,
+}
+
+impl ToBytes for StatfsOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        self.raw.as_bytes()
+    }
+}
+
+impl StatfsOut {
+    pub const fn new(st: &Statfs) -> Self {
+        Self {
+            raw: fuse_statfs_out {
+                st: fuse_kstatfs {
+                    bsize: st.bsize,
+                    frsize: st.frsize,
+                    blocks: st.blocks,
+                    bfree: st.bfree,
+                    bavail: st.bavail,
+                    files: st.files,
+                    ffree: st.ffree,
+                    namelen: st.namelen,
+                    padding: 0,
+                    spare: [0; 6],
+                },
+            },
+        }
+    }
+}
+
+#[derive(IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
+pub struct XattrOut {
+    raw: fuse_getxattr_out,
+}
+
+impl ToBytes for XattrOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        self.raw.as_bytes()
+    }
+}
+
+impl XattrOut {
+    pub const fn new(size: u32) -> Self {
+        Self {
+            raw: fuse_getxattr_out { size, padding: 0 },
+        }
+    }
+}
+
+#[derive(IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
+pub struct LkOut {
+    raw: fuse_lk_out,
+}
+
+impl ToBytes for LkOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        self.raw.as_bytes()
+    }
+}
+
+impl LkOut {
+    pub const fn new(lk: &FileLock) -> Self {
+        Self {
+            raw: fuse_lk_out {
+                lk: fuse_file_lock {
+                    typ: lk.typ,
+                    start: lk.start,
+                    end: lk.end,
+                    pid: lk.pid.as_raw_pid() as u32,
+                },
+            },
+        }
+    }
+}
+
+#[derive(IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
+pub struct BmapOut {
+    raw: fuse_bmap_out,
+}
+
+impl ToBytes for BmapOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        self.raw.as_bytes()
+    }
+}
+
+impl BmapOut {
+    pub const fn new(block: u64) -> Self {
+        Self {
+            raw: fuse_bmap_out { block },
+        }
+    }
+}
+
+#[derive(IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
+pub struct PollOut {
+    raw: fuse_poll_out,
+}
+
+impl ToBytes for PollOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        self.raw.as_bytes()
+    }
+}
+
+impl PollOut {
+    pub const fn new(revents: PollEvents) -> Self {
+        Self {
+            raw: fuse_poll_out {
+                revents: revents.bits(),
+                padding: 0,
+            },
+        }
+    }
+}
+
+#[repr(transparent)]
+pub struct LseekOut {
+    raw: fuse_lseek_out,
+}
+
+impl ToBytes for LseekOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        self.raw.as_bytes()
+    }
+}
+
+impl LseekOut {
+    pub const fn new(offset: u64) -> Self {
+        Self {
+            raw: fuse_lseek_out { offset },
+        }
+    }
+}
+
+pub struct ReaddirOut {
     buf: Vec<u8>,
 }
 
-impl<T> ReplyDir<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T, capacity: usize) -> Self {
+impl ToBytes for ReaddirOut {
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        &self.buf
+    }
+}
+
+impl ReaddirOut {
+    pub fn new(capacity: usize) -> Self {
         Self {
-            sender,
             buf: Vec::with_capacity(capacity),
         }
     }
@@ -248,278 +359,9 @@ where
 
         false
     }
-
-    pub fn send(self) -> Result<T::Ok, T::Error> {
-        self.sender.send(&self.buf[..])
-    }
 }
 
 #[inline]
 const fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
-}
-
-pub struct ReplyOpen<T> {
-    sender: T,
-    out: fuse_open_out,
-}
-
-impl<T> ReplyOpen<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self {
-            sender,
-            out: fuse_open_out::new_zeroed(),
-        }
-    }
-
-    /// Set the handle of opened file.
-    pub fn fh(&mut self, fh: FileID) {
-        self.out.fh = fh.into_raw();
-    }
-
-    /// Specify the flags for the opened file.
-    pub fn flags(&mut self, flags: OpenOutFlags) {
-        self.out.open_flags = flags.bits();
-    }
-
-    pub fn send(self) -> Result<T::Ok, T::Error> {
-        self.sender.send(self.out.as_bytes())
-    }
-}
-
-pub struct ReplyCreate<T> {
-    sender: T,
-    entry_out: fuse_entry_out,
-    open_out: fuse_open_out,
-}
-
-impl<T> ReplyCreate<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self {
-            sender,
-            entry_out: fuse_entry_out::new_zeroed(),
-            open_out: fuse_open_out::new_zeroed(),
-        }
-    }
-
-    /// Set the inode number of this entry.
-    ///
-    /// See [`ReplyEntry::ino`] for details.
-    #[inline]
-    pub fn ino(&mut self, ino: NodeID) {
-        self.entry_out.nodeid = ino.into_raw();
-    }
-
-    /// Fill attribute values about this entry.
-    #[inline]
-    pub fn attr(&mut self, attr: &FileAttr) {
-        fill_fuse_attr(&mut self.entry_out.attr, attr);
-    }
-
-    /// Set the generation of this entry.
-    ///
-    /// See [`ReplyEntry::generation`] for details.
-    pub fn generation(&mut self, generation: u64) {
-        self.entry_out.generation = generation;
-    }
-
-    /// Set the validity timeout for inode attributes.
-    ///
-    /// See [`ReplyEntry::ttl_attr`] for details.
-    pub fn ttl_attr(&mut self, ttl: Duration) {
-        self.entry_out.attr_valid = ttl.as_secs();
-        self.entry_out.attr_valid_nsec = ttl.subsec_nanos();
-    }
-
-    /// Set the validity timeout for the name.
-    ///
-    /// See [`ReplyEntry::ttl_entry`] for details.
-    pub fn ttl_entry(&mut self, ttl: Duration) {
-        self.entry_out.entry_valid = ttl.as_secs();
-        self.entry_out.entry_valid_nsec = ttl.subsec_nanos();
-    }
-
-    /// Set the handle of opened file.
-    pub fn fh(&mut self, fh: FileID) {
-        self.open_out.fh = fh.into_raw();
-    }
-
-    /// Specify the flags for the opened file.
-    pub fn flags(&mut self, flags: OpenOutFlags) {
-        self.open_out.open_flags = flags.bits();
-    }
-
-    pub fn send(self) -> Result<T::Ok, T::Error> {
-        self.sender
-            .send((self.entry_out.as_bytes(), self.open_out.as_bytes()))
-    }
-}
-
-bitflags! {
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct OpenOutFlags: u32 {
-        /// Indicates that the direct I/O is used on this file.
-        const DIRECT_IO = FOPEN_DIRECT_IO;
-
-        /// Indicates that the currently cached file data in the kernel
-        /// need not be invalidated.
-        const KEEP_CACHE = FOPEN_KEEP_CACHE;
-
-        /// Indicates that the opened file is not seekable.
-        const NONSEEKABLE = FOPEN_NONSEEKABLE;
-
-        /// Enable caching of entries returned by `readdir`.
-        ///
-        /// This flag is meaningful only for `opendir` operations.
-        const CACHE_DIR = FOPEN_CACHE_DIR;
-    }
-}
-
-pub struct ReplyStatfs<T> {
-    sender: T,
-}
-
-impl<T> ReplyStatfs<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self { sender }
-    }
-
-    pub fn send(self, st: &Statfs) -> Result<T::Ok, T::Error> {
-        self.sender.send(
-            fuse_statfs_out {
-                st: fuse_kstatfs {
-                    bsize: st.bsize,
-                    frsize: st.frsize,
-                    blocks: st.blocks,
-                    bfree: st.bfree,
-                    bavail: st.bavail,
-                    files: st.files,
-                    ffree: st.ffree,
-                    namelen: st.namelen,
-                    padding: 0,
-                    spare: [0; 6],
-                },
-            }
-            .as_bytes(),
-        )
-    }
-}
-
-pub struct ReplyXattr<T> {
-    sender: T,
-}
-
-impl<T> ReplyXattr<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self { sender }
-    }
-
-    pub fn send_size(self, size: u32) -> Result<T::Ok, T::Error> {
-        self.sender
-            .send(fuse_getxattr_out { size, padding: 0 }.as_bytes())
-    }
-
-    pub fn send_value<B>(self, data: B) -> Result<T::Ok, T::Error>
-    where
-        B: Bytes,
-    {
-        self.sender.send(data)
-    }
-}
-
-pub struct ReplyLock<T> {
-    sender: T,
-}
-
-impl<T> ReplyLock<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self { sender }
-    }
-
-    pub fn send(self, lk: &FileLock) -> Result<T::Ok, T::Error> {
-        self.sender.send(
-            fuse_lk_out {
-                lk: fuse_file_lock {
-                    typ: lk.typ,
-                    start: lk.start,
-                    end: lk.end,
-                    pid: lk.pid.as_raw_pid() as u32,
-                },
-            }
-            .as_bytes(),
-        )
-    }
-}
-
-pub struct ReplyBmap<T> {
-    sender: T,
-}
-
-impl<T> ReplyBmap<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self { sender }
-    }
-
-    pub fn send(self, block: u64) -> Result<T::Ok, T::Error> {
-        self.sender.send(fuse_bmap_out { block }.as_bytes())
-    }
-}
-
-pub struct ReplyPoll<T> {
-    sender: T,
-}
-
-impl<T> ReplyPoll<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self { sender }
-    }
-
-    pub fn send(self, revents: PollEvents) -> Result<T::Ok, T::Error> {
-        self.sender.send(
-            fuse_poll_out {
-                revents: revents.bits(),
-                padding: 0,
-            }
-            .as_bytes(),
-        )
-    }
-}
-
-pub struct ReplyLseek<T> {
-    sender: T,
-}
-
-impl<T> ReplyLseek<T>
-where
-    T: ReplySender,
-{
-    pub(crate) fn new(sender: T) -> Self {
-        Self { sender }
-    }
-
-    pub fn send(self, offset: u64) -> Result<T::Ok, T::Error> {
-        self.sender.send(fuse_lseek_out { offset }.as_bytes())
-    }
 }

@@ -1,9 +1,8 @@
 use crate::{
-    bytes::Bytes,
+    bytes::{Bytes, ToBytes},
     conn::Connection,
     mount::{Mount, MountOptions},
     op::{self, Forget, Operation},
-    reply,
     request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
     session::{KernelConfig, KernelFlags, Session},
     types::{NodeID, NotifyID, PollWakeupID},
@@ -57,7 +56,7 @@ impl From<io::Error> for Error {
     }
 }
 
-pub type Result<T = _priv::Replied, E = Error> = std::result::Result<T, E>;
+pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
 macro_rules! define_ops {
     ($( $name:ident: { $Arg:ident, $Reply:ident } ),*$(,)*) => {$(
@@ -66,7 +65,6 @@ macro_rules! define_ops {
             self: &Arc<Self>,
             req: Request<'_>,
             op: op::$Arg<'_>,
-            reply: $Reply<'_>,
         ) -> impl Future<Output = Result> + Send {
             async {
                 Err(Error::Code(Errno::NOSYS))
@@ -120,7 +118,6 @@ pub trait Filesystem {
         req: Request<'_>,
         op: op::Write<'_>,
         data: impl io::Read + Send + Unpin,
-        reply: ReplyWrite<'_>,
     ) -> impl Future<Output = Result> + Send {
         async { Err(Error::Code(Errno::NOSYS)) }
     }
@@ -300,6 +297,7 @@ impl Spawner<'_> {
 /// The context for a single FUSE request used by the filesystem.
 pub struct Request<'req> {
     global: &'req Arc<Global>,
+    conn: &'req Connection,
     header: &'req RequestHeader,
     join_set: &'req mut JoinSet<io::Result<()>>,
 }
@@ -326,51 +324,22 @@ impl Request<'_> {
             join_set: self.join_set,
         }
     }
-}
 
-pub struct ReplySender<'req> {
-    session: &'req Session,
-    conn: &'req Connection,
-    header: &'req RequestHeader,
-}
-
-mod _priv {
-    use super::*;
-
-    pub struct Replied {
-        _priv: (),
-    }
-
-    impl reply::ReplySender for ReplySender<'_> {
-        type Ok = Replied;
-        type Error = Error;
-
-        fn send<B>(self, arg: B) -> Result
-        where
-            B: Bytes,
-        {
-            self.session
-                .send_reply(self.conn, self.header.unique(), None, arg)
-                .map_err(Error::Fatal)?;
-            Ok(Replied { _priv: () })
-        }
+    pub fn reply<B>(self, arg: B) -> Result
+    where
+        B: ToBytes,
+    {
+        self.global
+            .session
+            .send_reply(self.conn, self.header.unique(), None, arg)
+            .map_err(Error::Fatal)?;
+        Ok(Replied { _priv: () })
     }
 }
 
-pub type ReplyUnit<'req> = reply::ReplyUnit<ReplySender<'req>>;
-pub type ReplyEntry<'req> = reply::ReplyEntry<ReplySender<'req>>;
-pub type ReplyAttr<'req> = reply::ReplyAttr<ReplySender<'req>>;
-pub type ReplyOpen<'req> = reply::ReplyOpen<ReplySender<'req>>;
-pub type ReplyCreate<'req> = reply::ReplyCreate<ReplySender<'req>>;
-pub type ReplyData<'req> = reply::ReplyData<ReplySender<'req>>;
-pub type ReplyDir<'req> = reply::ReplyDir<ReplySender<'req>>;
-pub type ReplyWrite<'req> = reply::ReplyWrite<ReplySender<'req>>;
-pub type ReplyStatfs<'req> = reply::ReplyStatfs<ReplySender<'req>>;
-pub type ReplyXattr<'req> = reply::ReplyXattr<ReplySender<'req>>;
-pub type ReplyBmap<'req> = reply::ReplyBmap<ReplySender<'req>>;
-pub type ReplyLock<'req> = reply::ReplyLock<ReplySender<'req>>;
-pub type ReplyPoll<'req> = reply::ReplyPoll<ReplySender<'req>>;
-pub type ReplyLseek<'req> = reply::ReplyLseek<ReplySender<'req>>;
+pub struct Replied {
+    _priv: (),
+}
 
 pub struct Daemon {
     global: Arc<Global>,
@@ -512,58 +481,48 @@ impl Worker {
 
         let req = Request {
             global: &self.global,
+            conn: self.conn.get_ref(),
             header,
             join_set: &mut self.join_set,
         };
 
-        let sender = ReplySender {
-            session: &self.global.session,
-            conn: self.conn.get_ref(),
-            header,
-        };
-
         let result = match op {
-            Operation::Lookup(op) => fs.lookup(req, op, ReplyEntry::new(sender)).await,
-            Operation::Getattr(op) => fs.getattr(req, op, ReplyAttr::new(sender)).await,
-            Operation::Setattr(op) => fs.setattr(req, op, ReplyAttr::new(sender)).await,
-            Operation::Readlink(op) => fs.readlink(req, op, ReplyData::new(sender)).await,
-            Operation::Symlink(op) => fs.symlink(req, op, ReplyEntry::new(sender)).await,
-            Operation::Mknod(op) => fs.mknod(req, op, ReplyEntry::new(sender)).await,
-            Operation::Mkdir(op) => fs.mkdir(req, op, ReplyEntry::new(sender)).await,
-            Operation::Unlink(op) => fs.unlink(req, op, ReplyUnit::new(sender)).await,
-            Operation::Rmdir(op) => fs.rmdir(req, op, ReplyUnit::new(sender)).await,
-            Operation::Rename(op) => fs.rename(req, op, ReplyUnit::new(sender)).await,
-            Operation::Link(op) => fs.link(req, op, ReplyEntry::new(sender)).await,
-            Operation::Open(op) => fs.open(req, op, ReplyOpen::new(sender)).await,
-            Operation::Read(op) => fs.read(req, op, ReplyData::new(sender)).await,
-            Operation::Release(op) => fs.release(req, op, ReplyUnit::new(sender)).await,
-            Operation::Statfs(op) => fs.statfs(req, op, ReplyStatfs::new(sender)).await,
-            Operation::Fsync(op) => fs.fsync(req, op, ReplyUnit::new(sender)).await,
-            Operation::Setxattr(op) => fs.setxattr(req, op, ReplyUnit::new(sender)).await,
-            Operation::Getxattr(op) => fs.getxattr(req, op, ReplyXattr::new(sender)).await,
-            Operation::Listxattr(op) => fs.listxattr(req, op, ReplyXattr::new(sender)).await,
-            Operation::Removexattr(op) => fs.removexattr(req, op, ReplyUnit::new(sender)).await,
-            Operation::Flush(op) => fs.flush(req, op, ReplyUnit::new(sender)).await,
-            Operation::Opendir(op) => fs.opendir(req, op, ReplyOpen::new(sender)).await,
-            Operation::Readdir(op) => {
-                let capacity = op.size as usize;
-                fs.readdir(req, op, ReplyDir::new(sender, capacity)).await
-            }
-            Operation::Releasedir(op) => fs.releasedir(req, op, ReplyUnit::new(sender)).await,
-            Operation::Fsyncdir(op) => fs.fsyncdir(req, op, ReplyUnit::new(sender)).await,
-            Operation::Getlk(op) => fs.getlk(req, op, ReplyLock::new(sender)).await,
-            Operation::Setlk(op) => fs.setlk(req, op, ReplyUnit::new(sender)).await,
-            Operation::Flock(op) => fs.flock(req, op, ReplyUnit::new(sender)).await,
-            Operation::Access(op) => fs.access(req, op, ReplyUnit::new(sender)).await,
-            Operation::Create(op) => fs.create(req, op, ReplyCreate::new(sender)).await,
-            Operation::Bmap(op) => fs.bmap(req, op, ReplyBmap::new(sender)).await,
-            Operation::Fallocate(op) => fs.fallocate(req, op, ReplyUnit::new(sender)).await,
-            Operation::CopyFileRange(op) => {
-                fs.copy_file_range(req, op, ReplyWrite::new(sender)).await
-            }
-            Operation::Poll(op) => fs.poll(req, op, ReplyPoll::new(sender)).await,
-            Operation::Lseek(op) => fs.lseek(req, op, ReplyLseek::new(sender)).await,
-            Operation::Write(op) => fs.write(req, op, data, ReplyWrite::new(sender)).await,
+            Operation::Lookup(op) => fs.lookup(req, op).await,
+            Operation::Getattr(op) => fs.getattr(req, op).await,
+            Operation::Setattr(op) => fs.setattr(req, op).await,
+            Operation::Readlink(op) => fs.readlink(req, op).await,
+            Operation::Symlink(op) => fs.symlink(req, op).await,
+            Operation::Mknod(op) => fs.mknod(req, op).await,
+            Operation::Mkdir(op) => fs.mkdir(req, op).await,
+            Operation::Unlink(op) => fs.unlink(req, op).await,
+            Operation::Rmdir(op) => fs.rmdir(req, op).await,
+            Operation::Rename(op) => fs.rename(req, op).await,
+            Operation::Link(op) => fs.link(req, op).await,
+            Operation::Open(op) => fs.open(req, op).await,
+            Operation::Read(op) => fs.read(req, op).await,
+            Operation::Release(op) => fs.release(req, op).await,
+            Operation::Statfs(op) => fs.statfs(req, op).await,
+            Operation::Fsync(op) => fs.fsync(req, op).await,
+            Operation::Setxattr(op) => fs.setxattr(req, op).await,
+            Operation::Getxattr(op) => fs.getxattr(req, op).await,
+            Operation::Listxattr(op) => fs.listxattr(req, op).await,
+            Operation::Removexattr(op) => fs.removexattr(req, op).await,
+            Operation::Flush(op) => fs.flush(req, op).await,
+            Operation::Opendir(op) => fs.opendir(req, op).await,
+            Operation::Readdir(op) => fs.readdir(req, op).await,
+            Operation::Releasedir(op) => fs.releasedir(req, op).await,
+            Operation::Fsyncdir(op) => fs.fsyncdir(req, op).await,
+            Operation::Getlk(op) => fs.getlk(req, op).await,
+            Operation::Setlk(op) => fs.setlk(req, op).await,
+            Operation::Flock(op) => fs.flock(req, op).await,
+            Operation::Access(op) => fs.access(req, op).await,
+            Operation::Create(op) => fs.create(req, op).await,
+            Operation::Bmap(op) => fs.bmap(req, op).await,
+            Operation::Fallocate(op) => fs.fallocate(req, op).await,
+            Operation::CopyFileRange(op) => fs.copy_file_range(req, op).await,
+            Operation::Poll(op) => fs.poll(req, op).await,
+            Operation::Lseek(op) => fs.lseek(req, op).await,
+            Operation::Write(op) => fs.write(req, op, data).await,
             Operation::NotifyReply(op) => {
                 fs.notify_reply(op, data).await?;
                 return Ok(());

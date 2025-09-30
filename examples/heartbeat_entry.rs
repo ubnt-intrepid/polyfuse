@@ -11,13 +11,14 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op,
+    reply::{AttrOut, EntryOut, ReaddirOut},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
 use rustix::io::Errno;
-use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
+use std::{borrow::Cow, io, mem, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 const FILE_INO: NodeID = NodeID::from_raw(2);
@@ -139,12 +140,7 @@ impl Heartbeat {
 }
 
 impl Filesystem for Heartbeat {
-    async fn lookup(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        arg: op::Lookup<'_>,
-        mut reply: fs::ReplyEntry<'_>,
-    ) -> fs::Result {
+    async fn lookup(self: &Arc<Self>, req: fs::Request<'_>, arg: op::Lookup<'_>) -> fs::Result {
         if arg.parent != NodeID::ROOT {
             Err(Errno::NOTDIR)?;
         }
@@ -152,11 +148,13 @@ impl Filesystem for Heartbeat {
         let mut current = self.current.lock().await;
 
         if arg.name.as_bytes() == current.filename.as_bytes() {
-            reply.ino(self.file_attr.ino);
-            reply.attr(&self.file_attr);
-            reply.ttl_entry(self.ttl);
-            reply.ttl_attr(self.ttl);
-            let res = reply.send()?;
+            let res = req.reply(EntryOut {
+                ino: self.file_attr.ino,
+                attr: Cow::Borrowed(&self.file_attr),
+                entry_valid: Some(self.ttl),
+                attr_valid: Some(self.ttl),
+                generation: 0,
+            })?;
 
             current.nlookup += 1;
 
@@ -175,52 +173,39 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    async fn getattr(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        arg: op::Getattr<'_>,
-        mut reply: fs::ReplyAttr<'_>,
-    ) -> fs::Result {
+    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, arg: op::Getattr<'_>) -> fs::Result {
         let attr = match arg.ino {
             NodeID::ROOT => &self.root_attr,
             FILE_INO => &self.file_attr,
             _ => Err(Errno::NOENT)?,
         };
 
-        reply.attr(attr);
-        reply.ttl(self.ttl);
-        reply.send()
+        req.reply(AttrOut {
+            attr: Cow::Borrowed(attr),
+            valid: Some(self.ttl),
+        })
     }
 
-    async fn read(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        arg: op::Read<'_>,
-        reply: fs::ReplyData<'_>,
-    ) -> fs::Result {
-        match arg.ino {
+    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
+        match op.ino {
             NodeID::ROOT => Err(Errno::ISDIR)?,
-            FILE_INO => reply.send(()),
+            FILE_INO => req.reply(()),
             _ => Err(Errno::NOENT)?,
         }
     }
 
-    async fn readdir(
-        self: &Arc<Self>,
-        _: fs::Request<'_>,
-        arg: op::Readdir<'_>,
-        mut reply: fs::ReplyDir<'_>,
-    ) -> fs::Result {
-        if arg.ino != NodeID::ROOT {
+    async fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
+        if op.ino != NodeID::ROOT {
             Err(Errno::NOTDIR)?;
         }
-        if arg.offset > 0 {
-            return reply.send();
+        if op.offset > 0 {
+            return req.reply(());
         }
 
+        let mut buf = ReaddirOut::new(op.size as usize);
         let current = self.current.lock().await;
-        reply.push_entry(current.filename.as_ref(), FILE_INO, None, 1);
+        buf.push_entry(current.filename.as_ref(), FILE_INO, None, 1);
 
-        reply.send()
+        req.reply(buf)
     }
 }

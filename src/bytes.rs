@@ -45,6 +45,20 @@ pub trait FillBytes<'a> {
     fn put(&mut self, chunk: &'a [u8]);
 }
 
+pub trait ToBytes {
+    fn to_bytes(&self) -> impl Bytes + '_;
+}
+
+impl<T> ToBytes for T
+where
+    T: Bytes,
+{
+    #[inline]
+    fn to_bytes(&self) -> impl Bytes + '_ {
+        self
+    }
+}
+
 // ==== pointer types ====
 
 macro_rules! impl_reply_body_for_pointers {
