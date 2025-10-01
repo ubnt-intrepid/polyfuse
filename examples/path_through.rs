@@ -81,11 +81,8 @@ impl INodeTable {
     }
 
     fn vacant_entry(&mut self) -> VacantEntry<'_> {
-        let ino = self.next_ino;
-        VacantEntry {
-            table: self,
-            ino: NodeID::from_raw(ino),
-        }
+        let ino = NodeID::from_raw(self.next_ino).unwrap();
+        VacantEntry { table: self, ino }
     }
 
     fn get(&self, ino: NodeID) -> Option<&INode> {
@@ -168,7 +165,7 @@ impl Filesystem for PathThrough {
         };
 
         req.reply(EntryOut {
-            ino,
+            ino: Some(ino),
             attr: Cow::Owned(attr),
             generation: 0,
             attr_valid: None,
@@ -309,14 +306,14 @@ impl Filesystem for PathThrough {
 
             let full = buf.push_entry(
                 &entry.file_name(),
-                NodeID::from_raw(metadata.ino()),
+                NodeID::from_raw(metadata.ino()).unwrap(),
                 typ,
                 dir.offset,
             );
             if full {
                 dir.last_entry.replace(DirEntry {
                     name: entry.file_name(),
-                    ino: NodeID::from_raw(metadata.ino()),
+                    ino: NodeID::from_raw(metadata.ino()).unwrap(),
                     typ,
                 });
                 if !at_least_one_entry {

@@ -21,7 +21,10 @@ use rustix::io::Errno;
 use std::{borrow::Cow, io, mem, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
-const FILE_INO: NodeID = NodeID::from_raw(2);
+const FILE_INO: NodeID = match NodeID::from_raw(2) {
+    Some(ino) => ino,
+    None => panic!("unreachable"),
+};
 
 const DEFAULT_TTL: Duration = Duration::from_secs(0);
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
@@ -149,7 +152,7 @@ impl Filesystem for Heartbeat {
 
         if arg.name.as_bytes() == current.filename.as_bytes() {
             let res = req.reply(EntryOut {
-                ino: self.file_attr.ino,
+                ino: Some(self.file_attr.ino),
                 attr: Cow::Borrowed(&self.file_attr),
                 entry_valid: Some(self.ttl),
                 attr_valid: Some(self.ttl),
