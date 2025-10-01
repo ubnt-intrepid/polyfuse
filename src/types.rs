@@ -347,7 +347,6 @@ bitflags! {
 
 /// Attributes about a file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct FileAttr {
     pub ino: NodeID,
     pub size: u64,
@@ -458,7 +457,6 @@ impl TryFrom<&Metadata> for FileAttr {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct Statfs {
     pub bsize: u32,
     pub frsize: u32,
@@ -496,7 +494,6 @@ impl TryFrom<&libc::statvfs> for Statfs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct FileLock {
     pub typ: u32,
     pub start: u64,

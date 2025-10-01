@@ -82,18 +82,22 @@ struct CurrentFile {
 
 impl Heartbeat {
     fn new(ttl: Duration, update_interval: Duration, no_notify: bool) -> Self {
-        let mut root_attr = FileAttr::new();
-        root_attr.ino = NodeID::ROOT;
-        root_attr.mode = FileMode::new(
-            FileType::Directory,
-            FilePermissions::READ | FilePermissions::EXEC,
-        );
-        root_attr.nlink = 2; // "." and ".."
+        let root_attr = FileAttr {
+            ino: NodeID::ROOT,
+            mode: FileMode::new(
+                FileType::Directory,
+                FilePermissions::READ | FilePermissions::EXEC,
+            ),
+            nlink: 2, // "." and ".."
+            ..FileAttr::new()
+        };
 
-        let mut file_attr = FileAttr::new();
-        file_attr.ino = FILE_INO;
-        file_attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-        file_attr.nlink = 1;
+        let file_attr = FileAttr {
+            ino: FILE_INO,
+            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+            nlink: 1,
+            ..FileAttr::new()
+        };
 
         Self {
             root_attr,

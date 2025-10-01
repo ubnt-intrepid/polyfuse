@@ -200,15 +200,14 @@ impl MemFS {
     fn new() -> Self {
         let inodes = INodeTable::new();
         inodes.vacant_entry().unwrap().insert(INode {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = NodeID::ROOT;
-                attr.nlink = 2;
-                attr.mode = FileMode::new(
+            attr: FileAttr {
+                ino: NodeID::ROOT,
+                nlink: 2,
+                mode: FileMode::new(
                     FileType::Directory,
                     FilePermissions::READ | FilePermissions::EXEC | FilePermissions::WRITE_USER,
-                );
-                attr
+                ),
+                ..FileAttr::new()
             },
             xattrs: HashMap::new(),
             refcount: u64::max_value() / 2,
@@ -429,12 +428,11 @@ impl Filesystem for MemFS {
         }
 
         let out = self.make_node(op.parent, op.name, |entry| INode {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = *entry.key();
-                attr.nlink = 1;
-                attr.mode = op.mode;
-                attr
+            attr: FileAttr {
+                ino: *entry.key(),
+                nlink: 1,
+                mode: op.mode,
+                ..FileAttr::new()
             },
             xattrs: HashMap::new(),
             refcount: 1,
@@ -447,12 +445,11 @@ impl Filesystem for MemFS {
 
     async fn mkdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mkdir<'_>) -> fs::Result {
         let out = self.make_node(op.parent, op.name, |entry| INode {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = *entry.key();
-                attr.nlink = 2;
-                attr.mode = FileMode::new(FileType::Directory, op.permissions);
-                attr
+            attr: FileAttr {
+                ino: *entry.key(),
+                nlink: 2,
+                mode: FileMode::new(FileType::Directory, op.permissions),
+                ..FileAttr::new()
             },
             xattrs: HashMap::new(),
             refcount: 1,
@@ -468,15 +465,14 @@ impl Filesystem for MemFS {
 
     async fn symlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Symlink<'_>) -> fs::Result {
         let out = self.make_node(op.parent, op.name, |entry| INode {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = *entry.key();
-                attr.nlink = 1;
-                attr.mode = FileMode::new(
+            attr: FileAttr {
+                ino: *entry.key(),
+                nlink: 1,
+                mode: FileMode::new(
                     FileType::SymbolicLink,
                     FilePermissions::READ | FilePermissions::WRITE | FilePermissions::EXEC,
-                );
-                attr
+                ),
+                ..FileAttr::new()
             },
             xattrs: HashMap::new(),
             refcount: 1,

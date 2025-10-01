@@ -68,15 +68,14 @@ impl PollFS {
 impl Filesystem for PollFS {
     async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, _: op::Getattr<'_>) -> fs::Result {
         req.reply(AttrOut {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = NodeID::ROOT;
-                attr.nlink = 1;
-                attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-                attr.uid = getuid();
-                attr.gid = getgid();
-                Cow::Owned(attr)
-            },
+            attr: Cow::Owned(FileAttr {
+                ino: NodeID::ROOT,
+                nlink: 1,
+                mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+                uid: getuid(),
+                gid: getgid(),
+                ..FileAttr::new()
+            }),
             valid: Some(Duration::from_secs(u64::MAX / 2)),
         })
     }

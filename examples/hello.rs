@@ -78,27 +78,29 @@ impl Hello {
     }
 
     fn root_attr(&self) -> FileAttr {
-        let mut attr = FileAttr::new();
-        attr.ino = NodeID::ROOT;
-        attr.mode = FileMode::new(
-            FileType::Directory,
-            FilePermissions::READ | FilePermissions::EXEC,
-        );
-        attr.nlink = 2; // ".", ".."
-        attr.uid = self.uid;
-        attr.gid = self.gid;
-        attr
+        FileAttr {
+            ino: NodeID::ROOT,
+            mode: FileMode::new(
+                FileType::Directory,
+                FilePermissions::READ | FilePermissions::EXEC,
+            ),
+            nlink: 2, // ".", ".."
+            uid: self.uid,
+            gid: self.gid,
+            ..FileAttr::new()
+        }
     }
 
     fn hello_attr(&self) -> FileAttr {
-        let mut attr = FileAttr::new();
-        attr.ino = HELLO_INO;
-        attr.size = HELLO_CONTENT.len() as u64;
-        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-        attr.nlink = 1;
-        attr.uid = self.uid;
-        attr.gid = self.gid;
-        attr
+        FileAttr {
+            ino: HELLO_INO,
+            size: HELLO_CONTENT.len() as u64,
+            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            ..FileAttr::new()
+        }
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {

@@ -79,10 +79,12 @@ impl Heartbeat {
     fn new(kind: Option<NotifyKind>, update_interval: Duration) -> Self {
         let content = Local::now().to_rfc3339();
 
-        let mut attr = FileAttr::new();
-        attr.ino = NodeID::ROOT;
-        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-        attr.size = content.len() as u64;
+        let attr = FileAttr {
+            ino: NodeID::ROOT,
+            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+            size: content.len() as u64,
+            ..FileAttr::new()
+        };
 
         Self {
             inner: Mutex::new(Inner { content, attr }),
