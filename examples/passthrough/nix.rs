@@ -1,6 +1,7 @@
 //! Linux-specific filesystem operations.
 
 use libc::{AT_EMPTY_PATH, AT_FDCWD, ENAMETOOLONG, O_RDONLY, PATH_MAX};
+use polyfuse::types::NodeID;
 use std::{
     ffi::{CStr, CString, OsStr, OsString},
     io, mem,
@@ -305,7 +306,7 @@ impl ReadDir {
 
 pub struct DirEntry {
     pub name: OsString,
-    pub ino: u64,
+    pub ino: NodeID,
     pub typ: u8,
     pub off: u64,
 }
@@ -335,7 +336,7 @@ impl Iterator for ReadDir {
 
                 let entry = DirEntry {
                     name: name.to_owned(),
-                    ino: raw_entry.d_ino,
+                    ino: NodeID::from_raw(raw_entry.d_ino).expect("invalid nodeid"),
                     typ: raw_entry.d_type,
                     off: raw_entry.d_off as u64,
                 };

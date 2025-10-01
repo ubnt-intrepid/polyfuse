@@ -73,8 +73,9 @@ impl INodeTable {
     fn vacant_entry(&self) -> Option<VacantEntry<'_>> {
         // TODO: choose appropriate atomic ordering.
         let ino = self.next_ino.fetch_add(1, Ordering::SeqCst);
+        let ino = NodeID::from_raw(ino).expect("invalid nodeid");
 
-        match self.map.entry(NodeID::from_raw(ino)) {
+        match self.map.entry(ino) {
             dashmap::mapref::entry::Entry::Occupied(..) => None,
             dashmap::mapref::entry::Entry::Vacant(entry) => Some(entry),
         }
@@ -199,15 +200,14 @@ impl MemFS {
     fn new() -> Self {
         let inodes = INodeTable::new();
         inodes.vacant_entry().unwrap().insert(INode {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = NodeID::ROOT;
-                attr.nlink = 2;
-                attr.mode = FileMode::new(
+            attr: FileAttr {
+                ino: NodeID::ROOT,
+                nlink: 2,
+                mode: FileMode::new(
                     FileType::Directory,
                     FilePermissions::READ | FilePermissions::EXEC | FilePermissions::WRITE_USER,
-                );
-                attr
+                ),
+                ..FileAttr::new()
             },
             xattrs: HashMap::new(),
             refcount: u64::max_value() / 2,
@@ -243,7 +243,7 @@ impl MemFS {
         let inode = f(&inode_entry);
 
         let out = EntryOut {
-            ino: *inode_entry.key(),
+            ino: Some(*inode_entry.key()),
             attr: Cow::Owned(inode.attr.clone()),
             entry_valid: Some(self.ttl),
             attr_valid: None,
@@ -294,7 +294,7 @@ impl Filesystem for MemFS {
         child.refcount += 1;
 
         req.reply(EntryOut {
-            ino: child_ino,
+            ino: Some(child_ino),
             generation: 0,
             attr: Cow::Borrowed(&child.attr),
             entry_valid: Some(self.ttl),
@@ -428,12 +428,11 @@ impl Filesystem for MemFS {
         }
 
         let out = self.make_node(op.parent, op.name, |entry| INode {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = *entry.key();
-                attr.nlink = 1;
-                attr.mode = op.mode;
-                attr
+            attr: FileAttr {
+                ino: *entry.key(),
+                nlink: 1,
+                mode: op.mode,
+                ..FileAttr::new()
             },
             xattrs: HashMap::new(),
             refcount: 1,
@@ -446,12 +445,11 @@ impl Filesystem for MemFS {
 
     async fn mkdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mkdir<'_>) -> fs::Result {
         let out = self.make_node(op.parent, op.name, |entry| INode {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = *entry.key();
-                attr.nlink = 2;
-                attr.mode = FileMode::new(FileType::Directory, op.permissions);
-                attr
+            attr: FileAttr {
+                ino: *entry.key(),
+                nlink: 2,
+                mode: FileMode::new(FileType::Directory, op.permissions),
+                ..FileAttr::new()
             },
             xattrs: HashMap::new(),
             refcount: 1,
@@ -467,15 +465,14 @@ impl Filesystem for MemFS {
 
     async fn symlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Symlink<'_>) -> fs::Result {
         let out = self.make_node(op.parent, op.name, |entry| INode {
-            attr: {
-                let mut attr = FileAttr::new();
-                attr.ino = *entry.key();
-                attr.nlink = 1;
-                attr.mode = FileMode::new(
+            attr: FileAttr {
+                ino: *entry.key(),
+                nlink: 1,
+                mode: FileMode::new(
                     FileType::SymbolicLink,
                     FilePermissions::READ | FilePermissions::WRITE | FilePermissions::EXEC,
-                );
-                attr
+                ),
+                ..FileAttr::new()
             },
             xattrs: HashMap::new(),
             refcount: 1,
@@ -504,7 +501,7 @@ impl Filesystem for MemFS {
         }
 
         req.reply(EntryOut {
-            ino: op.ino,
+            ino: Some(op.ino),
             attr: Cow::Borrowed(&inode.attr),
             entry_valid: Some(self.ttl),
             attr_valid: None,

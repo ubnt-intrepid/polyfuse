@@ -36,7 +36,7 @@ pub struct EntryOut<'a> {
     /// Returning a negative entry is also possible with the `ENOENT` error,
     /// but the *zeroed* entries also have the ability to specify the lifetime
     /// of the entry cache by using the `ttl_entry` parameter.
-    pub ino: NodeID,
+    pub ino: Option<NodeID>,
 
     /// The Attribute values about this entry.
     pub attr: Cow<'a, FileAttr>,
@@ -69,7 +69,7 @@ impl ToBytes for EntryOut<'_> {
         let entry_valid = self.entry_valid.unwrap_or_default();
         let attr_valid = self.attr_valid.unwrap_or_default();
         POD(fuse_entry_out {
-            nodeid: self.ino.into_raw(),
+            nodeid: self.ino.map_or(0, |ino| ino.into_raw()),
             generation: self.generation,
             entry_valid: entry_valid.as_secs(),
             attr_valid: attr_valid.as_secs(),

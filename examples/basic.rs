@@ -63,20 +63,20 @@ fn getattr(
         return session.send_reply(conn, header.unique(), Some(Errno::NOENT), ());
     }
 
-    let mut attr = FileAttr::new();
-    attr.ino = NodeID::ROOT;
-    attr.size = CONTENT.len() as u64;
-    attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-    attr.nlink = 1;
-    attr.uid = getuid();
-    attr.gid = getgid();
-
     session.send_reply(
         conn,
         header.unique(),
         None,
         AttrOut {
-            attr: Cow::Owned(attr),
+            attr: Cow::Owned(FileAttr {
+                ino: NodeID::ROOT,
+                size: CONTENT.len() as u64,
+                mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+                nlink: 1,
+                uid: getuid(),
+                gid: getgid(),
+                ..FileAttr::new()
+            }),
             valid: Some(Duration::from_secs(1)),
         },
     )

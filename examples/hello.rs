@@ -18,7 +18,10 @@ use rustix::{
 use std::{borrow::Cow, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
-const HELLO_INO: NodeID = NodeID::from_raw(2);
+const HELLO_INO: NodeID = match NodeID::from_raw(2) {
+    Some(ino) => ino,
+    None => panic!("unreachable"),
+};
 const HELLO_FILENAME: &str = "hello.txt";
 const HELLO_CONTENT: &[u8] = b"Hello, world!\n";
 
@@ -75,27 +78,29 @@ impl Hello {
     }
 
     fn root_attr(&self) -> FileAttr {
-        let mut attr = FileAttr::new();
-        attr.ino = NodeID::ROOT;
-        attr.mode = FileMode::new(
-            FileType::Directory,
-            FilePermissions::READ | FilePermissions::EXEC,
-        );
-        attr.nlink = 2; // ".", ".."
-        attr.uid = self.uid;
-        attr.gid = self.gid;
-        attr
+        FileAttr {
+            ino: NodeID::ROOT,
+            mode: FileMode::new(
+                FileType::Directory,
+                FilePermissions::READ | FilePermissions::EXEC,
+            ),
+            nlink: 2, // ".", ".."
+            uid: self.uid,
+            gid: self.gid,
+            ..FileAttr::new()
+        }
     }
 
     fn hello_attr(&self) -> FileAttr {
-        let mut attr = FileAttr::new();
-        attr.ino = HELLO_INO;
-        attr.size = HELLO_CONTENT.len() as u64;
-        attr.mode = FileMode::new(FileType::Regular, FilePermissions::READ);
-        attr.nlink = 1;
-        attr.uid = self.uid;
-        attr.gid = self.gid;
-        attr
+        FileAttr {
+            ino: HELLO_INO,
+            size: HELLO_CONTENT.len() as u64,
+            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            ..FileAttr::new()
+        }
     }
 
     fn dir_entries(&self) -> impl Iterator<Item = (u64, &DirEntry)> + '_ {
@@ -111,7 +116,7 @@ impl Filesystem for Hello {
         match op.parent {
             NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
                 req.reply(EntryOut {
-                    ino: HELLO_INO,
+                    ino: Some(HELLO_INO),
                     generation: 0,
                     attr: Cow::Owned(self.hello_attr()),
                     attr_valid: Some(TTL),

@@ -6,7 +6,8 @@ use rustix::{
     fs::{Gid, Uid},
     process::Pid,
 };
-use std::{fmt, fs::Metadata, os::unix::prelude::*, time::Duration};
+use std::{fmt, fs::Metadata, num::NonZeroU64, os::unix::prelude::*, time::Duration};
+use zerocopy::transmute;
 
 macro_rules! define_id_type {
     ($(
@@ -51,9 +52,6 @@ define_id_type! {
     /// The notification ID.
     pub type NotifyID = u64;
 
-    /// The inode number.
-    pub type NodeID = u64;
-
     /// The file handle.
     pub type FileID = u64;
 
@@ -61,8 +59,48 @@ define_id_type! {
     pub type PollWakeupID = u64;
 }
 
+/// The identifier of inodes.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct NodeID {
+    raw: NonZeroU64,
+}
+
+impl fmt::Debug for NodeID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for NodeID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ino#{}", self.raw.get())
+    }
+}
+
 impl NodeID {
-    pub const ROOT: Self = Self::from_raw(1);
+    pub const ROOT: Self = unsafe { Self::from_raw_unchecked(1) };
+
+    pub const fn from_raw(value: u64) -> Option<Self> {
+        match NonZeroU64::new(value) {
+            Some(raw) => Some(Self { raw }),
+            None => None,
+        }
+    }
+
+    /// Create a new `NodeID` with the specified inode number.
+    ///
+    /// # Safety
+    /// The specified value is a valid nodeid.
+    pub const unsafe fn from_raw_unchecked(value: u64) -> Self {
+        Self {
+            raw: NonZeroU64::new_unchecked(value),
+        }
+    }
+
+    pub const fn into_raw(self) -> u64 {
+        self.raw.get()
+    }
 }
 
 /// The lock owner ID.
@@ -309,7 +347,6 @@ bitflags! {
 
 /// Attributes about a file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct FileAttr {
     pub ino: NodeID,
     pub size: u64,
@@ -350,8 +387,17 @@ impl FileAttr {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum TryIntoFileAttrError {
+    #[error("invalid nodeid specified")]
+    InvalidNodeID,
+
+    #[error("num conversion: {}", _0)]
+    Num(#[from] std::num::TryFromIntError),
+}
+
 impl TryFrom<libc::stat> for FileAttr {
-    type Error = std::convert::Infallible;
+    type Error = TryIntoFileAttrError;
 
     #[inline]
     fn try_from(st: libc::stat) -> Result<Self, Self::Error> {
@@ -360,28 +406,28 @@ impl TryFrom<libc::stat> for FileAttr {
 }
 
 impl TryFrom<&libc::stat> for FileAttr {
-    type Error = std::convert::Infallible;
+    type Error = TryIntoFileAttrError;
 
     fn try_from(st: &libc::stat) -> Result<Self, Self::Error> {
         Ok(Self {
-            ino: NodeID::from_raw(st.st_ino),
-            size: st.st_size as _,
+            ino: NodeID::from_raw(st.st_ino).ok_or(TryIntoFileAttrError::InvalidNodeID)?,
+            size: transmute!(st.st_size),
             mode: FileMode::from_raw(st.st_mode),
-            nlink: st.st_nlink as _,
+            nlink: st.st_nlink.try_into()?,
             uid: Uid::from_raw(st.st_uid),
             gid: Gid::from_raw(st.st_gid),
             rdev: DeviceID::from_userspace_dev(st.st_rdev),
-            blksize: st.st_blksize as _,
-            blocks: st.st_blocks as _,
-            atime: Duration::new(st.st_atime as _, st.st_atime_nsec as _),
-            mtime: Duration::new(st.st_mtime as _, st.st_mtime_nsec as _),
-            ctime: Duration::new(st.st_ctime as _, st.st_ctime_nsec as _),
+            blksize: st.st_blksize.try_into()?,
+            blocks: transmute!(st.st_blocks),
+            atime: Duration::new(transmute!(st.st_atime), st.st_atime_nsec as _),
+            mtime: Duration::new(transmute!(st.st_mtime), st.st_mtime_nsec as _),
+            ctime: Duration::new(transmute!(st.st_ctime), st.st_ctime_nsec as _),
         })
     }
 }
 
 impl TryFrom<Metadata> for FileAttr {
-    type Error = std::convert::Infallible;
+    type Error = TryIntoFileAttrError;
 
     #[inline]
     fn try_from(metadata: Metadata) -> Result<Self, Self::Error> {
@@ -390,28 +436,27 @@ impl TryFrom<Metadata> for FileAttr {
 }
 
 impl TryFrom<&Metadata> for FileAttr {
-    type Error = std::convert::Infallible;
+    type Error = TryIntoFileAttrError;
 
     fn try_from(m: &Metadata) -> Result<Self, Self::Error> {
         Ok(Self {
-            ino: NodeID::from_raw(m.ino()),
+            ino: NodeID::from_raw(m.ino()).ok_or(TryIntoFileAttrError::InvalidNodeID)?,
             size: m.size(),
             mode: FileMode::from_raw(m.mode()),
-            nlink: m.nlink() as _,
+            nlink: m.nlink().try_into()?,
             uid: Uid::from_raw(m.uid()),
             gid: Gid::from_raw(m.gid()),
             rdev: DeviceID::from_userspace_dev(m.rdev()),
-            blksize: m.blksize() as _,
+            blksize: m.blksize().try_into()?,
             blocks: m.blocks(),
-            atime: Duration::new(m.atime() as _, m.atime_nsec() as _),
-            mtime: Duration::new(m.mtime() as _, m.mtime_nsec() as _),
-            ctime: Duration::new(m.ctime() as _, m.ctime_nsec() as _),
+            atime: Duration::new(transmute!(m.atime()), m.atime_nsec() as _),
+            mtime: Duration::new(transmute!(m.mtime()), m.mtime_nsec() as _),
+            ctime: Duration::new(transmute!(m.ctime()), m.ctime_nsec() as _),
         })
     }
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct Statfs {
     pub bsize: u32,
     pub frsize: u32,
@@ -449,7 +494,6 @@ impl TryFrom<&libc::statvfs> for Statfs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct FileLock {
     pub typ: u32,
     pub start: u64,

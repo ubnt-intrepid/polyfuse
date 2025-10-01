@@ -145,7 +145,7 @@ impl Passthrough {
         }
 
         Ok(EntryOut {
-            ino,
+            ino: Some(ino),
             attr: Cow::Owned(stat.try_into().map_err(|_| Errno::INVAL)?),
             generation: 0,
             entry_valid: self.timeout,
@@ -362,7 +362,7 @@ impl Filesystem for Passthrough {
         let stat = task::block_in_place(|| source.fd.fstatat("", AT_SYMLINK_NOFOLLOW))?;
 
         let replied = req.reply(EntryOut {
-            ino: source.ino,
+            ino: Some(source.ino),
             attr: Cow::Owned(stat.try_into().map_err(|_| Errno::INVAL)?),
             attr_valid: self.timeout,
             entry_valid: self.timeout,
@@ -472,7 +472,7 @@ impl Filesystem for Passthrough {
             let entry = entry?;
             if out.push_entry(
                 &entry.name,
-                NodeID::from_raw(entry.ino),
+                entry.ino,
                 FileType::from_dirent_type(entry.typ),
                 entry.off,
             ) {
@@ -791,11 +791,8 @@ impl INodeTable {
     }
 
     fn vacant_entry(&mut self) -> VacantEntry<'_> {
-        let ino = self.next_ino;
-        VacantEntry {
-            table: self,
-            ino: NodeID::from_raw(ino),
-        }
+        let ino = NodeID::from_raw(self.next_ino).expect("invalid nodeid");
+        VacantEntry { table: self, ino }
     }
 }
 
