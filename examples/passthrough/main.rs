@@ -28,13 +28,11 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, prelude::*},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::{sync::Mutex, task};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = Arguments::from_env();
@@ -62,10 +60,10 @@ async fn main() -> Result<()> {
     config.flags |= KernelFlags::FLOCK_LOCKS;
     config.flags |= KernelFlags::WRITEBACK_CACHE;
 
-    let daemon = Daemon::mount(mountpoint, mountopts, config).await?;
+    let daemon = Daemon::mount(mountpoint, mountopts, config)?;
 
     let fs = Passthrough::new(source, timeout)?;
-    daemon.run(Arc::new(fs), None).await?;
+    daemon.run(Arc::new(fs), None)?;
 
     Ok(())
 }
@@ -105,23 +103,23 @@ impl Passthrough {
         })
     }
 
-    async fn do_lookup(&self, parent: NodeID, name: &OsStr) -> fs::Result<EntryOut> {
-        let mut inodes = self.inodes.lock().await;
+    fn do_lookup(&self, parent: NodeID, name: &OsStr) -> fs::Result<EntryOut> {
+        let mut inodes = self.inodes.lock().unwrap();
         let inodes = &mut *inodes;
 
         let parent = inodes.get(parent).ok_or(Errno::NOENT)?;
-        let parent = parent.lock().await;
+        let parent = parent.lock().unwrap();
 
-        let fd = task::block_in_place(|| parent.fd.openat(name, O_PATH | O_NOFOLLOW))?;
+        let fd = parent.fd.openat(name, O_PATH | O_NOFOLLOW)?;
 
-        let stat = task::block_in_place(|| fd.fstatat("", AT_SYMLINK_NOFOLLOW))?;
+        let stat = fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
         let src_id = (stat.st_ino, stat.st_dev);
         let is_symlink = stat.st_mode & S_IFMT == S_IFLNK;
 
         let ino;
         match inodes.get_src(src_id) {
             Some(inode) => {
-                let mut inode = inode.lock().await;
+                let mut inode = inode.lock().unwrap();
                 ino = inode.ino;
                 inode.refcount += 1;
                 tracing::debug!(
@@ -153,7 +151,7 @@ impl Passthrough {
         })
     }
 
-    async fn make_node(
+    fn make_node(
         &self,
         parent: NodeID,
         name: &OsStr,
@@ -162,9 +160,9 @@ impl Passthrough {
         link: Option<&OsStr>,
     ) -> fs::Result<EntryOut> {
         {
-            let inodes = self.inodes.lock().await;
+            let inodes = self.inodes.lock().unwrap();
             let parent = inodes.get(parent).ok_or(Errno::NOENT)?;
-            let parent = parent.lock().await;
+            let parent = parent.lock().unwrap();
 
             match mode.file_type() {
                 Some(FileType::Directory) => {
@@ -183,23 +181,23 @@ impl Passthrough {
                 }
             }
         }
-        self.do_lookup(parent, name).await
+        self.do_lookup(parent, name)
     }
 }
 
 impl Filesystem for Passthrough {
-    async fn lookup(self: &Arc<Self>, req: fs::Request<'_>, op: op::Lookup<'_>) -> fs::Result {
-        let out = self.do_lookup(op.parent, op.name).await?;
+    fn lookup(self: &Arc<Self>, req: fs::Request<'_>, op: op::Lookup<'_>) -> fs::Result {
+        let out = self.do_lookup(op.parent, op.name)?;
         req.reply(out)
     }
 
-    async fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
-        let mut inodes = self.inodes.lock().await;
+    fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
+        let mut inodes = self.inodes.lock().unwrap();
 
         for forget in forgets {
             if let Entry::Occupied(mut entry) = inodes.map.entry(forget.ino()) {
                 let refcount = {
-                    let mut inode = entry.get_mut().lock().await;
+                    let mut inode = entry.get_mut().lock().unwrap();
                     inode.refcount = inode.refcount.saturating_sub(forget.nlookup());
                     inode.refcount
                 };
@@ -212,11 +210,11 @@ impl Filesystem for Passthrough {
         }
     }
 
-    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
 
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
+        let inode = inode.lock().unwrap();
 
         let stat = inode.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
@@ -227,28 +225,25 @@ impl Filesystem for Passthrough {
     }
 
     #[allow(clippy::cognitive_complexity)]
-    async fn setattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setattr<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn setattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setattr<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
+        let inode = inode.lock().unwrap();
         let fd = &inode.fd;
 
         let mut file = if let Some(fh) = op.fh {
-            Some(self.opened_files.get(fh).await.ok_or(Errno::NOENT)?)
+            Some(self.opened_files.get(fh).ok_or(Errno::NOENT)?)
         } else {
             None
         };
-        let mut file = match &mut file {
-            Some(file) => Some(file.lock().await),
-            None => None,
-        };
+        let mut file = file.as_mut().map(|file| file.lock().unwrap());
 
         // chmod
         if let Some(mode) = op.mode {
             if let Some(file) = file.as_mut() {
-                task::block_in_place(|| nix::fchmod(&**file, mode.into_raw()))?;
+                nix::fchmod(&**file, mode.into_raw())?;
             } else {
-                task::block_in_place(|| nix::chmod(fd.procname(), mode.into_raw()))?;
+                nix::chmod(fd.procname(), mode.into_raw())?;
             }
         }
 
@@ -256,23 +251,21 @@ impl Filesystem for Passthrough {
         match (op.uid, op.gid) {
             (None, None) => (),
             (uid, gid) => {
-                task::block_in_place(|| {
-                    fd.fchownat(
-                        "",
-                        uid.map(|id| id.as_raw()),
-                        gid.map(|id| id.as_raw()),
-                        AT_SYMLINK_NOFOLLOW,
-                    )
-                })?;
+                fd.fchownat(
+                    "",
+                    uid.map(|id| id.as_raw()),
+                    gid.map(|id| id.as_raw()),
+                    AT_SYMLINK_NOFOLLOW,
+                )?;
             }
         }
 
         // truncate
         if let Some(size) = op.size {
             if let Some(file) = file.as_mut() {
-                task::block_in_place(|| nix::ftruncate(&**file, size as libc::off_t))?;
+                nix::ftruncate(&**file, size as libc::off_t)?;
             } else {
-                task::block_in_place(|| nix::truncate(fd.procname(), size as libc::off_t))?;
+                nix::truncate(fd.procname(), size as libc::off_t)?;
             }
         }
 
@@ -302,19 +295,19 @@ impl Filesystem for Passthrough {
                 } else if inode.is_symlink {
                     // According to libfuse/examples/passthrough_hp.cc, it does not work on
                     // the current kernels, but may in the future.
-                    task::block_in_place(|| fd.futimensat("", tv, AT_SYMLINK_NOFOLLOW)) //
+                    fd.futimensat("", tv, AT_SYMLINK_NOFOLLOW) //
                         .map_err(|err| match Errno::from_io_error(&err) {
                             Some(Errno::INVAL) => Errno::PERM.into(),
                             _ => err,
                         })?;
                 } else {
-                    task::block_in_place(|| nix::utimens(fd.procname(), tv))?;
+                    nix::utimens(fd.procname(), tv)?;
                 }
             }
         }
 
         // finally, acquiring the latest metadata from the source filesystem.
-        let stat = task::block_in_place(|| fd.fstatat("", AT_SYMLINK_NOFOLLOW))?;
+        let stat = fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         req.reply(AttrOut {
             attr: Cow::Owned(stat.try_into().map_err(|_| Errno::INVAL)?),
@@ -322,25 +315,27 @@ impl Filesystem for Passthrough {
         })
     }
 
-    async fn readlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readlink<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn readlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readlink<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
-        let link = task::block_in_place(|| inode.fd.readlinkat(""))?;
+        let inode = inode.lock().unwrap();
+        let link = inode.fd.readlinkat("")?;
         req.reply(link)
     }
 
-    async fn link(self: &Arc<Self>, req: fs::Request<'_>, op: op::Link<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn link(self: &Arc<Self>, req: fs::Request<'_>, op: op::Link<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
 
         let source = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let mut source = source.lock().await;
+        let mut source = source.lock().unwrap();
 
         let parent = inodes.get(op.newparent).ok_or(Errno::NOENT)?;
-        let parent = parent.lock().await;
+        let parent = parent.lock().unwrap();
 
         if source.is_symlink {
-            task::block_in_place(|| source.fd.linkat("", &parent.fd, op.newname, 0)) //
+            source
+                .fd
+                .linkat("", &parent.fd, op.newname, 0) //
                 .map_err(|err| match Errno::from_io_error(&err) {
                     Some(Errno::NOENT) | Some(Errno::INVAL) => {
                         // no race-free way to hard-link a symlink.
@@ -349,17 +344,15 @@ impl Filesystem for Passthrough {
                     _ => err,
                 })?;
         } else {
-            task::block_in_place(|| {
-                nix::link(
-                    source.fd.procname(),
-                    &parent.fd,
-                    op.newname,
-                    AT_SYMLINK_FOLLOW,
-                )
-            })?;
+            nix::link(
+                source.fd.procname(),
+                &parent.fd,
+                op.newname,
+                AT_SYMLINK_FOLLOW,
+            )?;
         }
 
-        let stat = task::block_in_place(|| source.fd.fstatat("", AT_SYMLINK_NOFOLLOW))?;
+        let stat = source.fd.fstatat("", AT_SYMLINK_NOFOLLOW)?;
 
         let replied = req.reply(EntryOut {
             ino: Some(source.ino),
@@ -374,83 +367,79 @@ impl Filesystem for Passthrough {
         Ok(replied)
     }
 
-    async fn mknod(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mknod<'_>) -> fs::Result {
-        let out = self
-            .make_node(op.parent, op.name, op.mode, Some(op.rdev), None)
-            .await?;
+    fn mknod(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mknod<'_>) -> fs::Result {
+        let out = self.make_node(op.parent, op.name, op.mode, Some(op.rdev), None)?;
         req.reply(out)
     }
 
-    async fn mkdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mkdir<'_>) -> fs::Result {
-        let out = self
-            .make_node(
-                op.parent,
-                op.name,
-                FileMode::new(FileType::Directory, op.permissions),
-                None,
-                None,
-            )
-            .await?;
+    fn mkdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mkdir<'_>) -> fs::Result {
+        let out = self.make_node(
+            op.parent,
+            op.name,
+            FileMode::new(FileType::Directory, op.permissions),
+            None,
+            None,
+        )?;
         req.reply(out)
     }
 
-    async fn symlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Symlink<'_>) -> fs::Result {
-        let out = self
-            .make_node(
-                op.parent,
-                op.name,
-                FileMode::new(FileType::SymbolicLink, FilePermissions::empty()),
-                None,
-                Some(op.link),
-            )
-            .await?;
+    fn symlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Symlink<'_>) -> fs::Result {
+        let out = self.make_node(
+            op.parent,
+            op.name,
+            FileMode::new(FileType::SymbolicLink, FilePermissions::empty()),
+            None,
+            Some(op.link),
+        )?;
         req.reply(out)
     }
 
-    async fn unlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Unlink<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn unlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Unlink<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let parent = inodes.get(op.parent).ok_or(Errno::NOENT)?;
-        let parent = parent.lock().await;
-        task::block_in_place(|| parent.fd.unlinkat(op.name, 0))?;
+        let parent = parent.lock().unwrap();
+        parent.fd.unlinkat(op.name, 0)?;
         req.reply(())
     }
 
-    async fn rmdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Rmdir<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn rmdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Rmdir<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let parent = inodes.get(op.parent).ok_or(Errno::NOENT)?;
-        let parent = parent.lock().await;
-        task::block_in_place(|| parent.fd.unlinkat(op.name, AT_REMOVEDIR))?;
+        let parent = parent.lock().unwrap();
+        parent.fd.unlinkat(op.name, AT_REMOVEDIR)?;
         req.reply(())
     }
 
-    async fn rename(self: &Arc<Self>, req: fs::Request<'_>, op: op::Rename<'_>) -> fs::Result {
+    fn rename(self: &Arc<Self>, req: fs::Request<'_>, op: op::Rename<'_>) -> fs::Result {
         if !op.flags.is_empty() {
             // rename2 is not supported.
             return Err(Errno::INVAL.into());
         }
 
-        let inodes = self.inodes.lock().await;
+        let inodes = self.inodes.lock().unwrap();
 
         let parent = inodes.get(op.parent).ok_or(Errno::NOENT)?;
         let newparent = inodes.get(op.newparent).ok_or(Errno::NOENT)?;
 
-        let parent = parent.lock().await;
+        let parent = parent.lock().unwrap();
         if op.parent == op.newparent {
-            task::block_in_place(|| parent.fd.renameat(op.name, None::<&FileDesc>, op.newname))?;
+            parent.fd.renameat(op.name, None::<&FileDesc>, op.newname)?;
         } else {
-            let newparent = newparent.lock().await;
-            task::block_in_place(|| parent.fd.renameat(op.name, Some(&newparent.fd), op.newname))?;
+            let newparent = newparent.lock().unwrap();
+            parent
+                .fd
+                .renameat(op.name, Some(&newparent.fd), op.newname)?;
         }
 
         req.reply(())
     }
 
-    async fn opendir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Opendir<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn opendir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Opendir<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
-        let dir = task::block_in_place(|| inode.fd.read_dir())?;
-        let fh = self.opened_dirs.insert(Mutex::new(dir)).await;
+        let inode = inode.lock().unwrap();
+        let dir = inode.fd.read_dir()?;
+        let fh = self.opened_dirs.insert(Mutex::new(dir));
 
         req.reply(OpenOut {
             fh,
@@ -458,17 +447,17 @@ impl Filesystem for Passthrough {
         })
     }
 
-    async fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
+    fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
         if op.mode == op::ReaddirMode::Plus {
             return Err(Errno::NOSYS.into());
         }
 
-        let read_dir = self.opened_dirs.get(op.fh).await.ok_or(Errno::NOENT)?;
-        let read_dir = &mut *read_dir.lock().await;
-        task::block_in_place(|| read_dir.seek(op.offset));
+        let read_dir = self.opened_dirs.get(op.fh).ok_or(Errno::NOENT)?;
+        let read_dir = &mut *read_dir.lock().unwrap();
+        read_dir.seek(op.offset);
 
         let mut out = ReaddirOut::new(op.size as usize);
-        while let Some(entry) = task::block_in_place(|| read_dir.next()) {
+        for entry in read_dir.by_ref() {
             let entry = entry?;
             if out.push_entry(
                 &entry.name,
@@ -483,32 +472,28 @@ impl Filesystem for Passthrough {
         req.reply(out)
     }
 
-    async fn fsyncdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Fsyncdir<'_>) -> fs::Result {
-        let read_dir = self.opened_dirs.get(op.fh).await.ok_or(Errno::NOENT)?;
-        let read_dir = read_dir.lock().await;
+    fn fsyncdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Fsyncdir<'_>) -> fs::Result {
+        let read_dir = self.opened_dirs.get(op.fh).ok_or(Errno::NOENT)?;
+        let read_dir = read_dir.lock().unwrap();
 
         if op.datasync {
-            task::block_in_place(|| read_dir.sync_data())?;
+            read_dir.sync_data()?;
         } else {
-            task::block_in_place(|| read_dir.sync_all())?;
+            read_dir.sync_all()?;
         }
 
         req.reply(())
     }
 
-    async fn releasedir(
-        self: &Arc<Self>,
-        req: fs::Request<'_>,
-        op: op::Releasedir<'_>,
-    ) -> fs::Result {
-        let _dir = self.opened_dirs.remove(op.fh).await;
+    fn releasedir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Releasedir<'_>) -> fs::Result {
+        let _dir = self.opened_dirs.remove(op.fh);
         req.reply(())
     }
 
-    async fn open(self: &Arc<Self>, req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn open(self: &Arc<Self>, req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
+        let inode = inode.lock().unwrap();
 
         let options: OpenOptions = {
             let mut options = op.options;
@@ -516,8 +501,8 @@ impl Filesystem for Passthrough {
             options.into()
         };
 
-        let file = task::block_in_place(|| options.open(inode.fd.procname()))?;
-        let fh = self.opened_files.insert(Mutex::new(file)).await;
+        let file = options.open(inode.fd.procname())?;
+        let fh = self.opened_files.insert(Mutex::new(file));
 
         req.reply(OpenOut {
             fh,
@@ -525,30 +510,30 @@ impl Filesystem for Passthrough {
         })
     }
 
-    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
-        let file = self.opened_files.get(op.fh).await.ok_or(Errno::NOENT)?;
-        let mut file = file.lock().await;
+    fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh).ok_or(Errno::NOENT)?;
+        let mut file = file.lock().unwrap();
         let file = &mut *file;
 
-        task::block_in_place(|| file.seek(io::SeekFrom::Start(op.offset)))?;
+        file.seek(io::SeekFrom::Start(op.offset))?;
 
         let mut buf = Vec::<u8>::with_capacity(op.size as usize);
-        task::block_in_place(|| file.take(op.size as u64).read_to_end(&mut buf))?;
+        file.take(op.size as u64).read_to_end(&mut buf)?;
 
         req.reply(buf)
     }
 
-    async fn write(
+    fn write(
         self: &Arc<Self>,
         req: fs::Request<'_>,
         op: op::Write<'_>,
-        mut data: impl io::Read + Send,
+        mut data: impl io::Read,
     ) -> fs::Result {
-        let file = self.opened_files.get(op.fh).await.ok_or(Errno::NOENT)?;
-        let mut file = file.lock().await;
+        let file = self.opened_files.get(op.fh).ok_or(Errno::NOENT)?;
+        let mut file = file.lock().unwrap();
         let file = &mut *file;
 
-        task::block_in_place(|| file.seek(io::SeekFrom::Start(op.offset)))?;
+        file.seek(io::SeekFrom::Start(op.offset))?;
 
         // At here, the data is transferred via the temporary buffer due to
         // the incompatibility between the I/O abstraction in `futures` and
@@ -562,68 +547,64 @@ impl Filesystem for Passthrough {
 
         let mut buf = &buf[..];
         let mut buf = Read::take(&mut buf, op.size as u64);
-        let written = task::block_in_place(|| std::io::copy(&mut buf, &mut *file))?;
+        let written = std::io::copy(&mut buf, &mut *file)?;
 
         req.reply(WriteOut::new(written as u32))
     }
 
-    async fn flush(self: &Arc<Self>, req: fs::Request<'_>, op: op::Flush<'_>) -> fs::Result {
-        let file = self.opened_files.get(op.fh).await.ok_or(Errno::NOENT)?;
-        let file = file.lock().await;
+    fn flush(self: &Arc<Self>, req: fs::Request<'_>, op: op::Flush<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh).ok_or(Errno::NOENT)?;
+        let file = file.lock().unwrap();
 
-        task::block_in_place(|| file.sync_all())?;
+        file.sync_all()?;
 
         req.reply(())
     }
 
-    async fn fsync(self: &Arc<Self>, req: fs::Request<'_>, op: op::Fsync<'_>) -> fs::Result {
-        let file = self.opened_files.get(op.fh).await.ok_or(Errno::NOENT)?;
-        let file = file.lock().await;
+    fn fsync(self: &Arc<Self>, req: fs::Request<'_>, op: op::Fsync<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh).ok_or(Errno::NOENT)?;
+        let file = file.lock().unwrap();
 
         if op.datasync {
-            task::block_in_place(|| file.sync_data())?;
+            file.sync_data()?;
         } else {
-            task::block_in_place(|| file.sync_all())?;
+            file.sync_all()?;
         }
 
         req.reply(())
     }
 
-    async fn flock(self: &Arc<Self>, req: fs::Request<'_>, op: op::Flock<'_>) -> fs::Result {
-        let file = self.opened_files.get(op.fh).await.ok_or(Errno::NOENT)?;
-        let file = file.lock().await;
+    fn flock(self: &Arc<Self>, req: fs::Request<'_>, op: op::Flock<'_>) -> fs::Result {
+        let file = self.opened_files.get(op.fh).ok_or(Errno::NOENT)?;
+        let file = file.lock().unwrap();
 
-        task::block_in_place(|| nix::flock(&*file, op.op.into_raw()))?;
+        nix::flock(&*file, op.op.into_raw())?;
 
         req.reply(())
     }
 
-    async fn fallocate(
-        self: &Arc<Self>,
-        req: fs::Request<'_>,
-        op: op::Fallocate<'_>,
-    ) -> fs::Result {
+    fn fallocate(self: &Arc<Self>, req: fs::Request<'_>, op: op::Fallocate<'_>) -> fs::Result {
         if !op.mode.is_empty() {
             return Err(Errno::OPNOTSUPP.into());
         }
 
-        let file = self.opened_files.get(op.fh).await.ok_or(Errno::NOENT)?;
-        let file = file.lock().await;
+        let file = self.opened_files.get(op.fh).ok_or(Errno::NOENT)?;
+        let file = file.lock().unwrap();
 
-        task::block_in_place(|| nix::posix_fallocate(&*file, op.offset as i64, op.length as i64))?;
+        nix::posix_fallocate(&*file, op.offset as i64, op.length as i64)?;
 
         req.reply(())
     }
 
-    async fn release(self: &Arc<Self>, req: fs::Request<'_>, op: op::Release<'_>) -> fs::Result {
-        let _file = self.opened_files.remove(op.fh).await;
+    fn release(self: &Arc<Self>, req: fs::Request<'_>, op: op::Release<'_>) -> fs::Result {
+        let _file = self.opened_files.remove(op.fh);
         req.reply(())
     }
 
-    async fn getxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getxattr<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn getxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getxattr<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
+        let inode = inode.lock().unwrap();
 
         if inode.is_symlink {
             // no race-free way to getxattr on symlink.
@@ -632,29 +613,22 @@ impl Filesystem for Passthrough {
 
         match op.size {
             0 => {
-                let size =
-                    task::block_in_place(|| nix::getxattr(inode.fd.procname(), op.name, None))?;
+                let size = nix::getxattr(inode.fd.procname(), op.name, None)?;
                 req.reply(XattrOut::new(size as u32))
             }
             size => {
                 let mut value = vec![0u8; size as usize];
-                let n = task::block_in_place(|| {
-                    nix::getxattr(inode.fd.procname(), op.name, Some(&mut value[..]))
-                })?;
+                let n = nix::getxattr(inode.fd.procname(), op.name, Some(&mut value[..]))?;
                 value.resize(n as usize, 0);
                 req.reply(value)
             }
         }
     }
 
-    async fn listxattr(
-        self: &Arc<Self>,
-        req: fs::Request<'_>,
-        op: op::Listxattr<'_>,
-    ) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn listxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Listxattr<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
+        let inode = inode.lock().unwrap();
 
         if inode.is_symlink {
             // no race-free way to getxattr on symlink.
@@ -663,67 +637,59 @@ impl Filesystem for Passthrough {
 
         match op.size {
             0 => {
-                let size = task::block_in_place(|| nix::listxattr(inode.fd.procname(), None))?;
+                let size = nix::listxattr(inode.fd.procname(), None)?;
                 req.reply(XattrOut::new(size as u32))
             }
             size => {
                 let mut value = vec![0u8; size as usize];
-                let n = task::block_in_place(|| {
-                    nix::listxattr(inode.fd.procname(), Some(&mut value[..]))
-                })?;
+                let n = nix::listxattr(inode.fd.procname(), Some(&mut value[..]))?;
                 value.resize(n as usize, 0);
                 req.reply(value)
             }
         }
     }
 
-    async fn setxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setxattr<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn setxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setxattr<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
+        let inode = inode.lock().unwrap();
 
         if inode.is_symlink {
             // no race-free way to getxattr on symlink.
             return Err(Errno::NOTSUP.into());
         }
 
-        task::block_in_place(|| {
-            nix::setxattr(
-                inode.fd.procname(),
-                op.name,
-                op.value,
-                op.flags.bits() as libc::c_int,
-            )
-        })?;
+        nix::setxattr(
+            inode.fd.procname(),
+            op.name,
+            op.value,
+            op.flags.bits() as libc::c_int,
+        )?;
 
         req.reply(())
     }
 
-    async fn removexattr(
-        self: &Arc<Self>,
-        req: fs::Request<'_>,
-        op: op::Removexattr<'_>,
-    ) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn removexattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Removexattr<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
+        let inode = inode.lock().unwrap();
 
         if inode.is_symlink {
             // no race-free way to getxattr on symlink.
             return Err(Errno::NOTSUP.into());
         }
 
-        task::block_in_place(|| nix::removexattr(inode.fd.procname(), op.name))?;
+        nix::removexattr(inode.fd.procname(), op.name)?;
 
         req.reply(())
     }
 
-    async fn statfs(self: &Arc<Self>, req: fs::Request<'_>, op: op::Statfs<'_>) -> fs::Result {
-        let inodes = self.inodes.lock().await;
+    fn statfs(self: &Arc<Self>, req: fs::Request<'_>, op: op::Statfs<'_>) -> fs::Result {
+        let inodes = self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
-        let inode = inode.lock().await;
+        let inode = inode.lock().unwrap();
 
-        let st = task::block_in_place(|| nix::fstatvfs(&inode.fd))?;
+        let st = nix::fstatvfs(&inode.fd)?;
         let stat = st.try_into().map_err(|_| Errno::INVAL)?;
 
         req.reply(StatfsOut::new(&stat))
@@ -741,16 +707,16 @@ impl<T> Default for HandlePool<T> {
 }
 
 impl<T> HandlePool<T> {
-    async fn get(&self, fh: FileID) -> Option<Arc<T>> {
-        self.0.lock().await.get(fh.into_raw() as usize).cloned()
+    fn get(&self, fh: FileID) -> Option<Arc<T>> {
+        self.0.lock().unwrap().get(fh.into_raw() as usize).cloned()
     }
 
-    async fn remove(&self, fh: FileID) -> Arc<T> {
-        self.0.lock().await.remove(fh.into_raw() as usize)
+    fn remove(&self, fh: FileID) -> Arc<T> {
+        self.0.lock().unwrap().remove(fh.into_raw() as usize)
     }
 
-    async fn insert(&self, entry: T) -> FileID {
-        FileID::from_raw(self.0.lock().await.insert(Arc::new(entry)) as u64)
+    fn insert(&self, entry: T) -> FileID {
+        FileID::from_raw(self.0.lock().unwrap().insert(Arc::new(entry)) as u64)
     }
 }
 

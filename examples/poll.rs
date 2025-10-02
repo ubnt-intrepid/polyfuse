@@ -18,16 +18,14 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, OnceLock,
+        Arc, OnceLock, RwLock,
     },
     time::{Duration, Instant},
 };
-use tokio::sync::RwLock;
 
 const CONTENT: &str = "Hello, world!\n";
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -41,10 +39,8 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
-    daemon
-        .run(Arc::new(PollFS::new(wakeup_interval)), None)
-        .await?;
+    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default())?;
+    daemon.run(Arc::new(PollFS::new(wakeup_interval)), None)?;
 
     Ok(())
 }
@@ -66,7 +62,7 @@ impl PollFS {
 }
 
 impl Filesystem for PollFS {
-    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, _: op::Getattr<'_>) -> fs::Result {
+    fn getattr(self: &Arc<Self>, req: fs::Request<'_>, _: op::Getattr<'_>) -> fs::Result {
         req.reply(AttrOut {
             attr: Cow::Owned(FileAttr {
                 ino: NodeID::ROOT,
@@ -80,7 +76,7 @@ impl Filesystem for PollFS {
         })
     }
 
-    async fn open(self: &Arc<Self>, mut req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
+    fn open(self: &Arc<Self>, mut req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
         if op.options.access_mode() != Some(AccessMode::ReadOnly) {
             Err(Errno::ACCESS)?;
         }
@@ -100,12 +96,12 @@ impl Filesystem for PollFS {
             let notifier = req.notifier();
             let handle = Arc::downgrade(&handle);
             let wakeup_interval = self.wakeup_interval;
-            let _ = req.spawner().spawn(async move {
+            req.spawner().spawn(move || {
                 let span = tracing::debug_span!("reading_task", fh=?fh);
                 let _enter = span.enter();
 
                 tracing::info!("start reading");
-                tokio::time::sleep(wakeup_interval).await;
+                std::thread::sleep(wakeup_interval);
 
                 tracing::info!("reading completed");
 
@@ -122,7 +118,7 @@ impl Filesystem for PollFS {
         }
 
         let fh = FileID::from_raw(fh);
-        self.handles.write().await.insert(fh, handle);
+        self.handles.write().unwrap().insert(fh, handle);
 
         req.reply(OpenOut {
             fh,
@@ -130,9 +126,9 @@ impl Filesystem for PollFS {
         })
     }
 
-    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
+    fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
         let handle = {
-            let handles = self.handles.read().await;
+            let handles = self.handles.read().unwrap();
             handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
         };
         if handle.is_nonblock {
@@ -144,7 +140,7 @@ impl Filesystem for PollFS {
             tracing::info!("wait for the completion of background task");
             let now = Instant::now();
             if handle.deadline > now {
-                tokio::time::sleep(handle.deadline.duration_since(now)).await;
+                std::thread::sleep(handle.deadline.duration_since(now));
             }
         }
 
@@ -157,9 +153,9 @@ impl Filesystem for PollFS {
         req.reply(&content[..std::cmp::min(content.len(), bufsize)])
     }
 
-    async fn poll(self: &Arc<Self>, req: fs::Request<'_>, op: op::Poll<'_>) -> fs::Result {
+    fn poll(self: &Arc<Self>, req: fs::Request<'_>, op: op::Poll<'_>) -> fs::Result {
         let handle = {
-            let handles = self.handles.read().await;
+            let handles = self.handles.read().unwrap();
             handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
         };
         let now = Instant::now();
@@ -176,8 +172,8 @@ impl Filesystem for PollFS {
         req.reply(PollOut::new(revents))
     }
 
-    async fn release(self: &Arc<Self>, req: fs::Request<'_>, op: op::Release<'_>) -> fs::Result {
-        drop(self.handles.write().await.remove(&op.fh));
+    fn release(self: &Arc<Self>, req: fs::Request<'_>, op: op::Release<'_>) -> fs::Result {
+        drop(self.handles.write().unwrap().remove(&op.fh));
         req.reply(())
     }
 }

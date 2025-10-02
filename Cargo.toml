@@ -25,7 +25,6 @@ num_cpus = "1.17"
 polyfuse-kernel = { version = "0.3.0-dev", path = "crates/polyfuse-kernel" }
 rustix = { version = "1", features = [ "fs", "mount", "net", "param", "pipe", "process", "thread" ] }
 thiserror = "2"
-tokio = { version = ">=1.8.4", features = [ "fs", "net", "rt" ] }
 tracing = "0.1"
 zerocopy = "0.8.26"
 
@@ -34,7 +33,6 @@ anyhow = "1"
 chrono = "0.4.41"
 dashmap = "6.1"
 pico-args = "0.5"
-pin-project-lite = "0.2"
 slab = ">=0.4.11"
 tempfile = "3.23.0"
 tokio = { version = ">=1.8.4", features = [ "macros", "fs", "io-util", "net", "rt-multi-thread", "sync", "time" ] }

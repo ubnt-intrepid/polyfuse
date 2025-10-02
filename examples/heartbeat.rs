@@ -19,11 +19,9 @@ use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
 use rustix::io::Errno;
-use std::{borrow::Cow, io, path::PathBuf, sync::Arc, time::Duration};
-use tokio::sync::Mutex;
+use std::{borrow::Cow, io, path::PathBuf, sync::Arc, sync::Mutex, time::Duration};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -38,9 +36,9 @@ async fn main() -> Result<()> {
 
     let fs = Arc::new(Heartbeat::new(kind, update_interval));
 
-    let mut daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
+    let mut daemon = Daemon::mount(mountpoint, Default::default(), Default::default())?;
     fs.init(&mut daemon);
-    daemon.run(fs, None).await?;
+    daemon.run(fs, None)?;
 
     Ok(())
 }
@@ -94,17 +92,17 @@ impl Heartbeat {
         }
     }
 
-    async fn update_content(&self) {
-        let mut inner = self.inner.lock().await;
+    fn update_content(&self) {
+        let mut inner = self.inner.lock().unwrap();
         let content = Local::now().to_rfc3339();
         inner.attr.size = content.len() as u64;
         inner.content = content;
     }
 
-    async fn notify(&self, notifier: &fs::Notifier) -> io::Result<()> {
+    fn notify(&self, notifier: &fs::Notifier) -> io::Result<()> {
         match self.kind {
             Some(NotifyKind::Store) => {
-                let inner = &*self.inner.lock().await;
+                let inner = &*self.inner.lock().unwrap();
                 let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
@@ -131,30 +129,28 @@ impl Heartbeat {
         // Spawn a task that beats the heart.
         let this = self.clone();
         let notifier = daemon.notifier();
-        let _ = daemon.spawner().spawn(async move {
-            loop {
-                tracing::info!("heartbeat");
-                this.update_content().await;
-                this.notify(&notifier).await?;
-                tokio::time::sleep(this.update_interval).await;
-            }
+        daemon.spawner().spawn(move || loop {
+            tracing::info!("heartbeat");
+            this.update_content();
+            this.notify(&notifier)?;
+            std::thread::sleep(this.update_interval);
         });
     }
 }
 
 impl Filesystem for Heartbeat {
-    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
+    fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
         if op.ino != NodeID::ROOT {
             Err(Errno::NOENT)?;
         }
-        let inner = self.inner.lock().await;
+        let inner = self.inner.lock().unwrap();
         req.reply(AttrOut {
             attr: Cow::Borrowed(&inner.attr),
             valid: None,
         })
     }
 
-    async fn open(self: &Arc<Self>, req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
+    fn open(self: &Arc<Self>, req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
         if op.ino != NodeID::ROOT {
             Err(Errno::NOENT)?;
         }
@@ -164,12 +160,12 @@ impl Filesystem for Heartbeat {
         })
     }
 
-    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
+    fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
         if op.ino != NodeID::ROOT {
             Err(Errno::NOENT)?
         }
 
-        let inner = self.inner.lock().await;
+        let inner = self.inner.lock().unwrap();
 
         let offset = op.offset as usize;
         if offset >= inner.content.len() {
@@ -182,7 +178,7 @@ impl Filesystem for Heartbeat {
         req.reply(data)
     }
 
-    async fn notify_reply(
+    fn notify_reply(
         self: &Arc<Self>,
         arg: op::NotifyReply<'_>,
         mut data: impl io::Read,

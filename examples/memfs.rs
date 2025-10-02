@@ -21,14 +21,12 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, SystemTime},
 };
-use tokio::sync::Mutex;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -36,8 +34,8 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
-    daemon.run(Arc::new(MemFS::new()), None).await?;
+    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default())?;
+    daemon.run(Arc::new(MemFS::new()), None)?;
 
     Ok(())
 }
@@ -282,7 +280,7 @@ impl MemFS {
 }
 
 impl Filesystem for MemFS {
-    async fn lookup(self: &Arc<Self>, req: fs::Request<'_>, op: op::Lookup<'_>) -> fs::Result {
+    fn lookup(self: &Arc<Self>, req: fs::Request<'_>, op: op::Lookup<'_>) -> fs::Result {
         let parent = self.inodes.get(op.parent).ok_or(Errno::NOENT)?;
         let parent = parent.as_dir().ok_or(Errno::NOTDIR)?;
 
@@ -302,7 +300,7 @@ impl Filesystem for MemFS {
         })
     }
 
-    async fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
+    fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
         for forget in forgets {
             if let Some(mut inode) = self.inodes.occupied_entry(forget.ino()) {
                 inode.get_mut().refcount =
@@ -315,7 +313,7 @@ impl Filesystem for MemFS {
         }
     }
 
-    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
+    fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
         let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
         req.reply(AttrOut {
@@ -324,7 +322,7 @@ impl Filesystem for MemFS {
         })
     }
 
-    async fn setattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setattr<'_>) -> fs::Result {
+    fn setattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setattr<'_>) -> fs::Result {
         let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 
         fn to_duration(t: op::SetAttrTime) -> Duration {
@@ -364,20 +362,20 @@ impl Filesystem for MemFS {
         })
     }
 
-    async fn readlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readlink<'_>) -> fs::Result {
+    fn readlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readlink<'_>) -> fs::Result {
         let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let link = inode.as_symlink().ok_or(Errno::INVAL)?;
         req.reply(link)
     }
 
-    async fn opendir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Opendir<'_>) -> fs::Result {
+    fn opendir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Opendir<'_>) -> fs::Result {
         let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
         if inode.attr.nlink == 0 {
             return Err(Errno::NOENT.into());
         }
         let dir = inode.as_dir().ok_or(Errno::NOTDIR)?;
 
-        let dir_handles = &mut *self.dir_handles.lock().await;
+        let dir_handles = &mut *self.dir_handles.lock().unwrap();
         let key = dir_handles.insert(DirHandle {
             entries: dir.collect_entries(&inode.attr),
             offset: AtomicUsize::new(0),
@@ -389,12 +387,12 @@ impl Filesystem for MemFS {
         })
     }
 
-    async fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
+    fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
         if op.mode == op::ReaddirMode::Plus {
             Err(Errno::NOSYS)?;
         }
 
-        let dir_handles = &mut *self.dir_handles.lock().await;
+        let dir_handles = &mut *self.dir_handles.lock().unwrap();
         let dir = dir_handles
             .get(op.fh.into_raw() as usize)
             .ok_or(Errno::INVAL)?;
@@ -411,17 +409,13 @@ impl Filesystem for MemFS {
         req.reply(buf)
     }
 
-    async fn releasedir(
-        self: &Arc<Self>,
-        req: fs::Request<'_>,
-        op: op::Releasedir<'_>,
-    ) -> fs::Result {
-        let dir_handles = &mut *self.dir_handles.lock().await;
+    fn releasedir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Releasedir<'_>) -> fs::Result {
+        let dir_handles = &mut *self.dir_handles.lock().unwrap();
         dir_handles.remove(op.fh.into_raw() as usize);
         req.reply(())
     }
 
-    async fn mknod(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mknod<'_>) -> fs::Result {
+    fn mknod(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mknod<'_>) -> fs::Result {
         match op.mode.file_type() {
             Some(FileType::Regular) => (),
             _ => Err(Errno::NOTSUP)?,
@@ -443,7 +437,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    async fn mkdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mkdir<'_>) -> fs::Result {
+    fn mkdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Mkdir<'_>) -> fs::Result {
         let out = self.make_node(op.parent, op.name, |entry| INode {
             attr: FileAttr {
                 ino: *entry.key(),
@@ -463,7 +457,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    async fn symlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Symlink<'_>) -> fs::Result {
+    fn symlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Symlink<'_>) -> fs::Result {
         let out = self.make_node(op.parent, op.name, |entry| INode {
             attr: FileAttr {
                 ino: *entry.key(),
@@ -483,7 +477,7 @@ impl Filesystem for MemFS {
         req.reply(out)
     }
 
-    async fn link(self: &Arc<Self>, req: fs::Request<'_>, op: op::Link<'_>) -> fs::Result {
+    fn link(self: &Arc<Self>, req: fs::Request<'_>, op: op::Link<'_>) -> fs::Result {
         let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 
         debug_assert!(op.ino != op.newparent);
@@ -509,17 +503,17 @@ impl Filesystem for MemFS {
         })
     }
 
-    async fn unlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Unlink<'_>) -> fs::Result {
+    fn unlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Unlink<'_>) -> fs::Result {
         self.unlink_node(op.parent, op.name)?;
         req.reply(())
     }
 
-    async fn rmdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Rmdir<'_>) -> fs::Result {
+    fn rmdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Rmdir<'_>) -> fs::Result {
         self.unlink_node(op.parent, op.name)?;
         req.reply(())
     }
 
-    async fn rename(self: &Arc<Self>, req: fs::Request<'_>, op: op::Rename<'_>) -> fs::Result {
+    fn rename(self: &Arc<Self>, req: fs::Request<'_>, op: op::Rename<'_>) -> fs::Result {
         if !op.flags.is_empty() {
             // TODO: handle RENAME_NOREPLACE and RENAME_EXCHANGE.
             Err(Errno::INVAL)?;
@@ -563,7 +557,7 @@ impl Filesystem for MemFS {
         req.reply(())
     }
 
-    async fn getxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getxattr<'_>) -> fs::Result {
+    fn getxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getxattr<'_>) -> fs::Result {
         let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let value = inode.xattrs.get(op.name).ok_or(Errno::NODATA)?;
         match op.size {
@@ -577,7 +571,7 @@ impl Filesystem for MemFS {
         }
     }
 
-    async fn setxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setxattr<'_>) -> fs::Result {
+    fn setxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setxattr<'_>) -> fs::Result {
         let create = op.flags.contains(SetxattrFlags::CREATE);
         let replace = op.flags.contains(SetxattrFlags::REPLACE);
         if create && replace {
@@ -609,11 +603,7 @@ impl Filesystem for MemFS {
         req.reply(())
     }
 
-    async fn listxattr(
-        self: &Arc<Self>,
-        req: fs::Request<'_>,
-        op: op::Listxattr<'_>,
-    ) -> fs::Result {
+    fn listxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Listxattr<'_>) -> fs::Result {
         let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
         match op.size {
@@ -640,11 +630,7 @@ impl Filesystem for MemFS {
         }
     }
 
-    async fn removexattr(
-        self: &Arc<Self>,
-        req: fs::Request<'_>,
-        op: op::Removexattr<'_>,
-    ) -> fs::Result {
+    fn removexattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Removexattr<'_>) -> fs::Result {
         let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 
         match inode.xattrs.entry(op.name.into()) {
@@ -657,7 +643,7 @@ impl Filesystem for MemFS {
         req.reply(())
     }
 
-    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
+    fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
         let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
 
         let content = inode.as_file().ok_or(Errno::INVAL)?;
@@ -671,11 +657,11 @@ impl Filesystem for MemFS {
         req.reply(content)
     }
 
-    async fn write(
+    fn write(
         self: &Arc<Self>,
         req: fs::Request<'_>,
         op: op::Write<'_>,
-        mut data: impl io::Read + Send,
+        mut data: impl io::Read,
     ) -> fs::Result {
         let mut inode = self.inodes.get_mut(op.ino).ok_or(Errno::NOENT)?;
 

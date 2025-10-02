@@ -18,8 +18,14 @@ use polyfuse::{
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
 use rustix::io::Errno;
-use std::{borrow::Cow, io, mem, os::unix::prelude::*, path::PathBuf, sync::Arc, time::Duration};
-use tokio::sync::Mutex;
+use std::{
+    borrow::Cow,
+    io, mem,
+    os::unix::prelude::*,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 const FILE_INO: NodeID = match NodeID::from_raw(2) {
     Some(ino) => ino,
@@ -29,8 +35,7 @@ const FILE_INO: NodeID = match NodeID::from_raw(2) {
 const DEFAULT_TTL: Duration = Duration::from_secs(0);
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -52,11 +57,11 @@ async fn main() -> Result<()> {
 
     let fs = Arc::new(Heartbeat::new(ttl, update_interval, no_notify));
 
-    let mut daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
+    let mut daemon = Daemon::mount(mountpoint, Default::default(), Default::default())?;
 
     fs.init(&mut daemon);
 
-    daemon.run(fs, None).await?;
+    daemon.run(fs, None)?;
 
     Ok(())
 }
@@ -112,7 +117,7 @@ impl Heartbeat {
         }
     }
 
-    async fn heartbeat(&self, notifier: &fs::Notifier) -> io::Result<()> {
+    fn heartbeat(&self, notifier: &fs::Notifier) -> io::Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = !self.no_notify);
         let _enter = span.enter();
 
@@ -120,7 +125,7 @@ impl Heartbeat {
             tracing::info!("heartbeat");
 
             let new_filename = generate_filename();
-            let mut current = self.current.lock().await;
+            let mut current = self.current.lock().unwrap();
             tracing::debug!(filename = ?current.filename, nlookup = ?current.nlookup);
             tracing::debug!(?new_filename);
             let old_filename = mem::replace(&mut current.filename, new_filename);
@@ -132,27 +137,27 @@ impl Heartbeat {
 
             drop(current);
 
-            tokio::time::sleep(self.update_interval).await;
+            std::thread::sleep(self.update_interval);
         }
     }
 
     fn init(self: &Arc<Self>, daemon: &mut fs::Daemon) {
         let this = self.clone();
         let notifier = daemon.notifier();
-        let _ = daemon.spawner().spawn(async move {
-            this.heartbeat(&notifier).await?;
+        daemon.spawner().spawn(move || {
+            this.heartbeat(&notifier)?;
             Ok(())
         });
     }
 }
 
 impl Filesystem for Heartbeat {
-    async fn lookup(self: &Arc<Self>, req: fs::Request<'_>, arg: op::Lookup<'_>) -> fs::Result {
+    fn lookup(self: &Arc<Self>, req: fs::Request<'_>, arg: op::Lookup<'_>) -> fs::Result {
         if arg.parent != NodeID::ROOT {
             Err(Errno::NOTDIR)?;
         }
 
-        let mut current = self.current.lock().await;
+        let mut current = self.current.lock().unwrap();
 
         if arg.name.as_bytes() == current.filename.as_bytes() {
             let res = req.reply(EntryOut {
@@ -171,8 +176,8 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    async fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
-        let mut current = self.current.lock().await;
+    fn forget(self: &Arc<Self>, forgets: &[op::Forget]) {
+        let mut current = self.current.lock().unwrap();
         for forget in forgets {
             if forget.ino() == FILE_INO {
                 current.nlookup -= forget.nlookup();
@@ -180,7 +185,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, arg: op::Getattr<'_>) -> fs::Result {
+    fn getattr(self: &Arc<Self>, req: fs::Request<'_>, arg: op::Getattr<'_>) -> fs::Result {
         let attr = match arg.ino {
             NodeID::ROOT => &self.root_attr,
             FILE_INO => &self.file_attr,
@@ -193,7 +198,7 @@ impl Filesystem for Heartbeat {
         })
     }
 
-    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
+    fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
         match op.ino {
             NodeID::ROOT => Err(Errno::ISDIR)?,
             FILE_INO => req.reply(()),
@@ -201,7 +206,7 @@ impl Filesystem for Heartbeat {
         }
     }
 
-    async fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
+    fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
         if op.ino != NodeID::ROOT {
             Err(Errno::NOTDIR)?;
         }
@@ -210,7 +215,7 @@ impl Filesystem for Heartbeat {
         }
 
         let mut buf = ReaddirOut::new(op.size as usize);
-        let current = self.current.lock().await;
+        let current = self.current.lock().unwrap();
         buf.push_entry(current.filename.as_ref(), FILE_INO, None, 1);
 
         req.reply(buf)

@@ -16,7 +16,6 @@ use rustix::{
 use std::{
     borrow::Cow,
     ffi::OsStr,
-    future::Future,
     io,
     num::NonZeroUsize,
     panic,
@@ -25,14 +24,9 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Weak,
     },
-};
-use tokio::{
-    io::unix::AsyncFd,
-    task::{AbortHandle, JoinSet},
+    thread,
 };
 use zerocopy::IntoBytes as _;
-
-const NUM_WORKERS_PER_THREAD: usize = 4;
 
 /// The kind of errors during the handling of each operation.
 #[derive(Debug, thiserror::Error)]
@@ -59,57 +53,55 @@ impl From<io::Error> for Error {
 pub type Result<T = Replied, E = Error> = std::result::Result<T, E>;
 
 macro_rules! define_ops {
-    ($( $name:ident: { $Arg:ident, $Reply:ident } ),*$(,)*) => {$(
+    ($( $name:ident: $Arg:ident ),*$(,)*) => {$(
         #[allow(unused_variables)]
         fn $name(
             self: &Arc<Self>,
             req: Request<'_>,
             op: op::$Arg<'_>,
-        ) -> impl Future<Output = Result> + Send {
-            async {
-                Err(Error::Code(Errno::NOSYS))
-            }
+        ) -> Result {
+            Err(Error::Code(Errno::NOSYS))
         }
     )*};
 }
 
 pub trait Filesystem {
     define_ops! {
-        lookup: { Lookup, ReplyEntry },
-        getattr: { Getattr, ReplyAttr },
-        setattr: { Setattr, ReplyAttr },
-        readlink: { Readlink, ReplyData },
-        symlink: { Symlink, ReplyEntry },
-        mknod: { Mknod, ReplyEntry },
-        mkdir: { Mkdir, ReplyEntry },
-        unlink: { Unlink, ReplyUnit },
-        rmdir: { Rmdir, ReplyUnit },
-        rename: { Rename, ReplyUnit },
-        link: { Link, ReplyEntry },
-        open: { Open, ReplyOpen },
-        read: { Read, ReplyData },
-        release: { Release, ReplyUnit },
-        statfs: { Statfs, ReplyStatfs },
-        fsync: { Fsync, ReplyUnit },
-        setxattr: { Setxattr, ReplyUnit },
-        getxattr: { Getxattr, ReplyXattr },
-        listxattr: { Listxattr, ReplyXattr },
-        removexattr: { Removexattr, ReplyUnit },
-        flush: { Flush, ReplyUnit },
-        opendir: { Opendir, ReplyOpen },
-        readdir: { Readdir, ReplyDir },
-        releasedir: { Releasedir, ReplyUnit },
-        fsyncdir: { Fsyncdir, ReplyUnit },
-        getlk: { Getlk, ReplyLock },
-        setlk: { Setlk, ReplyUnit },
-        flock: { Flock, ReplyUnit },
-        access: { Access, ReplyUnit },
-        create: { Create, ReplyCreate },
-        bmap: { Bmap, ReplyBmap },
-        fallocate: { Fallocate, ReplyUnit },
-        copy_file_range: { CopyFileRange, ReplyWrite },
-        poll: { Poll, ReplyPoll },
-        lseek: { Lseek, ReplyLseek },
+        lookup: Lookup,
+        getattr: Getattr,
+        setattr: Setattr,
+        readlink: Readlink,
+        symlink: Symlink,
+        mknod: Mknod,
+        mkdir: Mkdir,
+        unlink: Unlink,
+        rmdir: Rmdir,
+        rename: Rename,
+        link: Link,
+        open: Open,
+        read: Read,
+        release: Release,
+        statfs: Statfs,
+        fsync: Fsync,
+        setxattr: Setxattr,
+        getxattr: Getxattr,
+        listxattr: Listxattr,
+        removexattr: Removexattr,
+        flush: Flush,
+        opendir: Opendir,
+        readdir: Readdir,
+        releasedir: Releasedir,
+        fsyncdir: Fsyncdir,
+        getlk: Getlk,
+        setlk: Setlk,
+        flock: Flock,
+        access: Access,
+        create: Create,
+        bmap: Bmap,
+        fallocate: Fallocate,
+        copy_file_range: CopyFileRange,
+        poll: Poll,
+        lseek: Lseek,
     }
 
     #[allow(unused_variables)]
@@ -117,23 +109,21 @@ pub trait Filesystem {
         self: &Arc<Self>,
         req: Request<'_>,
         op: op::Write<'_>,
-        data: impl io::Read + Send + Unpin,
-    ) -> impl Future<Output = Result> + Send {
-        async { Err(Error::Code(Errno::NOSYS)) }
+        data: impl io::Read + Unpin,
+    ) -> Result {
+        Err(Error::Code(Errno::NOSYS))
     }
 
     #[allow(unused_variables)]
-    fn forget(self: &Arc<Self>, forgets: &[Forget]) -> impl Future<Output = ()> + Send {
-        async {}
-    }
+    fn forget(self: &Arc<Self>, forgets: &[Forget]) {}
 
     #[allow(unused_variables)]
     fn notify_reply(
         self: &Arc<Self>,
         op: op::NotifyReply<'_>,
-        data: impl io::Read + Send + Unpin,
-    ) -> impl Future<Output = io::Result<()>> + Send {
-        async { Ok(()) }
+        data: impl io::Read + Unpin,
+    ) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -275,22 +265,15 @@ impl Notifier {
 }
 
 pub struct Spawner<'a> {
-    join_set: &'a mut JoinSet<io::Result<()>>,
+    join_set: &'a mut Vec<thread::JoinHandle<io::Result<()>>>,
 }
 
 impl Spawner<'_> {
-    pub fn spawn<F>(&mut self, future: F) -> AbortHandle
-    where
-        F: Future<Output = io::Result<()>> + Send + 'static,
-    {
-        self.join_set.spawn(future)
-    }
-
-    pub fn spawn_blocking<F>(&mut self, f: F) -> AbortHandle
+    pub fn spawn<F>(&mut self, f: F)
     where
         F: FnOnce() -> io::Result<()> + Send + 'static,
     {
-        self.join_set.spawn_blocking(f)
+        self.join_set.push(thread::spawn(f));
     }
 }
 
@@ -299,7 +282,7 @@ pub struct Request<'req> {
     global: &'req Arc<Global>,
     conn: &'req Connection,
     header: &'req RequestHeader,
-    join_set: &'req mut JoinSet<io::Result<()>>,
+    join_set: &'req mut Vec<thread::JoinHandle<io::Result<()>>>,
 }
 
 impl Request<'_> {
@@ -344,11 +327,11 @@ pub struct Replied {
 pub struct Daemon {
     global: Arc<Global>,
     fusermount: Mount,
-    join_set: JoinSet<io::Result<()>>,
+    join_set: Vec<thread::JoinHandle<io::Result<()>>>,
 }
 
 impl Daemon {
-    pub async fn mount(
+    pub fn mount(
         mountpoint: impl Into<Cow<'static, Path>>,
         mountopts: MountOptions,
         config: KernelConfig,
@@ -364,7 +347,7 @@ impl Daemon {
                 notify_unique: AtomicU64::new(0),
             }),
             fusermount,
-            join_set: JoinSet::new(),
+            join_set: vec![],
         })
     }
 
@@ -386,18 +369,16 @@ impl Daemon {
         let conn = self.global.conn.try_ioc_clone()?;
         Ok(Worker {
             global: self.global.clone(),
-            conn: AsyncFd::new(conn)?,
-            join_set: JoinSet::new(),
+            conn,
+            join_set: vec![],
         })
     }
 
-    pub async fn run<T>(mut self, fs: Arc<T>, num_workers: Option<NonZeroUsize>) -> io::Result<()>
+    pub fn run<T>(mut self, fs: Arc<T>, num_workers: Option<NonZeroUsize>) -> io::Result<()>
     where
         T: Filesystem + Send + Sync + 'static,
     {
-        let num_workers = num_workers
-            .map(|n| n.get())
-            .unwrap_or_else(|| num_cpus::get() * NUM_WORKERS_PER_THREAD);
+        let num_workers = num_workers.map(|n| n.get()).unwrap_or_else(num_cpus::get);
 
         for i in 0..num_workers {
             let worker = self.new_worker(i)?;
@@ -406,22 +387,21 @@ impl Daemon {
             if self.config().flags.contains(KernelFlags::SPLICE_READ) {
                 let buf = SpliceBuf::new(bufsize)?;
                 self.join_set
-                    .spawn(async move { worker.run(buf, fs).await });
+                    .push(thread::spawn(move || worker.run(buf, fs)));
             } else {
                 let buf = FallbackBuf::new(bufsize);
                 self.join_set
-                    .spawn(async move { worker.run(buf, fs).await });
+                    .push(thread::spawn(move || worker.run(buf, fs)));
             }
         }
 
-        while let Some(result) = self.join_set.join_next().await {
-            match result {
+        for handle in self.join_set.drain(..) {
+            match handle.join() {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => {
                     tracing::error!("A worker thread is exited with error: {}", err);
                 }
-                Err(err) if err.is_panic() => panic::resume_unwind(err.into_panic()),
-                Err(_err) => (),
+                Err(err) => panic::resume_unwind(err),
             }
         }
 
@@ -433,42 +413,46 @@ impl Daemon {
 
 struct Worker {
     global: Arc<Global>,
-    conn: AsyncFd<Connection>,
-    join_set: JoinSet<io::Result<()>>,
+    conn: Connection,
+    join_set: Vec<thread::JoinHandle<io::Result<()>>>,
 }
 
 impl Worker {
-    async fn run<T, B>(mut self, mut buf: B, fs: Arc<T>) -> io::Result<()>
+    fn run<T, B>(mut self, mut buf: B, fs: Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
         B: RequestBuf,
-        for<'req> B::RemainingData<'req>: Send + Unpin,
+        for<'a> B::RemainingData<'a>: Unpin,
     {
-        while self.read_request(&mut buf).await? {
-            self.handle_request(&mut buf, &fs).await?;
+        while self.read_request(&mut buf)? {
+            self.handle_request(&mut buf, &fs)?;
         }
-        self.join_set.shutdown().await;
+
+        for handle in self.join_set.drain(..) {
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::error!("A worker thread is exited with error: {}", err);
+                }
+                Err(err) => panic::resume_unwind(err),
+            }
+        }
+
         Ok(())
     }
 
-    async fn read_request<B>(&self, buf: &mut B) -> io::Result<bool>
+    fn read_request<B>(&self, buf: &mut B) -> io::Result<bool>
     where
         B: RequestBuf,
     {
-        loop {
-            let mut guard = self.conn.readable().await?;
-            match guard.try_io(|conn| self.global.session.recv_request(conn.get_ref(), buf)) {
-                Ok(result) => return result,
-                Err(_would_block) => continue,
-            }
-        }
+        self.global.session.recv_request(&self.conn, buf)
     }
 
-    async fn handle_request<T, B>(&mut self, buf: &mut B, fs: &Arc<T>) -> io::Result<()>
+    fn handle_request<T, B>(&mut self, buf: &mut B, fs: &Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
         B: RequestBuf,
-        for<'req> B::RemainingData<'req>: Send + Unpin,
+        for<'a> B::RemainingData<'a>: Unpin,
     {
         let (header, arg, data) = buf.parts();
 
@@ -481,54 +465,54 @@ impl Worker {
 
         let req = Request {
             global: &self.global,
-            conn: self.conn.get_ref(),
+            conn: &self.conn,
             header,
             join_set: &mut self.join_set,
         };
 
         let result = match op {
-            Operation::Lookup(op) => fs.lookup(req, op).await,
-            Operation::Getattr(op) => fs.getattr(req, op).await,
-            Operation::Setattr(op) => fs.setattr(req, op).await,
-            Operation::Readlink(op) => fs.readlink(req, op).await,
-            Operation::Symlink(op) => fs.symlink(req, op).await,
-            Operation::Mknod(op) => fs.mknod(req, op).await,
-            Operation::Mkdir(op) => fs.mkdir(req, op).await,
-            Operation::Unlink(op) => fs.unlink(req, op).await,
-            Operation::Rmdir(op) => fs.rmdir(req, op).await,
-            Operation::Rename(op) => fs.rename(req, op).await,
-            Operation::Link(op) => fs.link(req, op).await,
-            Operation::Open(op) => fs.open(req, op).await,
-            Operation::Read(op) => fs.read(req, op).await,
-            Operation::Release(op) => fs.release(req, op).await,
-            Operation::Statfs(op) => fs.statfs(req, op).await,
-            Operation::Fsync(op) => fs.fsync(req, op).await,
-            Operation::Setxattr(op) => fs.setxattr(req, op).await,
-            Operation::Getxattr(op) => fs.getxattr(req, op).await,
-            Operation::Listxattr(op) => fs.listxattr(req, op).await,
-            Operation::Removexattr(op) => fs.removexattr(req, op).await,
-            Operation::Flush(op) => fs.flush(req, op).await,
-            Operation::Opendir(op) => fs.opendir(req, op).await,
-            Operation::Readdir(op) => fs.readdir(req, op).await,
-            Operation::Releasedir(op) => fs.releasedir(req, op).await,
-            Operation::Fsyncdir(op) => fs.fsyncdir(req, op).await,
-            Operation::Getlk(op) => fs.getlk(req, op).await,
-            Operation::Setlk(op) => fs.setlk(req, op).await,
-            Operation::Flock(op) => fs.flock(req, op).await,
-            Operation::Access(op) => fs.access(req, op).await,
-            Operation::Create(op) => fs.create(req, op).await,
-            Operation::Bmap(op) => fs.bmap(req, op).await,
-            Operation::Fallocate(op) => fs.fallocate(req, op).await,
-            Operation::CopyFileRange(op) => fs.copy_file_range(req, op).await,
-            Operation::Poll(op) => fs.poll(req, op).await,
-            Operation::Lseek(op) => fs.lseek(req, op).await,
-            Operation::Write(op) => fs.write(req, op, data).await,
+            Operation::Lookup(op) => fs.lookup(req, op),
+            Operation::Getattr(op) => fs.getattr(req, op),
+            Operation::Setattr(op) => fs.setattr(req, op),
+            Operation::Readlink(op) => fs.readlink(req, op),
+            Operation::Symlink(op) => fs.symlink(req, op),
+            Operation::Mknod(op) => fs.mknod(req, op),
+            Operation::Mkdir(op) => fs.mkdir(req, op),
+            Operation::Unlink(op) => fs.unlink(req, op),
+            Operation::Rmdir(op) => fs.rmdir(req, op),
+            Operation::Rename(op) => fs.rename(req, op),
+            Operation::Link(op) => fs.link(req, op),
+            Operation::Open(op) => fs.open(req, op),
+            Operation::Read(op) => fs.read(req, op),
+            Operation::Release(op) => fs.release(req, op),
+            Operation::Statfs(op) => fs.statfs(req, op),
+            Operation::Fsync(op) => fs.fsync(req, op),
+            Operation::Setxattr(op) => fs.setxattr(req, op),
+            Operation::Getxattr(op) => fs.getxattr(req, op),
+            Operation::Listxattr(op) => fs.listxattr(req, op),
+            Operation::Removexattr(op) => fs.removexattr(req, op),
+            Operation::Flush(op) => fs.flush(req, op),
+            Operation::Opendir(op) => fs.opendir(req, op),
+            Operation::Readdir(op) => fs.readdir(req, op),
+            Operation::Releasedir(op) => fs.releasedir(req, op),
+            Operation::Fsyncdir(op) => fs.fsyncdir(req, op),
+            Operation::Getlk(op) => fs.getlk(req, op),
+            Operation::Setlk(op) => fs.setlk(req, op),
+            Operation::Flock(op) => fs.flock(req, op),
+            Operation::Access(op) => fs.access(req, op),
+            Operation::Create(op) => fs.create(req, op),
+            Operation::Bmap(op) => fs.bmap(req, op),
+            Operation::Fallocate(op) => fs.fallocate(req, op),
+            Operation::CopyFileRange(op) => fs.copy_file_range(req, op),
+            Operation::Poll(op) => fs.poll(req, op),
+            Operation::Lseek(op) => fs.lseek(req, op),
+            Operation::Write(op) => fs.write(req, op, data),
             Operation::NotifyReply(op) => {
-                fs.notify_reply(op, data).await?;
+                fs.notify_reply(op, data)?;
                 return Ok(());
             }
             Operation::Forget(forgets) => {
-                fs.forget(forgets.as_ref()).await;
+                fs.forget(forgets.as_ref());
                 return Ok(());
             }
             Operation::Interrupt(op) => {
@@ -546,12 +530,11 @@ impl Worker {
                 }
                 _ => return Err(err),
             },
-            Err(Error::Code(errno)) => self.global.session.send_reply(
-                self.conn.get_ref(),
-                header.unique(),
-                Some(errno),
-                (),
-            )?,
+            Err(Error::Code(errno)) => {
+                self.global
+                    .session
+                    .send_reply(&self.conn, header.unique(), Some(errno), ())?
+            }
         }
 
         Ok(())

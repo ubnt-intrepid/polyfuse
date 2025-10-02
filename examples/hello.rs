@@ -25,8 +25,7 @@ const HELLO_INO: NodeID = match NodeID::from_raw(2) {
 const HELLO_FILENAME: &str = "hello.txt";
 const HELLO_CONTENT: &[u8] = b"Hello, world!\n";
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
@@ -34,8 +33,8 @@ async fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default()).await?;
-    daemon.run(Arc::new(Hello::new()), None).await?;
+    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default())?;
+    daemon.run(Arc::new(Hello::new()), None)?;
 
     Ok(())
 }
@@ -112,7 +111,7 @@ impl Hello {
 }
 
 impl Filesystem for Hello {
-    async fn lookup(self: &Arc<Self>, req: fs::Request<'_>, op: op::Lookup<'_>) -> fs::Result {
+    fn lookup(self: &Arc<Self>, req: fs::Request<'_>, op: op::Lookup<'_>) -> fs::Result {
         match op.parent {
             NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
                 req.reply(EntryOut {
@@ -127,7 +126,7 @@ impl Filesystem for Hello {
         }
     }
 
-    async fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
+    fn getattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Getattr<'_>) -> fs::Result {
         let attr = match op.ino {
             NodeID::ROOT => self.root_attr(),
             HELLO_INO => self.hello_attr(),
@@ -139,7 +138,7 @@ impl Filesystem for Hello {
         })
     }
 
-    async fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
+    fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
         match op.ino {
             HELLO_INO => (),
             NodeID::ROOT => Err(Errno::ISDIR)?,
@@ -158,7 +157,7 @@ impl Filesystem for Hello {
         req.reply(data)
     }
 
-    async fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
+    fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {
         if op.ino != NodeID::ROOT {
             Err(Errno::NOTDIR)?
         }
