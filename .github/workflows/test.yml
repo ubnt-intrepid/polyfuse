@@ -7,9 +7,11 @@ on:
       - synchronize
     branches:
       - main
+      - 0.5.x
   push:
     branches:
       - main
+      - 0.5.x
 
 env:
   CARGO_HUSKY_DONT_INSTALL_HOOKS: true
