@@ -1,8 +1,7 @@
 use crate::{
     bytes::{Decoder, ToBytes},
-    io::SpliceRead,
     msg::{send_msg, MessageKind},
-    request::{FallbackBuf, RequestBuf},
+    request::RequestBuf,
     types::RequestID,
 };
 use polyfuse_kernel::*;
@@ -325,14 +324,14 @@ impl Drop for Session {
 impl Session {
     /// Initialize a FUSE session by communicating with the kernel driver over
     /// the established channel.
-    pub fn init<T>(mut conn: T, mut config: KernelConfig) -> io::Result<Self>
+    pub fn init<T, B>(mut conn: T, mut buf: B, mut config: KernelConfig) -> io::Result<Self>
     where
-        T: io::Read + io::Write,
+        T: io::Write,
+        B: RequestBuf<T>,
     {
-        let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
         loop {
-            buf.reset()?;
-            let header = buf.receive_fallback(&mut conn)?;
+            let (header, arg, _remains) = buf.receive(&mut conn)?;
+
             if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
                 // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
                 // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
@@ -345,7 +344,6 @@ impl Session {
                 continue;
             }
 
-            let (header, arg, _remains) = buf.parts();
             let init_in = Decoder::new(arg)
                 .fetch::<fuse_init_in>() //
                 .map_err(|_| Errno::INVAL)?;
@@ -458,13 +456,11 @@ impl Session {
     /// Receive an incoming FUSE request from the kernel.
     pub fn recv_request<T, B>(&self, mut conn: T, buf: &mut B) -> io::Result<bool>
     where
-        T: SpliceRead + io::Write,
-        B: RequestBuf,
+        T: io::Write,
+        B: RequestBuf<T>,
     {
         while !self.exited() {
-            buf.reset()?;
-
-            let header = match buf.try_receive(&mut conn) {
+            let header = match buf.receive(&mut conn) {
                 // ref: https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/fuse_lowlevel.c#L2865
                 Err(err) => match Errno::from_io_error(&err) {
                     Some(Errno::NODEV) => {
@@ -486,7 +482,7 @@ impl Session {
                     }
                 },
 
-                Ok(header) => header,
+                Ok((header, ..)) => header,
             };
 
             match header.opcode() {
