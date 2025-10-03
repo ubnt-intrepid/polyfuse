@@ -4,13 +4,14 @@ use polyfuse::{
     mount::{mount, MountOptions},
     op::{self, Operation},
     reply::AttrOut,
-    request::{FallbackBuf, RequestBuf as _, RequestHeader},
+    request::{FallbackBuf, RequestHeader, ToRequestParts as _},
     session::{KernelConfig, Session},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     Connection,
 };
 
 use anyhow::{ensure, Context as _, Result};
+use polyfuse_kernel::FUSE_MIN_READ_BUFFER;
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
@@ -32,12 +33,16 @@ fn main() -> Result<()> {
     let (mut conn, mount) = mount(&mountpoint.into(), &mountopts)?;
 
     // Initialize the FUSE session.
-    let session = Session::init(&mut conn, KernelConfig::default())?;
+    let session = Session::init(
+        &mut conn,
+        FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize),
+        KernelConfig::default(),
+    )?;
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = FallbackBuf::new(session.request_buffer_size());
     while session.recv_request(&mut conn, &mut buf)? {
-        let (header, arg, _remains) = buf.parts();
+        let (header, arg, _remains) = buf.to_request_parts();
         match Operation::decode(header, arg)? {
             // Dispatch your callbacks to the supported operations...
             Operation::Getattr(op) => getattr(&session, &mut conn, header, op)?,

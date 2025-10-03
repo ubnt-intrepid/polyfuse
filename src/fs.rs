@@ -338,7 +338,11 @@ impl Daemon {
     ) -> io::Result<Self> {
         let (conn, fusermount) = crate::mount::mount(&mountpoint.into(), &mountopts)?;
 
-        let session = Session::init(&conn, config)?;
+        let session = Session::init(
+            &conn,
+            FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize),
+            config,
+        )?;
 
         Ok(Self {
             global: Arc::new(Global {
@@ -421,8 +425,8 @@ impl Worker {
     fn run<T, B>(mut self, mut buf: B, fs: Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
-        B: RequestBuf,
-        for<'a> B::RemainingData<'a>: Unpin,
+        for<'a> B: RequestBuf<&'a Connection>,
+        for<'a> B::RemainingData<'a>: io::Read + Unpin,
     {
         while self.read_request(&mut buf)? {
             self.handle_request(&mut buf, &fs)?;
@@ -443,7 +447,7 @@ impl Worker {
 
     fn read_request<B>(&self, buf: &mut B) -> io::Result<bool>
     where
-        B: RequestBuf,
+        for<'a> B: RequestBuf<&'a Connection>,
     {
         self.global.session.recv_request(&self.conn, buf)
     }
@@ -451,10 +455,10 @@ impl Worker {
     fn handle_request<T, B>(&mut self, buf: &mut B, fs: &Arc<T>) -> io::Result<()>
     where
         T: Filesystem,
-        B: RequestBuf,
-        for<'a> B::RemainingData<'a>: Unpin,
+        for<'a> B: RequestBuf<&'a Connection>,
+        for<'a> B::RemainingData<'a>: io::Read + Unpin,
     {
-        let (header, arg, data) = buf.parts();
+        let (header, arg, data) = buf.to_request_parts();
 
         let span = tracing::debug_span!("handle_request", unique = ?header.unique());
         let _enter = span.enter();

@@ -80,20 +80,32 @@ impl RequestHeader {
     }
 }
 
-/// The buffer to store a processing FUSE request received from the kernel driver.
-pub trait RequestBuf {
-    type RemainingData<'a>: io::Read
+/// The trait that represents the receiving process of an incoming FUSE request from the kernel.
+pub trait TryReceive<T: ?Sized> {
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<()>;
+}
+
+pub trait ToRequestParts {
+    /// The type of object for reading the remaining part of received request.
+    type RemainingData<'a>
     where
         Self: 'a;
 
-    fn reset(&mut self) -> io::Result<()>;
-
-    fn try_receive<T>(&mut self, conn: T) -> io::Result<&RequestHeader>
-    where
-        T: SpliceRead;
-
-    fn parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>);
+    fn to_request_parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>);
 }
+
+/// The buffer to store a processing FUSE request received from the kernel driver.
+pub trait RequestBuf<T: ?Sized>: TryReceive<T> + ToRequestParts {
+    fn receive(
+        &mut self,
+        conn: &mut T,
+    ) -> io::Result<(&RequestHeader, &[u8], Self::RemainingData<'_>)> {
+        self.try_receive(conn)?;
+        Ok(self.to_request_parts())
+    }
+}
+
+impl<T: ?Sized, B: ?Sized> RequestBuf<T> for B where B: TryReceive<T> + ToRequestParts {}
 
 pub struct SpliceBuf {
     header: RequestHeader,
@@ -121,14 +133,6 @@ impl SpliceBuf {
             bufsize,
         })
     }
-}
-
-impl RequestBuf for SpliceBuf {
-    type RemainingData<'a> = &'a mut Pipe;
-
-    fn parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
-        (&self.header, &self.arg[..], &mut self.pipe)
-    }
 
     fn reset(&mut self) -> io::Result<()> {
         self.arg.truncate(0);
@@ -138,11 +142,23 @@ impl RequestBuf for SpliceBuf {
         }
         Ok(())
     }
+}
 
-    fn try_receive<T>(&mut self, mut conn: T) -> io::Result<&RequestHeader>
-    where
-        T: SpliceRead,
-    {
+impl ToRequestParts for SpliceBuf {
+    type RemainingData<'a> = &'a mut Pipe;
+
+    fn to_request_parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
+        (&self.header, &self.arg[..], &mut self.pipe)
+    }
+}
+
+impl<T: ?Sized> TryReceive<T> for SpliceBuf
+where
+    T: SpliceRead,
+{
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<()> {
+        self.reset()?;
+
         let len = conn.splice_read(&mut self.pipe, self.bufsize, SpliceFlags::NONBLOCK)?;
 
         if len < mem::size_of_val(&self.header.raw) {
@@ -159,7 +175,7 @@ impl RequestBuf for SpliceBuf {
         self.arg.resize(self.header.arg_len(), 0);
         self.pipe.read_exact(&mut self.arg[..])?;
 
-        Ok(&self.header)
+        Ok(())
     }
 }
 
@@ -180,11 +196,24 @@ impl FallbackBuf {
             pos: 0,
         }
     }
+}
 
-    pub fn receive_fallback<T>(&mut self, mut conn: T) -> io::Result<&RequestHeader>
-    where
-        T: io::Read,
-    {
+impl ToRequestParts for FallbackBuf {
+    type RemainingData<'a> = &'a [u8];
+
+    fn to_request_parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
+        let (arg, remains) = self.arg.split_at(self.pos);
+        (&self.header, arg, remains)
+    }
+}
+
+impl<T: ?Sized> TryReceive<T> for FallbackBuf
+where
+    T: io::Read,
+{
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<()> {
+        self.pos = 0;
+
         let len = conn.read_vectored(&mut [
             io::IoSliceMut::new(self.header.raw.as_mut_bytes()),
             io::IoSliceMut::new(&mut self.arg[..]),
@@ -198,28 +227,7 @@ impl FallbackBuf {
 
         self.pos = self.header.arg_len();
 
-        Ok(&self.header)
-    }
-}
-
-impl RequestBuf for FallbackBuf {
-    type RemainingData<'a> = &'a [u8];
-
-    fn parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
-        let (arg, remains) = self.arg.split_at(self.pos);
-        (&self.header, arg, remains)
-    }
-
-    fn reset(&mut self) -> io::Result<()> {
-        self.pos = 0;
         Ok(())
-    }
-
-    fn try_receive<T>(&mut self, conn: T) -> io::Result<&RequestHeader>
-    where
-        T: SpliceRead,
-    {
-        self.receive_fallback(conn)
     }
 }
 
