@@ -1,0 +1,1 @@
+window.ALL_CRATES = ["polyfuse","polyfuse_kernel","rustix"];

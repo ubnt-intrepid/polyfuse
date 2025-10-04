@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Error"],"struct":["Daemon","Notifier","Replied","Request","Spawner"],"trait":["Filesystem"],"type":["Result"]};
