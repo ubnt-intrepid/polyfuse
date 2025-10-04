@@ -1,20 +1,19 @@
 use crate::{
     io::{Pipe, SpliceRead},
-    types::RequestID,
+    types::{NodeID, RequestID},
 };
-use polyfuse_kernel::{
-    fuse_in_header, fuse_notify_retrieve_in, fuse_opcode, fuse_write_in, FUSE_MIN_READ_BUFFER,
-};
+use polyfuse_kernel::*;
 use rustix::{
     fs::{Gid, Uid},
     pipe::{PipeFlags, SpliceFlags},
     process::Pid,
 };
 use std::{
+    fmt,
     io::{self, prelude::*},
     mem,
 };
-use zerocopy::{try_transmute, FromZeros as _, Immutable, IntoBytes, KnownLayout};
+use zerocopy::{try_transmute, FromZeros as _, IntoBytes as _};
 
 // MEMO: FUSE_MIN_READ_BUFFER に到達する or 超える可能性のある opcode の一覧 (要調査)
 // * FUSE_BATCH_FORGET
@@ -28,43 +27,85 @@ use zerocopy::{try_transmute, FromZeros as _, Immutable, IntoBytes, KnownLayout}
 // * その他
 //   - 基本的には NAME_MAX=256, PATH_MAX=4096 による制限があるので、8096 bytes に到達することはないはず
 
-#[derive(IntoBytes, Immutable, KnownLayout)]
 #[repr(transparent)]
 pub struct RequestHeader {
     raw: fuse_in_header,
 }
 
+impl fmt::Debug for RequestHeader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RequestHeader")
+            .field("len", &self.len())
+            .field("nodeid", &self.nodeid())
+            .field("unique", &self.unique())
+            .field("opcode", &self.opcode())
+            .field("uid", &self.uid())
+            .field("gid", &self.gid())
+            .field("pid", &self.pid())
+            .finish()
+    }
+}
+
 impl RequestHeader {
+    /// Return the total amount of bytes received from the kernel.
+    #[inline]
+    #[allow(clippy::len_without_is_empty)]
+    pub const fn len(&self) -> u32 {
+        self.raw.len
+    }
+
+    /// Return the inode number associated with the request.
+    #[inline]
+    pub const fn nodeid(&self) -> Option<NodeID> {
+        NodeID::from_raw(self.raw.nodeid)
+    }
+
     /// Return the unique ID of the request.
     #[inline]
     pub const fn unique(&self) -> RequestID {
         RequestID::from_raw(self.raw.unique)
     }
 
+    /// Return the opcode of the request.
+    #[inline]
     pub fn opcode(&self) -> Result<fuse_opcode, u32> {
         try_transmute!(self.raw.opcode).map_err(|e| e.into_src())
     }
 
+    #[inline]
+    const fn is_special_request(&self) -> bool {
+        // 下記に該当する opcode のリクエストは、カーネル側で nodeid/uid/gid/pid に値が設定されない
+        // ※ FUSE_FORGET に関してのみ、nodeid が使用される
+        matches!(
+            self.raw.opcode,
+            FUSE_INIT
+                | FUSE_FORGET
+                | FUSE_BATCH_FORGET
+                | FUSE_INTERRUPT
+                | FUSE_DESTROY
+                | FUSE_NOTIFY_REPLY
+        )
+    }
+
     /// Return the user ID of the calling process.
     #[inline]
-    pub fn uid(&self) -> Uid {
-        Uid::from_raw(self.raw.uid)
+    pub fn uid(&self) -> Option<Uid> {
+        self.is_special_request()
+            .then(|| Uid::from_raw(self.raw.uid))
     }
 
     /// Return the group ID of the calling process.
     #[inline]
-    pub fn gid(&self) -> Gid {
-        Gid::from_raw(self.raw.gid)
+    pub fn gid(&self) -> Option<Gid> {
+        self.is_special_request()
+            .then(|| Gid::from_raw(self.raw.gid))
     }
 
     /// Return the process ID of the calling process.
     #[inline]
     pub fn pid(&self) -> Option<Pid> {
-        Pid::from_raw(self.raw.pid as i32)
-    }
-
-    pub(crate) fn raw(&self) -> &fuse_in_header {
-        &self.raw
+        self.is_special_request()
+            .then(|| Pid::from_raw(self.raw.pid as i32).expect("invalid PID"))
     }
 
     fn arg_len(&self) -> usize {
@@ -166,6 +207,11 @@ where
         }
         self.pipe.read_exact(self.header.raw.as_mut_bytes())?;
 
+        if !self.header.is_special_request() && Pid::from_raw(self.header.raw.pid as i32).is_none()
+        {
+            Err(invalid_data("invalid process ID"))?;
+        }
+
         if len != self.header.raw.len as usize {
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of splice(2)",
@@ -221,8 +267,13 @@ where
 
         if len != self.header.raw.len as usize {
             Err(invalid_data(
-                "The value in_header.len is mismatched to the result of splice(2)",
+                "The value in_header.len is mismatched to the result of readv(2)",
             ))?
+        }
+
+        if !self.header.is_special_request() && Pid::from_raw(self.header.raw.pid as i32).is_none()
+        {
+            Err(invalid_data("invalid process ID"))?;
         }
 
         self.pos = self.header.arg_len();

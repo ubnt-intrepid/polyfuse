@@ -287,15 +287,15 @@ pub struct Request<'req> {
 
 impl Request<'_> {
     pub fn uid(&self) -> Uid {
-        self.header.uid()
+        self.header.uid().expect("UID should not be None")
     }
 
     pub fn gid(&self) -> Gid {
-        self.header.gid()
+        self.header.gid().expect("GID should not be None")
     }
 
-    pub fn pid(&self) -> Option<Pid> {
-        self.header.pid()
+    pub fn pid(&self) -> Pid {
+        self.header.pid().expect("PID should not be None")
     }
 
     pub fn notifier(&self) -> Notifier {
