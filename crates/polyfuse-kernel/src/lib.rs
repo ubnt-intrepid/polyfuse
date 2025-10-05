@@ -1,6 +1,6 @@
 //! FUSE application binary interface for `polyfuse`.
 //!
-//! The binding is compatible with ABI 7.31 (in libfuse 3.10.1).
+//! The binding is compatible with ABI 7.41 (Linux 6.12).
 
 #![allow(nonstandard_style, clippy::identity_op)]
 
@@ -10,7 +10,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes};
 pub const FUSE_KERNEL_VERSION: u32 = 7;
 
 /// The minor version number of FUSE protocol.
-pub const FUSE_KERNEL_MINOR_VERSION: u32 = 31;
+pub const FUSE_KERNEL_MINOR_VERSION: u32 = 41;
 
 /// The minimum length of read buffer.
 pub const FUSE_MIN_READ_BUFFER: u32 = 8192;
@@ -30,6 +30,10 @@ pub const FATTR_ATIME_NOW: u32 = 1 << 7;
 pub const FATTR_MTIME_NOW: u32 = 1 << 8;
 pub const FATTR_LOCKOWNER: u32 = 1 << 9;
 pub const FATTR_CTIME: u32 = 1 << 10;
+pub const FATTR_KILL_SUIDGID: u32 = 1 << 11;
+
+// Bitmasks for fuse_attr.flags
+pub const FUSE_ATTR_SUBMOUNT: u32 = 1 << 0;
 
 // Flags returned by the OPEN request.
 pub const FOPEN_DIRECT_IO: u32 = 1 << 0;
@@ -37,6 +41,9 @@ pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
 pub const FOPEN_NONSEEKABLE: u32 = 1 << 2;
 pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
 pub const FOPEN_STREAM: u32 = 1 << 4;
+pub const FOPEN_NOFLUSH: u32 = 1 << 5;
+pub const FOPEN_PARALLEL_DIRECT_WRITES: u32 = 1 << 6;
+pub const FOPEN_PASSTHROUGH: u32 = 1 << 7;
 
 // INIT request/reply flags.
 pub const FUSE_ASYNC_READ: u32 = 1;
@@ -65,6 +72,22 @@ pub const FUSE_MAX_PAGES: u32 = 1 << 22;
 pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
 pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
 pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25;
+pub const FUSE_MAP_ALIGNMENT: u32 = 1 << 26;
+pub const FUSE_SUBMOUNTS: u32 = 1 << 27;
+pub const FUSE_HANDLE_KILLPRIV_V2: u32 = 1 << 28;
+pub const FUSE_SETXATTR_EXT: u32 = 1 << 29;
+pub const FUSE_INIT_EXT: u32 = 1 << 30;
+pub const FUSE_INIT_RESERVED: u32 = 1 << 31;
+// flags2.
+pub const FUSE_SECURITY_CTX: u64 = 1 << 32;
+pub const FUSE_HAS_INODE_DAX: u64 = 1 << 33;
+pub const FUSE_CREATE_SUPP_GROUP: u64 = 1 << 34;
+pub const FUSE_HAS_EXPIRE_ONLY: u64 = 1 << 35;
+pub const FUSE_DIRECT_IO_ALLOW_MMAP: u64 = 1 << 36;
+pub const FUSE_PASSTHROUGH: u64 = 1 << 37;
+pub const FUSE_NO_EXPORT_SUPPORT: u64 = 1 << 38;
+pub const FUSE_HAS_RESEND: u64 = 1 << 39;
+pub const FUSE_ALLOW_IDMAP: u64 = 1 << 40;
 
 // CUSE INIT request/reply flags.
 pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;
@@ -82,7 +105,10 @@ pub const FUSE_LK_FLOCK: u32 = 1 << 0;
 // WRITE flags.
 pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
 pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
-pub const FUSE_WRITE_KILL_PRIV: u32 = 1 << 2;
+pub const FUSE_WRITE_KILL_SUIDGID: u32 = 1 << 2;
+
+#[deprecated(since = "0.3.0", note = "use `FUSE_WRITE_KILL_SUIDGID` instead")]
+pub const FUSE_WRITE_KILL_PRIV: u32 = FUSE_WRITE_KILL_SUIDGID;
 
 // Read flags.
 pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
@@ -101,6 +127,12 @@ pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 // Fsync flags.
 pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
+// Open flags.
+pub const FUSE_OPEN_KILL_SUIDGID: u32 = 1 << 0;
+
+// notify_inval_entry flags.
+pub const FUSE_EXPIRE_ONLY: u32 = 1 << 0;
+
 // misc
 pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
 pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
@@ -110,6 +142,13 @@ pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
 pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
 pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 pub const CUSE_INIT_INFO_MAX: u32 = 4096;
+
+// FUSE_SETUPMAPPING flags.
+pub const FUSE_SETUPMAPPING_FLAG_WRITE: u64 = 1 << 0;
+pub const FUSE_SETUPMAPPING_FLAG_READ: u64 = 1 << 1;
+
+// Setxattr flags.
+pub const FUSE_SETXATTR_ACL_KILL_SGID: u32 = 1 << 0;
 
 // Device ioctls
 pub const FUSE_DEV_IOC_CLONE: u64 = libc::_IOR::<u32>(229, 0);
@@ -132,7 +171,7 @@ pub struct fuse_attr {
     pub gid: u32,
     pub rdev: u32,
     pub blksize: u32,
-    pub padding: u32,
+    pub flags: u32,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -150,6 +189,40 @@ pub struct fuse_dirent {
 pub struct fuse_direntplus {
     pub entry_out: fuse_entry_out,
     pub dirent: fuse_dirent,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_sx_time {
+    pub tv_sec: i64,
+    pub tv_nsec: u32,
+    pub __reserved: i32,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_statx {
+    pub mask: u32,
+    pub blksize: u32,
+    pub attributes: u64,
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub __spare0: [u16; 1],
+    pub ino: u64,
+    pub size: u64,
+    pub blocks: u64,
+    pub attributes_mask: u64,
+    pub atime: fuse_sx_time,
+    pub btime: fuse_sx_time,
+    pub ctime: fuse_sx_time,
+    pub mtime: fuse_sx_time,
+    pub rdev_major: u32,
+    pub rdev_minor: u32,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+    pub __spare2: [u64; 14],
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -245,9 +318,17 @@ define_opcode! {
     FUSE_RENAME2 = 45,
     FUSE_LSEEK = 46,
     FUSE_COPY_FILE_RANGE = 47,
+    FUSE_SETUPMAPPING = 48,
+    FUSE_REMOVEMAPPING = 49,
+    FUSE_SYNCFS = 50,
+    FUSE_TMPFILE = 51,
+    FUSE_STATX = 52,
 
     CUSE_INIT = 4096,
 }
+
+pub const CUSE_INIT_BSWAP_RESERVED: u32 = 1048576; // CUSE_INIT << 8;
+pub const FUSE_INIT_BSWAP_RESERVED: u32 = 436207616; // FUSE_INIT << 24;
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
@@ -259,7 +340,17 @@ pub struct fuse_in_header {
     pub uid: u32,
     pub gid: u32,
     pub pid: u32,
-    pub padding: u32,
+    pub total_extlen: u16,
+    pub padding: u16,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_init_in_compat_35 {
+    pub major: u32,
+    pub minor: u32,
+    pub max_readahead: u32,
+    pub flags: u32,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -269,6 +360,8 @@ pub struct fuse_init_in {
     pub minor: u32,
     pub max_readahead: u32,
     pub flags: u32,
+    pub flags2: u32,
+    pub unused: [u32; 11],
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -338,7 +431,7 @@ pub struct fuse_link_in {
 #[repr(C)]
 pub struct fuse_open_in {
     pub flags: u32,
-    pub unused: u32,
+    pub open_flags: u32,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -398,11 +491,24 @@ pub struct fuse_getxattr_in {
     pub padding: u32,
 }
 
+// ~ ABI 7.32
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_setxattr_in_compat_32 {
+    pub size: u32,
+    pub flags: u32,
+}
+
+pub const FUSE_COMPAT_SETXATTR_IN_SIZE: usize = 8;
+
+// ABI 7.33 ~
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct fuse_setxattr_in {
     pub size: u32,
     pub flags: u32,
+    pub setxattr_flags: u32,
+    pub padding: u32,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -428,7 +534,7 @@ pub struct fuse_create_in {
     pub flags: u32,
     pub mode: u32,
     pub umask: u32,
-    pub padding: u32,
+    pub open_flags: u32,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -480,8 +586,10 @@ pub struct fuse_init_out {
     pub max_write: u32,
     pub time_gran: u32,
     pub max_pages: u16,
-    pub padding: u16,
-    pub unused: [u32; 8],
+    pub map_alignment: u16,
+    pub flags2: u32,
+    pub max_stack_depth: u32,
+    pub unused: [u32; 6],
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -496,7 +604,7 @@ pub struct fuse_getxattr_out {
 pub struct fuse_open_out {
     pub fh: u64,
     pub open_flags: u32,
-    pub padding: u32,
+    pub backing_id: i32,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -660,6 +768,7 @@ define_notify_code! {
     FUSE_NOTIFY_STORE = 4,
     FUSE_NOTIFY_RETRIEVE = 5,
     FUSE_NOTIFY_DELETE = 6,
+    FUSE_NOTIFY_RESEND = 7,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -681,7 +790,7 @@ pub struct fuse_notify_inval_inode_out {
 pub struct fuse_notify_inval_entry_out {
     pub parent: u64,
     pub namelen: u32,
-    pub padding: u32,
+    pub flags: u32,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -744,4 +853,77 @@ pub struct cuse_init_out {
     pub dev_major: u32,
     pub dev_minor: u32,
     pub spare: [u32; 10],
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_setupmapping_in {
+    pub fh: u64,
+    pub foffset: u64,
+    pub len: u64,
+    pub flags: u64,
+    pub moffset: u64,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_removemapping_in {
+    pub count: u32,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_removemapping_one {
+    pub moffset: u64,
+    pub len: u64,
+}
+
+// #define FUSE_REMOVEMAPPING_MAX_ENTRY   \
+// 		(PAGE_SIZE / sizeof(struct fuse_removemapping_one))
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_syncfs_in {
+    pub padding: u64,
+}
+
+macro_rules! define_ext_type {
+    ($(
+        $(#[$m:meta])*
+        $VARIANT:ident = $val:expr,
+    )*) => {
+        $(
+            #[doc(hidden)]
+            pub const $VARIANT: u32 = $val;
+        )*
+
+        #[derive(Clone, Copy, Debug, PartialEq, Hash, TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        #[repr(u32)]
+        pub enum fuse_ext_type {
+            $(
+                $(#[$m])*
+                $VARIANT = $val,
+            )*
+        }
+    };
+}
+
+define_ext_type! {
+    // 0 ~ 31: reserved for fuse_secctx_header
+    FUSE_MAX_NR_SECCTX = 31,
+    FUSE_EXT_GROUPS = 32,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_ext_header {
+    pub size: u32,
+    pub typ: u32,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_supp_groups {
+    pub nr_groups: u32,
+    pub groups: [u32; 0],
 }

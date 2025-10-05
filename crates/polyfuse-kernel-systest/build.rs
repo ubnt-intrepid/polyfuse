@@ -7,16 +7,19 @@ fn main() {
 fn generate_abi_tests() {
     let mut cfg = TestGenerator::new();
     cfg.header("fuse_kernel.h");
+    cfg.header("fuse_kernel_compat.h");
     cfg.header("sys/ioctl.h");
-    cfg.include("../../vendor/libfuse/include");
+    cfg.include("./include");
 
     cfg.field_name(|_s, field| field.replace("typ", "type"));
-    cfg.skip_field(|s, field| s == "fuse_dirent" && field == "name");
+    cfg.skip_field(|s, field| {
+        matches!(
+            (s, field),
+            ("fuse_dirent", "name") | ("fuse_supp_groups", "groups")
+        )
+    });
 
     cfg.skip_struct(|s| s == "UnknownOpcode" || s == "InvalidFileLock");
-
-    // FUSE_FSYNC_FDATASYNC is defined since libfuse 3.7.0.
-    cfg.skip_const(|name| name == "FUSE_FSYNC_FDATASYNC");
 
     cfg.generate("../polyfuse-kernel/src/lib.rs", "kernel.rs");
 }

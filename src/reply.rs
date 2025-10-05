@@ -24,7 +24,7 @@ const fn to_fuse_attr(attr: &FileAttr) -> fuse_attr {
         gid: attr.gid.as_raw(),
         rdev: attr.rdev.into_kernel_dev(),
         blksize: attr.blksize,
-        padding: 0,
+        flags: 0,
     }
 }
 
@@ -132,7 +132,7 @@ impl ToBytes for OpenOut {
         POD(fuse_open_out {
             fh: self.fh.into_raw(),
             open_flags: self.open_flags.bits(),
-            padding: 0,
+            backing_id: 0,
         })
     }
 }

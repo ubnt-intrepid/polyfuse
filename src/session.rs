@@ -101,7 +101,7 @@ impl KernelConfig {
         }
     }
 
-    fn negotiate(&mut self, init_in: &fuse_init_in) -> Result<(), NegotiationError> {
+    fn negotiate(&mut self, init_in: &fuse_init_in_compat_35) -> Result<(), NegotiationError> {
         if init_in.major > 7 {
             return Err(NegotiationError::TooLargeProtocolVersion);
         }
@@ -117,7 +117,7 @@ impl KernelConfig {
         );
 
         self.major = FUSE_KERNEL_VERSION;
-        self.minor = cmp::min(init_in.minor, FUSE_KERNEL_MINOR_VERSION);
+        self.minor = cmp::min(init_in.minor, 35); // FIXME: treat FUSE_INIT_EXT
 
         let capable = KernelFlags::from_bits_truncate(init_in.flags);
         self.flags |= KernelFlags::READ_ONLY;
@@ -164,8 +164,10 @@ impl KernelConfig {
             congestion_threshold: self.congestion_threshold,
             max_write: self.max_write,
             max_pages: self.max_pages,
-            padding: 0,
-            unused: [0; 8],
+            map_alignment: 0,
+            flags2: 0,
+            max_stack_depth: 0,
+            unused: [0; 6],
         }
     }
 }
@@ -345,7 +347,7 @@ impl Session {
             }
 
             let init_in = Decoder::new(arg)
-                .fetch::<fuse_init_in>() //
+                .fetch::<fuse_init_in_compat_35>() //
                 .map_err(|_| Errno::INVAL)?;
 
             tracing::debug!("INIT request:");
@@ -583,7 +585,7 @@ mod tests {
 
     #[test]
     fn negotiate_default() {
-        let init_in = fuse_init_in {
+        let init_in = fuse_init_in_compat_35 {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION.saturating_add(20),
             max_readahead: 40,
@@ -596,7 +598,7 @@ mod tests {
         let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(page_size() as u32) as u16;
 
         assert_eq!(config.major, FUSE_KERNEL_VERSION);
-        assert_eq!(config.minor, FUSE_KERNEL_MINOR_VERSION);
+        assert_eq!(config.minor, 35);
         assert_eq!(config.max_readahead, 40);
         assert_eq!(config.max_background, 0);
         assert_eq!(config.congestion_threshold, 0);
@@ -611,7 +613,7 @@ mod tests {
 
     #[test]
     fn negotiate_mismatched_protocol_version() {
-        let init_in = fuse_init_in {
+        let init_in = fuse_init_in_compat_35 {
             major: FUSE_KERNEL_VERSION + 1,
             minor: 9999,
             max_readahead: 0,
@@ -623,7 +625,7 @@ mod tests {
             Err(NegotiationError::TooLargeProtocolVersion)
         ));
 
-        let init_in = fuse_init_in {
+        let init_in = fuse_init_in_compat_35 {
             major: FUSE_KERNEL_VERSION - 1,
             minor: 9999,
             max_readahead: 0,
@@ -635,7 +637,7 @@ mod tests {
             Err(NegotiationError::TooSmallProtocolVersion)
         ));
 
-        let init_in = fuse_init_in {
+        let init_in = fuse_init_in_compat_35 {
             major: FUSE_KERNEL_VERSION,
             minor: MINIMUM_SUPPORTED_MINOR_VERSION.saturating_sub(1),
             max_readahead: 0,
@@ -650,7 +652,7 @@ mod tests {
 
     #[test]
     fn test_disabled_max_pages() {
-        let init_in = fuse_init_in {
+        let init_in = fuse_init_in_compat_35 {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
             max_readahead: 40,
@@ -664,7 +666,7 @@ mod tests {
         config.negotiate(&init_in).unwrap();
 
         assert_eq!(config.major, FUSE_KERNEL_VERSION);
-        assert_eq!(config.minor, FUSE_KERNEL_MINOR_VERSION);
+        assert_eq!(config.minor, 35);
         assert_eq!(config.max_readahead, 40);
         assert_eq!(config.max_background, 0);
         assert_eq!(config.congestion_threshold, 0);

@@ -184,7 +184,7 @@ impl Notifier {
                 fuse_notify_inval_entry_out {
                     parent: parent.into_raw(),
                     namelen,
-                    padding: 0,
+                    flags: 0,
                 }
                 .as_bytes(),
                 name,
