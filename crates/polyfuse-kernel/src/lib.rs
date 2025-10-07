@@ -134,13 +134,6 @@ pub const FUSE_OPEN_KILL_SUIDGID: u32 = 1 << 0;
 pub const FUSE_EXPIRE_ONLY: u32 = 1 << 0;
 
 // misc
-pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
-pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
-pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
-pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
-pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
-pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
-pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 
 // FUSE_SETUPMAPPING flags.
@@ -153,6 +146,27 @@ pub const FUSE_SETXATTR_ACL_KILL_SGID: u32 = 1 << 0;
 // Device ioctls
 pub const FUSE_DEV_IOC_CLONE: u64 = libc::_IOR::<u32>(229, 0);
 
+// ~ ABI 7.8
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_attr_compat_8 {
+    pub ino: u64,
+    pub size: u64,
+    pub blocks: u64,
+    pub atime: u64,
+    pub mtime: u64,
+    pub ctime: u64,
+    pub atimensec: u32,
+    pub mtimensec: u32,
+    pub ctimensec: u32,
+    pub mode: u32,
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub rdev: u32,
+}
+
+// ABI 7.9 ~
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct fuse_attr {
@@ -225,6 +239,20 @@ pub struct fuse_statx {
     pub __spare2: [u64; 14],
 }
 
+// ~ ABI 7.3
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_kstatfs_compat_3 {
+    pub blocks: u64,
+    pub bfree: u64,
+    pub bavail: u64,
+    pub files: u64,
+    pub ffree: u64,
+    pub bsize: u32,
+    pub namelen: u32,
+}
+
+// ABI 7.4 ~
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct fuse_kstatfs {
@@ -399,6 +427,16 @@ pub struct fuse_setattr_in {
     pub unused5: u32,
 }
 
+// ~ ABI 7.11
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_mknod_in_compat_11 {
+    pub mode: u32,
+    pub rdev: u32,
+}
+pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
+
+// ABI 7.12 ~
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct fuse_mknod_in {
@@ -446,6 +484,18 @@ pub struct fuse_read_in {
     pub padding: u32,
 }
 
+// ~ ABI 7.8
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_write_in_compat_8 {
+    pub fh: u64,
+    pub offset: u64,
+    pub size: u32,
+    pub write_flags: u32,
+}
+pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
+
+// ABI 7.9~
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct fuse_write_in {
@@ -555,12 +605,35 @@ pub struct fuse_out_header {
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
+pub struct fuse_attr_out_compat_8 {
+    pub attr_valid: u64,
+    pub attr_valid_nsec: u32,
+    pub dummy: u32,
+    pub attr: fuse_attr_compat_8,
+}
+pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
 pub struct fuse_attr_out {
     pub attr_valid: u64,
     pub attr_valid_nsec: u32,
     pub dummy: u32,
     pub attr: fuse_attr,
 }
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_entry_out_compat_8 {
+    pub nodeid: u64,
+    pub generation: u64,
+    pub entry_valid: u64,
+    pub attr_valid: u64,
+    pub entry_valid_nsec: u32,
+    pub attr_valid_nsec: u32,
+    pub attr: fuse_attr_compat_8,
+}
+pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
@@ -574,6 +647,30 @@ pub struct fuse_entry_out {
     pub attr: fuse_attr,
 }
 
+// ~ ABI 7.3
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_init_out_compat_3 {
+    pub major: u32,
+    pub minor: u32,
+}
+pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
+
+// ~ ABI 7.5
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_init_out_compat_22 {
+    pub major: u32,
+    pub minor: u32,
+    pub max_readahead: u32,
+    pub flags: u32,
+    pub max_background: u16,
+    pub congestion_threshold: u16,
+    pub max_write: u32,
+}
+pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
+
+// ABI 7.23 ~
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct fuse_init_out {
@@ -614,6 +711,15 @@ pub struct fuse_write_out {
     pub padding: u32,
 }
 
+// ~ ABI 7.3
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_statfs_out_compat_3 {
+    pub st: fuse_kstatfs_compat_3,
+}
+pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
+
+// ABI 7.4 ~
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct fuse_statfs_out {
