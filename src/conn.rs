@@ -1,4 +1,5 @@
 use crate::io::{Pipe, SpliceRead, SpliceWrite};
+use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
 use rustix::{
     fs::{Mode, OFlags},
     ioctl::{self, ioctl},
@@ -7,13 +8,6 @@ use rustix::{
 use std::{ffi::CStr, io, os::unix::prelude::*};
 
 pub(crate) const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
-
-// FIXME: move to polyfuse-kernel
-const FUSE_DEV_IOC_MAGIC: u8 = 229;
-const FUSE_DEV_IOC_CLONE: u32 = ioctl::opcode::read::<u32>(FUSE_DEV_IOC_MAGIC, 0);
-
-#[cfg(test)]
-const _: [(); polyfuse_kernel::FUSE_DEV_IOC_CLONE as usize] = [(); FUSE_DEV_IOC_CLONE as usize];
 
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]

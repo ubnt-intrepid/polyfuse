@@ -144,7 +144,10 @@ pub const FUSE_SETUPMAPPING_FLAG_READ: u64 = 1 << 1;
 pub const FUSE_SETXATTR_ACL_KILL_SGID: u32 = 1 << 0;
 
 // Device ioctls
-pub const FUSE_DEV_IOC_CLONE: u64 = libc::_IOR::<u32>(229, 0);
+pub const FUSE_DEV_IOC_MAGIC: u32 = 229;
+pub const FUSE_DEV_IOC_CLONE: u64 = libc::_IOR::<u32>(FUSE_DEV_IOC_MAGIC, 0);
+pub const FUSE_DEV_IOC_BACKING_OPEN: u64 = libc::_IOW::<fuse_backing_map>(FUSE_DEV_IOC_MAGIC, 1);
+pub const FUSE_DEV_IOC_BACKING_CLOSE: u64 = libc::_IOW::<u32>(FUSE_DEV_IOC_MAGIC, 2);
 
 // ~ ABI 7.8
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -936,6 +939,14 @@ pub struct fuse_notify_retrieve_in {
     pub dummy2: u32,
     pub dummy3: u64,
     pub dummy4: u64,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_backing_map {
+    pub fd: i32,
+    pub flags: u32,
+    pub padding: u64,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]

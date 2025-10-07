@@ -23,7 +23,7 @@ either = "1"
 libc = "0.2"
 num_cpus = "1.17"
 polyfuse-kernel = { version = "0.3.0-dev", path = "crates/polyfuse-kernel" }
-rustix = { version = "1", features = [ "fs", "mount", "net", "param", "pipe", "process", "thread" ] }
+rustix = { version = "1", features = [ "fs", "mount", "net", "param", "pipe", "process", "thread", "use-libc" ] }
 thiserror = "2"
 tracing = "0.1"
 zerocopy = "0.8.26"
