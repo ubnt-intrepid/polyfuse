@@ -1022,6 +1022,20 @@ define_ext_type! {
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
+pub struct fuse_secctx {
+    pub size: u32,
+    pub padding: u32,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_secctx_header {
+    pub size: u32,
+    pub nr_secctx: u32,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
 pub struct fuse_ext_header {
     pub size: u32,
     pub typ: u32,
