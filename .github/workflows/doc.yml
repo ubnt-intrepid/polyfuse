@@ -16,11 +16,8 @@ on:
 env:
   RUST_BACKTRACE: full
 
-permissions:
-  contents: write # squash/force-push to gh-pages branch
-
 jobs:
-  Doc:
+  Build:
     runs-on: ubuntu-24.04
     if: github.event.pull_request.draft == false
     steps:
@@ -37,21 +34,27 @@ jobs:
       run: |
         set -ex
         cargo doc -p rustix --no-deps
+        cargo doc -p zerocopy --no-deps
         cargo doc -p polyfuse-kernel --no-deps
         cargo doc -p polyfuse --no-deps
         echo '<meta http-equiv="refresh" content="0;url=polyfuse">' > ./target/doc/index.html
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      id: deployment
+      uses: actions/upload-pages-artifact@v3
       with:
-        name: published-docs
         path: target/doc
 
+  Deploy:
+    needs: Build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
     - name: Deply to GitHub Pages
-      if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      uses: peaceiris/actions-gh-pages@v4
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_branch: gh-pages
-        publish_dir: ./target/doc
-        force_orphan: true
+      id: deployment
+      uses: actions/deploy-pages@v4
