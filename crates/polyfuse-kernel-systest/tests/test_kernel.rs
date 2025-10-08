@@ -8,7 +8,7 @@ include!(concat!(env!("OUT_DIR"), "/kernel.rs"));
 
 // TODO: use static_assert
 const _: [(); size_of::<fuse_statfs_out_compat_3>()] = [(); FUSE_COMPAT_STATFS_SIZE];
-const _: [(); size_of::<fuse_init_out_compat_3>()] = [(); FUSE_COMPAT_INIT_OUT_SIZE];
+const _: [(); size_of::<fuse_init_in_out_compat_3>()] = [(); FUSE_COMPAT_INIT_OUT_SIZE];
 const _: [(); size_of::<fuse_attr_out_compat_8>()] = [(); FUSE_COMPAT_ATTR_OUT_SIZE];
 const _: [(); size_of::<fuse_entry_out_compat_8>()] = [(); FUSE_COMPAT_ENTRY_OUT_SIZE];
 const _: [(); size_of::<fuse_write_in_compat_8>()] = [(); FUSE_COMPAT_WRITE_IN_SIZE];

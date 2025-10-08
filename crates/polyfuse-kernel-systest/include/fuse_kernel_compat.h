@@ -21,7 +21,7 @@ struct fuse_statfs_out_compat_3 {
 	struct fuse_kstatfs_compat_3 st;
 };
 
-struct fuse_init_out_compat_3 {
+struct fuse_init_in_out_compat_3 {
 	uint32_t	major;
 	uint32_t	minor;
 };

@@ -658,10 +658,10 @@ pub struct fuse_entry_out {
     pub attr: fuse_attr,
 }
 
-// ~ ABI 7.3
+// ~ ABI 7.3 (both fuse_init_in and fuse_init_out)
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
-pub struct fuse_init_out_compat_3 {
+pub struct fuse_init_in_out_compat_3 {
     pub major: u32,
     pub minor: u32,
 }
