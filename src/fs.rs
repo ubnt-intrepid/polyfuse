@@ -463,7 +463,7 @@ impl Worker {
         let span = tracing::debug_span!("handle_request", unique = ?header.unique());
         let _enter = span.enter();
 
-        let op = Operation::decode(header, arg)
+        let op = Operation::decode(self.global.session.config(), header, arg)
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
 
