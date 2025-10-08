@@ -167,7 +167,8 @@ impl KernelConfig {
             map_alignment: 0,
             flags2: 0,
             max_stack_depth: 0,
-            unused: [0; 6],
+            request_timeout: 0,
+            unused: [0; 11],
         }
     }
 }

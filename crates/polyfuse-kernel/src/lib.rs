@@ -1,16 +1,17 @@
 //! FUSE application binary interface for `polyfuse`.
 //!
-//! The binding is compatible with ABI 7.41 (Linux 6.12).
+//! The binding is compatible with ABI 7.44 (Linux 6.16.11).
 
 #![allow(nonstandard_style, clippy::identity_op)]
 
+use libc::{c_char, c_ulong};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes};
 
 /// The major version number of FUSE protocol.
 pub const FUSE_KERNEL_VERSION: u32 = 7;
 
 /// The minor version number of FUSE protocol.
-pub const FUSE_KERNEL_MINOR_VERSION: u32 = 41;
+pub const FUSE_KERNEL_MINOR_VERSION: u32 = 44;
 
 /// The minimum length of read buffer.
 pub const FUSE_MIN_READ_BUFFER: u32 = 8192;
@@ -88,6 +89,8 @@ pub const FUSE_PASSTHROUGH: u64 = 1 << 37;
 pub const FUSE_NO_EXPORT_SUPPORT: u64 = 1 << 38;
 pub const FUSE_HAS_RESEND: u64 = 1 << 39;
 pub const FUSE_ALLOW_IDMAP: u64 = 1 << 40;
+pub const FUSE_OVER_IO_URING: u64 = 1 << 41;
+pub const FUSE_REQUEST_TIMEOUT: u64 = 1 << 42;
 
 // CUSE INIT request/reply flags.
 pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0;
@@ -145,9 +148,14 @@ pub const FUSE_SETXATTR_ACL_KILL_SGID: u32 = 1 << 0;
 
 // Device ioctls
 pub const FUSE_DEV_IOC_MAGIC: u32 = 229;
-pub const FUSE_DEV_IOC_CLONE: u64 = libc::_IOR::<u32>(FUSE_DEV_IOC_MAGIC, 0);
-pub const FUSE_DEV_IOC_BACKING_OPEN: u64 = libc::_IOW::<fuse_backing_map>(FUSE_DEV_IOC_MAGIC, 1);
-pub const FUSE_DEV_IOC_BACKING_CLOSE: u64 = libc::_IOW::<u32>(FUSE_DEV_IOC_MAGIC, 2);
+pub const FUSE_DEV_IOC_CLONE: c_ulong = libc::_IOR::<u32>(FUSE_DEV_IOC_MAGIC, 0);
+pub const FUSE_DEV_IOC_BACKING_OPEN: c_ulong =
+    libc::_IOW::<fuse_backing_map>(FUSE_DEV_IOC_MAGIC, 1);
+pub const FUSE_DEV_IOC_BACKING_CLOSE: c_ulong = libc::_IOW::<u32>(FUSE_DEV_IOC_MAGIC, 2);
+
+// FUSE over io_uring.
+pub const FUSE_URING_IN_OUT_HEADER_SZ: usize = 128;
+pub const FUSE_URING_OP_IN_OUT_SZ: usize = 128;
 
 // ~ ABI 7.8
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -689,7 +697,8 @@ pub struct fuse_init_out {
     pub map_alignment: u16,
     pub flags2: u32,
     pub max_stack_depth: u32,
-    pub unused: [u32; 6],
+    pub request_timeout: u16,
+    pub unused: [u16; 11],
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -878,6 +887,7 @@ define_notify_code! {
     FUSE_NOTIFY_RETRIEVE = 5,
     FUSE_NOTIFY_DELETE = 6,
     FUSE_NOTIFY_RESEND = 7,
+    FUSE_NOTIFY_INC_EPOCH = 8,
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -1057,4 +1067,58 @@ pub struct fuse_ext_header {
 pub struct fuse_supp_groups {
     pub nr_groups: u32,
     pub groups: [u32; 0],
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_uring_ent_in_out {
+    pub flags: u64,
+    pub commit_id: u64,
+    pub payload_sz: u32,
+    pub padding: u32,
+    pub reserved: u64,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_uring_req_header {
+    pub in_out: [c_char; FUSE_URING_IN_OUT_HEADER_SZ],
+    pub op_in: [c_char; FUSE_URING_OP_IN_OUT_SZ],
+    pub ring_ent_in_out: fuse_uring_ent_in_out,
+}
+
+macro_rules! define_uring_cmd {
+    ($(
+        $(#[$m:meta])*
+        $VARIANT:ident = $val:expr,
+    )*) => {
+        $(
+            #[doc(hidden)]
+            pub const $VARIANT: u32 = $val;
+        )*
+
+        #[derive(Clone, Copy, Debug, PartialEq, Hash, TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        #[repr(u32)]
+        pub enum fuse_uring_cmd {
+            $(
+                $(#[$m])*
+                $VARIANT = $val,
+            )*
+        }
+    };
+}
+
+define_uring_cmd! {
+    FUSE_IO_URING_CMD_INVALID = 0,
+    FUSE_IO_URING_CMD_REGISTER = 1,
+    FUSE_IO_URING_CMD_COMMIT_AND_FETCH = 2,
+}
+
+#[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct fuse_uring_cmd_req {
+    pub flags: u64,
+    pub commit_id: u64,
+    pub qid: u16,
+    pub padding: [u8; 6],
 }
