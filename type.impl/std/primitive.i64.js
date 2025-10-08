@@ -1,0 +1,3 @@
+(function() {var type_impls = {
+"rustix":[["<section id=\"impl-Integer-for-i64\" class=\"impl\"><a class=\"src rightside\" href=\"src/rustix/path/dec_int.rs.html#142\">source</a><a href=\"#impl-Integer-for-i64\" class=\"anchor\">§</a><h3 class=\"code-header\">impl <a class=\"trait\" href=\"rustix/path/trait.Integer.html\" title=\"trait rustix::path::Integer\">Integer</a> for <a class=\"primitive\" href=\"https://doc.rust-lang.org/1.78.0/std/primitive.i64.html\">i64</a></h3></section>","Integer","rustix::ffi::c_long","rustix::ffi::c_longlong","rustix::timespec::Secs"]]
+};if (window.register_type_impls) {window.register_type_impls(type_impls);} else {window.pending_type_impls = type_impls;}})()

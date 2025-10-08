@@ -1,0 +1,3 @@
+(function() {var implementors = {
+"rustix":[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.78.0/core/borrow/trait.Borrow.html\" title=\"trait core::borrow::Borrow\">Borrow</a>&lt;<a class=\"primitive\" href=\"https://doc.rust-lang.org/1.78.0/std/primitive.str.html\">str</a>&gt; for <a class=\"struct\" href=\"rustix/net/netdevice/struct.InlinedName.html\" title=\"struct rustix::net::netdevice::InlinedName\">InlinedName</a>"]]
+};if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
