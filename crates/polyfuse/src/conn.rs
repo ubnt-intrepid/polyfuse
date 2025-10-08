@@ -1,7 +1,6 @@
 use libc::{c_int, c_void, iovec};
 use std::{
     cmp,
-    convert::TryInto,
     ffi::{OsStr, OsString},
     io,
     mem::{self, MaybeUninit},
@@ -321,18 +320,12 @@ fn receive_fd(reader: &UnixStream) -> io::Result<RawFd> {
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = cmsg.as_mut_ptr() as *mut c_void;
-    msg.msg_controllen = mem::size_of::<Cmsg>()
-        .try_into()
-        .expect("invalid control message length");
+    msg.msg_controllen = mem::size_of::<Cmsg>() as _;
     msg.msg_flags = 0;
 
     syscall! { recvmsg(reader.as_raw_fd(), &mut msg, 0) };
 
-    if msg.msg_controllen
-        < mem::size_of_val(&cmsg)
-            .try_into()
-            .expect("invalid control message length")
-    {
+    if msg.msg_controllen < mem::size_of_val(&cmsg) as _ {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "too short control message length",
