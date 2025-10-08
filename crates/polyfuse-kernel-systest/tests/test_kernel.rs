@@ -1,5 +1,6 @@
 #![allow(bad_style, deprecated, clippy::all)]
 
+use libc::*;
 use polyfuse_kernel::*;
 use std::mem::size_of;
 
