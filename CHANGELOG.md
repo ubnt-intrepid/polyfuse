@@ -5,6 +5,12 @@ This format is based on [Keep a Changelog], and this project adheres to [Semanti
 
 ## [Unreleased]
 
+## [0.5.1] (2025-10-08)
+* Dealing with type errors in musl target ([#228], thanks to [@delandtj])
+
+[#228]: https://github.com/ubnt-intrepid/polyfuse/pull/228
+[@delandtj]: https://github.com/delandtj
+
 ## [0.5.0] (2025-07-30)
 The purpose of this release is to upgrade the supported Rust edition and clarify the minimum supported Rust version (MSRV) in the metadata of published crates.
 Any breaking changes to the API are not contained in this release.
@@ -128,6 +134,7 @@ See the commit log for a detailed change history.
 <!-- links -->
 
 [Unreleased]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.5.0...HEAD
+[0.5.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ubnt-intrepid/polyfuse/compare/v0.4.0...v0.4.1
