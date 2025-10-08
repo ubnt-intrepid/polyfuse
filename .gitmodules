@@ -1,4 +1,0 @@
-[submodule "libfuse"]
-path = vendor/libfuse
-url = https://github.com/libfuse/libfuse.git
-ignore = dirty

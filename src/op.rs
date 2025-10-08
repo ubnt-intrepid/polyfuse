@@ -338,7 +338,8 @@ impl<'op> Operation<'op> {
             }
 
             fuse_opcode::FUSE_SETXATTR => {
-                let arg: &fuse_setxattr_in = decoder.fetch::<fuse_setxattr_in>()?;
+                // FIXME: treat setxattr_flags
+                let arg = decoder.fetch::<fuse_setxattr_in_compat_32>()?; // FUSE_SETXATTR_EXT を設定していないので常に compat
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
                 Ok(Operation::Setxattr(Setxattr {
@@ -579,7 +580,13 @@ impl<'op> Operation<'op> {
                 unreachable!()
             }
 
-            fuse_opcode::FUSE_IOCTL | fuse_opcode::CUSE_INIT => Err(Error::UnsupportedOpcode),
+            fuse_opcode::FUSE_IOCTL
+            | fuse_opcode::FUSE_SETUPMAPPING
+            | fuse_opcode::FUSE_REMOVEMAPPING
+            | fuse_opcode::FUSE_SYNCFS
+            | fuse_opcode::FUSE_TMPFILE
+            | fuse_opcode::FUSE_STATX
+            | fuse_opcode::CUSE_INIT => Err(Error::UnsupportedOpcode),
         }
     }
 }

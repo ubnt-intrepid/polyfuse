@@ -665,6 +665,7 @@ mod tests {
             uid: 100,
             gid: 100,
             pid: 7,
+            total_extlen: 0,
             padding: 0,
         });
         assert_eq!(payload.size(), mem::size_of::<fuse_in_header>());
@@ -679,7 +680,8 @@ mod tests {
                 100, 0, 0, 0, // uid
                 100, 0, 0, 0, // gid
                 7, 0, 0, 0, // gid
-                0, 0, 0, 0, // padding
+                0, 0, // total_extlen
+                0, 0, // padding
             ])
         );
     }
