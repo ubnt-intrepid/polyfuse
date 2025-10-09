@@ -12,12 +12,7 @@ use std::{
 };
 use zerocopy::{FromZeros as _, IntoBytes as _, TryFromBytes as _};
 
-const DEFAULT_MAX_PAGES_PER_REQ: usize = 32;
-const MAX_MAX_PAGES: usize = 256;
-
-const DEFAULT_MAX_WRITE: u32 = (FUSE_MIN_READ_BUFFER as usize
-    - mem::size_of::<fuse_in_header>()
-    - mem::size_of::<fuse_write_in>()) as u32;
+const FILESYSTEM_MAX_STACK_DEPTH: u32 = 2;
 
 // ==== KernelConfig ====
 
@@ -61,17 +56,21 @@ pub struct KernelConfig {
     /// the initialization process.
     pub max_write: u32,
 
-    /// The maximum number of pages attached each `FUSE_WRITE` request.
-    ///
-    /// This value will be automatically calculated during the initialization process.
-    pub max_pages: u16,
-
     /// The timestamp resolution supported by the filesystem.
     ///
     /// The setting value has the nanosecond unit and should be a power of 10.
     ///
     /// The default value is 1.
     pub time_gran: u32,
+
+    /// The maximum number of pages attached each `FUSE_WRITE` request.
+    pub max_pages: u16,
+
+    pub map_alignment: u16,
+
+    pub max_stack_depth: u32,
+
+    pub request_timeout: u16,
 
     /// The flags.
     pub flags: KernelFlags,
@@ -84,6 +83,11 @@ impl Default for KernelConfig {
 }
 
 impl KernelConfig {
+    const MIN_MAX_WRITE: u32 = FUSE_MIN_READ_BUFFER
+        - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32;
+    const DEFAULT_MAX_PAGES_PER_REQ: u16 = 32;
+    const MAX_MAX_PAGES: u16 = 256;
+
     pub const fn new() -> Self {
         Self {
             major: FUSE_KERNEL_VERSION,
@@ -91,9 +95,12 @@ impl KernelConfig {
             max_readahead: u32::MAX,
             max_background: 0,
             congestion_threshold: 0,
-            max_write: DEFAULT_MAX_WRITE,
-            max_pages: 0, // read only
+            max_write: Self::MIN_MAX_WRITE,
+            max_pages: Self::DEFAULT_MAX_PAGES_PER_REQ,
             time_gran: 1,
+            map_alignment: 0,
+            max_stack_depth: 0,
+            request_timeout: 0,
             flags: KernelFlags::new(),
         }
     }
@@ -109,83 +116,78 @@ impl KernelConfig {
         self.major = major;
         self.minor = cmp::min(self.minor, minor);
 
-        match init_in {
-            InitIn::Compat3(..) => {}
-            InitIn::Compat35(init_in) => {
-                self.negotiate_params_compat_35(init_in);
-            }
-            InitIn::Current(init_in) => {
-                self.negotiate_params(init_in);
-            }
+        if matches!(init_in, InitIn::Compat3(..)) {
+            // do nothing.
+            return Ok(());
         }
+
+        // update flags.
+        // * カーネル側の挙動を変更しないフラグ (SPLICE_READ など) は強制的にオンにする
+        // * カーネル側でサポートしていないフラグはクリアする
+        self.flags = (self.flags | KernelFlags::READ_ONLY) & init_in.flags();
+
+        // max_readahead: since ABI 7.6
+        // * 最小値は 4096 (それ未満の値を指定した場合、fc->max_readahead への代入時に強制的に上寄せされる)
+        self.max_readahead = cmp::min(self.max_readahead, init_in.max_readahead());
+        self.max_readahead = cmp::max(self.max_readahead, 4096);
+
+        // max_write: since ABI 7.6
+        // * 7.5 は対応するカーネルのバージョンが見つからなかったので欠番扱いにする
+        self.max_write = cmp::max(self.max_write, Self::MIN_MAX_WRITE);
+        self.max_write = cmp::min(
+            self.max_write,
+            (Self::MAX_MAX_PAGES as usize * page_size()) as u32,
+        );
+
+        // max_background/congestion_threshold: since ABI 7.13
+        // * max_background = 0 は許容される
+        // * congestion_threshold = 0 の場合は max_background * 3/4 に上書きする
+        // * max_background よりも大きい場合は下寄せする
+        if self.minor >= 13 {
+            if self.congestion_threshold == 0 {
+                self.congestion_threshold = self.max_background * 3 / 4;
+            }
+            self.congestion_threshold = cmp::min(self.congestion_threshold, self.max_background);
+        } else {
+            self.max_background = 0;
+            self.congestion_threshold = 0;
+        }
+
+        // time_gran: since ABI 7.13
+        // * 最も近い 10 のべき乗の値へと下寄せされる
+        // * 0 の場合は 1 にする
+        // * 最大値は 1_000_000_000
+        if self.minor >= 13 {
+            self.time_gran = 10u32.pow(cmp::max(self.time_gran, 1).ilog10());
+            self.time_gran = cmp::min(self.time_gran, 1_000_000_000);
+        } else {
+            self.time_gran = 0;
+        }
+
+        // max_pages: since ABI 7.28
+        // * FUSE_MAX_PAGES が有効化されている場合のみ（サーバ側から無効化できる）
+        // *
+        if self.minor >= 28 && self.flags.contains(KernelFlags::MAX_PAGES) {
+            self.max_pages = cmp::min(self.max_pages, Self::MAX_MAX_PAGES);
+        } else {
+            self.max_pages = 0;
+        }
+
+        if self.minor >= 40
+            && self.flags.contains(KernelFlags::PASSTHROUGH)
+                & !self.flags.contains(KernelFlags::WRITEBACK_CACHE)
+        {
+            self.max_stack_depth = cmp::min(self.max_stack_depth, FILESYSTEM_MAX_STACK_DEPTH);
+        } else {
+            self.flags.remove(KernelFlags::PASSTHROUGH);
+            self.max_stack_depth = 0;
+        }
+
+        // TODO: map_alignment(7.31~), request_timeout(7.43~)
+        self.map_alignment = 0;
+        self.request_timeout = 0;
 
         Ok(())
-    }
-
-    fn negotiate_params_compat_35(&mut self, init_in: &fuse_init_in_compat_35) {
-        let capable = KernelFlags::from_bits_truncate(init_in.flags);
-        self.flags |= KernelFlags::READ_ONLY;
-        self.flags &= capable;
-
-        self.max_readahead = cmp::min(self.max_readahead, init_in.max_readahead);
-
-        if self.congestion_threshold == 0 {
-            self.congestion_threshold = self.max_background * 3 / 4;
-        }
-        self.congestion_threshold = cmp::min(self.congestion_threshold, self.max_background);
-
-        self.max_write = cmp::max(
-            self.max_write,
-            FUSE_MIN_READ_BUFFER
-                - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32,
-        );
-
-        if self.flags.contains(KernelFlags::MAX_PAGES) {
-            self.max_write = cmp::min(self.max_write, (MAX_MAX_PAGES * page_size()) as u32);
-            self.max_pages = cmp::min(
-                self.max_write.div_ceil(page_size() as u32),
-                u16::max_value() as u32,
-            ) as u16;
-        } else {
-            self.max_write = cmp::min(
-                self.max_write,
-                (DEFAULT_MAX_PAGES_PER_REQ * page_size()) as u32,
-            );
-            self.max_pages = 0;
-        }
-    }
-
-    fn negotiate_params(&mut self, init_in: &fuse_init_in) {
-        let capable = KernelFlags::from_bits_truncate(init_in.flags);
-        self.flags |= KernelFlags::READ_ONLY;
-        self.flags &= capable;
-
-        self.max_readahead = cmp::min(self.max_readahead, init_in.max_readahead);
-
-        if self.congestion_threshold == 0 {
-            self.congestion_threshold = self.max_background * 3 / 4;
-        }
-        self.congestion_threshold = cmp::min(self.congestion_threshold, self.max_background);
-
-        self.max_write = cmp::max(
-            self.max_write,
-            FUSE_MIN_READ_BUFFER
-                - (mem::size_of::<fuse_in_header>() + mem::size_of::<fuse_write_in>()) as u32,
-        );
-
-        if self.flags.contains(KernelFlags::MAX_PAGES) {
-            self.max_write = cmp::min(self.max_write, (MAX_MAX_PAGES * page_size()) as u32);
-            self.max_pages = cmp::min(
-                self.max_write.div_ceil(page_size() as u32),
-                u16::max_value() as u32,
-            ) as u16;
-        } else {
-            self.max_write = cmp::min(
-                self.max_write,
-                (DEFAULT_MAX_PAGES_PER_REQ * page_size()) as u32,
-            );
-            self.max_pages = 0;
-        }
     }
 
     const fn to_out(&self) -> InitOut {
@@ -199,7 +201,7 @@ impl KernelConfig {
                 major: self.major,
                 minor: self.minor,
                 max_readahead: self.max_readahead,
-                flags: self.flags.bits(),
+                flags: (self.flags.bits() & (u32::MAX as u64)) as _,
                 max_background: self.max_background,
                 congestion_threshold: self.congestion_threshold,
                 max_write: self.max_write,
@@ -209,16 +211,16 @@ impl KernelConfig {
                 major: self.major,
                 minor: self.minor,
                 max_readahead: self.max_readahead,
-                flags: self.flags.bits(),
+                flags: (self.flags.bits() & (u32::MAX as u64)) as _,
                 max_background: self.max_background,
                 congestion_threshold: self.congestion_threshold,
                 max_write: self.max_write,
                 time_gran: self.time_gran,
                 max_pages: self.max_pages,
-                map_alignment: 0,
-                flags2: 0,
-                max_stack_depth: 0,
-                request_timeout: 0,
+                map_alignment: self.map_alignment,
+                flags2: ((self.flags.bits() >> 32) & (u32::MAX as u64)) as _,
+                max_stack_depth: self.max_stack_depth,
+                request_timeout: self.request_timeout,
                 unused: [0; 11],
             })
         }
@@ -234,21 +236,15 @@ enum InitIn<'a> {
 
 impl<'a> InitIn<'a> {
     fn from_bytes(bytes: &'a [u8]) -> Option<Self> {
-        let arg = (bytes.len() >= mem::size_of::<fuse_init_in_out_compat_3>())
-            .then(|| {
-                fuse_init_in_out_compat_3::try_ref_from_bytes(
-                    &bytes[..mem::size_of::<fuse_init_in_out_compat_3>()],
-                )
-                .ok()
-            })
-            .flatten()?;
+        let (arg, _) = fuse_init_in_out_compat_3::try_ref_from_prefix(bytes).ok()?;
         if arg.minor <= 3 {
             Some(Self::Compat3(arg))
         } else if arg.minor <= 35 {
-            let arg = fuse_init_in_compat_35::try_ref_from_bytes(bytes).ok()?;
+            let (arg, _) = fuse_init_in_compat_35::try_ref_from_prefix(bytes).ok()?;
             Some(Self::Compat35(arg))
         } else {
-            let arg = fuse_init_in::try_ref_from_bytes(bytes).ok()?;
+            // fuse_init_in 側は FUSE_INIT_EXT の有無に関わらず sizeof(fuse_init_in) 分だけ送信される
+            let (arg, _) = fuse_init_in::try_ref_from_prefix(bytes).ok()?;
             Some(Self::Current(arg))
         }
     }
@@ -258,6 +254,24 @@ impl<'a> InitIn<'a> {
             Self::Compat3(arg) => (arg.major, arg.minor),
             Self::Compat35(arg) => (arg.major, arg.minor),
             Self::Current(arg) => (arg.major, arg.minor),
+        }
+    }
+
+    pub const fn flags(&self) -> KernelFlags {
+        match *self {
+            Self::Compat3(..) => KernelFlags::empty(),
+            Self::Compat35(arg) => KernelFlags::from_bits_truncate(arg.flags as u64),
+            Self::Current(arg) => {
+                KernelFlags::from_bits_truncate((arg.flags as u64) | ((arg.flags2 as u64) << 32))
+            }
+        }
+    }
+
+    pub const fn max_readahead(&self) -> u32 {
+        match *self {
+            Self::Compat35(arg) => arg.max_readahead,
+            Self::Current(arg) => arg.max_readahead,
+            _ => 0,
         }
     }
 }
@@ -291,53 +305,53 @@ enum NegotiationError {
 bitflags::bitflags! {
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct KernelFlags: u32 {
+    pub struct KernelFlags: u64 {
         /// Indicates whether the kernel do readahead asynchronously or not.
-        const ASYNC_READ = FUSE_ASYNC_READ;
+        const ASYNC_READ = FUSE_ASYNC_READ as _;
 
         /// Indicates whether the kernel does not filtered the `O_TRUNC` open_flag
         /// out or not.
-        const ATOMIC_O_TRUNC = FUSE_ATOMIC_O_TRUNC;
+        const ATOMIC_O_TRUNC = FUSE_ATOMIC_O_TRUNC as _;
 
         /// The kernel check the validity of attributes on every read.
-        const AUTO_INVAL_DATA = FUSE_AUTO_INVAL_DATA;
+        const AUTO_INVAL_DATA = FUSE_AUTO_INVAL_DATA as _;
 
         /// The filesystem supports asynchronous direct I/O submission.
-        const ASYNC_DIO = FUSE_ASYNC_DIO;
+        const ASYNC_DIO = FUSE_ASYNC_DIO as _;
 
         /// The kernel supports parallel directory operations.
-        const PARALLEL_DIROPS = FUSE_PARALLEL_DIROPS;
+        const PARALLEL_DIROPS = FUSE_PARALLEL_DIROPS as _;
 
         /// The filesystem is responsible for unsetting setuid and setgid bits
         /// when a file is written, truncated, or its owner is changed.
-        const HANDLE_KILLPRIV = FUSE_HANDLE_KILLPRIV;
+        const HANDLE_KILLPRIV = FUSE_HANDLE_KILLPRIV as _;
 
         /// The filesystem supports the POSIX-style file lock.
-        const POSIX_LOCKS = FUSE_POSIX_LOCKS;
+        const POSIX_LOCKS = FUSE_POSIX_LOCKS as _;
 
         /// The filesystem supports the `flock` handling.
-        const FLOCK_LOCKS = FUSE_FLOCK_LOCKS;
+        const FLOCK_LOCKS = FUSE_FLOCK_LOCKS as _;
 
         /// The filesystem supports lookups of `"."` and `".."`.
-        const EXPORT_SUPPORT = FUSE_EXPORT_SUPPORT;
+        const EXPORT_SUPPORT = FUSE_EXPORT_SUPPORT as _;
 
         /// The kernel should not apply the umask to the file mode
         /// on `mknod`, `mkdir` and `create` operations.
-        const DONT_MASK = FUSE_DONT_MASK;
+        const DONT_MASK = FUSE_DONT_MASK as _;
 
         /// The kernel should enable writeback caching.
-        const WRITEBACK_CACHE = FUSE_WRITEBACK_CACHE;
+        const WRITEBACK_CACHE = FUSE_WRITEBACK_CACHE as _;
 
         /// The filesystem supports POSIX access control lists.
-        const POSIX_ACL = FUSE_POSIX_ACL;
+        const POSIX_ACL = FUSE_POSIX_ACL as _;
 
         /// The filesystem supports `readdirplus` operations.
-        const DO_READDIRPLUS = FUSE_DO_READDIRPLUS;
+        const DO_READDIRPLUS = FUSE_DO_READDIRPLUS as _;
 
         /// The kernel uses the adaptive readdirplus.
         ///
         /// This option is meaningful only if `readdirplus` is enabled.
-        const READDIRPLUS_AUTO = FUSE_READDIRPLUS_AUTO;
+        const READDIRPLUS_AUTO = FUSE_READDIRPLUS_AUTO as _;
 
         /// Specify whether the kernel supports for zero-message opens.
         ///
@@ -345,48 +359,76 @@ bitflags::bitflags! {
         /// for a `FUSE_OPEN` request as successful and does not send
         /// subsequent `open` requests.  Otherwise, the filesystem should
         /// implement the handler for `open` requests appropriately.
-        const NO_OPEN_SUPPORT = FUSE_NO_OPEN_SUPPORT;
+        const NO_OPEN_SUPPORT = FUSE_NO_OPEN_SUPPORT as _;
 
         /// Specify whether the kernel supports for zero-message opendirs.
         ///
         /// See the documentation of `no_open_support` for details.
-        const NO_OPENDIR_SUPPORT = FUSE_NO_OPENDIR_SUPPORT;
+        const NO_OPENDIR_SUPPORT = FUSE_NO_OPENDIR_SUPPORT as _;
 
         /// Indicates whether the content of `FUSE_READLINK` replies are cached or not.
-        const CACHE_SYMLINKS = FUSE_CACHE_SYMLINKS;
+        const CACHE_SYMLINKS = FUSE_CACHE_SYMLINKS as _;
 
         /// Indicates whether the kernel invalidate the page caches only on explicit
         /// requests.
-        const EXPLICIT_INVAL_DATA = FUSE_EXPLICIT_INVAL_DATA;
+        const EXPLICIT_INVAL_DATA = FUSE_EXPLICIT_INVAL_DATA as _;
 
         /// The kernel supports `splice(2)` read on the device.
         ///
         /// This flag is read-only.
-        const SPLICE_READ = FUSE_SPLICE_READ;
+        const SPLICE_READ = FUSE_SPLICE_READ as _;
 
         /// The kernel supports `splice(2)` write on the device.
         ///
         /// This flag is read-only.
-        const SPLICE_WRITE = FUSE_SPLICE_WRITE;
+        const SPLICE_WRITE = FUSE_SPLICE_WRITE as _;
 
         /// The kernel supports `splice(2)` move on the device.
         ///
         /// This flag is read-only.
-        const SPLICE_MOVE = FUSE_SPLICE_MOVE;
+        const SPLICE_MOVE = FUSE_SPLICE_MOVE as _;
 
         /// The filesystem can handle `FUSE_WRITE` requests with the size larger
         /// than 4KB.
         ///
         /// This flag is read-only.
-        const BIG_WRITES = FUSE_BIG_WRITES;
-
-        const MAX_PAGES = FUSE_MAX_PAGES;
+        const BIG_WRITES = FUSE_BIG_WRITES as _;
 
         /// Reading from device will return `ECONNABORTED` rather than `ENODEV`
         /// if the connection is aborted via `fusectl`.
         ///
         /// This flag is read-only.
-        const ABORT_ERROR = FUSE_ABORT_ERROR;
+        const ABORT_ERROR = FUSE_ABORT_ERROR as _;
+
+        // TODO: add doc
+        const MAX_PAGES = FUSE_MAX_PAGES as _;
+
+        const MAP_ALIGNMENT = FUSE_MAP_ALIGNMENT as _;
+
+        /// This flag is read-only.
+        const SUBMOUNTS = FUSE_SUBMOUNTS as _;
+
+        const HANDLE_KILLPRIV_V2 = FUSE_HANDLE_KILLPRIV_V2 as _;
+        const SETATTR_EXT = FUSE_SETXATTR_EXT as _;
+        const INIT_EXT = FUSE_INIT_EXT as _;
+
+        const SECURITY_CTX = FUSE_SECURITY_CTX;
+        const HAS_INODE_DAX = FUSE_HAS_INODE_DAX;
+        const CREATE_SUPP_GROUP = FUSE_CREATE_SUPP_GROUP;
+
+        /// This flag is read-only.
+        const HAS_EXPIRE_ONLY = FUSE_HAS_EXPIRE_ONLY;
+
+        const DIRECT_IO_ALLOW_MMAP = FUSE_DIRECT_IO_ALLOW_MMAP;
+        const PASSTHROUGH = FUSE_PASSTHROUGH;
+        const NO_EXPORT_SUPPORT = FUSE_NO_EXPORT_SUPPORT;
+
+        /// This flag is read-only.
+        const HAS_RESEND = FUSE_HAS_RESEND;
+
+        const ALLOW_IDMAP = FUSE_ALLOW_IDMAP;
+        const OVER_IO_URING = FUSE_OVER_IO_URING;
+        const REQUEST_TIMEOUT = FUSE_REQUEST_TIMEOUT;
     }
 }
 
@@ -411,7 +453,10 @@ impl KernelFlags {
         .union(Self::SPLICE_MOVE)
         .union(Self::BIG_WRITES)
         .union(Self::MAX_PAGES)
-        .union(Self::ABORT_ERROR);
+        .union(Self::ABORT_ERROR)
+        .union(Self::SUBMOUNTS)
+        .union(Self::HAS_EXPIRE_ONLY)
+        .union(Self::HAS_RESEND);
 }
 
 // ==== Session ====
@@ -453,14 +498,6 @@ impl Session {
             }
 
             let init_in = InitIn::from_bytes(arg).ok_or(Errno::INVAL)?;
-
-            // tracing::debug!("INIT request:");
-            // tracing::debug!("  version = {}.{}:", init_in.major, init_in.minor);
-            // tracing::debug!(
-            //     "  capable flags = {:?}",
-            //     KernelFlags::from_bits_truncate(init_in.flags)
-            // );
-            // tracing::debug!("  max_readahead = 0x{:08X}", init_in.max_readahead);
 
             match config.negotiate(init_in) {
                 Ok(()) => (),
@@ -507,18 +544,6 @@ impl Session {
                     continue;
                 }
             }
-
-            tracing::debug!("Reply to INIT:");
-            tracing::debug!("  proto = {}.{}:", config.major, config.minor);
-            tracing::debug!("  flags = {:?}", config.flags);
-            tracing::debug!("  max_readahead = 0x{:08X}", config.max_readahead);
-            tracing::debug!("  max_write = 0x{:08X}", config.max_write);
-            tracing::debug!("  max_background = 0x{:04X}", config.max_background);
-            tracing::debug!(
-                "  congestion_threshold = 0x{:04X}",
-                config.congestion_threshold
-            );
-            tracing::debug!("  time_gran = {}", config.time_gran);
 
             send_msg(
                 &mut conn,
@@ -688,26 +713,27 @@ mod tests {
 
     #[test]
     fn negotiate_default() {
-        let init_in = fuse_init_in_compat_35 {
+        let flags = KernelFlags::all();
+        let init_in = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION.saturating_add(20),
-            max_readahead: 40,
-            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
+            max_readahead: 8000,
+            flags: flags.bits() as _,
+            flags2: (flags.bits() >> 32) as _,
+            unused: [0; 11],
         };
-        let init_in = InitIn::Compat35(&init_in);
+        let init_in = InitIn::Current(&init_in);
 
         let mut config = KernelConfig::default();
         config.negotiate(init_in).unwrap();
 
-        let expected_max_pages = DEFAULT_MAX_WRITE.div_ceil(page_size() as u32) as u16;
-
         assert_eq!(config.major, FUSE_KERNEL_VERSION);
         assert_eq!(config.minor, FUSE_KERNEL_MINOR_VERSION);
-        assert_eq!(config.max_readahead, 40);
+        assert_eq!(config.max_readahead, 8000);
         assert_eq!(config.max_background, 0);
         assert_eq!(config.congestion_threshold, 0);
-        assert_eq!(config.max_write, DEFAULT_MAX_WRITE);
-        assert_eq!(config.max_pages, expected_max_pages);
+        assert_eq!(config.max_write, KernelConfig::MIN_MAX_WRITE);
+        assert_eq!(config.max_pages, KernelConfig::DEFAULT_MAX_PAGES_PER_REQ);
         assert_eq!(config.time_gran, 1);
         assert_eq!(
             config.flags,
@@ -721,7 +747,7 @@ mod tests {
             major: FUSE_KERNEL_VERSION + 1,
             minor: 9999,
             max_readahead: 0,
-            flags: KernelFlags::all().bits() | FUSE_MAX_PAGES,
+            flags: KernelFlags::all().bits() as _,
         };
         let init_in = InitIn::Compat35(&init_in);
 
@@ -746,31 +772,34 @@ mod tests {
 
     #[test]
     fn test_disabled_max_pages() {
-        let init_in = fuse_init_in_compat_35 {
+        let flags = KernelFlags::all() & !KernelFlags::MAX_PAGES;
+        let init_in = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
-            max_readahead: 40,
-            flags: (KernelFlags::all().bits() | FUSE_MAX_PAGES) & !FUSE_MAX_PAGES,
+            max_readahead: 99,
+            flags: flags.bits() as _,
+            flags2: (flags.bits() >> 32) as _,
+            unused: [0; 11],
         };
-        let init_in = InitIn::Compat35(&init_in);
+        let init_in = InitIn::Current(&init_in);
 
         let mut config = KernelConfig {
             max_pages: 42,
-            ..Default::default()
+            ..KernelConfig::new()
         };
         config.negotiate(init_in).unwrap();
 
         assert_eq!(config.major, FUSE_KERNEL_VERSION);
         assert_eq!(config.minor, FUSE_KERNEL_MINOR_VERSION);
-        assert_eq!(config.max_readahead, 40);
+        assert_eq!(config.max_readahead, 4096);
         assert_eq!(config.max_background, 0);
         assert_eq!(config.congestion_threshold, 0);
-        assert_eq!(config.max_write, DEFAULT_MAX_WRITE);
+        assert_eq!(config.max_write, KernelConfig::MIN_MAX_WRITE);
         assert_eq!(config.max_pages, 0);
         assert_eq!(config.time_gran, 1);
         assert_eq!(
             config.flags,
-            (KernelFlags::default() | KernelFlags::READ_ONLY) & !KernelFlags::MAX_PAGES
+            (KernelFlags::new() | KernelFlags::READ_ONLY) & !KernelFlags::MAX_PAGES
         );
     }
 
