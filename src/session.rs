@@ -176,7 +176,7 @@ impl KernelConfig {
 
         if self.minor >= 40
             && self.flags.contains(KernelFlags::PASSTHROUGH)
-                & !self.flags.contains(KernelFlags::WRITEBACK_CACHE)
+            && !self.flags.contains(KernelFlags::WRITEBACK_CACHE)
         {
             self.max_stack_depth = cmp::min(self.max_stack_depth, FILESYSTEM_MAX_STACK_DEPTH);
         } else {
