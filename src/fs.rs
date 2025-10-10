@@ -1,8 +1,9 @@
 use crate::{
-    bytes::{Bytes, ToBytes},
+    bytes::Bytes,
     conn::Connection,
     mount::{Mount, MountOptions},
     op::{self, Forget, Operation},
+    reply::ReplyArg,
     request::{FallbackBuf, RequestBuf, RequestHeader, SpliceBuf},
     session::{KernelConfig, KernelFlags, Session},
     types::{NodeID, NotifyID, PollWakeupID},
@@ -310,7 +311,7 @@ impl Request<'_> {
 
     pub fn reply<B>(self, arg: B) -> Result
     where
-        B: ToBytes,
+        B: ReplyArg,
     {
         self.global
             .session
@@ -463,7 +464,7 @@ impl Worker {
         let span = tracing::debug_span!("handle_request", unique = ?header.unique());
         let _enter = span.enter();
 
-        let op = Operation::decode(header, arg)
+        let op = Operation::decode(self.global.session.config(), header, arg)
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         tracing::debug!(?op);
 

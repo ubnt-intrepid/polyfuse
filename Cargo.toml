@@ -30,6 +30,7 @@ zerocopy = "0.8.26"
 
 [dev-dependencies]
 anyhow = "1"
+bytes = "1.10.1"
 chrono = "0.4.41"
 dashmap = "6.1"
 pico-args = "0.5"

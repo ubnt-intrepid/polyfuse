@@ -3,7 +3,7 @@
 use polyfuse::{
     mount::{mount, MountOptions},
     op::{self, Operation},
-    reply::AttrOut,
+    reply::{self, AttrOut},
     request::{FallbackBuf, RequestHeader, ToRequestParts as _},
     session::{KernelConfig, Session},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     let mut buf = FallbackBuf::new(session.request_buffer_size());
     while session.recv_request(&mut conn, &mut buf)? {
         let (header, arg, _remains) = buf.to_request_parts();
-        match Operation::decode(header, arg)? {
+        match Operation::decode(session.config(), header, arg)? {
             // Dispatch your callbacks to the supported operations...
             Operation::Getattr(op) => getattr(&session, &mut conn, header, op)?,
             Operation::Read(op) => read(&session, &mut conn, header, op)?,
@@ -106,5 +106,5 @@ fn read(
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    session.send_reply(conn, header.unique(), None, data)
+    session.send_reply(conn, header.unique(), None, reply::Raw(data))
 }

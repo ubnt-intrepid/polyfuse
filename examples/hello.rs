@@ -5,7 +5,7 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op,
-    reply::{AttrOut, EntryOut, ReaddirOut},
+    reply::{self, AttrOut, EntryOut, ReaddirOut},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
 
@@ -154,7 +154,7 @@ impl Filesystem for Hello {
             data = &data[..std::cmp::min(data.len(), size)];
         }
 
-        req.reply(data)
+        req.reply(reply::Raw(data))
     }
 
     fn readdir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readdir<'_>) -> fs::Result {

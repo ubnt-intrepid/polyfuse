@@ -5,7 +5,7 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op::{self, SetxattrFlags},
-    reply::{AttrOut, EntryOut, OpenOut, OpenOutFlags, ReaddirOut, WriteOut, XattrOut},
+    reply::{self, AttrOut, EntryOut, OpenOut, OpenOutFlags, ReaddirOut, WriteOut, XattrOut},
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID},
 };
 
@@ -365,7 +365,7 @@ impl Filesystem for MemFS {
     fn readlink(self: &Arc<Self>, req: fs::Request<'_>, op: op::Readlink<'_>) -> fs::Result {
         let inode = self.inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let link = inode.as_symlink().ok_or(Errno::INVAL)?;
-        req.reply(link)
+        req.reply(reply::Raw(link))
     }
 
     fn opendir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Opendir<'_>) -> fs::Result {
@@ -566,7 +566,7 @@ impl Filesystem for MemFS {
                 if value.len() as u32 > size {
                     return Err(Errno::RANGE.into());
                 }
-                req.reply(value)
+                req.reply(reply::Raw(value))
             }
         }
     }
@@ -625,7 +625,7 @@ impl Filesystem for MemFS {
                     return Err(Errno::RANGE.into());
                 }
 
-                req.reply(names)
+                req.reply(reply::Raw(names))
             }
         }
     }
@@ -654,7 +654,7 @@ impl Filesystem for MemFS {
         let content = content.get(offset..).unwrap_or(&[]);
         let content = &content[..std::cmp::min(content.len(), size)];
 
-        req.reply(content)
+        req.reply(reply::Raw(content))
     }
 
     fn write(

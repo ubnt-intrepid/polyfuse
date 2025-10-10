@@ -1,6 +1,7 @@
 use crate::{
     bytes::{DecodeError, Decoder},
     request::RequestHeader,
+    session::KernelConfig,
     types::{
         DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
         PollEvents, PollWakeupID, RequestID,
@@ -88,7 +89,11 @@ pub enum Operation<'op> {
 }
 
 impl<'op> Operation<'op> {
-    pub fn decode(header: &'op RequestHeader, arg: &'op [u8]) -> Result<Self, Error> {
+    pub fn decode(
+        config: &KernelConfig,
+        header: &'op RequestHeader,
+        arg: &'op [u8],
+    ) -> Result<Self, Error> {
         let opcode = header.opcode().map_err(|_| Error::UnsupportedOpcode)?;
 
         let mut decoder = Decoder::new(arg);
@@ -198,6 +203,18 @@ impl<'op> Operation<'op> {
                 }))
             }
 
+            fuse_opcode::FUSE_MKNOD if config.minor <= 11 => {
+                let arg: &fuse_mknod_in_compat_11 = decoder.fetch()?;
+                let name = decoder.fetch_str()?;
+                Ok(Operation::Mknod(Mknod {
+                    parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
+                    name,
+                    mode: FileMode::from_raw(arg.mode),
+                    rdev: DeviceID::from_kernel_dev(arg.rdev),
+                    umask: FilePermissions::empty(),
+                }))
+            }
+
             fuse_opcode::FUSE_MKNOD => {
                 let arg: &fuse_mknod_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
@@ -296,6 +313,19 @@ impl<'op> Operation<'op> {
                 }))
             }
 
+            fuse_opcode::FUSE_WRITE if config.minor <= 8 => {
+                let arg: &fuse_write_in_compat_8 = decoder.fetch()?;
+                Ok(Operation::Write(Write {
+                    ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
+                    fh: FileID::from_raw(arg.fh),
+                    offset: arg.offset,
+                    size: arg.size,
+                    options: OpenOptions::from_raw(0),
+                    lock_owner: None,
+                    _marker: PhantomData,
+                }))
+            }
+
             fuse_opcode::FUSE_WRITE => {
                 let arg: &fuse_write_in = decoder.fetch()?;
                 Ok(Operation::Write(Write {
@@ -337,9 +367,21 @@ impl<'op> Operation<'op> {
                 }))
             }
 
+            fuse_opcode::FUSE_SETXATTR if config.minor <= 32 => {
+                let arg: &fuse_setxattr_in_compat_32 = decoder.fetch()?;
+                let name = decoder.fetch_str()?;
+                let value = decoder.fetch_bytes(arg.size as usize)?;
+                Ok(Operation::Setxattr(Setxattr {
+                    ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
+                    name,
+                    value,
+                    flags: SetxattrFlags::from_bits_truncate(arg.flags),
+                }))
+            }
+
             fuse_opcode::FUSE_SETXATTR => {
                 // FIXME: treat setxattr_flags
-                let arg = decoder.fetch::<fuse_setxattr_in_compat_32>()?; // FUSE_SETXATTR_EXT を設定していないので常に compat
+                let arg: &fuse_setxattr_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
                 Ok(Operation::Setxattr(Setxattr {

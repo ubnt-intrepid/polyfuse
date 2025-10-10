@@ -7,7 +7,9 @@ use polyfuse::{
     fs::{self, Daemon, Filesystem},
     mount::{MountFlags, MountOptions},
     op::{self, OpenFlags},
-    reply::{AttrOut, EntryOut, OpenOut, OpenOutFlags, ReaddirOut, StatfsOut, WriteOut, XattrOut},
+    reply::{
+        self, AttrOut, EntryOut, OpenOut, OpenOutFlags, ReaddirOut, StatfsOut, WriteOut, XattrOut,
+    },
     session::{KernelConfig, KernelFlags},
     types::{DeviceID, FileID, FileMode, FilePermissions, FileType, NodeID},
 };
@@ -320,7 +322,7 @@ impl Filesystem for Passthrough {
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let inode = inode.lock().unwrap();
         let link = inode.fd.readlinkat("")?;
-        req.reply(link)
+        req.reply(reply::Raw(link))
     }
 
     fn link(self: &Arc<Self>, req: fs::Request<'_>, op: op::Link<'_>) -> fs::Result {
@@ -520,7 +522,7 @@ impl Filesystem for Passthrough {
         let mut buf = Vec::<u8>::with_capacity(op.size as usize);
         file.take(op.size as u64).read_to_end(&mut buf)?;
 
-        req.reply(buf)
+        req.reply(reply::Raw(buf))
     }
 
     fn write(
@@ -620,7 +622,7 @@ impl Filesystem for Passthrough {
                 let mut value = vec![0u8; size as usize];
                 let n = nix::getxattr(inode.fd.procname(), op.name, Some(&mut value[..]))?;
                 value.resize(n as usize, 0);
-                req.reply(value)
+                req.reply(reply::Raw(value))
             }
         }
     }
@@ -644,7 +646,7 @@ impl Filesystem for Passthrough {
                 let mut value = vec![0u8; size as usize];
                 let n = nix::listxattr(inode.fd.procname(), Some(&mut value[..]))?;
                 value.resize(n as usize, 0);
-                req.reply(value)
+                req.reply(reply::Raw(value))
             }
         }
     }
