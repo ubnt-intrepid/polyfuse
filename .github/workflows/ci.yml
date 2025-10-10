@@ -1,4 +1,4 @@
-name: Test
+name: CI
 
 on:
   pull_request:
@@ -15,6 +15,7 @@ on:
 
 env:
   RUST_BACKTRACE: full
+  CARGO_TERM_COLOR: always
 
 permissions:
   contents: read # only fetching code is available
@@ -24,20 +25,11 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event.pull_request.draft == false
     steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
-
-    - name: Install APT dependencies
-      run: |
-        set -xe
-        sudo apt-get update -yqq
-        sudo apt-get install -yqq --no-install-recommends fuse
+    - uses: actions/checkout@v5
 
     - run: rustup set profile minimal
-
     - uses: taiki-e/install-action@nextest
-
+    - uses: taiki-e/install-action@cargo-llvm-cov
     - uses: Swatinem/rust-cache@v2
 
     - name: Run tests (MSRV)
@@ -54,16 +46,11 @@ jobs:
         set -xe
         cargo +stable nextest run
         cargo +stable test -p polyfuse-kernel-systest
-
-    - name: Run tests (beta)
-      run: |
-        set -xe
-        cargo +beta nextest run
-        cargo +beta test -p polyfuse-kernel-systest
-
-    - name: Run tests (nightly)
-      run: |
-        set -x
-        cargo +nightly nextest run
-        cargo +nightly test -p polyfuse-kernel-systest
-      continue-on-error: true
+  
+    - name: Run coverage test
+      id: coverage
+      run: cargo +stable llvm-cov --codecov --output-path codecov.json
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        files: codecov.json
