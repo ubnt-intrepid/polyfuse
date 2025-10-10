@@ -15,7 +15,7 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op::{self, Forget, OpenFlags},
-    reply::{AttrOut, EntryOut, OpenOut, OpenOutFlags, ReaddirOut, WriteOut},
+    reply::{self, AttrOut, EntryOut, OpenOut, OpenOutFlags, ReaddirOut, WriteOut},
     types::{FileID, FileType, NodeID},
 };
 
@@ -240,7 +240,7 @@ impl Filesystem for PathThrough {
         let inodes = &mut *self.inodes.lock().unwrap();
         let inode = inodes.get(op.ino).ok_or(Errno::NOENT)?;
         let path = std::fs::read_link(self.source.join(&inode.path))?;
-        req.reply(path.as_os_str())
+        req.reply(reply::Raw(path.as_os_str()))
     }
 
     fn opendir(self: &Arc<Self>, req: fs::Request<'_>, op: op::Opendir<'_>) -> fs::Result {
@@ -355,7 +355,7 @@ impl Filesystem for PathThrough {
         let files = &mut *self.files.lock().unwrap();
         let file = Slab::get_mut(files, op.fh.into_raw() as usize).ok_or(Errno::INVAL)?;
         let buf = file.read(op.offset, op.size as usize)?;
-        req.reply(buf)
+        req.reply(reply::Raw(buf))
     }
 
     fn write(

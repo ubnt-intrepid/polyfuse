@@ -1,6 +1,7 @@
 use crate::{
-    bytes::{Bytes, ToBytes},
+    bytes::Bytes,
     msg::{send_msg, MessageKind},
+    reply::ReplyArg,
     request::RequestBuf,
     types::RequestID,
 };
@@ -282,8 +283,8 @@ enum InitOut {
     Current(fuse_init_out),
 }
 
-impl ToBytes for InitOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl InitOut {
+    fn to_bytes(&self) -> &[u8] {
         match self {
             Self::Compat3(out) => out.as_bytes(),
             Self::Compat22(out) => out.as_bytes(),
@@ -545,13 +546,14 @@ impl Session {
                 }
             }
 
+            let out = config.to_out();
             send_msg(
                 &mut conn,
                 MessageKind::Reply {
                     unique: header.unique(),
                     error: None,
                 },
-                config.to_out(),
+                out.to_bytes(),
             )?;
 
             return Ok(Self {
@@ -690,9 +692,10 @@ impl Session {
     ) -> io::Result<()>
     where
         T: io::Write,
-        B: ToBytes,
+        B: ReplyArg,
     {
-        send_msg(conn, MessageKind::Reply { unique, error }, arg.to_bytes())
+        let bytes = arg.to_bytes(self.config.minor);
+        send_msg(conn, MessageKind::Reply { unique, error }, bytes)
             .or_else(|err| self.handle_reply_error(err))
     }
 
@@ -700,9 +703,9 @@ impl Session {
     pub fn send_notify<T, B>(&self, conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
     where
         T: io::Write,
-        B: ToBytes,
+        B: Bytes,
     {
-        send_msg(conn, MessageKind::Notify { code }, arg.to_bytes())
+        send_msg(conn, MessageKind::Notify { code }, arg)
             .or_else(|err| self.handle_reply_error(err))
     }
 }

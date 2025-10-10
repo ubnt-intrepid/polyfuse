@@ -11,7 +11,7 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op,
-    reply::{AttrOut, OpenOut, OpenOutFlags},
+    reply::{self, AttrOut, OpenOut, OpenOutFlags},
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, NotifyID},
 };
 
@@ -175,7 +175,7 @@ impl Filesystem for Heartbeat {
         let size = op.size as usize;
         let data = &inner.content.as_bytes()[offset..];
         let data = &data[..std::cmp::min(data.len(), size)];
-        req.reply(data)
+        req.reply(reply::Raw(data))
     }
 
     fn notify_reply(

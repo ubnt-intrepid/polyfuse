@@ -1,8 +1,9 @@
 use crate::{
-    bytes::{Bytes, ToBytes, POD},
+    bytes::{Bytes, POD},
     types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
 };
 use bitflags::bitflags;
+use either::Either;
 use polyfuse_kernel::*;
 use std::{borrow::Cow, ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
@@ -25,6 +26,80 @@ const fn to_fuse_attr(attr: &FileAttr) -> fuse_attr {
         rdev: attr.rdev.into_kernel_dev(),
         blksize: attr.blksize,
         flags: 0,
+    }
+}
+
+const fn to_fuse_attr_compat_8(attr: &FileAttr) -> fuse_attr_compat_8 {
+    fuse_attr_compat_8 {
+        ino: attr.ino.into_raw(),
+        size: attr.size,
+        blocks: attr.blocks,
+        atime: attr.atime.as_secs(),
+        mtime: attr.mtime.as_secs(),
+        ctime: attr.ctime.as_secs(),
+        atimensec: attr.atime.subsec_nanos(),
+        mtimensec: attr.mtime.subsec_nanos(),
+        ctimensec: attr.ctime.subsec_nanos(),
+        mode: attr.mode.into_raw(),
+        nlink: attr.nlink,
+        uid: attr.uid.as_raw(),
+        gid: attr.gid.as_raw(),
+        rdev: attr.rdev.into_kernel_dev(),
+    }
+}
+
+pub trait ReplyArg {
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_;
+}
+
+impl<T: ?Sized> ReplyArg for &T
+where
+    T: ReplyArg,
+{
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+        (**self).to_bytes(minor)
+    }
+}
+
+impl<T: ?Sized> ReplyArg for Box<T>
+where
+    T: ReplyArg,
+{
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+        (**self).to_bytes(minor)
+    }
+}
+
+impl<T: ?Sized> ReplyArg for std::rc::Rc<T>
+where
+    T: ReplyArg,
+{
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+        (**self).to_bytes(minor)
+    }
+}
+
+impl<T: ?Sized> ReplyArg for std::sync::Arc<T>
+where
+    T: ReplyArg,
+{
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+        (**self).to_bytes(minor)
+    }
+}
+
+impl ReplyArg for () {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {}
+}
+
+pub struct Raw<T: Bytes>(pub T);
+
+impl<T> ReplyArg for Raw<T>
+where
+    T: Bytes,
+{
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
+        &self.0
     }
 }
 
@@ -64,19 +139,32 @@ pub struct EntryOut<'a> {
     pub entry_valid: Option<Duration>,
 }
 
-impl ToBytes for EntryOut<'_> {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for EntryOut<'_> {
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+        let nodeid = self.ino.map_or(0, |ino| ino.into_raw());
         let entry_valid = self.entry_valid.unwrap_or_default();
         let attr_valid = self.attr_valid.unwrap_or_default();
-        POD(fuse_entry_out {
-            nodeid: self.ino.map_or(0, |ino| ino.into_raw()),
-            generation: self.generation,
-            entry_valid: entry_valid.as_secs(),
-            attr_valid: attr_valid.as_secs(),
-            entry_valid_nsec: entry_valid.subsec_nanos(),
-            attr_valid_nsec: attr_valid.subsec_nanos(),
-            attr: to_fuse_attr(&self.attr),
-        })
+        if minor <= 8 {
+            Either::Left(POD(fuse_entry_out_compat_8 {
+                nodeid,
+                generation: self.generation,
+                entry_valid: entry_valid.as_secs(),
+                attr_valid: attr_valid.as_secs(),
+                entry_valid_nsec: entry_valid.subsec_nanos(),
+                attr_valid_nsec: attr_valid.subsec_nanos(),
+                attr: to_fuse_attr_compat_8(&self.attr),
+            }))
+        } else {
+            Either::Right(POD(fuse_entry_out {
+                nodeid,
+                generation: self.generation,
+                entry_valid: entry_valid.as_secs(),
+                attr_valid: attr_valid.as_secs(),
+                entry_valid_nsec: entry_valid.subsec_nanos(),
+                attr_valid_nsec: attr_valid.subsec_nanos(),
+                attr: to_fuse_attr(&self.attr),
+            }))
+        }
     }
 }
 
@@ -86,15 +174,24 @@ pub struct AttrOut<'a> {
     pub valid: Option<Duration>,
 }
 
-impl ToBytes for AttrOut<'_> {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for AttrOut<'_> {
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
         let valid = self.valid.unwrap_or_default();
-        POD(fuse_attr_out {
-            attr_valid: valid.as_secs(),
-            attr_valid_nsec: valid.subsec_nanos(),
-            dummy: 0,
-            attr: to_fuse_attr(&self.attr),
-        })
+        if minor <= 8 {
+            Either::Left(POD(fuse_attr_out_compat_8 {
+                attr_valid: valid.as_secs(),
+                attr_valid_nsec: valid.subsec_nanos(),
+                dummy: 0,
+                attr: to_fuse_attr_compat_8(&self.attr),
+            }))
+        } else {
+            Either::Right(POD(fuse_attr_out {
+                attr_valid: valid.as_secs(),
+                attr_valid_nsec: valid.subsec_nanos(),
+                dummy: 0,
+                attr: to_fuse_attr(&self.attr),
+            }))
+        }
     }
 }
 
@@ -104,8 +201,8 @@ pub struct WriteOut {
     raw: fuse_write_out,
 }
 
-impl ToBytes for WriteOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for WriteOut {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
         self.raw.as_bytes()
     }
 }
@@ -127,8 +224,8 @@ pub struct OpenOut {
     pub open_flags: OpenOutFlags,
 }
 
-impl ToBytes for OpenOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for OpenOut {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
         POD(fuse_open_out {
             fh: self.fh.into_raw(),
             open_flags: self.open_flags.bits(),
@@ -164,9 +261,23 @@ pub struct StatfsOut {
     raw: fuse_statfs_out,
 }
 
-impl ToBytes for StatfsOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+impl ReplyArg for StatfsOut {
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+        if minor <= 3 {
+            Either::Left(POD(fuse_statfs_out_compat_3 {
+                st: fuse_kstatfs_compat_3 {
+                    blocks: self.raw.st.blocks,
+                    bfree: self.raw.st.bfree,
+                    bavail: self.raw.st.bavail,
+                    files: self.raw.st.files,
+                    ffree: self.raw.st.ffree,
+                    bsize: self.raw.st.bsize,
+                    namelen: self.raw.st.namelen,
+                },
+            }))
+        } else {
+            Either::Right(self.raw.as_bytes())
+        }
     }
 }
 
@@ -197,8 +308,8 @@ pub struct XattrOut {
     raw: fuse_getxattr_out,
 }
 
-impl ToBytes for XattrOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for XattrOut {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
         self.raw.as_bytes()
     }
 }
@@ -217,8 +328,8 @@ pub struct LkOut {
     raw: fuse_lk_out,
 }
 
-impl ToBytes for LkOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for LkOut {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
         self.raw.as_bytes()
     }
 }
@@ -244,8 +355,8 @@ pub struct BmapOut {
     raw: fuse_bmap_out,
 }
 
-impl ToBytes for BmapOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for BmapOut {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
         self.raw.as_bytes()
     }
 }
@@ -264,8 +375,8 @@ pub struct PollOut {
     raw: fuse_poll_out,
 }
 
-impl ToBytes for PollOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for PollOut {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
         self.raw.as_bytes()
     }
 }
@@ -286,8 +397,8 @@ pub struct LseekOut {
     raw: fuse_lseek_out,
 }
 
-impl ToBytes for LseekOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for LseekOut {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
         self.raw.as_bytes()
     }
 }
@@ -304,8 +415,8 @@ pub struct ReaddirOut {
     buf: Vec<u8>,
 }
 
-impl ToBytes for ReaddirOut {
-    fn to_bytes(&self) -> impl Bytes + '_ {
+impl ReplyArg for ReaddirOut {
+    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
         &self.buf
     }
 }

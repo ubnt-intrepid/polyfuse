@@ -1,7 +1,7 @@
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
     op::{self, AccessMode, OpenFlags},
-    reply::{AttrOut, OpenOut, OpenOutFlags, PollOut},
+    reply::{self, AttrOut, OpenOut, OpenOutFlags, PollOut},
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
     },
@@ -150,7 +150,9 @@ impl Filesystem for PollFS {
         let bufsize = op.size as usize;
         let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-        req.reply(&content[..std::cmp::min(content.len(), bufsize)])
+        req.reply(reply::Raw(
+            &content[..std::cmp::min(content.len(), bufsize)],
+        ))
     }
 
     fn poll(self: &Arc<Self>, req: fs::Request<'_>, op: op::Poll<'_>) -> fs::Result {

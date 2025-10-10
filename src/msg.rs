@@ -1,5 +1,5 @@
 use crate::{
-    bytes::{Bytes as _, ToBytes, POD},
+    bytes::{Bytes, POD},
     types::RequestID,
 };
 use polyfuse_kernel::{fuse_notify_code, fuse_out_header};
@@ -20,10 +20,8 @@ pub enum MessageKind {
 pub fn send_msg<T, B>(conn: T, kind: MessageKind, arg: B) -> io::Result<()>
 where
     T: io::Write,
-    B: ToBytes,
+    B: Bytes,
 {
-    let arg = arg.to_bytes();
-
     let len = (mem::size_of::<fuse_out_header>() + arg.size())
         .try_into()
         .map_err(|_| Errno::INVAL)?;
