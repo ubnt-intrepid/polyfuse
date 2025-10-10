@@ -713,6 +713,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{Buf as _, BufMut as _};
 
     #[test]
     fn negotiate_default() {
@@ -806,19 +807,68 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn config_to_args() {
-    //     let config = KernelConfig::default();
-    //     let arg = config.to_out();
+    #[test]
+    fn init_in_from_bytes() {
+        let mut input = vec![];
+        input.put_u32_ne(7);
+        input.put_u32_ne(2);
+        let parsed = InitIn::from_bytes(&input[..]).unwrap();
+        assert!(matches!(parsed, InitIn::Compat3(..)));
+        assert_eq!(parsed.protocol_version(), (7, 2));
+        assert_eq!(parsed.max_readahead(), 0);
+        assert_eq!(parsed.flags(), KernelFlags::empty());
 
-    //     assert_eq!(arg.major, config.major);
-    //     assert_eq!(arg.minor, config.minor);
-    //     assert_eq!(arg.max_readahead, config.max_readahead);
-    //     assert_eq!(arg.max_background, config.max_background);
-    //     assert_eq!(arg.congestion_threshold, config.congestion_threshold);
-    //     assert_eq!(arg.max_write, config.max_write);
-    //     assert_eq!(arg.max_pages, config.max_pages);
-    //     assert_eq!(arg.time_gran, config.time_gran);
-    //     assert_eq!(arg.flags, config.flags.bits());
-    // }
+        let mut input = vec![];
+        input.put_u32_ne(7);
+        input.put_u32_ne(32);
+        assert!(InitIn::from_bytes(&input[..]).is_none());
+        input.put_u32_ne(9876);
+        input.put_u32_ne(FUSE_POSIX_ACL);
+        let parsed = InitIn::from_bytes(&input[..]).unwrap();
+        assert!(matches!(parsed, InitIn::Compat35(..)));
+        assert_eq!(parsed.protocol_version(), (7, 32));
+        assert_eq!(parsed.max_readahead(), 9876);
+        assert_eq!(parsed.flags(), KernelFlags::POSIX_ACL);
+
+        let mut input = vec![];
+        input.put_u32_ne(7);
+        input.put_u32_ne(42);
+        input.put_u32_ne(8888);
+        input.put_u32_ne(FUSE_SPLICE_READ | FUSE_BIG_WRITES);
+        assert!(InitIn::from_bytes(&input[..]).is_none());
+        input.put_u32_ne((FUSE_ALLOW_IDMAP >> 32) as u32);
+        input.put_slice(&[0; 11 * mem::size_of::<u32>()]);
+        let parsed = InitIn::from_bytes(&input[..]).unwrap();
+        assert!(matches!(parsed, InitIn::Current(..)));
+        assert_eq!(parsed.protocol_version(), (7, 42));
+        assert_eq!(parsed.max_readahead(), 8888);
+        assert_eq!(
+            parsed.flags(),
+            KernelFlags::SPLICE_READ | KernelFlags::BIG_WRITES | KernelFlags::ALLOW_IDMAP
+        );
+    }
+
+    #[test]
+    fn config_to_out() {
+        let config = KernelConfig::default();
+        let out = config.to_out();
+        assert!(matches!(out, InitOut::Current(..)));
+
+        let mut bytes = out.to_bytes();
+        assert_eq!(bytes.len(), mem::size_of::<fuse_init_out>());
+        assert_eq!(bytes.get_u32_ne(), config.major);
+        assert_eq!(bytes.get_u32_ne(), config.minor);
+        assert_eq!(bytes.get_u32_ne(), config.max_readahead);
+        assert_eq!(bytes.get_u32_ne(), config.flags.bits() as u32);
+        assert_eq!(bytes.get_u16_ne(), config.max_background);
+        assert_eq!(bytes.get_u16_ne(), config.congestion_threshold);
+        assert_eq!(bytes.get_u32_ne(), config.max_write);
+        assert_eq!(bytes.get_u32_ne(), config.time_gran);
+        assert_eq!(bytes.get_u16_ne(), config.max_pages);
+        assert_eq!(bytes.get_u16_ne(), config.map_alignment);
+        assert_eq!(bytes.get_u32_ne(), (config.flags.bits() >> 32) as u32);
+        assert_eq!(bytes.get_u32_ne(), config.max_stack_depth);
+        assert_eq!(bytes.get_u16_ne(), config.request_timeout);
+        assert_eq!(bytes, [0u8; 22]);
+    }
 }
