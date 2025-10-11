@@ -463,9 +463,7 @@ impl Worker {
 
         let span = tracing::debug_span!("handle_request", unique = ?header.unique());
         let _enter = span.enter();
-
-        let op = Operation::decode(self.global.session.config(), header, arg)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let op = Operation::decode(self.global.session.config(), header, arg);
         tracing::debug!(?op);
 
         let req = Request {
@@ -476,55 +474,56 @@ impl Worker {
         };
 
         let result = match op {
-            Operation::Lookup(op) => fs.lookup(req, op),
-            Operation::Getattr(op) => fs.getattr(req, op),
-            Operation::Setattr(op) => fs.setattr(req, op),
-            Operation::Readlink(op) => fs.readlink(req, op),
-            Operation::Symlink(op) => fs.symlink(req, op),
-            Operation::Mknod(op) => fs.mknod(req, op),
-            Operation::Mkdir(op) => fs.mkdir(req, op),
-            Operation::Unlink(op) => fs.unlink(req, op),
-            Operation::Rmdir(op) => fs.rmdir(req, op),
-            Operation::Rename(op) => fs.rename(req, op),
-            Operation::Link(op) => fs.link(req, op),
-            Operation::Open(op) => fs.open(req, op),
-            Operation::Read(op) => fs.read(req, op),
-            Operation::Release(op) => fs.release(req, op),
-            Operation::Statfs(op) => fs.statfs(req, op),
-            Operation::Fsync(op) => fs.fsync(req, op),
-            Operation::Setxattr(op) => fs.setxattr(req, op),
-            Operation::Getxattr(op) => fs.getxattr(req, op),
-            Operation::Listxattr(op) => fs.listxattr(req, op),
-            Operation::Removexattr(op) => fs.removexattr(req, op),
-            Operation::Flush(op) => fs.flush(req, op),
-            Operation::Opendir(op) => fs.opendir(req, op),
-            Operation::Readdir(op) => fs.readdir(req, op),
-            Operation::Releasedir(op) => fs.releasedir(req, op),
-            Operation::Fsyncdir(op) => fs.fsyncdir(req, op),
-            Operation::Getlk(op) => fs.getlk(req, op),
-            Operation::Setlk(op) => fs.setlk(req, op),
-            Operation::Flock(op) => fs.flock(req, op),
-            Operation::Access(op) => fs.access(req, op),
-            Operation::Create(op) => fs.create(req, op),
-            Operation::Bmap(op) => fs.bmap(req, op),
-            Operation::Fallocate(op) => fs.fallocate(req, op),
-            Operation::CopyFileRange(op) => fs.copy_file_range(req, op),
-            Operation::Poll(op) => fs.poll(req, op),
-            Operation::Lseek(op) => fs.lseek(req, op),
-            Operation::Write(op) => fs.write(req, op, data),
-            Operation::NotifyReply(op) => {
+            Ok(Operation::Lookup(op)) => fs.lookup(req, op),
+            Ok(Operation::Getattr(op)) => fs.getattr(req, op),
+            Ok(Operation::Setattr(op)) => fs.setattr(req, op),
+            Ok(Operation::Readlink(op)) => fs.readlink(req, op),
+            Ok(Operation::Symlink(op)) => fs.symlink(req, op),
+            Ok(Operation::Mknod(op)) => fs.mknod(req, op),
+            Ok(Operation::Mkdir(op)) => fs.mkdir(req, op),
+            Ok(Operation::Unlink(op)) => fs.unlink(req, op),
+            Ok(Operation::Rmdir(op)) => fs.rmdir(req, op),
+            Ok(Operation::Rename(op)) => fs.rename(req, op),
+            Ok(Operation::Link(op)) => fs.link(req, op),
+            Ok(Operation::Open(op)) => fs.open(req, op),
+            Ok(Operation::Read(op)) => fs.read(req, op),
+            Ok(Operation::Release(op)) => fs.release(req, op),
+            Ok(Operation::Statfs(op)) => fs.statfs(req, op),
+            Ok(Operation::Fsync(op)) => fs.fsync(req, op),
+            Ok(Operation::Setxattr(op)) => fs.setxattr(req, op),
+            Ok(Operation::Getxattr(op)) => fs.getxattr(req, op),
+            Ok(Operation::Listxattr(op)) => fs.listxattr(req, op),
+            Ok(Operation::Removexattr(op)) => fs.removexattr(req, op),
+            Ok(Operation::Flush(op)) => fs.flush(req, op),
+            Ok(Operation::Opendir(op)) => fs.opendir(req, op),
+            Ok(Operation::Readdir(op)) => fs.readdir(req, op),
+            Ok(Operation::Releasedir(op)) => fs.releasedir(req, op),
+            Ok(Operation::Fsyncdir(op)) => fs.fsyncdir(req, op),
+            Ok(Operation::Getlk(op)) => fs.getlk(req, op),
+            Ok(Operation::Setlk(op)) => fs.setlk(req, op),
+            Ok(Operation::Flock(op)) => fs.flock(req, op),
+            Ok(Operation::Access(op)) => fs.access(req, op),
+            Ok(Operation::Create(op)) => fs.create(req, op),
+            Ok(Operation::Bmap(op)) => fs.bmap(req, op),
+            Ok(Operation::Fallocate(op)) => fs.fallocate(req, op),
+            Ok(Operation::CopyFileRange(op)) => fs.copy_file_range(req, op),
+            Ok(Operation::Poll(op)) => fs.poll(req, op),
+            Ok(Operation::Lseek(op)) => fs.lseek(req, op),
+            Ok(Operation::Write(op)) => fs.write(req, op, data),
+            Ok(Operation::NotifyReply(op)) => {
                 fs.notify_reply(op, data)?;
                 return Ok(());
             }
-            Operation::Forget(forgets) => {
+            Ok(Operation::Forget(forgets)) => {
                 fs.forget(forgets.as_ref());
                 return Ok(());
             }
-            Operation::Interrupt(op) => {
+            Ok(Operation::Interrupt(op)) => {
                 tracing::warn!("interrupted(unique={})", op.unique);
                 // TODO: handle interrupt requests.
                 Err(Error::Code(Errno::NOSYS))
             }
+            Err(..) => Err(Error::Code(Errno::NOSYS)),
         };
 
         match result {
