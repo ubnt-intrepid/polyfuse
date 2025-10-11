@@ -105,7 +105,8 @@ impl RequestHeader {
     #[inline]
     pub fn pid(&self) -> Option<Pid> {
         self.is_special_request()
-            .then(|| Pid::from_raw(self.raw.pid as i32).expect("invalid PID"))
+            .then(|| Pid::from_raw(self.raw.pid as i32))
+            .flatten()
     }
 
     fn arg_len(&self) -> usize {
@@ -207,11 +208,6 @@ where
         }
         self.pipe.read_exact(self.header.raw.as_mut_bytes())?;
 
-        if !self.header.is_special_request() && Pid::from_raw(self.header.raw.pid as i32).is_none()
-        {
-            Err(invalid_data("invalid process ID"))?;
-        }
-
         if len != self.header.raw.len as usize {
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of splice(2)",
@@ -269,11 +265,6 @@ where
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of readv(2)",
             ))?
-        }
-
-        if !self.header.is_special_request() && Pid::from_raw(self.header.raw.pid as i32).is_none()
-        {
-            Err(invalid_data("invalid process ID"))?;
         }
 
         self.pos = self.header.arg_len();
