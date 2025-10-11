@@ -90,22 +90,28 @@ impl RequestHeader {
     /// Return the user ID of the calling process.
     #[inline]
     pub fn uid(&self) -> Option<Uid> {
-        self.is_special_request()
-            .then(|| Uid::from_raw(self.raw.uid))
+        if self.is_special_request() {
+            return None;
+        }
+        Some(Uid::from_raw(self.raw.uid))
     }
 
     /// Return the group ID of the calling process.
     #[inline]
     pub fn gid(&self) -> Option<Gid> {
-        self.is_special_request()
-            .then(|| Gid::from_raw(self.raw.gid))
+        if self.is_special_request() {
+            return None;
+        }
+        Some(Gid::from_raw(self.raw.gid))
     }
 
     /// Return the process ID of the calling process.
     #[inline]
     pub fn pid(&self) -> Option<Pid> {
-        self.is_special_request()
-            .then(|| Pid::from_raw(self.raw.pid as i32).expect("invalid PID"))
+        if self.is_special_request() {
+            return None;
+        }
+        Pid::from_raw(self.raw.pid as i32)
     }
 
     fn arg_len(&self) -> usize {
@@ -207,11 +213,6 @@ where
         }
         self.pipe.read_exact(self.header.raw.as_mut_bytes())?;
 
-        if !self.header.is_special_request() && Pid::from_raw(self.header.raw.pid as i32).is_none()
-        {
-            Err(invalid_data("invalid process ID"))?;
-        }
-
         if len != self.header.raw.len as usize {
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of splice(2)",
@@ -269,11 +270,6 @@ where
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of readv(2)",
             ))?
-        }
-
-        if !self.header.is_special_request() && Pid::from_raw(self.header.raw.pid as i32).is_none()
-        {
-            Err(invalid_data("invalid process ID"))?;
         }
 
         self.pos = self.header.arg_len();
