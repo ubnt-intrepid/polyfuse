@@ -90,23 +90,28 @@ impl RequestHeader {
     /// Return the user ID of the calling process.
     #[inline]
     pub fn uid(&self) -> Option<Uid> {
-        self.is_special_request()
-            .then(|| Uid::from_raw(self.raw.uid))
+        if self.is_special_request() {
+            return None;
+        }
+        Some(Uid::from_raw(self.raw.uid))
     }
 
     /// Return the group ID of the calling process.
     #[inline]
     pub fn gid(&self) -> Option<Gid> {
-        self.is_special_request()
-            .then(|| Gid::from_raw(self.raw.gid))
+        if self.is_special_request() {
+            return None;
+        }
+        Some(Gid::from_raw(self.raw.gid))
     }
 
     /// Return the process ID of the calling process.
     #[inline]
     pub fn pid(&self) -> Option<Pid> {
-        self.is_special_request()
-            .then(|| Pid::from_raw(self.raw.pid as i32))
-            .flatten()
+        if self.is_special_request() {
+            return None;
+        }
+        Pid::from_raw(self.raw.pid as i32)
     }
 
     fn arg_len(&self) -> usize {
