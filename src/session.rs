@@ -588,80 +588,40 @@ impl Session {
     /// Receive an incoming FUSE request from the kernel.
     pub fn recv_request<T, B>(&self, mut conn: T, buf: &mut B) -> io::Result<bool>
     where
-        T: io::Write,
         B: RequestBuf<T>,
     {
-        while !self.exited() {
-            let header = match buf.receive(&mut conn) {
-                // ref: https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/fuse_lowlevel.c#L2865
-                Err(err) => match Errno::from_io_error(&err) {
-                    Some(Errno::NODEV) => {
-                        tracing::debug!("The connection has already been disconnected");
-                        self.exit();
-                        return Ok(false);
-                    }
-                    Some(Errno::INTR) => {
-                        tracing::debug!("The read operation is interrupted");
-                        continue;
-                    }
-                    #[allow(unreachable_patterns)]
-                    Some(Errno::AGAIN) | Some(Errno::WOULDBLOCK) => {
-                        return Err(err);
-                    }
-                    _ => {
-                        tracing::error!("failed to receive the FUSE request: {}", err);
-                        return Err(err);
-                    }
-                },
+        if self.exited() {
+            return Ok(false);
+        }
 
-                Ok((header, ..)) => header,
-            };
-
-            match header.opcode() {
-                Ok(fuse_opcode::FUSE_INIT) => {
-                    // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
-                    tracing::error!("unexpected FUSE_INIT request received");
-                    continue;
-                }
-
-                Ok(fuse_opcode::FUSE_DESTROY) => {
-                    // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
-                    tracing::debug!("FUSE_DESTROY received");
+        let header = match buf.receive(&mut conn) {
+            Err(err) => match Errno::from_io_error(&err) {
+                Some(Errno::NODEV) => {
                     self.exit();
                     return Ok(false);
                 }
+                _ => return Err(err),
+            },
+            Ok((header, ..)) => header,
+        };
 
-                Ok(opcode @ fuse_opcode::FUSE_IOCTL) | Ok(opcode @ fuse_opcode::CUSE_INIT) => {
-                    tracing::warn!(
-                        "unsupported opcode (unique={}, opcode={:?})",
-                        header.unique(),
-                        opcode
-                    );
-                    self.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?;
-                    continue;
-                }
-
-                Err(opcode) => {
-                    tracing::warn!(
-                        "The opcode `{}' is not recognized by the current version of polyfuse.",
-                        opcode
-                    );
-                    self.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?;
-                    continue;
-                }
-
-                Ok(opcode) => {
-                    tracing::debug!(
-                        "Got a request (unique={}, opcode={:?})",
-                        header.unique(),
-                        opcode
-                    );
-                    return Ok(true);
-                }
+        match header.opcode() {
+            Ok(fuse_opcode::FUSE_INIT) => {
+                // FUSE_INIT リクエストは Session の初期化時に処理しているはずなので、ここで読み込まれることはないはず
+                tracing::error!("unexpected FUSE_INIT request received");
+                return Err(Errno::PROTO.into());
             }
+
+            Ok(fuse_opcode::FUSE_DESTROY) => {
+                // TODO: FUSE_DESTROY 後にリクエストの読み込みを中断するかどうかを決める
+                tracing::debug!("FUSE_DESTROY received");
+                self.exit();
+                return Ok(false);
+            }
+            _ => (),
         }
 
-        Ok(false)
+        Ok(true)
     }
 
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
