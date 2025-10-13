@@ -102,7 +102,7 @@ impl FlockOp {
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum SetlkKind<'op> {
+pub(super) enum SetlkKind<'op> {
     Posix(Setlk<'op>),
     Flock(Flock<'op>),
 }

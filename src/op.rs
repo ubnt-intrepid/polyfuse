@@ -1,3 +1,5 @@
+#![deny(unreachable_pub)]
+
 mod attr;
 mod copy_file_range;
 mod create;
@@ -15,12 +17,13 @@ pub use copy_file_range::CopyFileRange;
 pub use create::Create;
 pub use dir::{Fsyncdir, Opendir, Readdir, ReaddirMode, Releasedir};
 pub use file::{
-    AccessMode, Fallocate, Flush, Fsync, Lseek, Open, OpenFlags, OpenOptions, Poll, Read, Release,
-    ReleaseFlags, Write,
+    AccessMode, Fallocate, FallocateFlags, Flush, Fsync, Lseek, Open, OpenFlags, OpenOptions, Poll,
+    Read, Release, ReleaseFlags, Whence, Write,
 };
 pub use forget::{Forget, Forgets};
 pub use inode::{
-    Access, Bmap, Link, Lookup, Mkdir, Mknod, Readlink, Rename, Rmdir, Statfs, Symlink, Unlink,
+    Access, Bmap, Link, Lookup, Mkdir, Mknod, Readlink, Rename, RenameFlags, Rmdir, Statfs,
+    Symlink, Unlink,
 };
 pub use interrupt::Interrupt;
 pub use lock::{Flock, FlockOp, Getlk, Setlk};
