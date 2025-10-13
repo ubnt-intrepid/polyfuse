@@ -450,7 +450,15 @@ impl Worker {
     where
         for<'a> B: RequestBuf<&'a Connection>,
     {
-        self.global.session.recv_request(&self.conn, buf)
+        loop {
+            match self.global.session.recv_request(&self.conn, buf) {
+                Err(err) => match err.kind() {
+                    io::ErrorKind::Interrupted => continue,
+                    _ => return Err(err),
+                },
+                Ok(received) => return Ok(received),
+            }
+        }
     }
 
     fn handle_request<T, B>(&mut self, buf: &mut B, fs: &Arc<T>) -> io::Result<()>
