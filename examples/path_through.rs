@@ -257,6 +257,7 @@ impl Filesystem for PathThrough {
         req.reply(OpenOut {
             fh: FileID::from_raw(fh),
             open_flags: OpenOutFlags::empty(),
+            backing_id: 0,
         })
     }
 
@@ -348,6 +349,7 @@ impl Filesystem for PathThrough {
         req.reply(OpenOut {
             fh: FileID::from_raw(fh),
             open_flags: OpenOutFlags::DIRECT_IO,
+            backing_id: 0,
         })
     }
 

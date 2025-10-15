@@ -4,14 +4,14 @@
 
 use polyfuse::{
     fs::{self, Daemon, Filesystem},
-    op::{self, SetxattrFlags},
+    op,
     reply::{self, AttrOut, EntryOut, OpenOut, OpenOutFlags, ReaddirOut, WriteOut, XattrOut},
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID},
 };
 
 use anyhow::{ensure, Context as _, Result};
 use dashmap::DashMap;
-use rustix::io::Errno;
+use rustix::{fs::XattrFlags, io::Errno};
 use slab::Slab;
 use std::{
     borrow::Cow,
@@ -384,6 +384,7 @@ impl Filesystem for MemFS {
         req.reply(OpenOut {
             fh: FileID::from_raw(key as u64),
             open_flags: OpenOutFlags::empty(),
+            backing_id: 0,
         })
     }
 
@@ -572,8 +573,8 @@ impl Filesystem for MemFS {
     }
 
     fn setxattr(self: &Arc<Self>, req: fs::Request<'_>, op: op::Setxattr<'_>) -> fs::Result {
-        let create = op.flags.contains(SetxattrFlags::CREATE);
-        let replace = op.flags.contains(SetxattrFlags::REPLACE);
+        let create = op.flags.contains(XattrFlags::CREATE);
+        let replace = op.flags.contains(XattrFlags::REPLACE);
         if create && replace {
             return Err(Errno::INVAL.into());
         }

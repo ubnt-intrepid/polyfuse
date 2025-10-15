@@ -10,7 +10,7 @@ use crate::{
 use bitflags::bitflags;
 use polyfuse_kernel::*;
 use rustix::{
-    fs::{Gid, Uid},
+    fs::{Gid, Uid, XattrFlags},
     process::Pid,
 };
 use std::{
@@ -324,7 +324,7 @@ impl<'op> Operation<'op> {
                     size: arg.size,
                     options: OpenOptions::from_raw(0),
                     lock_owner: None,
-                    flags: WriteFlags::empty(),
+                    flags: WriteInFlags::empty(),
                     _marker: PhantomData,
                 }))
             }
@@ -339,7 +339,7 @@ impl<'op> Operation<'op> {
                     options: OpenOptions::from_raw(arg.flags),
                     lock_owner: (arg.write_flags & FUSE_WRITE_LOCKOWNER != 0)
                         .then(|| LockOwnerID::from_raw(arg.lock_owner)),
-                    flags: WriteFlags::from_bits_truncate(arg.write_flags),
+                    flags: WriteInFlags::from_bits_truncate(arg.write_flags),
                     _marker: PhantomData,
                 }))
             }
@@ -381,8 +381,8 @@ impl<'op> Operation<'op> {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     value,
-                    flags: SetxattrFlags::from_bits_truncate(arg.flags),
-                    acl_kill_sgid: false,
+                    flags: XattrFlags::from_bits_truncate(arg.flags),
+                    extra_flags: SetxattrInFlags::empty(),
                 }))
             }
 
@@ -394,8 +394,8 @@ impl<'op> Operation<'op> {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     value,
-                    flags: SetxattrFlags::from_bits_truncate(arg.flags),
-                    acl_kill_sgid: arg.setxattr_flags & FUSE_SETXATTR_ACL_KILL_SGID != 0,
+                    flags: XattrFlags::from_bits_truncate(arg.flags),
+                    extra_flags: SetxattrInFlags::from_bits_truncate(arg.setxattr_flags),
                 }))
             }
 
@@ -1163,7 +1163,7 @@ pub struct Write<'op> {
     /// The identifier of lock owner.
     pub lock_owner: Option<LockOwnerID>,
 
-    pub flags: WriteFlags,
+    pub flags: WriteInFlags,
 
     _marker: PhantomData<&'op ()>,
 }
@@ -1171,7 +1171,7 @@ pub struct Write<'op> {
 bitflags! {
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct WriteFlags: u32 {
+    pub struct WriteInFlags: u32 {
         const CACHE = FUSE_WRITE_CACHE;
         const KILL_SUIDGID = FUSE_WRITE_KILL_SUIDGID;
     }
@@ -1255,17 +1255,16 @@ pub struct Setxattr<'op> {
     pub value: &'op [u8],
 
     /// The flags that specifies the meanings of this operation.
-    pub flags: SetxattrFlags,
+    pub flags: XattrFlags,
 
-    pub acl_kill_sgid: bool,
+    pub extra_flags: SetxattrInFlags,
 }
 
 bitflags! {
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct SetxattrFlags: u32 {
-        const CREATE = libc::XATTR_CREATE as u32;
-        const REPLACE = libc::XATTR_REPLACE as u32;
+    pub struct SetxattrInFlags: u32 {
+        const KILL_SUIDGID = FUSE_SETXATTR_ACL_KILL_SGID;
     }
 }
 

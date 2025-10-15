@@ -123,6 +123,7 @@ impl Filesystem for PollFS {
         req.reply(OpenOut {
             fh,
             open_flags: OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
+            backing_id: 0,
         })
     }
 

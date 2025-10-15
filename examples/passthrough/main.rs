@@ -446,6 +446,7 @@ impl Filesystem for Passthrough {
         req.reply(OpenOut {
             fh,
             open_flags: OpenOutFlags::empty(),
+            backing_id: 0,
         })
     }
 
@@ -509,6 +510,7 @@ impl Filesystem for Passthrough {
         req.reply(OpenOut {
             fh,
             open_flags: OpenOutFlags::DIRECT_IO,
+            backing_id: 0,
         })
     }
 

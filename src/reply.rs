@@ -222,14 +222,16 @@ pub struct OpenOut {
 
     /// The flags for the opened file.
     pub open_flags: OpenOutFlags,
+
+    pub backing_id: i32,
 }
 
 impl ReplyArg for OpenOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
         POD(fuse_open_out {
             fh: self.fh.into_raw(),
             open_flags: self.open_flags.bits(),
-            backing_id: 0,
+            backing_id: if minor >= 40 { self.backing_id } else { 0 },
         })
     }
 }
