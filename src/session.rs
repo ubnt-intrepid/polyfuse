@@ -64,7 +64,8 @@ pub struct KernelConfig {
     /// The default value is 1.
     pub time_gran: u32,
 
-    /// The maximum number of pages attached each `FUSE_WRITE` request.
+    /// The maximum number of pages that can be sent from the filesystem on each
+    /// reply/notification.
     pub max_pages: u16,
 
     /// The maximum stack depth for passthrough backing files.
@@ -165,12 +166,12 @@ impl KernelConfig {
         }
 
         // max_pages: since ABI 7.28
-        // * FUSE_MAX_PAGES が有効化されている場合のみ（サーバ側から無効化できる）
-        // *
+        // * FS 側からの書き込み (特に READ / NOTIFY_RETRIEVE) 時の最大ページ数を指定する
         if self.minor >= 28 && self.flags.contains(KernelFlags::MAX_PAGES) {
+            self.max_pages = cmp::max(self.max_pages, 1);
             self.max_pages = cmp::min(self.max_pages, Self::MAX_MAX_PAGES);
         } else {
-            self.max_pages = 0;
+            self.max_pages = Self::DEFAULT_MAX_PAGES_PER_REQ;
         }
 
         if self.minor >= 40
@@ -217,7 +218,11 @@ impl KernelConfig {
                 time_gran: self.time_gran,
                 max_pages: self.max_pages,
                 map_alignment: 0,
-                flags2: ((self.flags.bits() >> 32) & (u32::MAX as u64)) as _,
+                flags2: if self.flags.contains(KernelFlags::INIT_EXT) {
+                    ((self.flags.bits() >> 32) & (u32::MAX as u64)) as _
+                } else {
+                    0
+                },
                 max_stack_depth: self.max_stack_depth,
                 request_timeout: self.request_timeout,
                 unused: [0; 11],
@@ -302,6 +307,7 @@ enum NegotiationError {
 
 // TODO: add FUSE_IOCTL_DIR
 bitflags::bitflags! {
+    /// The flags to obtain the supported feature, or control the behavior of the FUSE kernel driver.
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(transparent)]
     pub struct KernelFlags: u64 {
@@ -310,9 +316,13 @@ bitflags::bitflags! {
 
         /// Indicates whether the kernel does not filtered the `O_TRUNC` open_flag
         /// out or not.
+        ///
+        /// This flag is enabled by default.
         const ATOMIC_O_TRUNC = FUSE_ATOMIC_O_TRUNC as _;
 
         /// The kernel check the validity of attributes on every read.
+        ///
+        /// This flag is enabled by default.
         const AUTO_INVAL_DATA = FUSE_AUTO_INVAL_DATA as _;
 
         /// The filesystem supports asynchronous direct I/O submission.
@@ -321,35 +331,43 @@ bitflags::bitflags! {
         /// The kernel supports parallel directory operations.
         const PARALLEL_DIROPS = FUSE_PARALLEL_DIROPS as _;
 
-        /// The filesystem is responsible for unsetting setuid and setgid bits
-        /// when a file is written, truncated, or its owner is changed.
+        /// The filesystem is responsible for unsetting suid/sgid bits
+        /// when a file is modified (written, truncated, or its owner is changed).
         const HANDLE_KILLPRIV = FUSE_HANDLE_KILLPRIV as _;
 
         /// The filesystem supports the POSIX-style file lock.
         const POSIX_LOCKS = FUSE_POSIX_LOCKS as _;
 
-        /// The filesystem supports the `flock` handling.
+        /// The filesystem supports the BSD-style file lock.
         const FLOCK_LOCKS = FUSE_FLOCK_LOCKS as _;
 
-        /// The filesystem supports lookups of `"."` and `".."`.
+        /// The filesystem supports NFS exporting.
         const EXPORT_SUPPORT = FUSE_EXPORT_SUPPORT as _;
 
-        /// The kernel should not apply the umask to the file mode
-        /// on `mknod`, `mkdir` and `create` operations.
+        /// The kernel does not apply the umask to the file mode on the
+        /// creation operations (`mknod`, `mkdir` and `create`).
+        ///
+        /// If this flag is enabled, the filesystem should properly handle
+        /// the argument `umask` in the request parameters.
         const DONT_MASK = FUSE_DONT_MASK as _;
 
-        /// The kernel should enable writeback caching.
+        /// The kernel uses writeback caching policy.
+        ///
+        /// By default, the kernel uses the write-through policy.
         const WRITEBACK_CACHE = FUSE_WRITEBACK_CACHE as _;
 
         /// The filesystem supports POSIX access control lists.
+        ///
+        /// If this flag is enabled, the kernel enables the mount options
+        /// `default_permissions` implicitly.
         const POSIX_ACL = FUSE_POSIX_ACL as _;
 
-        /// The filesystem supports `readdirplus` operations.
+        /// The filesystem supports the `FUSE_READDIRPLUS` opcode.
         const DO_READDIRPLUS = FUSE_DO_READDIRPLUS as _;
 
         /// The kernel uses the adaptive readdirplus.
         ///
-        /// This option is meaningful only if `readdirplus` is enabled.
+        /// This option is meaningful only if [`Self::DO_READDIRPLUS`] is enabled.
         const READDIRPLUS_AUTO = FUSE_READDIRPLUS_AUTO as _;
 
         /// Specify whether the kernel supports for zero-message opens.
@@ -358,18 +376,22 @@ bitflags::bitflags! {
         /// for a `FUSE_OPEN` request as successful and does not send
         /// subsequent `open` requests.  Otherwise, the filesystem should
         /// implement the handler for `open` requests appropriately.
+        ///
+        /// This flag is enabled by default.
         const NO_OPEN_SUPPORT = FUSE_NO_OPEN_SUPPORT as _;
 
         /// Specify whether the kernel supports for zero-message opendirs.
         ///
-        /// See the documentation of `no_open_support` for details.
+        /// See also [`Self::NO_OPEN_SUPPORT`].
+        ///
+        /// This flag is enabled by default.
         const NO_OPENDIR_SUPPORT = FUSE_NO_OPENDIR_SUPPORT as _;
 
         /// Indicates whether the content of `FUSE_READLINK` replies are cached or not.
         const CACHE_SYMLINKS = FUSE_CACHE_SYMLINKS as _;
 
-        /// Indicates whether the kernel invalidate the page caches only on explicit
-        /// requests.
+        /// Indicates whether the kernel invalidate the page caches
+        /// only on explicit notifications by the filesystem.
         const EXPLICIT_INVAL_DATA = FUSE_EXPLICIT_INVAL_DATA as _;
 
         /// The kernel supports `splice(2)` read on the device.
@@ -399,28 +421,52 @@ bitflags::bitflags! {
         /// This flag is read-only.
         const ABORT_ERROR = FUSE_ABORT_ERROR as _;
 
-        // TODO: add doc
+        /// Specify whether the parameter [`KernelConfig::max_pages`] is available or not.
+        ///
+        /// This flag is read-only.
         const MAX_PAGES = FUSE_MAX_PAGES as _;
 
+        // TODO: add doc
         const HANDLE_KILLPRIV_V2 = FUSE_HANDLE_KILLPRIV_V2 as _;
-        const SETATTR_EXT = FUSE_SETXATTR_EXT as _;
+
+        /// The kernel supports the extended version of `fuse_setxattr_in`.
+        ///
+        /// This flag is read-only.
+        const SETXATTR_EXT = FUSE_SETXATTR_EXT as _;
+
+        /// The kernel supports the extended version of `fuse_init_out`.
+        ///
+        /// This flag is read-only.
         const INIT_EXT = FUSE_INIT_EXT as _;
 
+        // TODO: add doc
         const SECURITY_CTX = FUSE_SECURITY_CTX;
+
+        // TODO: add doc
         const CREATE_SUPP_GROUP = FUSE_CREATE_SUPP_GROUP;
 
         /// This flag is read-only.
         const HAS_EXPIRE_ONLY = FUSE_HAS_EXPIRE_ONLY;
 
+        // TODO: add doc
         const DIRECT_IO_ALLOW_MMAP = FUSE_DIRECT_IO_ALLOW_MMAP;
+
+        // TODO: add doc
         const PASSTHROUGH = FUSE_PASSTHROUGH;
+
+        // TODO: add doc
         const NO_EXPORT_SUPPORT = FUSE_NO_EXPORT_SUPPORT;
 
         /// This flag is read-only.
         const HAS_RESEND = FUSE_HAS_RESEND;
 
+        // TODO: add doc
         const ALLOW_IDMAP = FUSE_ALLOW_IDMAP;
+
+        /// The filesystem uses FUSE over io_uring.
         const OVER_IO_URING = FUSE_OVER_IO_URING;
+
+        // TODO: add doc
         const REQUEST_TIMEOUT = FUSE_REQUEST_TIMEOUT;
     }
 }
@@ -440,6 +486,7 @@ impl KernelFlags {
             .union(Self::NO_OPENDIR_SUPPORT)
     }
 
+    // The read-only flags.
     const READ_ONLY: Self = Self::empty()
         .union(Self::SPLICE_READ)
         .union(Self::SPLICE_WRITE)
@@ -447,6 +494,8 @@ impl KernelFlags {
         .union(Self::BIG_WRITES)
         .union(Self::MAX_PAGES)
         .union(Self::ABORT_ERROR)
+        .union(Self::SETXATTR_EXT)
+        .union(Self::INIT_EXT)
         .union(Self::HAS_EXPIRE_ONLY)
         .union(Self::HAS_RESEND);
 }
@@ -750,7 +799,7 @@ mod tests {
         assert_eq!(config.max_background, 0);
         assert_eq!(config.congestion_threshold, 0);
         assert_eq!(config.max_write, KernelConfig::MIN_MAX_WRITE);
-        assert_eq!(config.max_pages, 0);
+        assert_eq!(config.max_pages, KernelConfig::DEFAULT_MAX_PAGES_PER_REQ);
         assert_eq!(config.time_gran, 1);
         assert_eq!(
             config.flags,

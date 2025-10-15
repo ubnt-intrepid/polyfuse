@@ -1,7 +1,7 @@
 use crate::{
     bytes::{DecodeError, Decoder},
     request::RequestHeader,
-    session::KernelConfig,
+    session::{KernelConfig, KernelFlags},
     types::{
         DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
         PollEvents, PollWakeupID, RequestID,
@@ -367,7 +367,9 @@ impl<'op> Operation<'op> {
                 }))
             }
 
-            fuse_opcode::FUSE_SETXATTR if config.minor <= 32 => {
+            fuse_opcode::FUSE_SETXATTR
+                if config.minor <= 32 || !config.flags.contains(KernelFlags::SETXATTR_EXT) =>
+            {
                 let arg: &fuse_setxattr_in_compat_32 = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
@@ -376,11 +378,11 @@ impl<'op> Operation<'op> {
                     name,
                     value,
                     flags: SetxattrFlags::from_bits_truncate(arg.flags),
+                    acl_kill_sgid: false,
                 }))
             }
 
             fuse_opcode::FUSE_SETXATTR => {
-                // FIXME: treat setxattr_flags
                 let arg: &fuse_setxattr_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
@@ -389,6 +391,7 @@ impl<'op> Operation<'op> {
                     name,
                     value,
                     flags: SetxattrFlags::from_bits_truncate(arg.flags),
+                    acl_kill_sgid: arg.setxattr_flags & FUSE_SETXATTR_ACL_KILL_SGID != 0,
                 }))
             }
 
@@ -1226,6 +1229,8 @@ pub struct Setxattr<'op> {
 
     /// The flags that specifies the meanings of this operation.
     pub flags: SetxattrFlags,
+
+    pub acl_kill_sgid: bool,
 }
 
 bitflags! {
