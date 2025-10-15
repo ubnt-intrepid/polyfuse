@@ -67,10 +67,10 @@ pub struct KernelConfig {
     /// The maximum number of pages attached each `FUSE_WRITE` request.
     pub max_pages: u16,
 
-    pub map_alignment: u16,
-
+    /// The maximum stack depth for passthrough backing files.
     pub max_stack_depth: u32,
 
+    // TODO: add documentation
     pub request_timeout: u16,
 
     /// The flags.
@@ -99,7 +99,6 @@ impl KernelConfig {
             max_write: Self::MIN_MAX_WRITE,
             max_pages: Self::DEFAULT_MAX_PAGES_PER_REQ,
             time_gran: 1,
-            map_alignment: 0,
             max_stack_depth: 0,
             request_timeout: 0,
             flags: KernelFlags::new(),
@@ -184,8 +183,7 @@ impl KernelConfig {
             self.max_stack_depth = 0;
         }
 
-        // TODO: map_alignment(7.31~), request_timeout(7.43~)
-        self.map_alignment = 0;
+        // TODO: request_timeout(7.43~)
         self.request_timeout = 0;
 
         Ok(())
@@ -218,7 +216,7 @@ impl KernelConfig {
                 max_write: self.max_write,
                 time_gran: self.time_gran,
                 max_pages: self.max_pages,
-                map_alignment: self.map_alignment,
+                map_alignment: 0,
                 flags2: ((self.flags.bits() >> 32) & (u32::MAX as u64)) as _,
                 max_stack_depth: self.max_stack_depth,
                 request_timeout: self.request_timeout,
@@ -404,17 +402,11 @@ bitflags::bitflags! {
         // TODO: add doc
         const MAX_PAGES = FUSE_MAX_PAGES as _;
 
-        const MAP_ALIGNMENT = FUSE_MAP_ALIGNMENT as _;
-
-        /// This flag is read-only.
-        const SUBMOUNTS = FUSE_SUBMOUNTS as _;
-
         const HANDLE_KILLPRIV_V2 = FUSE_HANDLE_KILLPRIV_V2 as _;
         const SETATTR_EXT = FUSE_SETXATTR_EXT as _;
         const INIT_EXT = FUSE_INIT_EXT as _;
 
         const SECURITY_CTX = FUSE_SECURITY_CTX;
-        const HAS_INODE_DAX = FUSE_HAS_INODE_DAX;
         const CREATE_SUPP_GROUP = FUSE_CREATE_SUPP_GROUP;
 
         /// This flag is read-only.
@@ -455,7 +447,6 @@ impl KernelFlags {
         .union(Self::BIG_WRITES)
         .union(Self::MAX_PAGES)
         .union(Self::ABORT_ERROR)
-        .union(Self::SUBMOUNTS)
         .union(Self::HAS_EXPIRE_ONLY)
         .union(Self::HAS_RESEND);
 }
@@ -825,7 +816,7 @@ mod tests {
         assert_eq!(bytes.get_u32_ne(), config.max_write);
         assert_eq!(bytes.get_u32_ne(), config.time_gran);
         assert_eq!(bytes.get_u16_ne(), config.max_pages);
-        assert_eq!(bytes.get_u16_ne(), config.map_alignment);
+        assert_eq!(bytes.get_u16_ne(), 0);
         assert_eq!(bytes.get_u32_ne(), (config.flags.bits() >> 32) as u32);
         assert_eq!(bytes.get_u32_ne(), config.max_stack_depth);
         assert_eq!(bytes.get_u16_ne(), config.request_timeout);
