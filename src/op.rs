@@ -184,6 +184,7 @@ impl<'op> Operation<'op> {
                         .then(|| Duration::new(arg.ctime, arg.ctimensec)),
                     lock_owner: (arg.valid & FATTR_LOCKOWNER != 0)
                         .then(|| LockOwnerID::from_raw(arg.lock_owner)),
+                    kill_suidgid: arg.valid & FATTR_KILL_SUIDGID != 0,
                     _marker: PhantomData,
                 }))
             }
@@ -295,6 +296,7 @@ impl<'op> Operation<'op> {
                 Ok(Operation::Open(Open {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     options: OpenOptions::from_raw(arg.flags),
+                    flags: OpenInFlags::from_bits_truncate(arg.open_flags),
                     _marker: PhantomData,
                 }))
             }
@@ -322,6 +324,7 @@ impl<'op> Operation<'op> {
                     size: arg.size,
                     options: OpenOptions::from_raw(0),
                     lock_owner: None,
+                    flags: WriteFlags::empty(),
                     _marker: PhantomData,
                 }))
             }
@@ -336,6 +339,7 @@ impl<'op> Operation<'op> {
                     options: OpenOptions::from_raw(arg.flags),
                     lock_owner: (arg.write_flags & FUSE_WRITE_LOCKOWNER != 0)
                         .then(|| LockOwnerID::from_raw(arg.lock_owner)),
+                    flags: WriteFlags::from_bits_truncate(arg.write_flags),
                     _marker: PhantomData,
                 }))
             }
@@ -790,6 +794,8 @@ pub struct Setattr<'op> {
     /// The identifier of lock owner.
     pub lock_owner: Option<LockOwnerID>,
 
+    pub kill_suidgid: bool,
+
     _marker: PhantomData<&'op ()>,
 }
 
@@ -967,7 +973,17 @@ pub struct Open<'op> {
     /// The access mode and creation/status flags of the opened file.
     pub options: OpenOptions,
 
+    pub flags: OpenInFlags,
+
     _marker: PhantomData<&'op ()>,
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct OpenInFlags: u32 {
+        const KILL_SUIDGID = FUSE_OPEN_KILL_SUIDGID;
+    }
 }
 
 /// The compound type of the access mode and auxiliary flags of opened files.
@@ -1147,7 +1163,18 @@ pub struct Write<'op> {
     /// The identifier of lock owner.
     pub lock_owner: Option<LockOwnerID>,
 
+    pub flags: WriteFlags,
+
     _marker: PhantomData<&'op ()>,
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct WriteFlags: u32 {
+        const CACHE = FUSE_WRITE_CACHE;
+        const KILL_SUIDGID = FUSE_WRITE_KILL_SUIDGID;
+    }
 }
 
 /// Release an opened file.

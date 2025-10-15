@@ -252,7 +252,19 @@ bitflags! {
         ///
         /// This flag is meaningful only for `opendir` operations.
         const CACHE_DIR = FOPEN_CACHE_DIR;
+
+        const STREAM = FOPEN_STREAM;
+        const NOFLUSH = FOPEN_NOFLUSH;
+        const PARALLEL_DIRECT_WRITES = FOPEN_PARALLEL_DIRECT_WRITES;
+        const PASSTHROUGH = FOPEN_PASSTHROUGH;
     }
+}
+
+impl OpenOutFlags {
+    pub const PASSTHROUGH_MASK: Self = Self::PASSTHROUGH
+        .union(Self::DIRECT_IO)
+        .union(Self::PARALLEL_DIRECT_WRITES)
+        .union(Self::NOFLUSH);
 }
 
 #[derive(IntoBytes, Immutable, KnownLayout)]
