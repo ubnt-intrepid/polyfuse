@@ -222,14 +222,16 @@ pub struct OpenOut {
 
     /// The flags for the opened file.
     pub open_flags: OpenOutFlags,
+
+    pub backing_id: i32,
 }
 
 impl ReplyArg for OpenOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
+    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
         POD(fuse_open_out {
             fh: self.fh.into_raw(),
             open_flags: self.open_flags.bits(),
-            backing_id: 0,
+            backing_id: if minor >= 40 { self.backing_id } else { 0 },
         })
     }
 }
@@ -252,7 +254,19 @@ bitflags! {
         ///
         /// This flag is meaningful only for `opendir` operations.
         const CACHE_DIR = FOPEN_CACHE_DIR;
+
+        const STREAM = FOPEN_STREAM;
+        const NOFLUSH = FOPEN_NOFLUSH;
+        const PARALLEL_DIRECT_WRITES = FOPEN_PARALLEL_DIRECT_WRITES;
+        const PASSTHROUGH = FOPEN_PASSTHROUGH;
     }
+}
+
+impl OpenOutFlags {
+    pub const PASSTHROUGH_MASK: Self = Self::PASSTHROUGH
+        .union(Self::DIRECT_IO)
+        .union(Self::PARALLEL_DIRECT_WRITES)
+        .union(Self::NOFLUSH);
 }
 
 #[derive(IntoBytes, Immutable, KnownLayout)]

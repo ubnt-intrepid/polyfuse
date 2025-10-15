@@ -1,7 +1,7 @@
 use crate::{
     bytes::{DecodeError, Decoder},
     request::RequestHeader,
-    session::KernelConfig,
+    session::{KernelConfig, KernelFlags},
     types::{
         DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
         PollEvents, PollWakeupID, RequestID,
@@ -10,7 +10,7 @@ use crate::{
 use bitflags::bitflags;
 use polyfuse_kernel::*;
 use rustix::{
-    fs::{Gid, Uid},
+    fs::{Gid, Uid, XattrFlags},
     process::Pid,
 };
 use std::{
@@ -184,6 +184,7 @@ impl<'op> Operation<'op> {
                         .then(|| Duration::new(arg.ctime, arg.ctimensec)),
                     lock_owner: (arg.valid & FATTR_LOCKOWNER != 0)
                         .then(|| LockOwnerID::from_raw(arg.lock_owner)),
+                    kill_suidgid: arg.valid & FATTR_KILL_SUIDGID != 0,
                     _marker: PhantomData,
                 }))
             }
@@ -295,6 +296,7 @@ impl<'op> Operation<'op> {
                 Ok(Operation::Open(Open {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     options: OpenOptions::from_raw(arg.flags),
+                    flags: OpenInFlags::from_bits_truncate(arg.open_flags),
                     _marker: PhantomData,
                 }))
             }
@@ -322,6 +324,7 @@ impl<'op> Operation<'op> {
                     size: arg.size,
                     options: OpenOptions::from_raw(0),
                     lock_owner: None,
+                    flags: WriteInFlags::empty(),
                     _marker: PhantomData,
                 }))
             }
@@ -336,6 +339,7 @@ impl<'op> Operation<'op> {
                     options: OpenOptions::from_raw(arg.flags),
                     lock_owner: (arg.write_flags & FUSE_WRITE_LOCKOWNER != 0)
                         .then(|| LockOwnerID::from_raw(arg.lock_owner)),
+                    flags: WriteInFlags::from_bits_truncate(arg.write_flags),
                     _marker: PhantomData,
                 }))
             }
@@ -367,7 +371,9 @@ impl<'op> Operation<'op> {
                 }))
             }
 
-            fuse_opcode::FUSE_SETXATTR if config.minor <= 32 => {
+            fuse_opcode::FUSE_SETXATTR
+                if config.minor <= 32 || !config.flags.contains(KernelFlags::SETXATTR_EXT) =>
+            {
                 let arg: &fuse_setxattr_in_compat_32 = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
@@ -375,12 +381,12 @@ impl<'op> Operation<'op> {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     value,
-                    flags: SetxattrFlags::from_bits_truncate(arg.flags),
+                    flags: XattrFlags::from_bits_truncate(arg.flags),
+                    extra_flags: SetxattrInFlags::empty(),
                 }))
             }
 
             fuse_opcode::FUSE_SETXATTR => {
-                // FIXME: treat setxattr_flags
                 let arg: &fuse_setxattr_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
@@ -388,7 +394,8 @@ impl<'op> Operation<'op> {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     value,
-                    flags: SetxattrFlags::from_bits_truncate(arg.flags),
+                    flags: XattrFlags::from_bits_truncate(arg.flags),
+                    extra_flags: SetxattrInFlags::from_bits_truncate(arg.setxattr_flags),
                 }))
             }
 
@@ -787,6 +794,8 @@ pub struct Setattr<'op> {
     /// The identifier of lock owner.
     pub lock_owner: Option<LockOwnerID>,
 
+    pub kill_suidgid: bool,
+
     _marker: PhantomData<&'op ()>,
 }
 
@@ -964,7 +973,17 @@ pub struct Open<'op> {
     /// The access mode and creation/status flags of the opened file.
     pub options: OpenOptions,
 
+    pub flags: OpenInFlags,
+
     _marker: PhantomData<&'op ()>,
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct OpenInFlags: u32 {
+        const KILL_SUIDGID = FUSE_OPEN_KILL_SUIDGID;
+    }
 }
 
 /// The compound type of the access mode and auxiliary flags of opened files.
@@ -1144,7 +1163,18 @@ pub struct Write<'op> {
     /// The identifier of lock owner.
     pub lock_owner: Option<LockOwnerID>,
 
+    pub flags: WriteInFlags,
+
     _marker: PhantomData<&'op ()>,
+}
+
+bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct WriteInFlags: u32 {
+        const CACHE = FUSE_WRITE_CACHE;
+        const KILL_SUIDGID = FUSE_WRITE_KILL_SUIDGID;
+    }
 }
 
 /// Release an opened file.
@@ -1225,15 +1255,16 @@ pub struct Setxattr<'op> {
     pub value: &'op [u8],
 
     /// The flags that specifies the meanings of this operation.
-    pub flags: SetxattrFlags,
+    pub flags: XattrFlags,
+
+    pub extra_flags: SetxattrInFlags,
 }
 
 bitflags! {
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct SetxattrFlags: u32 {
-        const CREATE = libc::XATTR_CREATE as u32;
-        const REPLACE = libc::XATTR_REPLACE as u32;
+    pub struct SetxattrInFlags: u32 {
+        const KILL_SUIDGID = FUSE_SETXATTR_ACL_KILL_SGID;
     }
 }
 

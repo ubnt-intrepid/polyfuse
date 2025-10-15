@@ -157,6 +157,7 @@ impl Filesystem for Heartbeat {
         req.reply(OpenOut {
             fh: FileID::from_raw(0),
             open_flags: OpenOutFlags::KEEP_CACHE,
+            backing_id: 0,
         })
     }
 
