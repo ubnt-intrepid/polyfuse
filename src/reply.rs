@@ -51,7 +51,6 @@ const fn to_fuse_attr_compat_8(attr: &FileAttr) -> fuse_attr_compat_8 {
 pub trait ReplySender {
     type Error;
     fn config(&self) -> &KernelConfig;
-    fn capacity(&self) -> usize;
     fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error>;
 }
 
@@ -516,7 +515,6 @@ const fn aligned(len: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustix::param::page_size;
     use zerocopy::TryFromBytes as _;
 
     struct TestReplySender<'a> {
@@ -527,9 +525,6 @@ mod tests {
         type Error = std::convert::Infallible;
         fn config(&self) -> &KernelConfig {
             &self.config
-        }
-        fn capacity(&self) -> usize {
-            self.config.max_pages as usize * page_size()
         }
         fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error> {
             bytes.fill_bytes(self.buf);

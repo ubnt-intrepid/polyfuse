@@ -710,10 +710,6 @@ impl Session {
                 &self.session.config
             }
 
-            fn capacity(&self) -> usize {
-                self.session.config.max_pages as usize * page_size()
-            }
-
             fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error> {
                 send_msg(
                     self.conn,
