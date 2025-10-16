@@ -515,6 +515,7 @@ const fn aligned(len: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Buf as _;
     use zerocopy::TryFromBytes as _;
 
     struct TestReplySender<'a> {
@@ -573,5 +574,129 @@ mod tests {
         assert_eq!(out.entry_valid_nsec, 0);
         assert_eq!(out.attr_valid_nsec, 19);
         // TODO: check out.attr
+    }
+
+    #[test]
+    fn reply_entry_out_compat() {
+        let entry_out = EntryOut {
+            ino: NodeID::from_raw(9876),
+            attr: Cow::Owned(FileAttr { ..FileAttr::new() }),
+            generation: 42,
+            attr_valid: Some(Duration::new(22, 19)),
+            entry_valid: None,
+        };
+        let bytes = {
+            let mut buf = vec![];
+            entry_out
+                .reply(TestReplySender {
+                    buf: &mut buf,
+                    config: KernelConfig {
+                        minor: 5,
+                        ..KernelConfig::new()
+                    },
+                })
+                .unwrap();
+            buf
+        };
+        let out = fuse_entry_out_compat_8::try_ref_from_bytes(&bytes).unwrap();
+        assert_eq!(out.nodeid, 9876);
+        assert_eq!(out.generation, 42);
+        assert_eq!(out.entry_valid, 0);
+        assert_eq!(out.attr_valid, 22);
+        assert_eq!(out.entry_valid_nsec, 0);
+        assert_eq!(out.attr_valid_nsec, 19);
+    }
+
+    #[test]
+    fn reply_open_out() {
+        let out = OpenOut {
+            fh: FileID::from_raw(22),
+            open_flags: OpenOutFlags::DIRECT_IO,
+            backing_id: 2,
+        };
+        let out = do_reply(out);
+        let out = fuse_open_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.fh, 22);
+        assert_eq!(out.open_flags, FOPEN_DIRECT_IO);
+        assert_eq!(out.backing_id, 0);
+    }
+
+    #[test]
+    fn reply_misc_types() {
+        let out = do_reply(WriteOut::new(9876));
+        let out = fuse_write_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.size, 9876);
+        assert_eq!(out.padding, 0);
+
+        let out = do_reply(XattrOut::new(6));
+        let out = fuse_getxattr_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.size, 6);
+        assert_eq!(out.padding, 0);
+
+        let out = do_reply(BmapOut::new(3314));
+        let out = fuse_bmap_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.block, 3314);
+
+        let out = do_reply(PollOut::new(PollEvents::HUP));
+        let out = fuse_poll_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.revents, PollEvents::HUP.bits());
+        assert_eq!(out.padding, 0);
+
+        let out = do_reply(LseekOut::new(1192));
+        let out = fuse_lseek_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.offset, 1192);
+    }
+
+    #[test]
+    fn reply_readdir_out() {
+        let mut out = ReaddirOut::new(1024);
+        out.push_entry(
+            ".gitignore".as_ref(),
+            NodeID::from_raw(9).unwrap(),
+            Some(FileType::Regular),
+            2,
+        );
+        out.push_entry(
+            "README.md".as_ref(),
+            NodeID::from_raw(18).unwrap(),
+            Some(FileType::SymbolicLink),
+            3,
+        );
+        let out = do_reply(out);
+        assert_eq!(out.len(), 80);
+
+        let mut out = &out[..];
+
+        assert_eq!(
+            &out[..mem::size_of::<fuse_dirent>()],
+            fuse_dirent {
+                ino: 9,
+                off: 2,
+                namelen: 10,
+                typ: libc::DT_REG as u32,
+                name: []
+            }
+            .as_bytes()
+        );
+        out.advance(mem::size_of::<fuse_dirent>());
+        assert_eq!(&out[0..10], b".gitignore");
+        assert_eq!(&out[10..16], [0u8; 6]);
+        out.advance(16);
+
+        assert_eq!(
+            &out[..mem::size_of::<fuse_dirent>()],
+            fuse_dirent {
+                ino: 18,
+                off: 3,
+                namelen: 9,
+                typ: libc::DT_LNK as u32,
+                name: []
+            }
+            .as_bytes()
+        );
+        out.advance(mem::size_of::<fuse_dirent>());
+        assert_eq!(&out[0..9], b"README.md");
+        assert_eq!(&out[9..16], [0u8; 7]);
+        out.advance(16);
     }
 }
