@@ -512,3 +512,71 @@ impl ReaddirOut {
 const fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustix::param::page_size;
+    use zerocopy::TryFromBytes as _;
+
+    struct TestReplySender<'a> {
+        buf: &'a mut Vec<u8>,
+        config: KernelConfig,
+    }
+    impl ReplySender for TestReplySender<'_> {
+        type Error = std::convert::Infallible;
+        fn config(&self) -> &KernelConfig {
+            &self.config
+        }
+        fn capacity(&self) -> usize {
+            self.config.max_pages as usize * page_size()
+        }
+        fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error> {
+            bytes.fill_bytes(self.buf);
+            Ok(())
+        }
+    }
+
+    fn do_reply<T: ReplyArg>(arg: T) -> Vec<u8> {
+        let mut buf = vec![];
+        ReplyArg::reply(
+            arg,
+            TestReplySender {
+                buf: &mut buf,
+                config: KernelConfig::new(),
+            },
+        )
+        .unwrap();
+        buf
+    }
+
+    #[test]
+    fn reply_unit() {
+        assert_eq!(do_reply(()), b"");
+    }
+
+    #[test]
+    fn reply_raw() {
+        assert_eq!(do_reply(Raw((b"hello, ", "world"))), b"hello, world");
+    }
+
+    #[test]
+    fn reply_entry_out() {
+        let entry_out = EntryOut {
+            ino: NodeID::from_raw(9876),
+            attr: Cow::Owned(FileAttr { ..FileAttr::new() }),
+            generation: 42,
+            attr_valid: Some(Duration::new(22, 19)),
+            entry_valid: None,
+        };
+        let bytes = do_reply(entry_out);
+        let out = fuse_entry_out::try_ref_from_bytes(&bytes).unwrap();
+        assert_eq!(out.nodeid, 9876);
+        assert_eq!(out.generation, 42);
+        assert_eq!(out.entry_valid, 0);
+        assert_eq!(out.attr_valid, 22);
+        assert_eq!(out.entry_valid_nsec, 0);
+        assert_eq!(out.attr_valid_nsec, 19);
+        // TODO: check out.attr
+    }
+}
