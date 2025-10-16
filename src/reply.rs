@@ -1,9 +1,9 @@
 use crate::{
     bytes::{Bytes, POD},
+    session::{KernelConfig, KernelFlags},
     types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
 };
 use bitflags::bitflags;
-use either::Either;
 use polyfuse_kernel::*;
 use std::{borrow::Cow, ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
@@ -48,58 +48,40 @@ const fn to_fuse_attr_compat_8(attr: &FileAttr) -> fuse_attr_compat_8 {
     }
 }
 
+pub trait ReplySender {
+    type Error;
+    fn config(&self) -> &KernelConfig;
+    fn capacity(&self) -> usize;
+    fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error>;
+}
+
 pub trait ReplyArg {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_;
-}
-
-impl<T: ?Sized> ReplyArg for &T
-where
-    T: ReplyArg,
-{
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        (**self).to_bytes(minor)
-    }
-}
-
-impl<T: ?Sized> ReplyArg for Box<T>
-where
-    T: ReplyArg,
-{
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        (**self).to_bytes(minor)
-    }
-}
-
-impl<T: ?Sized> ReplyArg for std::rc::Rc<T>
-where
-    T: ReplyArg,
-{
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        (**self).to_bytes(minor)
-    }
-}
-
-impl<T: ?Sized> ReplyArg for std::sync::Arc<T>
-where
-    T: ReplyArg,
-{
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        (**self).to_bytes(minor)
-    }
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender;
 }
 
 impl ReplyArg for () {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {}
+    #[inline]
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(())
+    }
 }
 
-pub struct Raw<T: Bytes>(pub T);
+pub struct Raw<B: Bytes>(pub B);
 
-impl<T> ReplyArg for Raw<T>
+impl<B> ReplyArg for Raw<B>
 where
-    T: Bytes,
+    B: Bytes,
 {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        &self.0
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.0)
     }
 }
 
@@ -140,12 +122,15 @@ pub struct EntryOut<'a> {
 }
 
 impl ReplyArg for EntryOut<'_> {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
         let nodeid = self.ino.map_or(0, |ino| ino.into_raw());
         let entry_valid = self.entry_valid.unwrap_or_default();
         let attr_valid = self.attr_valid.unwrap_or_default();
-        if minor <= 8 {
-            Either::Left(POD(fuse_entry_out_compat_8 {
+        if sender.config().minor <= 8 {
+            sender.send_bytes(POD(fuse_entry_out_compat_8 {
                 nodeid,
                 generation: self.generation,
                 entry_valid: entry_valid.as_secs(),
@@ -155,7 +140,7 @@ impl ReplyArg for EntryOut<'_> {
                 attr: to_fuse_attr_compat_8(&self.attr),
             }))
         } else {
-            Either::Right(POD(fuse_entry_out {
+            sender.send_bytes(POD(fuse_entry_out {
                 nodeid,
                 generation: self.generation,
                 entry_valid: entry_valid.as_secs(),
@@ -175,17 +160,20 @@ pub struct AttrOut<'a> {
 }
 
 impl ReplyArg for AttrOut<'_> {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
         let valid = self.valid.unwrap_or_default();
-        if minor <= 8 {
-            Either::Left(POD(fuse_attr_out_compat_8 {
+        if sender.config().minor <= 8 {
+            sender.send_bytes(POD(fuse_attr_out_compat_8 {
                 attr_valid: valid.as_secs(),
                 attr_valid_nsec: valid.subsec_nanos(),
                 dummy: 0,
                 attr: to_fuse_attr_compat_8(&self.attr),
             }))
         } else {
-            Either::Right(POD(fuse_attr_out {
+            sender.send_bytes(POD(fuse_attr_out {
                 attr_valid: valid.as_secs(),
                 attr_valid_nsec: valid.subsec_nanos(),
                 dummy: 0,
@@ -202,8 +190,11 @@ pub struct WriteOut {
 }
 
 impl ReplyArg for WriteOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -227,12 +218,22 @@ pub struct OpenOut {
 }
 
 impl ReplyArg for OpenOut {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        POD(fuse_open_out {
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        let backing_id = if sender.config().minor >= 40
+            && sender.config().flags.contains(KernelFlags::PASSTHROUGH)
+        {
+            self.backing_id
+        } else {
+            0
+        };
+        sender.send_bytes(POD(fuse_open_out {
             fh: self.fh.into_raw(),
             open_flags: self.open_flags.bits(),
-            backing_id: if minor >= 40 { self.backing_id } else { 0 },
-        })
+            backing_id,
+        }))
     }
 }
 
@@ -276,9 +277,12 @@ pub struct StatfsOut {
 }
 
 impl ReplyArg for StatfsOut {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        if minor <= 3 {
-            Either::Left(POD(fuse_statfs_out_compat_3 {
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        if sender.config().minor <= 3 {
+            sender.send_bytes(POD(fuse_statfs_out_compat_3 {
                 st: fuse_kstatfs_compat_3 {
                     blocks: self.raw.st.blocks,
                     bfree: self.raw.st.bfree,
@@ -290,7 +294,7 @@ impl ReplyArg for StatfsOut {
                 },
             }))
         } else {
-            Either::Right(self.raw.as_bytes())
+            sender.send_bytes(self.raw.as_bytes())
         }
     }
 }
@@ -323,8 +327,11 @@ pub struct XattrOut {
 }
 
 impl ReplyArg for XattrOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -343,8 +350,11 @@ pub struct LkOut {
 }
 
 impl ReplyArg for LkOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -370,8 +380,11 @@ pub struct BmapOut {
 }
 
 impl ReplyArg for BmapOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -390,8 +403,11 @@ pub struct PollOut {
 }
 
 impl ReplyArg for PollOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -412,8 +428,11 @@ pub struct LseekOut {
 }
 
 impl ReplyArg for LseekOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -430,8 +449,11 @@ pub struct ReaddirOut {
 }
 
 impl ReplyArg for ReaddirOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        &self.buf
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.buf)
     }
 }
 
