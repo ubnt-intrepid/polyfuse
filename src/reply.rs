@@ -1,9 +1,9 @@
 use crate::{
     bytes::{Bytes, POD},
+    session::{KernelConfig, KernelFlags},
     types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
 };
 use bitflags::bitflags;
-use either::Either;
 use polyfuse_kernel::*;
 use std::{borrow::Cow, ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
@@ -48,58 +48,39 @@ const fn to_fuse_attr_compat_8(attr: &FileAttr) -> fuse_attr_compat_8 {
     }
 }
 
+pub trait ReplySender {
+    type Error;
+    fn config(&self) -> &KernelConfig;
+    fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error>;
+}
+
 pub trait ReplyArg {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_;
-}
-
-impl<T: ?Sized> ReplyArg for &T
-where
-    T: ReplyArg,
-{
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        (**self).to_bytes(minor)
-    }
-}
-
-impl<T: ?Sized> ReplyArg for Box<T>
-where
-    T: ReplyArg,
-{
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        (**self).to_bytes(minor)
-    }
-}
-
-impl<T: ?Sized> ReplyArg for std::rc::Rc<T>
-where
-    T: ReplyArg,
-{
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        (**self).to_bytes(minor)
-    }
-}
-
-impl<T: ?Sized> ReplyArg for std::sync::Arc<T>
-where
-    T: ReplyArg,
-{
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        (**self).to_bytes(minor)
-    }
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender;
 }
 
 impl ReplyArg for () {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {}
+    #[inline]
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(())
+    }
 }
 
-pub struct Raw<T: Bytes>(pub T);
+pub struct Raw<B: Bytes>(pub B);
 
-impl<T> ReplyArg for Raw<T>
+impl<B> ReplyArg for Raw<B>
 where
-    T: Bytes,
+    B: Bytes,
 {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        &self.0
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.0)
     }
 }
 
@@ -140,12 +121,15 @@ pub struct EntryOut<'a> {
 }
 
 impl ReplyArg for EntryOut<'_> {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
         let nodeid = self.ino.map_or(0, |ino| ino.into_raw());
         let entry_valid = self.entry_valid.unwrap_or_default();
         let attr_valid = self.attr_valid.unwrap_or_default();
-        if minor <= 8 {
-            Either::Left(POD(fuse_entry_out_compat_8 {
+        if sender.config().minor <= 8 {
+            sender.send_bytes(POD(fuse_entry_out_compat_8 {
                 nodeid,
                 generation: self.generation,
                 entry_valid: entry_valid.as_secs(),
@@ -155,7 +139,7 @@ impl ReplyArg for EntryOut<'_> {
                 attr: to_fuse_attr_compat_8(&self.attr),
             }))
         } else {
-            Either::Right(POD(fuse_entry_out {
+            sender.send_bytes(POD(fuse_entry_out {
                 nodeid,
                 generation: self.generation,
                 entry_valid: entry_valid.as_secs(),
@@ -175,17 +159,20 @@ pub struct AttrOut<'a> {
 }
 
 impl ReplyArg for AttrOut<'_> {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
         let valid = self.valid.unwrap_or_default();
-        if minor <= 8 {
-            Either::Left(POD(fuse_attr_out_compat_8 {
+        if sender.config().minor <= 8 {
+            sender.send_bytes(POD(fuse_attr_out_compat_8 {
                 attr_valid: valid.as_secs(),
                 attr_valid_nsec: valid.subsec_nanos(),
                 dummy: 0,
                 attr: to_fuse_attr_compat_8(&self.attr),
             }))
         } else {
-            Either::Right(POD(fuse_attr_out {
+            sender.send_bytes(POD(fuse_attr_out {
                 attr_valid: valid.as_secs(),
                 attr_valid_nsec: valid.subsec_nanos(),
                 dummy: 0,
@@ -202,8 +189,11 @@ pub struct WriteOut {
 }
 
 impl ReplyArg for WriteOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -227,12 +217,22 @@ pub struct OpenOut {
 }
 
 impl ReplyArg for OpenOut {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        POD(fuse_open_out {
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        let backing_id = if sender.config().minor >= 40
+            && sender.config().flags.contains(KernelFlags::PASSTHROUGH)
+        {
+            self.backing_id
+        } else {
+            0
+        };
+        sender.send_bytes(POD(fuse_open_out {
             fh: self.fh.into_raw(),
             open_flags: self.open_flags.bits(),
-            backing_id: if minor >= 40 { self.backing_id } else { 0 },
-        })
+            backing_id,
+        }))
     }
 }
 
@@ -276,9 +276,12 @@ pub struct StatfsOut {
 }
 
 impl ReplyArg for StatfsOut {
-    fn to_bytes(&self, minor: u32) -> impl Bytes + '_ {
-        if minor <= 3 {
-            Either::Left(POD(fuse_statfs_out_compat_3 {
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        if sender.config().minor <= 3 {
+            sender.send_bytes(POD(fuse_statfs_out_compat_3 {
                 st: fuse_kstatfs_compat_3 {
                     blocks: self.raw.st.blocks,
                     bfree: self.raw.st.bfree,
@@ -290,7 +293,7 @@ impl ReplyArg for StatfsOut {
                 },
             }))
         } else {
-            Either::Right(self.raw.as_bytes())
+            sender.send_bytes(self.raw.as_bytes())
         }
     }
 }
@@ -323,8 +326,11 @@ pub struct XattrOut {
 }
 
 impl ReplyArg for XattrOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -343,8 +349,11 @@ pub struct LkOut {
 }
 
 impl ReplyArg for LkOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -370,8 +379,11 @@ pub struct BmapOut {
 }
 
 impl ReplyArg for BmapOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -390,8 +402,11 @@ pub struct PollOut {
 }
 
 impl ReplyArg for PollOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -412,8 +427,11 @@ pub struct LseekOut {
 }
 
 impl ReplyArg for LseekOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        self.raw.as_bytes()
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.raw.as_bytes())
     }
 }
 
@@ -430,8 +448,11 @@ pub struct ReaddirOut {
 }
 
 impl ReplyArg for ReaddirOut {
-    fn to_bytes(&self, _: u32) -> impl Bytes + '_ {
-        &self.buf
+    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    where
+        T: ReplySender,
+    {
+        sender.send_bytes(self.buf)
     }
 }
 
@@ -489,4 +510,193 @@ impl ReaddirOut {
 #[inline]
 const fn aligned(len: usize) -> usize {
     (len + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Buf as _;
+    use zerocopy::TryFromBytes as _;
+
+    struct TestReplySender<'a> {
+        buf: &'a mut Vec<u8>,
+        config: KernelConfig,
+    }
+    impl ReplySender for TestReplySender<'_> {
+        type Error = std::convert::Infallible;
+        fn config(&self) -> &KernelConfig {
+            &self.config
+        }
+        fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error> {
+            bytes.fill_bytes(self.buf);
+            Ok(())
+        }
+    }
+
+    fn do_reply<T: ReplyArg>(arg: T) -> Vec<u8> {
+        let mut buf = vec![];
+        ReplyArg::reply(
+            arg,
+            TestReplySender {
+                buf: &mut buf,
+                config: KernelConfig::new(),
+            },
+        )
+        .unwrap();
+        buf
+    }
+
+    #[test]
+    fn reply_unit() {
+        assert_eq!(do_reply(()), b"");
+    }
+
+    #[test]
+    fn reply_raw() {
+        assert_eq!(do_reply(Raw((b"hello, ", "world"))), b"hello, world");
+    }
+
+    #[test]
+    fn reply_entry_out() {
+        let entry_out = EntryOut {
+            ino: NodeID::from_raw(9876),
+            attr: Cow::Owned(FileAttr { ..FileAttr::new() }),
+            generation: 42,
+            attr_valid: Some(Duration::new(22, 19)),
+            entry_valid: None,
+        };
+        let bytes = do_reply(entry_out);
+        let out = fuse_entry_out::try_ref_from_bytes(&bytes).unwrap();
+        assert_eq!(out.nodeid, 9876);
+        assert_eq!(out.generation, 42);
+        assert_eq!(out.entry_valid, 0);
+        assert_eq!(out.attr_valid, 22);
+        assert_eq!(out.entry_valid_nsec, 0);
+        assert_eq!(out.attr_valid_nsec, 19);
+        // TODO: check out.attr
+    }
+
+    #[test]
+    fn reply_entry_out_compat() {
+        let entry_out = EntryOut {
+            ino: NodeID::from_raw(9876),
+            attr: Cow::Owned(FileAttr { ..FileAttr::new() }),
+            generation: 42,
+            attr_valid: Some(Duration::new(22, 19)),
+            entry_valid: None,
+        };
+        let bytes = {
+            let mut buf = vec![];
+            entry_out
+                .reply(TestReplySender {
+                    buf: &mut buf,
+                    config: KernelConfig {
+                        minor: 5,
+                        ..KernelConfig::new()
+                    },
+                })
+                .unwrap();
+            buf
+        };
+        let out = fuse_entry_out_compat_8::try_ref_from_bytes(&bytes).unwrap();
+        assert_eq!(out.nodeid, 9876);
+        assert_eq!(out.generation, 42);
+        assert_eq!(out.entry_valid, 0);
+        assert_eq!(out.attr_valid, 22);
+        assert_eq!(out.entry_valid_nsec, 0);
+        assert_eq!(out.attr_valid_nsec, 19);
+    }
+
+    #[test]
+    fn reply_open_out() {
+        let out = OpenOut {
+            fh: FileID::from_raw(22),
+            open_flags: OpenOutFlags::DIRECT_IO,
+            backing_id: 2,
+        };
+        let out = do_reply(out);
+        let out = fuse_open_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.fh, 22);
+        assert_eq!(out.open_flags, FOPEN_DIRECT_IO);
+        assert_eq!(out.backing_id, 0);
+    }
+
+    #[test]
+    fn reply_misc_types() {
+        let out = do_reply(WriteOut::new(9876));
+        let out = fuse_write_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.size, 9876);
+        assert_eq!(out.padding, 0);
+
+        let out = do_reply(XattrOut::new(6));
+        let out = fuse_getxattr_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.size, 6);
+        assert_eq!(out.padding, 0);
+
+        let out = do_reply(BmapOut::new(3314));
+        let out = fuse_bmap_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.block, 3314);
+
+        let out = do_reply(PollOut::new(PollEvents::HUP));
+        let out = fuse_poll_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.revents, PollEvents::HUP.bits());
+        assert_eq!(out.padding, 0);
+
+        let out = do_reply(LseekOut::new(1192));
+        let out = fuse_lseek_out::try_ref_from_bytes(&out).unwrap();
+        assert_eq!(out.offset, 1192);
+    }
+
+    #[test]
+    fn reply_readdir_out() {
+        let mut out = ReaddirOut::new(1024);
+        out.push_entry(
+            ".gitignore".as_ref(),
+            NodeID::from_raw(9).unwrap(),
+            Some(FileType::Regular),
+            2,
+        );
+        out.push_entry(
+            "README.md".as_ref(),
+            NodeID::from_raw(18).unwrap(),
+            Some(FileType::SymbolicLink),
+            3,
+        );
+        let out = do_reply(out);
+        assert_eq!(out.len(), 80);
+
+        let mut out = &out[..];
+
+        assert_eq!(
+            &out[..mem::size_of::<fuse_dirent>()],
+            fuse_dirent {
+                ino: 9,
+                off: 2,
+                namelen: 10,
+                typ: libc::DT_REG as u32,
+                name: []
+            }
+            .as_bytes()
+        );
+        out.advance(mem::size_of::<fuse_dirent>());
+        assert_eq!(&out[0..10], b".gitignore");
+        assert_eq!(&out[10..16], [0u8; 6]);
+        out.advance(16);
+
+        assert_eq!(
+            &out[..mem::size_of::<fuse_dirent>()],
+            fuse_dirent {
+                ino: 18,
+                off: 3,
+                namelen: 9,
+                typ: libc::DT_LNK as u32,
+                name: []
+            }
+            .as_bytes()
+        );
+        out.advance(mem::size_of::<fuse_dirent>());
+        assert_eq!(&out[0..9], b"README.md");
+        assert_eq!(&out[9..16], [0u8; 7]);
+        out.advance(16);
+    }
 }

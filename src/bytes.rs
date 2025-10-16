@@ -45,6 +45,12 @@ pub trait FillBytes<'a> {
     fn put(&mut self, chunk: &'a [u8]);
 }
 
+impl FillBytes<'_> for Vec<u8> {
+    fn put(&mut self, chunk: &'_ [u8]) {
+        self.extend_from_slice(chunk);
+    }
+}
+
 // ==== pointer types ====
 
 macro_rules! impl_reply_body_for_pointers {

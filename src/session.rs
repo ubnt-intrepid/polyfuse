@@ -694,9 +694,40 @@ impl Session {
         T: io::Write,
         B: ReplyArg,
     {
-        let bytes = arg.to_bytes(self.config.minor);
-        send_msg(conn, MessageKind::Reply { unique, error }, bytes)
-            .or_else(|err| self.handle_reply_error(err))
+        struct SessionReplySender<'a, T> {
+            session: &'a Session,
+            conn: T,
+            unique: RequestID,
+            error: Option<Errno>,
+        }
+        impl<T> crate::reply::ReplySender for SessionReplySender<'_, T>
+        where
+            T: io::Write,
+        {
+            type Error = io::Error;
+
+            fn config(&self) -> &KernelConfig {
+                &self.session.config
+            }
+
+            fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error> {
+                send_msg(
+                    self.conn,
+                    MessageKind::Reply {
+                        unique: self.unique,
+                        error: self.error,
+                    },
+                    bytes,
+                )
+                .or_else(|err| self.session.handle_reply_error(err))
+            }
+        }
+        arg.reply(SessionReplySender {
+            session: self,
+            conn,
+            unique,
+            error,
+        })
     }
 
     /// Send a notification message to the kernel.
