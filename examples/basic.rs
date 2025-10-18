@@ -43,10 +43,10 @@ fn main() -> Result<()> {
     let mut buf = FallbackBuf::new(session.request_buffer_size());
     while session.recv_request(&mut conn, &mut buf)? {
         let (header, arg, _remains) = buf.to_request_parts();
-        match Operation::decode(session.config(), header, arg)? {
+        match Operation::decode(session.config(), header, arg) {
             // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(&session, &mut conn, header, op)?,
-            Operation::Read(op) => read(&session, &mut conn, header, op)?,
+            Ok(Operation::Getattr(op)) => getattr(&session, &mut conn, header, op)?,
+            Ok(Operation::Read(op)) => read(&session, &mut conn, header, op)?,
 
             // Or annotate that the operation is not supported.
             _ => session.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?,

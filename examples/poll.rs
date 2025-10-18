@@ -1,13 +1,17 @@
 use polyfuse::{
-    fs::{self, Daemon, Filesystem},
-    op::{self, AccessMode, OpenFlags},
+    bytes::POD,
+    mount::MountOptions,
+    op::{AccessMode, OpenFlags, Operation},
     reply::{self, AttrOut, OpenOut, OpenOutFlags, PollOut},
+    request::{FallbackBuf, SpliceBuf, ToRequestParts as _},
+    session::{KernelConfig, Session},
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
     },
 };
 
 use anyhow::{ensure, Context as _, Result};
+use polyfuse_kernel::{fuse_notify_code, fuse_notify_poll_wakeup_out, FUSE_MIN_READ_BUFFER};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
@@ -20,6 +24,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, OnceLock, RwLock,
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -36,11 +41,166 @@ fn main() -> Result<()> {
             .unwrap_or(5),
     );
 
+    let fs = Arc::new(PollFS::new(wakeup_interval));
+
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let daemon = Daemon::mount(mountpoint, Default::default(), Default::default())?;
-    daemon.run(Arc::new(PollFS::new(wakeup_interval)), None)?;
+    let (conn, mount) = polyfuse::mount::mount(&mountpoint.into(), &MountOptions::new())?;
+    let session = Session::init(
+        &conn,
+        FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize),
+        KernelConfig::new(),
+    )?;
+
+    let conn = &conn;
+    let session = &session;
+    thread::scope(|scope| -> Result<()> {
+        let mut buf = SpliceBuf::new(session.request_buffer_size())?;
+        while session.recv_request(conn, &mut buf)? {
+            let (header, arg, _remains) = buf.to_request_parts();
+            match Operation::decode(session.config(), header, arg) {
+                Ok(Operation::Getattr(_op)) => session.send_reply(
+                    conn,
+                    header.unique(),
+                    None,
+                    AttrOut {
+                        attr: Cow::Owned(FileAttr {
+                            ino: NodeID::ROOT,
+                            nlink: 1,
+                            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+                            uid: getuid(),
+                            gid: getgid(),
+                            ..FileAttr::new()
+                        }),
+                        valid: Some(Duration::from_secs(u64::MAX / 2)),
+                    },
+                )?,
+
+                Ok(Operation::Open(op)) => {
+                    if op.options.access_mode() != Some(AccessMode::ReadOnly) {
+                        session.send_reply(conn, header.unique(), Some(Errno::ACCESS), ())?;
+                        continue;
+                    }
+
+                    let is_nonblock = op.options.flags().contains(OpenFlags::NONBLOCK);
+
+                    let fh = fs.next_fh.fetch_add(1, Ordering::SeqCst);
+                    let deadline = Instant::now() + fs.wakeup_interval;
+                    let handle = Arc::new(FileHandle {
+                        is_nonblock,
+                        kh: OnceLock::new(),
+                        deadline,
+                    });
+
+                    tracing::info!("spawn reading task");
+                    {
+                        let handle = Arc::downgrade(&handle);
+                        let wakeup_interval = fs.wakeup_interval;
+                        scope.spawn(move || -> Result<()> {
+                            let span = tracing::debug_span!("reading_task", fh=?fh);
+                            let _enter = span.enter();
+
+                            tracing::info!("start reading");
+                            std::thread::sleep(wakeup_interval);
+
+                            tracing::info!("reading completed");
+
+                            // Do nothing when the handle is already closed.
+                            if let Some(handle) = handle.upgrade() {
+                                if let Some(kh) = handle.kh.get() {
+                                    tracing::info!("send wakeup notification, kh={}", kh);
+                                    session.send_notify(
+                                        conn,
+                                        fuse_notify_code::FUSE_NOTIFY_POLL,
+                                        POD(fuse_notify_poll_wakeup_out { kh: kh.into_raw() }),
+                                    )?;
+                                }
+                            }
+
+                            Ok(())
+                        });
+                    }
+
+                    let fh = FileID::from_raw(fh);
+                    fs.handles.write().unwrap().insert(fh, handle);
+
+                    session.send_reply(
+                        conn,
+                        header.unique(),
+                        None,
+                        OpenOut {
+                            fh,
+                            open_flags: OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
+                            backing_id: 0,
+                        },
+                    )?;
+                }
+
+                Ok(Operation::Read(op)) => {
+                    let handle = {
+                        let handles = fs.handles.read().unwrap();
+                        handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
+                    };
+                    if handle.is_nonblock {
+                        if handle.deadline > Instant::now() {
+                            tracing::info!("send EAGAIN immediately");
+                            Err(Errno::AGAIN)?;
+                        }
+                    } else {
+                        tracing::info!("wait for the completion of background task");
+                        let now = Instant::now();
+                        if handle.deadline > now {
+                            std::thread::sleep(handle.deadline.duration_since(now));
+                        }
+                    }
+
+                    tracing::info!("ready to read contents");
+
+                    let offset = op.offset as usize;
+                    let bufsize = op.size as usize;
+                    let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
+
+                    session.send_reply(
+                        conn,
+                        header.unique(),
+                        None,
+                        reply::Raw(&content[..std::cmp::min(content.len(), bufsize)]),
+                    )?;
+                }
+
+                Ok(Operation::Poll(op)) => {
+                    let handle = {
+                        let handles = fs.handles.read().unwrap();
+                        handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
+                    };
+                    let now = Instant::now();
+
+                    let mut revents = PollEvents::empty();
+                    if handle.deadline <= now {
+                        tracing::info!("file is ready to read");
+                        revents = op.events & PollEvents::IN;
+                    } else if let Some(kh) = op.kh {
+                        tracing::info!("register the poll handle for notification: kh={}", kh);
+                        let _ = handle.kh.set(kh);
+                    }
+
+                    session.send_reply(conn, header.unique(), None, PollOut::new(revents))?;
+                }
+
+                Ok(Operation::Release(op)) => {
+                    drop(fs.handles.write().unwrap().remove(&op.fh));
+                    session.send_reply(conn, header.unique(), None, ())?;
+                }
+
+                _ => session.send_reply(conn, header.unique(), Some(Errno::NOSYS), ())?,
+            }
+        }
+
+        Ok(())
+    })?;
+
+    mount.unmount()?;
 
     Ok(())
 }
@@ -58,126 +218,6 @@ impl PollFS {
             next_fh: AtomicU64::new(0),
             wakeup_interval,
         }
-    }
-}
-
-impl Filesystem for PollFS {
-    fn getattr(self: &Arc<Self>, req: fs::Request<'_>, _: op::Getattr<'_>) -> fs::Result {
-        req.reply(AttrOut {
-            attr: Cow::Owned(FileAttr {
-                ino: NodeID::ROOT,
-                nlink: 1,
-                mode: FileMode::new(FileType::Regular, FilePermissions::READ),
-                uid: getuid(),
-                gid: getgid(),
-                ..FileAttr::new()
-            }),
-            valid: Some(Duration::from_secs(u64::MAX / 2)),
-        })
-    }
-
-    fn open(self: &Arc<Self>, mut req: fs::Request<'_>, op: op::Open<'_>) -> fs::Result {
-        if op.options.access_mode() != Some(AccessMode::ReadOnly) {
-            Err(Errno::ACCESS)?;
-        }
-
-        let is_nonblock = op.options.flags().contains(OpenFlags::NONBLOCK);
-
-        let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
-        let deadline = Instant::now() + self.wakeup_interval;
-        let handle = Arc::new(FileHandle {
-            is_nonblock,
-            kh: OnceLock::new(),
-            deadline,
-        });
-
-        tracing::info!("spawn reading task");
-        {
-            let notifier = req.notifier();
-            let handle = Arc::downgrade(&handle);
-            let wakeup_interval = self.wakeup_interval;
-            req.spawner().spawn(move || {
-                let span = tracing::debug_span!("reading_task", fh=?fh);
-                let _enter = span.enter();
-
-                tracing::info!("start reading");
-                std::thread::sleep(wakeup_interval);
-
-                tracing::info!("reading completed");
-
-                // Do nothing when the handle is already closed.
-                if let Some(handle) = handle.upgrade() {
-                    if let Some(kh) = handle.kh.get() {
-                        tracing::info!("send wakeup notification, kh={}", kh);
-                        notifier.poll_wakeup(*kh)?;
-                    }
-                }
-
-                Ok(())
-            });
-        }
-
-        let fh = FileID::from_raw(fh);
-        self.handles.write().unwrap().insert(fh, handle);
-
-        req.reply(OpenOut {
-            fh,
-            open_flags: OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
-            backing_id: 0,
-        })
-    }
-
-    fn read(self: &Arc<Self>, req: fs::Request<'_>, op: op::Read<'_>) -> fs::Result {
-        let handle = {
-            let handles = self.handles.read().unwrap();
-            handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
-        };
-        if handle.is_nonblock {
-            if handle.deadline > Instant::now() {
-                tracing::info!("send EAGAIN immediately");
-                Err(Errno::AGAIN)?;
-            }
-        } else {
-            tracing::info!("wait for the completion of background task");
-            let now = Instant::now();
-            if handle.deadline > now {
-                std::thread::sleep(handle.deadline.duration_since(now));
-            }
-        }
-
-        tracing::info!("ready to read contents");
-
-        let offset = op.offset as usize;
-        let bufsize = op.size as usize;
-        let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
-
-        req.reply(reply::Raw(
-            &content[..std::cmp::min(content.len(), bufsize)],
-        ))
-    }
-
-    fn poll(self: &Arc<Self>, req: fs::Request<'_>, op: op::Poll<'_>) -> fs::Result {
-        let handle = {
-            let handles = self.handles.read().unwrap();
-            handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
-        };
-        let now = Instant::now();
-
-        let mut revents = PollEvents::empty();
-        if handle.deadline <= now {
-            tracing::info!("file is ready to read");
-            revents = op.events & PollEvents::IN;
-        } else if let Some(kh) = op.kh {
-            tracing::info!("register the poll handle for notification: kh={}", kh);
-            let _ = handle.kh.set(kh);
-        }
-
-        req.reply(PollOut::new(revents))
-    }
-
-    fn release(self: &Arc<Self>, req: fs::Request<'_>, op: op::Release<'_>) -> fs::Result {
-        drop(self.handles.write().unwrap().remove(&op.fh));
-        req.reply(())
     }
 }
 

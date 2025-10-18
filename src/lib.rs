@@ -6,7 +6,6 @@
 mod conn;
 
 pub mod bytes;
-pub mod fs;
 pub mod io;
 pub mod mount;
 pub mod msg;
