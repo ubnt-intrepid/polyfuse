@@ -2,7 +2,7 @@ use crate::{
     bytes::Bytes,
     msg::{send_msg, MessageKind},
     reply::ReplyArg,
-    request::RequestBuf,
+    request::{FallbackBuf, RequestBuf},
     types::RequestID,
 };
 use polyfuse_kernel::*;
@@ -518,11 +518,11 @@ impl Drop for Session {
 impl Session {
     /// Initialize a FUSE session by communicating with the kernel driver over
     /// the established channel.
-    pub fn init<T, B>(mut conn: T, mut buf: B, mut config: KernelConfig) -> io::Result<Self>
+    pub fn init<T>(mut conn: T, mut config: KernelConfig) -> io::Result<Self>
     where
-        T: io::Write,
-        B: RequestBuf<T>,
+        T: io::Read + io::Write,
     {
+        let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
         loop {
             let (header, arg, _remains) = buf.receive(&mut conn)?;
 

@@ -6,13 +6,12 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{self, AttrOut, EntryOut, ReaddirOut},
-    request::{FallbackBuf, SpliceBuf, ToRequestParts},
+    request::{SpliceBuf, ToRequestParts},
     session::{KernelConfig, Session},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
 
 use anyhow::{ensure, Context as _, Result};
-use polyfuse_kernel::FUSE_MIN_READ_BUFFER;
 use rustix::{
     fs::{Gid, Uid},
     io::Errno,
@@ -37,11 +36,7 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     let (conn, mount) = polyfuse::mount::mount(&mountpoint.into(), &MountOptions::new())?;
-    let session = Session::init(
-        &conn,
-        FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize),
-        KernelConfig::new(),
-    )?;
+    let session = Session::init(&conn, KernelConfig::new())?;
 
     let fs = Hello::new();
 

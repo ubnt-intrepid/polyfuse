@@ -11,7 +11,6 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use polyfuse_kernel::FUSE_MIN_READ_BUFFER;
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
@@ -33,11 +32,7 @@ fn main() -> Result<()> {
     let (mut conn, mount) = mount(&mountpoint.into(), &mountopts)?;
 
     // Initialize the FUSE session.
-    let session = Session::init(
-        &mut conn,
-        FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize),
-        KernelConfig::default(),
-    )?;
+    let session = Session::init(&mut conn, KernelConfig::default())?;
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = FallbackBuf::new(session.request_buffer_size());
