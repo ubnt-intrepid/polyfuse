@@ -7,7 +7,7 @@ use polyfuse::{
     op::Operation,
     reply::{self, AttrOut, EntryOut, ReaddirOut},
     request::{SpliceBuf, ToRequestParts},
-    session::{KernelConfig, Session},
+    session::KernelConfig,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
 
@@ -35,8 +35,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let (conn, mount) = polyfuse::mount::mount(&mountpoint.into(), &MountOptions::new())?;
-    let session = Session::init(&conn, KernelConfig::new())?;
+    let (session, conn, mount) =
+        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
 
     let fs = Hello::new();
 

@@ -63,8 +63,8 @@ fn main() -> Result<()> {
 
     let fs = Arc::new(Heartbeat::new(ttl, update_interval, no_notify));
 
-    let (conn, mount) = polyfuse::mount::mount(&mountpoint.into(), &MountOptions::new())?;
-    let session = Session::init(&conn, KernelConfig::new())?;
+    let (session, conn, mount) =
+        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
 
     let session = &session;
     let conn = &conn;
