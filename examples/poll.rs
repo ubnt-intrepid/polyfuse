@@ -3,15 +3,15 @@ use polyfuse::{
     mount::MountOptions,
     op::{AccessMode, OpenFlags, Operation},
     reply::{self, AttrOut, OpenOut, OpenOutFlags, PollOut},
-    request::{FallbackBuf, SpliceBuf, ToRequestParts as _},
-    session::{KernelConfig, Session},
+    request::{SpliceBuf, ToRequestParts as _},
+    session::KernelConfig,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
     },
 };
 
 use anyhow::{ensure, Context as _, Result};
-use polyfuse_kernel::{fuse_notify_code, fuse_notify_poll_wakeup_out, FUSE_MIN_READ_BUFFER};
+use polyfuse_kernel::{fuse_notify_code, fuse_notify_poll_wakeup_out};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
@@ -46,12 +46,8 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let (conn, mount) = polyfuse::mount::mount(&mountpoint.into(), &MountOptions::new())?;
-    let session = Session::init(
-        &conn,
-        FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize),
-        KernelConfig::new(),
-    )?;
+    let (session, conn, mount) =
+        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
 
     let conn = &conn;
     let session = &session;

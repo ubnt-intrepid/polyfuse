@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    mount::{mount, MountOptions},
+    mount::MountOptions,
     op::{self, Operation},
     reply::{self, AttrOut},
     request::{FallbackBuf, RequestHeader, ToRequestParts as _},
@@ -11,7 +11,6 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use polyfuse_kernel::FUSE_MIN_READ_BUFFER;
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
@@ -29,15 +28,8 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let mountopts = MountOptions::new();
-    let (mut conn, mount) = mount(&mountpoint.into(), &mountopts)?;
-
-    // Initialize the FUSE session.
-    let session = Session::init(
-        &mut conn,
-        FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize),
-        KernelConfig::default(),
-    )?;
+    let (session, mut conn, mount) =
+        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = FallbackBuf::new(session.request_buffer_size());

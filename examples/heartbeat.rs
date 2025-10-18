@@ -13,7 +13,7 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{self, AttrOut, OpenOut, OpenOutFlags},
-    request::{FallbackBuf, SpliceBuf, ToRequestParts},
+    request::{SpliceBuf, ToRequestParts},
     session::{KernelConfig, Session},
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, NotifyID},
     Connection,
@@ -24,7 +24,6 @@ use chrono::Local;
 use dashmap::DashMap;
 use polyfuse_kernel::{
     fuse_notify_code, fuse_notify_inval_inode_out, fuse_notify_retrieve_out, fuse_notify_store_out,
-    FUSE_MIN_READ_BUFFER,
 };
 use rustix::{io::Errno, param::page_size};
 use std::{
@@ -54,12 +53,8 @@ fn main() -> Result<()> {
 
     let fs = Arc::new(Heartbeat::new(kind, update_interval));
 
-    let (conn, mount) = polyfuse::mount::mount(&mountpoint.into(), &MountOptions::new())?;
-    let session = Session::init(
-        &conn,
-        FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize),
-        KernelConfig::new(),
-    )?;
+    let (session, conn, mount) =
+        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
 
     let conn = &conn;
     let session = &session;

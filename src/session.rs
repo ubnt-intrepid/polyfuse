@@ -1,14 +1,18 @@
 use crate::{
     bytes::Bytes,
+    conn::Connection,
+    mount::{Mount, MountOptions},
     msg::{send_msg, MessageKind},
     reply::ReplyArg,
-    request::RequestBuf,
+    request::{FallbackBuf, RequestBuf},
     types::RequestID,
 };
 use polyfuse_kernel::*;
 use rustix::{io::Errno, param::page_size};
 use std::{
+    borrow::Cow,
     cmp, io, mem,
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
 use zerocopy::{FromZeros as _, IntoBytes as _, TryFromBytes as _};
@@ -516,93 +520,6 @@ impl Drop for Session {
 }
 
 impl Session {
-    /// Initialize a FUSE session by communicating with the kernel driver over
-    /// the established channel.
-    pub fn init<T, B>(mut conn: T, mut buf: B, mut config: KernelConfig) -> io::Result<Self>
-    where
-        T: io::Write,
-        B: RequestBuf<T>,
-    {
-        loop {
-            let (header, arg, _remains) = buf.receive(&mut conn)?;
-
-            if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
-                // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
-                // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
-                // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
-                tracing::error!(
-                    "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={:?})",
-                    header.unique(),
-                    header.opcode(),
-                );
-                continue;
-            }
-
-            let init_in = InitIn::from_bytes(arg).ok_or(Errno::INVAL)?;
-
-            match config.negotiate(init_in) {
-                Ok(()) => (),
-                Err(NegotiationError::TooLargeProtocolVersion) => {
-                    let (major, minor) = init_in.protocol_version();
-                    // major version が大きい場合、カーネルにダウングレードを要求する
-                    tracing::debug!(
-                        "The requested ABI version {}.{} is too large (expected version is {}.x)\n",
-                        major,
-                        minor,
-                        FUSE_KERNEL_VERSION,
-                    );
-                    tracing::debug!("  -> Wait for a second INIT request with an older version.");
-                    let mut out = fuse_init_out::new_zeroed();
-                    out.major = FUSE_KERNEL_VERSION;
-                    out.minor = FUSE_KERNEL_MINOR_VERSION;
-                    send_msg(
-                        &mut conn,
-                        MessageKind::Reply {
-                            unique: header.unique(),
-                            error: None,
-                        },
-                        out.as_bytes(),
-                    )?;
-                    continue;
-                }
-                Err(NegotiationError::TooSmallProtocolVersion) => {
-                    let (major, minor) = init_in.protocol_version();
-                    // バージョンが小さすぎる場合は、プロコトルエラーを報告する。
-                    tracing::error!(
-                        "The requested ABI version {}.{} is too small (expected version is {}.x)",
-                        major,
-                        minor,
-                        FUSE_KERNEL_VERSION,
-                    );
-                    send_msg(
-                        &mut conn,
-                        MessageKind::Reply {
-                            unique: header.unique(),
-                            error: Some(Errno::PROTO),
-                        },
-                        (),
-                    )?;
-                    continue;
-                }
-            }
-
-            let out = config.to_out();
-            send_msg(
-                &mut conn,
-                MessageKind::Reply {
-                    unique: header.unique(),
-                    error: None,
-                },
-                out.to_bytes(),
-            )?;
-
-            return Ok(Self {
-                config,
-                exited: AtomicBool::new(false),
-            });
-        }
-    }
-
     #[inline]
     pub fn config(&self) -> &KernelConfig {
         &self.config
@@ -707,7 +624,7 @@ impl Session {
             type Error = io::Error;
 
             fn config(&self) -> &KernelConfig {
-                &self.session.config
+                self.session.config()
             }
 
             fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error> {
@@ -738,6 +655,95 @@ impl Session {
     {
         send_msg(conn, MessageKind::Notify { code }, arg)
             .or_else(|err| self.handle_reply_error(err))
+    }
+}
+
+pub fn connect(
+    mountpoint: Cow<'static, Path>,
+    mountopts: MountOptions,
+    mut config: KernelConfig,
+) -> io::Result<(Session, Connection, Mount)> {
+    let (conn, mount) = crate::mount::mount(&mountpoint, &mountopts)?;
+
+    let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
+    loop {
+        let (header, arg, _remains) = buf.receive(&mut &conn)?;
+
+        if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
+            // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
+            // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
+            // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
+            tracing::error!(
+                    "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={:?})",
+                    header.unique(),
+                    header.opcode(),
+                );
+            continue;
+        }
+
+        let init_in = InitIn::from_bytes(arg).ok_or(Errno::INVAL)?;
+
+        match config.negotiate(init_in) {
+            Ok(()) => (),
+            Err(NegotiationError::TooLargeProtocolVersion) => {
+                let (major, minor) = init_in.protocol_version();
+                // major version が大きい場合、カーネルにダウングレードを要求する
+                tracing::debug!(
+                    "The requested ABI version {}.{} is too large (expected version is {}.x)\n",
+                    major,
+                    minor,
+                    FUSE_KERNEL_VERSION,
+                );
+                tracing::debug!("  -> Wait for a second INIT request with an older version.");
+                let mut out = fuse_init_out::new_zeroed();
+                out.major = FUSE_KERNEL_VERSION;
+                out.minor = FUSE_KERNEL_MINOR_VERSION;
+                send_msg(
+                    &conn,
+                    MessageKind::Reply {
+                        unique: header.unique(),
+                        error: None,
+                    },
+                    out.as_bytes(),
+                )?;
+                continue;
+            }
+            Err(NegotiationError::TooSmallProtocolVersion) => {
+                let (major, minor) = init_in.protocol_version();
+                // バージョンが小さすぎる場合は、プロコトルエラーを報告する。
+                tracing::error!(
+                    "The requested ABI version {}.{} is too small (expected version is {}.x)",
+                    major,
+                    minor,
+                    FUSE_KERNEL_VERSION,
+                );
+                send_msg(
+                    &conn,
+                    MessageKind::Reply {
+                        unique: header.unique(),
+                        error: Some(Errno::PROTO),
+                    },
+                    (),
+                )?;
+                continue;
+            }
+        }
+
+        let out = config.to_out();
+        send_msg(
+            &conn,
+            MessageKind::Reply {
+                unique: header.unique(),
+                error: None,
+            },
+            out.to_bytes(),
+        )?;
+
+        let session = Session {
+            config,
+            exited: AtomicBool::new(false),
+        };
+        return Ok((session, conn, mount));
     }
 }
 
