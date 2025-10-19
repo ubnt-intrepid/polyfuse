@@ -13,7 +13,7 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{AttrOut, EntryOut, ReaddirOut},
-    request::{SpliceBuf, ToRequestParts},
+    request::SpliceBuf,
     session::{KernelConfig, Session},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     Connection,
@@ -77,38 +77,35 @@ fn main() -> Result<()> {
 
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, arg, _remains) = buf.to_request_parts();
-            match Operation::decode(session.config(), header, arg) {
-                Ok(Operation::Lookup(op)) => {
+            let Some((req, op, ..)) = session.decode(conn, &mut buf)? else {
+                continue;
+            };
+            match op {
+                Operation::Lookup(op) => {
                     if op.parent != NodeID::ROOT {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOTDIR), ())?;
+                        req.reply_error(Errno::NOTDIR)?;
                         continue;
                     }
 
                     let mut current = fs.current.lock().unwrap();
 
                     if op.name.as_bytes() != current.filename.as_bytes() {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(Errno::NOENT)?;
                         continue;
                     }
 
-                    session.send_reply(
-                        conn,
-                        header.unique(),
-                        None,
-                        EntryOut {
-                            ino: Some(fs.file_attr.ino),
-                            attr: Cow::Borrowed(&fs.file_attr),
-                            entry_valid: Some(fs.ttl),
-                            attr_valid: Some(fs.ttl),
-                            generation: 0,
-                        },
-                    )?;
+                    req.reply(EntryOut {
+                        ino: Some(fs.file_attr.ino),
+                        attr: Cow::Borrowed(&fs.file_attr),
+                        entry_valid: Some(fs.ttl),
+                        attr_valid: Some(fs.ttl),
+                        generation: 0,
+                    })?;
 
                     current.nlookup += 1;
                 }
 
-                Ok(Operation::Forget(forgets)) => {
+                Operation::Forget(forgets) => {
                     let mut current = fs.current.lock().unwrap();
                     for forget in forgets.as_ref() {
                         if forget.ino() == FILE_INO {
@@ -117,42 +114,35 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Ok(Operation::Getattr(op)) => {
+                Operation::Getattr(op) => {
                     let attr = match op.ino {
                         NodeID::ROOT => &fs.root_attr,
                         FILE_INO => &fs.file_attr,
                         _ => {
-                            session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                            req.reply_error(Errno::NOENT)?;
                             continue;
                         }
                     };
 
-                    session.send_reply(
-                        conn,
-                        header.unique(),
-                        None,
-                        AttrOut {
-                            attr: Cow::Borrowed(attr),
-                            valid: Some(fs.ttl),
-                        },
-                    )?;
+                    req.reply(AttrOut {
+                        attr: Cow::Borrowed(attr),
+                        valid: Some(fs.ttl),
+                    })?;
                 }
 
-                Ok(Operation::Read(op)) => match op.ino {
-                    NodeID::ROOT => {
-                        session.send_reply(conn, header.unique(), Some(Errno::ISDIR), ())?
-                    }
-                    FILE_INO => session.send_reply(conn, header.unique(), None, ())?,
-                    _ => session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?,
+                Operation::Read(op) => match op.ino {
+                    NodeID::ROOT => req.reply_error(Errno::ISDIR)?,
+                    FILE_INO => req.reply(())?,
+                    _ => req.reply_error(Errno::NOENT)?,
                 },
 
-                Ok(Operation::Readdir(op)) => {
+                Operation::Readdir(op) => {
                     if op.ino != NodeID::ROOT {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOTDIR), ())?;
+                        req.reply_error(Errno::NOTDIR)?;
                         continue;
                     }
                     if op.offset > 0 {
-                        session.send_reply(conn, header.unique(), None, ())?;
+                        req.reply(())?;
                         continue;
                     }
 
@@ -160,10 +150,10 @@ fn main() -> Result<()> {
                     let current = fs.current.lock().unwrap();
                     buf.push_entry(current.filename.as_ref(), FILE_INO, None, 1);
 
-                    session.send_reply(conn, header.unique(), None, buf)?;
+                    req.reply(buf)?;
                 }
 
-                _ => session.send_reply(conn, header.unique(), Some(Errno::NOSYS), ())?,
+                _ => req.reply_error(Errno::NOSYS)?,
             }
         }
 

@@ -3,12 +3,18 @@ use crate::{
     conn::Connection,
     mount::{Mount, MountOptions},
     msg::{send_msg, MessageKind},
+    op::Operation,
     reply::ReplyArg,
-    request::{FallbackBuf, RequestBuf},
+    request::{FallbackBuf, RequestBuf, RequestHeader, ToRequestParts},
     types::RequestID,
 };
 use polyfuse_kernel::*;
-use rustix::{io::Errno, param::page_size};
+use rustix::{
+    fs::{Gid, Uid},
+    io::Errno,
+    param::page_size,
+    thread::Pid,
+};
 use std::{
     borrow::Cow,
     cmp, io, mem,
@@ -581,6 +587,34 @@ impl Session {
         Ok(true)
     }
 
+    #[allow(clippy::type_complexity)]
+    pub fn decode<'req, T, B>(
+        &'req self,
+        conn: T,
+        buf: &'req mut B,
+    ) -> io::Result<Option<(Request<'req, T>, Operation<'req>, B::RemainingData<'req>)>>
+    where
+        T: io::Write,
+        B: ToRequestParts + ?Sized,
+    {
+        let (header, arg, remains) = buf.to_request_parts();
+        let req = Request {
+            session: self,
+            header,
+            conn,
+        };
+        let op = Operation::decode(&self.config, header, arg)
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let op = match op {
+            Some(op) => op,
+            None => {
+                req.reply_error(Errno::NOSYS)?;
+                return Ok(None);
+            }
+        };
+        Ok(Some((req, op, remains)))
+    }
+
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
         match Errno::from_io_error(&err) {
             Some(Errno::NODEV) => {
@@ -600,7 +634,7 @@ impl Session {
     /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
     /// the corresponding kernel processing will be isolated, and the process
     /// that issued the associated syscall may enter a deadlock state.
-    pub fn send_reply<T, B>(
+    fn send_reply<T, B>(
         &self,
         conn: T,
         unique: RequestID,
@@ -655,6 +689,42 @@ impl Session {
     {
         send_msg(conn, MessageKind::Notify { code }, arg)
             .or_else(|err| self.handle_reply_error(err))
+    }
+}
+
+pub struct Request<'req, T> {
+    session: &'req Session,
+    header: &'req RequestHeader,
+    conn: T,
+}
+
+impl<T> Request<'_, T>
+where
+    T: io::Write,
+{
+    pub fn uid(&self) -> Option<Uid> {
+        self.header.uid()
+    }
+
+    pub fn gid(&self) -> Option<Gid> {
+        self.header.gid()
+    }
+
+    pub fn pid(&self) -> Option<Pid> {
+        self.header.pid()
+    }
+
+    pub fn reply<B>(self, arg: B) -> io::Result<()>
+    where
+        B: ReplyArg,
+    {
+        self.session
+            .send_reply(self.conn, self.header.unique(), None, arg)
+    }
+
+    pub fn reply_error(self, error: Errno) -> io::Result<()> {
+        self.session
+            .send_reply(self.conn, self.header.unique(), Some(error), ())
     }
 }
 

@@ -6,7 +6,7 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{self, AttrOut, EntryOut, ReaddirOut},
-    request::{SpliceBuf, ToRequestParts},
+    request::SpliceBuf,
     session::KernelConfig,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
@@ -42,51 +42,44 @@ fn main() -> Result<()> {
 
     let mut buf = SpliceBuf::new(session.request_buffer_size())?;
     while session.recv_request(&conn, &mut buf)? {
-        let (header, arg, _remains) = buf.to_request_parts();
-        match Operation::decode(session.config(), header, arg) {
-            Ok(Operation::Lookup(op)) => match op.parent {
-                NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => session
-                    .send_reply(
-                        &conn,
-                        header.unique(),
-                        None,
-                        EntryOut {
-                            ino: Some(HELLO_INO),
-                            generation: 0,
-                            attr: Cow::Owned(fs.hello_attr()),
-                            attr_valid: Some(TTL),
-                            entry_valid: Some(TTL),
-                        },
-                    )?,
-                _ => session.send_reply(&conn, header.unique(), Some(Errno::NOENT), ())?,
+        let Some((req, op, ..)) = session.decode(&conn, &mut buf)? else {
+            continue;
+        };
+        match op {
+            Operation::Lookup(op) => match op.parent {
+                NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
+                    req.reply(EntryOut {
+                        ino: Some(HELLO_INO),
+                        generation: 0,
+                        attr: Cow::Owned(fs.hello_attr()),
+                        attr_valid: Some(TTL),
+                        entry_valid: Some(TTL),
+                    })?
+                }
+                _ => req.reply_error(Errno::NOENT)?,
             },
 
-            Ok(Operation::Getattr(op)) => {
+            Operation::Getattr(op) => {
                 let attr = match op.ino {
                     NodeID::ROOT => fs.root_attr(),
                     HELLO_INO => fs.hello_attr(),
                     _ => Err(Errno::NOENT)?,
                 };
-                session.send_reply(
-                    &conn,
-                    header.unique(),
-                    None,
-                    AttrOut {
-                        attr: Cow::Owned(attr),
-                        valid: Some(TTL),
-                    },
-                )?;
+                req.reply(AttrOut {
+                    attr: Cow::Owned(attr),
+                    valid: Some(TTL),
+                })?;
             }
 
-            Ok(Operation::Read(op)) => {
+            Operation::Read(op) => {
                 match op.ino {
                     HELLO_INO => (),
                     NodeID::ROOT => {
-                        session.send_reply(&conn, header.unique(), Some(Errno::ISDIR), ())?;
+                        req.reply_error(Errno::ISDIR)?;
                         continue;
                     }
                     _ => {
-                        session.send_reply(&conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(Errno::NOENT)?;
                         continue;
                     }
                 }
@@ -100,18 +93,18 @@ fn main() -> Result<()> {
                     data = &data[..std::cmp::min(data.len(), size)];
                 }
 
-                session.send_reply(&conn, header.unique(), None, reply::Raw(data))?;
+                req.reply(reply::Raw(data))?;
             }
 
-            Ok(Operation::Readdir(op)) => {
+            Operation::Readdir(op) => {
                 if op.ino != NodeID::ROOT {
-                    session.send_reply(&conn, header.unique(), Some(Errno::NOTDIR), ())?;
+                    req.reply_error(Errno::NOTDIR)?;
                     continue;
                 }
 
-                let mut buf = ReaddirOut::new(op.size as usize);
+                let mut out = ReaddirOut::new(op.size as usize);
                 for (i, entry) in fs.dir_entries().skip(op.offset as usize) {
-                    let full = buf.push_entry(
+                    let full = out.push_entry(
                         entry.name.as_ref(), //
                         entry.ino,
                         entry.typ,
@@ -122,10 +115,10 @@ fn main() -> Result<()> {
                     }
                 }
 
-                session.send_reply(&conn, header.unique(), None, buf)?;
+                req.reply(out)?;
             }
 
-            _ => session.send_reply(&conn, header.unique(), Some(Errno::NOSYS), ())?,
+            _ => req.reply_error(Errno::NOSYS)?,
         }
     }
 

@@ -3,7 +3,7 @@ use polyfuse::{
     mount::MountOptions,
     op::{AccessMode, OpenFlags, Operation},
     reply::{self, AttrOut, OpenOut, OpenOutFlags, PollOut},
-    request::{SpliceBuf, ToRequestParts as _},
+    request::SpliceBuf,
     session::KernelConfig,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
@@ -54,28 +54,25 @@ fn main() -> Result<()> {
     thread::scope(|scope| -> Result<()> {
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, arg, _remains) = buf.to_request_parts();
-            match Operation::decode(session.config(), header, arg) {
-                Ok(Operation::Getattr(_op)) => session.send_reply(
-                    conn,
-                    header.unique(),
-                    None,
-                    AttrOut {
-                        attr: Cow::Owned(FileAttr {
-                            ino: NodeID::ROOT,
-                            nlink: 1,
-                            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
-                            uid: getuid(),
-                            gid: getgid(),
-                            ..FileAttr::new()
-                        }),
-                        valid: Some(Duration::from_secs(u64::MAX / 2)),
-                    },
-                )?,
+            let Some((req, op, ..)) = session.decode(conn, &mut buf)? else {
+                continue;
+            };
+            match op {
+                Operation::Getattr(_op) => req.reply(AttrOut {
+                    attr: Cow::Owned(FileAttr {
+                        ino: NodeID::ROOT,
+                        nlink: 1,
+                        mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+                        uid: getuid(),
+                        gid: getgid(),
+                        ..FileAttr::new()
+                    }),
+                    valid: Some(Duration::from_secs(u64::MAX / 2)),
+                })?,
 
-                Ok(Operation::Open(op)) => {
+                Operation::Open(op) => {
                     if op.options.access_mode() != Some(AccessMode::ReadOnly) {
-                        session.send_reply(conn, header.unique(), Some(Errno::ACCESS), ())?;
+                        req.reply_error(Errno::ACCESS)?;
                         continue;
                     }
 
@@ -121,19 +118,14 @@ fn main() -> Result<()> {
                     let fh = FileID::from_raw(fh);
                     fs.handles.write().unwrap().insert(fh, handle);
 
-                    session.send_reply(
-                        conn,
-                        header.unique(),
-                        None,
-                        OpenOut {
-                            fh,
-                            open_flags: OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
-                            backing_id: 0,
-                        },
-                    )?;
+                    req.reply(OpenOut {
+                        fh,
+                        open_flags: OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
+                        backing_id: 0,
+                    })?;
                 }
 
-                Ok(Operation::Read(op)) => {
+                Operation::Read(op) => {
                     let handle = {
                         let handles = fs.handles.read().unwrap();
                         handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
@@ -157,15 +149,12 @@ fn main() -> Result<()> {
                     let bufsize = op.size as usize;
                     let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-                    session.send_reply(
-                        conn,
-                        header.unique(),
-                        None,
-                        reply::Raw(&content[..std::cmp::min(content.len(), bufsize)]),
-                    )?;
+                    req.reply(reply::Raw(
+                        &content[..std::cmp::min(content.len(), bufsize)],
+                    ))?;
                 }
 
-                Ok(Operation::Poll(op)) => {
+                Operation::Poll(op) => {
                     let handle = {
                         let handles = fs.handles.read().unwrap();
                         handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
@@ -181,15 +170,15 @@ fn main() -> Result<()> {
                         let _ = handle.kh.set(kh);
                     }
 
-                    session.send_reply(conn, header.unique(), None, PollOut::new(revents))?;
+                    req.reply(PollOut::new(revents))?;
                 }
 
-                Ok(Operation::Release(op)) => {
+                Operation::Release(op) => {
                     drop(fs.handles.write().unwrap().remove(&op.fh));
-                    session.send_reply(conn, header.unique(), None, ())?;
+                    req.reply(())?;
                 }
 
-                _ => session.send_reply(conn, header.unique(), Some(Errno::NOSYS), ())?,
+                _ => req.reply_error(Errno::NOSYS)?,
             }
         }
 

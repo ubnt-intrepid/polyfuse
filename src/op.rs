@@ -26,9 +26,6 @@ pub enum Error {
     #[error("during decoding: {}", _0)]
     Decode(#[from] DecodeError),
 
-    #[error("unsupported opcode")]
-    UnsupportedOpcode,
-
     #[error("invalid nodeid")]
     InvalidNodeID,
 
@@ -89,17 +86,14 @@ pub enum Operation<'op> {
 }
 
 impl<'op> Operation<'op> {
-    pub fn decode(
+    pub(crate) fn decode(
         config: &KernelConfig,
         header: &'op RequestHeader,
         arg: &'op [u8],
-    ) -> Result<Self, Error> {
-        let opcode = header.opcode().map_err(|_| Error::UnsupportedOpcode)?;
-
+    ) -> Result<Option<Self>, Error> {
         let mut decoder = Decoder::new(arg);
-
-        match opcode {
-            fuse_opcode::FUSE_FORGET => {
+        match header.opcode() {
+            Ok(fuse_opcode::FUSE_FORGET) => {
                 let arg: &fuse_forget_in = decoder.fetch()?;
                 let forget = Forget {
                     raw: fuse_forget_one {
@@ -107,59 +101,59 @@ impl<'op> Operation<'op> {
                         nlookup: arg.nlookup,
                     },
                 };
-                Ok(Operation::Forget(Forgets::Single([forget; 1])))
+                Ok(Some(Operation::Forget(Forgets::Single([forget; 1]))))
             }
 
-            fuse_opcode::FUSE_BATCH_FORGET => {
+            Ok(fuse_opcode::FUSE_BATCH_FORGET) => {
                 let arg: &fuse_batch_forget_in = decoder.fetch()?;
                 let forgets = decoder.fetch_array::<fuse_forget_one>(arg.count as usize)?;
                 let forgets = unsafe {
                     // Safety: `Forget` has the same layout with `fuse_forget_one`.
                     slice::from_raw_parts(forgets.as_ptr().cast(), forgets.len())
                 };
-                Ok(Operation::Forget(Forgets::Batch(forgets)))
+                Ok(Some(Operation::Forget(Forgets::Batch(forgets))))
             }
 
-            fuse_opcode::FUSE_INTERRUPT => {
+            Ok(fuse_opcode::FUSE_INTERRUPT) => {
                 let arg: &fuse_interrupt_in = decoder.fetch()?;
-                Ok(Operation::Interrupt(Interrupt {
+                Ok(Some(Operation::Interrupt(Interrupt {
                     unique: RequestID::from_raw(arg.unique & !FUSE_INT_REQ_BIT),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_NOTIFY_REPLY => {
+            Ok(fuse_opcode::FUSE_NOTIFY_REPLY) => {
                 let arg: &fuse_notify_retrieve_in = decoder.fetch()?;
-                Ok(Operation::NotifyReply(NotifyReply {
+                Ok(Some(Operation::NotifyReply(NotifyReply {
                     unique: NotifyID::from_raw(header.unique().into_raw()),
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     offset: arg.offset,
                     size: arg.size,
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_LOOKUP => {
+            Ok(fuse_opcode::FUSE_LOOKUP) => {
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Lookup(Lookup {
+                Ok(Some(Operation::Lookup(Lookup {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_GETATTR => {
+            Ok(fuse_opcode::FUSE_GETATTR) => {
                 let arg: &fuse_getattr_in = decoder.fetch()?;
-                Ok(Operation::Getattr(Getattr {
+                Ok(Some(Operation::Getattr(Getattr {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: (arg.getattr_flags & FUSE_GETATTR_FH != 0)
                         .then_some(FileID::from_raw(arg.fh)),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_SETATTR => {
+            Ok(fuse_opcode::FUSE_SETATTR) => {
                 let arg: &fuse_setattr_in = decoder.fetch()?;
-                Ok(Operation::Setattr(Setattr {
+                Ok(Some(Operation::Setattr(Setattr {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: (arg.valid & FATTR_FH != 0).then(|| FileID::from_raw(arg.fh)),
                     mode: (arg.valid & FATTR_MODE != 0).then(|| FileMode::from_raw(arg.mode)),
@@ -186,124 +180,124 @@ impl<'op> Operation<'op> {
                         .then(|| LockOwnerID::from_raw(arg.lock_owner)),
                     kill_suidgid: arg.valid & FATTR_KILL_SUIDGID != 0,
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_READLINK => Ok(Operation::Readlink(Readlink {
+            Ok(fuse_opcode::FUSE_READLINK) => Ok(Some(Operation::Readlink(Readlink {
                 ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                 _marker: PhantomData,
-            })),
+            }))),
 
-            fuse_opcode::FUSE_SYMLINK => {
+            Ok(fuse_opcode::FUSE_SYMLINK) => {
                 let name = decoder.fetch_str()?;
                 let link = decoder.fetch_str()?;
-                Ok(Operation::Symlink(Symlink {
+                Ok(Some(Operation::Symlink(Symlink {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     link,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_MKNOD if config.minor <= 11 => {
+            Ok(fuse_opcode::FUSE_MKNOD) if config.minor <= 11 => {
                 let arg: &fuse_mknod_in_compat_11 = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Mknod(Mknod {
+                Ok(Some(Operation::Mknod(Mknod {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     mode: FileMode::from_raw(arg.mode),
                     rdev: DeviceID::from_kernel_dev(arg.rdev),
                     umask: FilePermissions::empty(),
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_MKNOD => {
+            Ok(fuse_opcode::FUSE_MKNOD) => {
                 let arg: &fuse_mknod_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Mknod(Mknod {
+                Ok(Some(Operation::Mknod(Mknod {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     mode: FileMode::from_raw(arg.mode),
                     rdev: DeviceID::from_kernel_dev(arg.rdev),
                     umask: FilePermissions::from_bits_truncate(arg.umask) & FilePermissions::MASK,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_MKDIR => {
+            Ok(fuse_opcode::FUSE_MKDIR) => {
                 let arg: &fuse_mkdir_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Mkdir(Mkdir {
+                Ok(Some(Operation::Mkdir(Mkdir {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     permissions: FilePermissions::from_bits_truncate(arg.mode),
                     umask: FilePermissions::from_bits_truncate(arg.umask) & FilePermissions::MASK,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_UNLINK => {
+            Ok(fuse_opcode::FUSE_UNLINK) => {
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Unlink(Unlink {
+                Ok(Some(Operation::Unlink(Unlink {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_RMDIR => {
+            Ok(fuse_opcode::FUSE_RMDIR) => {
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Rmdir(Rmdir {
+                Ok(Some(Operation::Rmdir(Rmdir {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_RENAME => {
+            Ok(fuse_opcode::FUSE_RENAME) => {
                 let arg: &fuse_rename_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let newname = decoder.fetch_str()?;
-                Ok(Operation::Rename(Rename {
+                Ok(Some(Operation::Rename(Rename {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     newparent: NodeID::from_raw(arg.newdir).ok_or(Error::InvalidNodeID)?,
                     newname,
                     flags: RenameFlags::empty(),
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_RENAME2 => {
+            Ok(fuse_opcode::FUSE_RENAME2) => {
                 let arg: &fuse_rename2_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let newname = decoder.fetch_str()?;
-                Ok(Operation::Rename(Rename {
+                Ok(Some(Operation::Rename(Rename {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     newparent: NodeID::from_raw(arg.newdir).ok_or(Error::InvalidNodeID)?,
                     newname,
                     flags: RenameFlags::from_bits_truncate(arg.flags),
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_LINK => {
+            Ok(fuse_opcode::FUSE_LINK) => {
                 let arg: &fuse_link_in = decoder.fetch()?;
                 let newname = decoder.fetch_str()?;
-                Ok(Operation::Link(Link {
+                Ok(Some(Operation::Link(Link {
                     ino: NodeID::from_raw(arg.oldnodeid).ok_or(Error::InvalidNodeID)?,
                     newparent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     newname,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_OPEN => {
+            Ok(fuse_opcode::FUSE_OPEN) => {
                 let arg: &fuse_open_in = decoder.fetch()?;
-                Ok(Operation::Open(Open {
+                Ok(Some(Operation::Open(Open {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     options: OpenOptions::from_raw(arg.flags),
                     flags: OpenInFlags::from_bits_truncate(arg.open_flags),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_READ => {
+            Ok(fuse_opcode::FUSE_READ) => {
                 let arg: &fuse_read_in = decoder.fetch()?;
-                Ok(Operation::Read(Read {
+                Ok(Some(Operation::Read(Read {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     offset: arg.offset,
@@ -312,12 +306,12 @@ impl<'op> Operation<'op> {
                     lock_owner: (arg.read_flags & FUSE_READ_LOCKOWNER != 0)
                         .then(|| LockOwnerID::from_raw(arg.lock_owner)),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_WRITE if config.minor <= 8 => {
+            Ok(fuse_opcode::FUSE_WRITE) if config.minor <= 8 => {
                 let arg: &fuse_write_in_compat_8 = decoder.fetch()?;
-                Ok(Operation::Write(Write {
+                Ok(Some(Operation::Write(Write {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     offset: arg.offset,
@@ -326,12 +320,12 @@ impl<'op> Operation<'op> {
                     lock_owner: None,
                     flags: WriteInFlags::empty(),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_WRITE => {
+            Ok(fuse_opcode::FUSE_WRITE) => {
                 let arg: &fuse_write_in = decoder.fetch()?;
-                Ok(Operation::Write(Write {
+                Ok(Some(Operation::Write(Write {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     offset: arg.offset,
@@ -341,113 +335,113 @@ impl<'op> Operation<'op> {
                         .then(|| LockOwnerID::from_raw(arg.lock_owner)),
                     flags: WriteInFlags::from_bits_truncate(arg.write_flags),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_RELEASE => {
+            Ok(fuse_opcode::FUSE_RELEASE) => {
                 let arg: &fuse_release_in = decoder.fetch()?;
-                Ok(Operation::Release(Release {
+                Ok(Some(Operation::Release(Release {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     options: OpenOptions::from_raw(arg.flags),
                     lock_owner: LockOwnerID::from_raw(arg.lock_owner),
                     flags: ReleaseFlags::from_bits_truncate(arg.release_flags),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_STATFS => Ok(Operation::Statfs(Statfs {
+            Ok(fuse_opcode::FUSE_STATFS) => Ok(Some(Operation::Statfs(Statfs {
                 ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                 _marker: PhantomData,
-            })),
+            }))),
 
-            fuse_opcode::FUSE_FSYNC => {
+            Ok(fuse_opcode::FUSE_FSYNC) => {
                 let arg: &fuse_fsync_in = decoder.fetch()?;
-                Ok(Operation::Fsync(Fsync {
+                Ok(Some(Operation::Fsync(Fsync {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     datasync: arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0,
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_SETXATTR
+            Ok(fuse_opcode::FUSE_SETXATTR)
                 if config.minor <= 32 || !config.flags.contains(KernelFlags::SETXATTR_EXT) =>
             {
                 let arg: &fuse_setxattr_in_compat_32 = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
-                Ok(Operation::Setxattr(Setxattr {
+                Ok(Some(Operation::Setxattr(Setxattr {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     value,
                     flags: XattrFlags::from_bits_truncate(arg.flags),
                     extra_flags: SetxattrInFlags::empty(),
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_SETXATTR => {
+            Ok(fuse_opcode::FUSE_SETXATTR) => {
                 let arg: &fuse_setxattr_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
                 let value = decoder.fetch_bytes(arg.size as usize)?;
-                Ok(Operation::Setxattr(Setxattr {
+                Ok(Some(Operation::Setxattr(Setxattr {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     value,
                     flags: XattrFlags::from_bits_truncate(arg.flags),
                     extra_flags: SetxattrInFlags::from_bits_truncate(arg.setxattr_flags),
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_GETXATTR => {
+            Ok(fuse_opcode::FUSE_GETXATTR) => {
                 let arg: &fuse_getxattr_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Getxattr(Getxattr {
+                Ok(Some(Operation::Getxattr(Getxattr {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     size: arg.size,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_LISTXATTR => {
+            Ok(fuse_opcode::FUSE_LISTXATTR) => {
                 let arg: &fuse_getxattr_in = decoder.fetch()?;
-                Ok(Operation::Listxattr(Listxattr {
+                Ok(Some(Operation::Listxattr(Listxattr {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     size: arg.size,
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_REMOVEXATTR => {
+            Ok(fuse_opcode::FUSE_REMOVEXATTR) => {
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Removexattr(Removexattr {
+                Ok(Some(Operation::Removexattr(Removexattr {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_FLUSH => {
+            Ok(fuse_opcode::FUSE_FLUSH) => {
                 let arg: &fuse_flush_in = decoder.fetch()?;
-                Ok(Operation::Flush(Flush {
+                Ok(Some(Operation::Flush(Flush {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     lock_owner: LockOwnerID::from_raw(arg.lock_owner),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_OPENDIR => {
+            Ok(fuse_opcode::FUSE_OPENDIR) => {
                 let arg: &fuse_open_in = decoder.fetch()?;
-                Ok(Operation::Opendir(Opendir {
+                Ok(Some(Operation::Opendir(Opendir {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     options: OpenOptions::from_raw(arg.flags),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            opcode @ fuse_opcode::FUSE_READDIR | opcode @ fuse_opcode::FUSE_READDIRPLUS => {
+            Ok(opcode @ fuse_opcode::FUSE_READDIR) | Ok(opcode @ fuse_opcode::FUSE_READDIRPLUS) => {
                 let arg: &fuse_read_in = decoder.fetch()?;
-                Ok(Operation::Readdir(Readdir {
+                Ok(Some(Operation::Readdir(Readdir {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     offset: arg.offset,
@@ -458,32 +452,32 @@ impl<'op> Operation<'op> {
                         ReaddirMode::Normal
                     },
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_RELEASEDIR => {
+            Ok(fuse_opcode::FUSE_RELEASEDIR) => {
                 let arg: &fuse_release_in = decoder.fetch()?;
-                Ok(Operation::Releasedir(Releasedir {
+                Ok(Some(Operation::Releasedir(Releasedir {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     options: OpenOptions::from_raw(arg.flags),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_FSYNCDIR => {
+            Ok(fuse_opcode::FUSE_FSYNCDIR) => {
                 let arg: &fuse_fsync_in = decoder.fetch()?;
-                Ok(Operation::Fsyncdir(Fsyncdir {
+                Ok(Some(Operation::Fsyncdir(Fsyncdir {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     datasync: arg.fsync_flags & FUSE_FSYNC_FDATASYNC != 0,
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_GETLK => {
+            Ok(fuse_opcode::FUSE_GETLK) => {
                 let arg: &fuse_lk_in = decoder.fetch()?;
-                Ok(Operation::Getlk(Getlk {
+                Ok(Some(Operation::Getlk(Getlk {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     owner: LockOwnerID::from_raw(arg.owner),
@@ -494,10 +488,10 @@ impl<'op> Operation<'op> {
                         pid: Pid::from_raw(arg.lk.pid as i32).ok_or(Error::InvalidPid)?,
                     },
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            opcode @ fuse_opcode::FUSE_SETLK | opcode @ fuse_opcode::FUSE_SETLKW => {
+            Ok(opcode @ fuse_opcode::FUSE_SETLK) | Ok(opcode @ fuse_opcode::FUSE_SETLKW) => {
                 let arg: &fuse_lk_in = decoder.fetch()?;
                 let sleep = match opcode {
                     fuse_opcode::FUSE_SETLK => false,
@@ -506,7 +500,7 @@ impl<'op> Operation<'op> {
                 };
 
                 if arg.lk_flags & FUSE_LK_FLOCK == 0 {
-                    Ok(Operation::Setlk(Setlk {
+                    Ok(Some(Operation::Setlk(Setlk {
                         ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                         fh: FileID::from_raw(arg.fh),
                         file_lock: FileLock {
@@ -517,9 +511,9 @@ impl<'op> Operation<'op> {
                         },
                         sleep,
                         _marker: PhantomData,
-                    }))
+                    })))
                 } else {
-                    Ok(Operation::Flock(Flock {
+                    Ok(Some(Operation::Flock(Flock {
                         ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                         fh: FileID::from_raw(arg.fh),
                         owner: LockOwnerID::from_raw(arg.owner),
@@ -532,56 +526,56 @@ impl<'op> Operation<'op> {
                             _ => return Err(Error::InvalidFlockType),
                         },
                         _marker: PhantomData,
-                    }))
+                    })))
                 }
             }
 
-            fuse_opcode::FUSE_ACCESS => {
+            Ok(fuse_opcode::FUSE_ACCESS) => {
                 let arg: &fuse_access_in = decoder.fetch()?;
-                Ok(Operation::Access(Access {
+                Ok(Some(Operation::Access(Access {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     mask: FilePermissions::from_bits_truncate(arg.mask) & FilePermissions::MASK,
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_CREATE => {
+            Ok(fuse_opcode::FUSE_CREATE) => {
                 let arg: &fuse_create_in = decoder.fetch()?;
                 let name = decoder.fetch_str()?;
-                Ok(Operation::Create(Create {
+                Ok(Some(Operation::Create(Create {
                     parent: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     name,
                     mode: FileMode::from_raw(arg.mode),
                     umask: FilePermissions::from_bits_truncate(arg.umask) & FilePermissions::MASK,
                     open_options: OpenOptions::from_raw(arg.flags),
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_BMAP => {
+            Ok(fuse_opcode::FUSE_BMAP) => {
                 let arg: &fuse_bmap_in = decoder.fetch()?;
-                Ok(Operation::Bmap(Bmap {
+                Ok(Some(Operation::Bmap(Bmap {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     block: arg.block,
                     blocksize: arg.blocksize,
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_FALLOCATE => {
+            Ok(fuse_opcode::FUSE_FALLOCATE) => {
                 let arg: &fuse_fallocate_in = decoder.fetch()?;
-                Ok(Operation::Fallocate(Fallocate {
+                Ok(Some(Operation::Fallocate(Fallocate {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     offset: arg.offset,
                     length: arg.length,
                     mode: FallocateFlags::from_bits_truncate(arg.mode),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_COPY_FILE_RANGE => {
+            Ok(fuse_opcode::FUSE_COPY_FILE_RANGE) => {
                 let arg: &fuse_copy_file_range_in = decoder.fetch()?;
-                Ok(Operation::CopyFileRange(CopyFileRange {
+                Ok(Some(Operation::CopyFileRange(CopyFileRange {
                     ino_in: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh_in: FileID::from_raw(arg.fh_in),
                     offset_in: arg.off_in,
@@ -591,24 +585,24 @@ impl<'op> Operation<'op> {
                     length: arg.len,
                     flags: arg.flags,
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_POLL => {
+            Ok(fuse_opcode::FUSE_POLL) => {
                 let arg: &fuse_poll_in = decoder.fetch()?;
-                Ok(Operation::Poll(Poll {
+                Ok(Some(Operation::Poll(Poll {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     events: PollEvents::from_bits_truncate(arg.events),
                     kh: (arg.flags & FUSE_POLL_SCHEDULE_NOTIFY != 0)
                         .then(|| PollWakeupID::from_raw(arg.kh)),
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_LSEEK => {
+            Ok(fuse_opcode::FUSE_LSEEK) => {
                 let arg: &fuse_lseek_in = decoder.fetch()?;
-                Ok(Operation::Lseek(Lseek {
+                Ok(Some(Operation::Lseek(Lseek {
                     ino: header.nodeid().ok_or(Error::InvalidNodeID)?,
                     fh: FileID::from_raw(arg.fh),
                     offset: arg.offset,
@@ -621,21 +615,10 @@ impl<'op> Operation<'op> {
                         _ => return Err(Error::UnknownLseekWhence),
                     },
                     _marker: PhantomData,
-                }))
+                })))
             }
 
-            fuse_opcode::FUSE_INIT | fuse_opcode::FUSE_DESTROY => {
-                // should be handled by the upstream process.
-                unreachable!()
-            }
-
-            fuse_opcode::FUSE_IOCTL
-            | fuse_opcode::FUSE_SETUPMAPPING
-            | fuse_opcode::FUSE_REMOVEMAPPING
-            | fuse_opcode::FUSE_SYNCFS
-            | fuse_opcode::FUSE_TMPFILE
-            | fuse_opcode::FUSE_STATX
-            | fuse_opcode::CUSE_INIT => Err(Error::UnsupportedOpcode),
+            _ => Ok(None),
         }
     }
 }

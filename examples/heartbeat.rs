@@ -13,7 +13,7 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{self, AttrOut, OpenOut, OpenOutFlags},
-    request::{SpliceBuf, ToRequestParts},
+    request::SpliceBuf,
     session::{KernelConfig, Session},
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, NotifyID},
     Connection,
@@ -74,62 +74,54 @@ fn main() -> Result<()> {
 
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, arg, remains) = buf.to_request_parts();
-            match Operation::decode(session.config(), header, arg) {
-                Ok(Operation::Getattr(op)) => {
+            let Some((req, op, remains)) = session.decode(conn, &mut buf)? else {
+                continue;
+            };
+            match op {
+                Operation::Getattr(op) => {
                     if op.ino == NodeID::ROOT {
                         let inner = fs.inner.lock().unwrap();
-                        session.send_reply(
-                            conn,
-                            header.unique(),
-                            None,
-                            AttrOut {
-                                attr: Cow::Borrowed(&inner.attr),
-                                valid: None,
-                            },
-                        )?;
+                        req.reply(AttrOut {
+                            attr: Cow::Borrowed(&inner.attr),
+                            valid: None,
+                        })?;
                     } else {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(Errno::NOENT)?;
                     }
                 }
 
-                Ok(Operation::Open(op)) => {
+                Operation::Open(op) => {
                     if op.ino == NodeID::ROOT {
-                        session.send_reply(
-                            conn,
-                            header.unique(),
-                            None,
-                            OpenOut {
-                                fh: FileID::from_raw(0),
-                                open_flags: OpenOutFlags::KEEP_CACHE,
-                                backing_id: 0,
-                            },
-                        )?;
+                        req.reply(OpenOut {
+                            fh: FileID::from_raw(0),
+                            open_flags: OpenOutFlags::KEEP_CACHE,
+                            backing_id: 0,
+                        })?;
                     } else {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(Errno::NOENT)?;
                     }
                 }
 
-                Ok(Operation::Read(op)) => {
+                Operation::Read(op) => {
                     if op.ino == NodeID::ROOT {
                         let inner = fs.inner.lock().unwrap();
 
                         let offset = op.offset as usize;
                         if offset >= inner.content.len() {
-                            session.send_reply(conn, header.unique(), None, ())?;
+                            req.reply(())?;
                             continue;
                         }
 
                         let size = op.size as usize;
                         let data = &inner.content.as_bytes()[offset..];
                         let data = &data[..std::cmp::min(data.len(), size)];
-                        session.send_reply(conn, header.unique(), None, reply::Raw(data))?;
+                        req.reply(reply::Raw(data))?;
                     } else {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(Errno::NOENT)?;
                     }
                 }
 
-                Ok(Operation::NotifyReply(op)) => {
+                Operation::NotifyReply(op) => {
                     if let Some((_, original)) = fs.retrieves.remove(&op.unique) {
                         let data = {
                             let mut buf = vec![0u8; op.size as usize];
@@ -145,7 +137,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                _ => session.send_reply(conn, header.unique(), Some(Errno::NOSYS), ())?,
+                _ => req.reply_error(Errno::NOSYS)?,
             }
         }
 
