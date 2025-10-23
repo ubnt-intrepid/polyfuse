@@ -6,7 +6,7 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{self, AttrOut, EntryOut, ReaddirOut},
-    request::{SpliceBuf, ToRequestParts},
+    request::SpliceBuf,
     session::KernelConfig,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
@@ -42,9 +42,9 @@ fn main() -> Result<()> {
 
     let mut buf = SpliceBuf::new(session.request_buffer_size())?;
     while session.recv_request(&conn, &mut buf)? {
-        let (header, arg, _remains) = buf.to_request_parts();
-        match Operation::decode(session.config(), header, arg) {
-            Ok(Operation::Lookup(op)) => match op.parent {
+        let (header, op) = session.decode(&mut buf)?;
+        match op {
+            Some(Operation::Lookup(op)) => match op.parent {
                 NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => session
                     .send_reply(
                         &conn,
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
                 _ => session.send_reply(&conn, header.unique(), Some(Errno::NOENT), ())?,
             },
 
-            Ok(Operation::Getattr(op)) => {
+            Some(Operation::Getattr(op)) => {
                 let attr = match op.ino {
                     NodeID::ROOT => fs.root_attr(),
                     HELLO_INO => fs.hello_attr(),
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
                 )?;
             }
 
-            Ok(Operation::Read(op)) => {
+            Some(Operation::Read(op)) => {
                 match op.ino {
                     HELLO_INO => (),
                     NodeID::ROOT => {
@@ -103,7 +103,7 @@ fn main() -> Result<()> {
                 session.send_reply(&conn, header.unique(), None, reply::Raw(data))?;
             }
 
-            Ok(Operation::Readdir(op)) => {
+            Some(Operation::Readdir(op)) => {
                 if op.ino != NodeID::ROOT {
                     session.send_reply(&conn, header.unique(), Some(Errno::NOTDIR), ())?;
                     continue;

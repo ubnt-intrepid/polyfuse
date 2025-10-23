@@ -1,17 +1,7 @@
 use std::{ffi::OsStr, mem, os::unix::prelude::*};
-use zerocopy::{FromBytes, Immutable, KnownLayout};
+use zerocopy::{Immutable, KnownLayout, TryFromBytes};
 
-#[derive(Debug, thiserror::Error)]
-pub enum DecodeError {
-    #[error("unexpected eof")]
-    UnexpectedEof,
-
-    #[error("missing null character")]
-    MissingNulCharacter,
-
-    #[error("the unaligned pointer specified")]
-    Unaligned,
-}
+use super::DecodeError;
 
 pub struct Decoder<'a> {
     bytes: &'a [u8],
@@ -38,19 +28,19 @@ impl<'a> Decoder<'a> {
     /// Fetch a value of Plain-Old-Data (POD) type by reference.
     pub fn fetch<T>(&mut self) -> Result<&'a T, DecodeError>
     where
-        T: FromBytes + KnownLayout + Immutable,
+        T: TryFromBytes + KnownLayout + Immutable,
     {
         let bytes = self.fetch_bytes(mem::size_of::<T>())?;
-        FromBytes::ref_from_bytes(bytes).map_err(|_err| DecodeError::Unaligned)
+        TryFromBytes::try_ref_from_bytes(bytes).map_err(|_err| DecodeError::Unaligned)
     }
 
     /// Fetch an array of Plain-Old Data (POD) type by reference.
     pub fn fetch_array<T>(&mut self, count: usize) -> Result<&'a [T], DecodeError>
     where
-        T: FromBytes + KnownLayout + Immutable,
+        T: TryFromBytes + KnownLayout + Immutable,
     {
         let bytes = self.fetch_bytes(mem::size_of::<T>() * count)?;
-        FromBytes::ref_from_bytes(bytes).map_err(|_err| DecodeError::Unaligned)
+        TryFromBytes::try_ref_from_bytes(bytes).map_err(|_err| DecodeError::Unaligned)
     }
 
     /// Fetch a zero-terminated OS string by reference.
@@ -65,10 +55,6 @@ impl<'a> Decoder<'a> {
             .expect("invalid null terminator position");
         let bytes = &bytes[..bytes.len() - 1];
         Ok(OsStr::from_bytes(bytes))
-    }
-
-    pub fn remains(&self) -> &[u8] {
-        self.bytes
     }
 }
 

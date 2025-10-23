@@ -13,7 +13,7 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{AttrOut, EntryOut, ReaddirOut},
-    request::{SpliceBuf, ToRequestParts},
+    request::SpliceBuf,
     session::{KernelConfig, Session},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     Connection,
@@ -77,9 +77,9 @@ fn main() -> Result<()> {
 
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, arg, _remains) = buf.to_request_parts();
-            match Operation::decode(session.config(), header, arg) {
-                Ok(Operation::Lookup(op)) => {
+            let (header, op) = session.decode(&mut buf)?;
+            match op {
+                Some(Operation::Lookup(op)) => {
                     if op.parent != NodeID::ROOT {
                         session.send_reply(conn, header.unique(), Some(Errno::NOTDIR), ())?;
                         continue;
@@ -108,7 +108,7 @@ fn main() -> Result<()> {
                     current.nlookup += 1;
                 }
 
-                Ok(Operation::Forget(forgets)) => {
+                Some(Operation::Forget(forgets)) => {
                     let mut current = fs.current.lock().unwrap();
                     for forget in forgets.as_ref() {
                         if forget.ino() == FILE_INO {
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Ok(Operation::Getattr(op)) => {
+                Some(Operation::Getattr(op)) => {
                     let attr = match op.ino {
                         NodeID::ROOT => &fs.root_attr,
                         FILE_INO => &fs.file_attr,
@@ -138,7 +138,7 @@ fn main() -> Result<()> {
                     )?;
                 }
 
-                Ok(Operation::Read(op)) => match op.ino {
+                Some(Operation::Read(op)) => match op.ino {
                     NodeID::ROOT => {
                         session.send_reply(conn, header.unique(), Some(Errno::ISDIR), ())?
                     }
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
                     _ => session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?,
                 },
 
-                Ok(Operation::Readdir(op)) => {
+                Some(Operation::Readdir(op)) => {
                     if op.ino != NodeID::ROOT {
                         session.send_reply(conn, header.unique(), Some(Errno::NOTDIR), ())?;
                         continue;

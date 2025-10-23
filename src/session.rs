@@ -3,8 +3,9 @@ use crate::{
     conn::Connection,
     mount::{Mount, MountOptions},
     msg::{send_msg, MessageKind},
+    op::{DecodeError, Operation},
     reply::ReplyArg,
-    request::{FallbackBuf, RequestBuf},
+    request::{FallbackBuf, RequestHeader, ToRequestParts, TryReceive},
     types::RequestID,
 };
 use polyfuse_kernel::*;
@@ -545,13 +546,13 @@ impl Session {
     /// Receive an incoming FUSE request from the kernel.
     pub fn recv_request<T, B>(&self, mut conn: T, buf: &mut B) -> io::Result<bool>
     where
-        B: RequestBuf<T>,
+        B: TryReceive<T>,
     {
         if self.exited() {
             return Ok(false);
         }
 
-        let header = match buf.receive(&mut conn) {
+        let header = match buf.try_receive(&mut conn) {
             Err(err) => match Errno::from_io_error(&err) {
                 Some(Errno::NODEV) => {
                     self.exit();
@@ -559,7 +560,7 @@ impl Session {
                 }
                 _ => return Err(err),
             },
-            Ok((header, ..)) => header,
+            Ok(header) => header,
         };
 
         match header.opcode() {
@@ -579,6 +580,19 @@ impl Session {
         }
 
         Ok(true)
+    }
+
+    pub fn decode<'op, B>(&self, buf: &'op mut B) -> Result<RequestParts<'op, B>, DecodeError>
+    where
+        B: ToRequestParts,
+    {
+        let (header, arg, remains) = buf.to_request_parts();
+        let op = match Operation::decode(&self.config, header, arg, remains) {
+            Ok(op) => Some(op),
+            Err(DecodeError::UnsupportedOpcode) => None,
+            Err(err) => return Err(err),
+        };
+        Ok((header, op))
     }
 
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
@@ -658,6 +672,11 @@ impl Session {
     }
 }
 
+pub type RequestParts<'op, B> = (
+    &'op RequestHeader,
+    Option<Operation<'op, <B as ToRequestParts>::RemainingData<'op>>>,
+);
+
 pub fn connect(
     mountpoint: Cow<'static, Path>,
     mountopts: MountOptions,
@@ -667,7 +686,8 @@ pub fn connect(
 
     let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
     loop {
-        let (header, arg, _remains) = buf.receive(&mut &conn)?;
+        buf.try_receive(&mut &conn)?;
+        let (header, arg, _remains) = buf.to_request_parts();
 
         if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
             // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない

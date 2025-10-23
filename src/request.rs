@@ -129,7 +129,7 @@ impl RequestHeader {
 
 /// The trait that represents the receiving process of an incoming FUSE request from the kernel.
 pub trait TryReceive<T: ?Sized> {
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<()>;
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<&RequestHeader>;
 }
 
 pub trait ToRequestParts {
@@ -140,19 +140,6 @@ pub trait ToRequestParts {
 
     fn to_request_parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>);
 }
-
-/// The buffer to store a processing FUSE request received from the kernel driver.
-pub trait RequestBuf<T: ?Sized>: TryReceive<T> + ToRequestParts {
-    fn receive(
-        &mut self,
-        conn: &mut T,
-    ) -> io::Result<(&RequestHeader, &[u8], Self::RemainingData<'_>)> {
-        self.try_receive(conn)?;
-        Ok(self.to_request_parts())
-    }
-}
-
-impl<T: ?Sized, B: ?Sized> RequestBuf<T> for B where B: TryReceive<T> + ToRequestParts {}
 
 pub struct SpliceBuf {
     header: RequestHeader,
@@ -203,7 +190,7 @@ impl<T: ?Sized> TryReceive<T> for SpliceBuf
 where
     T: SpliceRead,
 {
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<()> {
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<&RequestHeader> {
         self.reset()?;
 
         let len = conn.splice_read(&mut self.pipe, self.bufsize, SpliceFlags::NONBLOCK)?;
@@ -222,7 +209,7 @@ where
         self.arg.resize(self.header.arg_len(), 0);
         self.pipe.read_exact(&mut self.arg[..])?;
 
-        Ok(())
+        Ok(&self.header)
     }
 }
 
@@ -258,7 +245,7 @@ impl<T: ?Sized> TryReceive<T> for FallbackBuf
 where
     T: io::Read,
 {
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<()> {
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<&RequestHeader> {
         self.pos = 0;
 
         let len = conn.read_vectored(&mut [
@@ -274,7 +261,7 @@ where
 
         self.pos = self.header.arg_len();
 
-        Ok(())
+        Ok(&self.header)
     }
 }
 

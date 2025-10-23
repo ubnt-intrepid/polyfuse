@@ -3,7 +3,7 @@ use polyfuse::{
     mount::MountOptions,
     op::{AccessMode, OpenFlags, Operation},
     reply::{self, AttrOut, OpenOut, OpenOutFlags, PollOut},
-    request::{SpliceBuf, ToRequestParts as _},
+    request::SpliceBuf,
     session::KernelConfig,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
@@ -54,9 +54,9 @@ fn main() -> Result<()> {
     thread::scope(|scope| -> Result<()> {
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, arg, _remains) = buf.to_request_parts();
-            match Operation::decode(session.config(), header, arg) {
-                Ok(Operation::Getattr(_op)) => session.send_reply(
+            let (header, op) = session.decode(&mut buf)?;
+            match op {
+                Some(Operation::Getattr(_op)) => session.send_reply(
                     conn,
                     header.unique(),
                     None,
@@ -73,7 +73,7 @@ fn main() -> Result<()> {
                     },
                 )?,
 
-                Ok(Operation::Open(op)) => {
+                Some(Operation::Open(op)) => {
                     if op.options.access_mode() != Some(AccessMode::ReadOnly) {
                         session.send_reply(conn, header.unique(), Some(Errno::ACCESS), ())?;
                         continue;
@@ -133,7 +133,7 @@ fn main() -> Result<()> {
                     )?;
                 }
 
-                Ok(Operation::Read(op)) => {
+                Some(Operation::Read(op)) => {
                     let handle = {
                         let handles = fs.handles.read().unwrap();
                         handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
@@ -165,7 +165,7 @@ fn main() -> Result<()> {
                     )?;
                 }
 
-                Ok(Operation::Poll(op)) => {
+                Some(Operation::Poll(op)) => {
                     let handle = {
                         let handles = fs.handles.read().unwrap();
                         handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
@@ -184,7 +184,7 @@ fn main() -> Result<()> {
                     session.send_reply(conn, header.unique(), None, PollOut::new(revents))?;
                 }
 
-                Ok(Operation::Release(op)) => {
+                Some(Operation::Release(op)) => {
                     drop(fs.handles.write().unwrap().remove(&op.fh));
                     session.send_reply(conn, header.unique(), None, ())?;
                 }

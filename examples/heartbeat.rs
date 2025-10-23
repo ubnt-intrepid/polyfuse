@@ -13,7 +13,7 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{self, AttrOut, OpenOut, OpenOutFlags},
-    request::{SpliceBuf, ToRequestParts},
+    request::SpliceBuf,
     session::{KernelConfig, Session},
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, NotifyID},
     Connection,
@@ -74,9 +74,9 @@ fn main() -> Result<()> {
 
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, arg, remains) = buf.to_request_parts();
-            match Operation::decode(session.config(), header, arg) {
-                Ok(Operation::Getattr(op)) => {
+            let (header, op) = session.decode(&mut buf)?;
+            match op {
+                Some(Operation::Getattr(op)) => {
                     if op.ino == NodeID::ROOT {
                         let inner = fs.inner.lock().unwrap();
                         session.send_reply(
@@ -93,7 +93,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Ok(Operation::Open(op)) => {
+                Some(Operation::Open(op)) => {
                     if op.ino == NodeID::ROOT {
                         session.send_reply(
                             conn,
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Ok(Operation::Read(op)) => {
+                Some(Operation::Read(op)) => {
                     if op.ino == NodeID::ROOT {
                         let inner = fs.inner.lock().unwrap();
 
@@ -129,7 +129,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Ok(Operation::NotifyReply(op)) => {
+                Some(Operation::NotifyReply(op, remains)) => {
                     if let Some((_, original)) = fs.retrieves.remove(&op.unique) {
                         let data = {
                             let mut buf = vec![0u8; op.size as usize];
