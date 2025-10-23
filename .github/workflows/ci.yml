@@ -29,7 +29,6 @@ jobs:
 
     - run: rustup set profile minimal
     - uses: taiki-e/install-action@nextest
-    - uses: taiki-e/install-action@cargo-llvm-cov
     - uses: Swatinem/rust-cache@v2
 
     - name: Run tests (MSRV)
@@ -46,12 +45,3 @@ jobs:
         set -xe
         cargo +stable nextest run
         cargo +stable test -p polyfuse-kernel-systest
-  
-    - name: Run coverage test
-      id: coverage
-      run: cargo +stable llvm-cov --codecov --output-path codecov.json
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
-      with:
-        files: codecov.json
-        token: ${{ secrets.CODECOV_TOKEN }}
