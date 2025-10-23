@@ -4,7 +4,7 @@ use polyfuse::{
     mount::MountOptions,
     op::{self, Operation},
     reply::{self, AttrOut},
-    request::{FallbackBuf, RequestHeader, ToRequestParts as _},
+    request::{FallbackBuf, RequestHeader},
     session::{KernelConfig, Session},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     Connection,
@@ -34,11 +34,11 @@ fn main() -> Result<()> {
     // Receive an incoming FUSE request from the kernel.
     let mut buf = FallbackBuf::new(session.request_buffer_size());
     while session.recv_request(&mut conn, &mut buf)? {
-        let (header, arg, _remains) = buf.to_request_parts();
-        match Operation::decode(session.config(), header, arg) {
+        let (header, op, _remains) = session.decode(&mut buf)?;
+        match op {
             // Dispatch your callbacks to the supported operations...
-            Ok(Operation::Getattr(op)) => getattr(&session, &mut conn, header, op)?,
-            Ok(Operation::Read(op)) => read(&session, &mut conn, header, op)?,
+            Some(Operation::Getattr(op)) => getattr(&session, &mut conn, header, op)?,
+            Some(Operation::Read(op)) => read(&session, &mut conn, header, op)?,
 
             // Or annotate that the operation is not supported.
             _ => session.send_reply(&mut conn, header.unique(), Some(Errno::NOSYS), ())?,

@@ -34,6 +34,7 @@ pub enum DecodeError {
     #[error("the unaligned pointer specified")]
     Unaligned,
 
+    #[doc(hidden)]
     #[error("unsupported opcode")]
     UnsupportedOpcode,
 
@@ -97,7 +98,7 @@ pub enum Operation<'op> {
 }
 
 impl<'op> Operation<'op> {
-    pub fn decode(
+    pub(crate) fn decode(
         config: &KernelConfig,
         header: &'op RequestHeader,
         arg: &'op [u8],

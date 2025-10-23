@@ -3,8 +3,9 @@ use crate::{
     conn::Connection,
     mount::{Mount, MountOptions},
     msg::{send_msg, MessageKind},
+    op::{DecodeError, Operation},
     reply::ReplyArg,
-    request::{FallbackBuf, RequestBuf},
+    request::{FallbackBuf, RequestBuf, RequestHeader, ToRequestParts},
     types::RequestID,
 };
 use polyfuse_kernel::*;
@@ -579,6 +580,29 @@ impl Session {
         }
 
         Ok(true)
+    }
+
+    pub fn decode<'op, B>(
+        &self,
+        buf: &'op mut B,
+    ) -> Result<
+        (
+            &'op RequestHeader,
+            Option<Operation<'op>>,
+            B::RemainingData<'op>,
+        ),
+        DecodeError,
+    >
+    where
+        B: ToRequestParts,
+    {
+        let (header, arg, remains) = buf.to_request_parts();
+        let op = match Operation::decode(&self.config, header, arg) {
+            Ok(op) => Some(op),
+            Err(DecodeError::UnsupportedOpcode) => None,
+            Err(err) => return Err(err),
+        };
+        Ok((header, op, remains))
     }
 
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
