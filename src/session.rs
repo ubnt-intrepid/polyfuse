@@ -5,7 +5,7 @@ use crate::{
     msg::{send_msg, MessageKind},
     op::{DecodeError, Operation},
     reply::ReplyArg,
-    request::{FallbackBuf, RequestBuf, RequestHeader, ToRequestParts},
+    request::{FallbackBuf, RequestHeader, ToRequestParts, TryReceive},
     types::RequestID,
 };
 use polyfuse_kernel::*;
@@ -546,13 +546,13 @@ impl Session {
     /// Receive an incoming FUSE request from the kernel.
     pub fn recv_request<T, B>(&self, mut conn: T, buf: &mut B) -> io::Result<bool>
     where
-        B: RequestBuf<T>,
+        B: TryReceive<T>,
     {
         if self.exited() {
             return Ok(false);
         }
 
-        let header = match buf.receive(&mut conn) {
+        let header = match buf.try_receive(&mut conn) {
             Err(err) => match Errno::from_io_error(&err) {
                 Some(Errno::NODEV) => {
                     self.exit();
@@ -560,7 +560,7 @@ impl Session {
                 }
                 _ => return Err(err),
             },
-            Ok((header, ..)) => header,
+            Ok(header) => header,
         };
 
         match header.opcode() {
@@ -686,7 +686,8 @@ pub fn connect(
 
     let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
     loop {
-        let (header, arg, _remains) = buf.receive(&mut &conn)?;
+        buf.try_receive(&mut &conn)?;
+        let (header, arg, _remains) = buf.to_request_parts();
 
         if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
             // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
