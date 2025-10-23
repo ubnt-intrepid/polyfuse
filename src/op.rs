@@ -1,5 +1,8 @@
+mod decoder;
+
+pub use decoder::DecodeError;
+
 use crate::{
-    bytes::{DecodeError, Decoder},
     request::RequestHeader,
     session::{KernelConfig, KernelFlags},
     types::{
@@ -8,6 +11,7 @@ use crate::{
     },
 };
 use bitflags::bitflags;
+use decoder::Decoder;
 use polyfuse_kernel::*;
 use rustix::{
     fs::{Gid, Uid, XattrFlags},

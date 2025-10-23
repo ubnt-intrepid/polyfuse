@@ -1,9 +1,5 @@
 //! Bytes facilities.
 
-mod decoder;
-
-pub use decoder::{DecodeError, Decoder};
-
 use either::Either;
 use std::{
     io::{self, IoSlice},

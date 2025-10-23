@@ -66,10 +66,6 @@ impl<'a> Decoder<'a> {
         let bytes = &bytes[..bytes.len() - 1];
         Ok(OsStr::from_bytes(bytes))
     }
-
-    pub fn remains(&self) -> &[u8] {
-        self.bytes
-    }
 }
 
 #[cfg(test)]
