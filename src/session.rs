@@ -582,14 +582,14 @@ impl Session {
         Ok(true)
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn decode<'op, B>(
         &self,
         buf: &'op mut B,
     ) -> Result<
         (
             &'op RequestHeader,
-            Option<Operation<'op>>,
-            B::RemainingData<'op>,
+            Option<Operation<'op, B::RemainingData<'op>>>,
         ),
         DecodeError,
     >
@@ -597,12 +597,12 @@ impl Session {
         B: ToRequestParts,
     {
         let (header, arg, remains) = buf.to_request_parts();
-        let op = match Operation::decode(&self.config, header, arg) {
+        let op = match Operation::decode(&self.config, header, arg, remains) {
             Ok(op) => Some(op),
             Err(DecodeError::UnsupportedOpcode) => None,
             Err(err) => return Err(err),
         };
-        Ok((header, op, remains))
+        Ok((header, op))
     }
 
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {

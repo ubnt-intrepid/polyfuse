@@ -42,7 +42,7 @@ fn main() -> Result<()> {
 
     let mut buf = SpliceBuf::new(session.request_buffer_size())?;
     while session.recv_request(&conn, &mut buf)? {
-        let (header, op, _remains) = session.decode(&mut buf)?;
+        let (header, op) = session.decode(&mut buf)?;
         match op {
             Some(Operation::Lookup(op)) => match op.parent {
                 NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => session

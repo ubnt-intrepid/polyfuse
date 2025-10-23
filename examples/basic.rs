@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     // Receive an incoming FUSE request from the kernel.
     let mut buf = FallbackBuf::new(session.request_buffer_size());
     while session.recv_request(&mut conn, &mut buf)? {
-        let (header, op, _remains) = session.decode(&mut buf)?;
+        let (header, op) = session.decode(&mut buf)?;
         match op {
             // Dispatch your callbacks to the supported operations...
             Some(Operation::Getattr(op)) => getattr(&session, &mut conn, header, op)?,

@@ -54,7 +54,7 @@ fn main() -> Result<()> {
     thread::scope(|scope| -> Result<()> {
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, op, _remains) = session.decode(&mut buf)?;
+            let (header, op) = session.decode(&mut buf)?;
             match op {
                 Some(Operation::Getattr(_op)) => session.send_reply(
                     conn,
