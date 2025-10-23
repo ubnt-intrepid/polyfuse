@@ -582,17 +582,7 @@ impl Session {
         Ok(true)
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn decode<'op, B>(
-        &self,
-        buf: &'op mut B,
-    ) -> Result<
-        (
-            &'op RequestHeader,
-            Option<Operation<'op, B::RemainingData<'op>>>,
-        ),
-        DecodeError,
-    >
+    pub fn decode<'op, B>(&self, buf: &'op mut B) -> Result<RequestParts<'op, B>, DecodeError>
     where
         B: ToRequestParts,
     {
@@ -681,6 +671,11 @@ impl Session {
             .or_else(|err| self.handle_reply_error(err))
     }
 }
+
+pub type RequestParts<'op, B> = (
+    &'op RequestHeader,
+    Option<Operation<'op, <B as ToRequestParts>::RemainingData<'op>>>,
+);
 
 pub fn connect(
     mountpoint: Cow<'static, Path>,
