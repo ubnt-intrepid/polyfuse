@@ -233,9 +233,7 @@ impl Heartbeat {
 
             if !self.no_notify && current.nlookup > 0 {
                 tracing::info!("send notify_inval_entry");
-                session
-                    .notifier()
-                    .inval_entry(conn, NodeID::ROOT, old_filename)?;
+                session.notify_inval_entry(conn, NodeID::ROOT, old_filename)?;
             }
 
             drop(current);

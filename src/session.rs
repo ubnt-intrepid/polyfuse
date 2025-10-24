@@ -608,10 +608,6 @@ impl Session {
         ))
     }
 
-    pub fn notifier(&self) -> Notifier<'_> {
-        Notifier { session: self }
-    }
-
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
         match Errno::from_io_error(&err) {
             Some(Errno::NODEV) => {
@@ -722,16 +718,12 @@ impl Request<'_> {
     }
 }
 
-pub struct Notifier<'sess> {
-    session: &'sess Session,
-}
-
-impl Notifier<'_> {
-    pub fn inval_inode<T>(&self, conn: T, ino: NodeID, off: i64, len: i64) -> io::Result<()>
+impl Session {
+    pub fn notify_inval_inode<T>(&self, conn: T, ino: NodeID, off: i64, len: i64) -> io::Result<()>
     where
         T: io::Write,
     {
-        self.session.send_notify(
+        self.send_notify(
             conn,
             fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
             POD(fuse_notify_inval_inode_out {
@@ -742,12 +734,17 @@ impl Notifier<'_> {
         )
     }
 
-    pub fn inval_entry<T>(&self, conn: T, parent: NodeID, name: impl AsRef<OsStr>) -> io::Result<()>
+    pub fn notify_inval_entry<T>(
+        &self,
+        conn: T,
+        parent: NodeID,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
     where
         T: io::Write,
     {
         let name = name.as_ref();
-        self.session.send_notify(
+        self.send_notify(
             conn,
             fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
             (
@@ -762,7 +759,7 @@ impl Notifier<'_> {
         )
     }
 
-    pub fn delete<T>(
+    pub fn notify_delete<T>(
         &self,
         conn: T,
         parent: NodeID,
@@ -773,7 +770,7 @@ impl Notifier<'_> {
         T: io::Write,
     {
         let name = name.as_ref();
-        self.session.send_notify(
+        self.send_notify(
             conn,
             fuse_notify_code::FUSE_NOTIFY_DELETE,
             (
@@ -789,13 +786,19 @@ impl Notifier<'_> {
         )
     }
 
-    pub fn store<T, B>(&self, conn: T, ino: NodeID, offset: u64, content: B) -> io::Result<()>
+    pub fn notify_store<T, B>(
+        &self,
+        conn: T,
+        ino: NodeID,
+        offset: u64,
+        content: B,
+    ) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
     {
         let size = content.size();
-        self.session.send_notify(
+        self.send_notify(
             conn,
             fuse_notify_code::FUSE_NOTIFY_STORE,
             (
@@ -810,12 +813,18 @@ impl Notifier<'_> {
         )
     }
 
-    pub fn retrieve<T>(&self, conn: T, ino: NodeID, offset: u64, size: u32) -> io::Result<NotifyID>
+    pub fn notify_retrieve<T>(
+        &self,
+        conn: T,
+        ino: NodeID,
+        offset: u64,
+        size: u32,
+    ) -> io::Result<NotifyID>
     where
         T: io::Write,
     {
-        let notify_unique = self.session.notify_unique.fetch_add(1, Ordering::AcqRel);
-        self.session.send_notify(
+        let notify_unique = self.notify_unique.fetch_add(1, Ordering::AcqRel);
+        self.send_notify(
             conn,
             fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
             POD(fuse_notify_retrieve_out {
@@ -829,11 +838,11 @@ impl Notifier<'_> {
         Ok(NotifyID::from_raw(notify_unique))
     }
 
-    pub fn poll_wakeup<T>(&self, conn: T, kh: PollWakeupID) -> io::Result<()>
+    pub fn notify_poll_wakeup<T>(&self, conn: T, kh: PollWakeupID) -> io::Result<()>
     where
         T: io::Write,
     {
-        self.session.send_notify(
+        self.send_notify(
             conn,
             fuse_notify_code::FUSE_NOTIFY_POLL,
             POD(fuse_notify_poll_wakeup_out { kh: kh.into_raw() }),

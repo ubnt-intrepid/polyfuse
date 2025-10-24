@@ -102,7 +102,7 @@ fn main() -> Result<()> {
                             if let Some(handle) = handle.upgrade() {
                                 if let Some(kh) = handle.kh.get().copied() {
                                     tracing::info!("send wakeup notification, kh={}", kh);
-                                    session.notifier().poll_wakeup(conn, kh)?;
+                                    session.notify_poll_wakeup(conn, kh)?;
                                 }
                             }
 
