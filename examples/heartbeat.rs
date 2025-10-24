@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    bytes::POD,
     mount::MountOptions,
     op::Operation,
     reply::{self, AttrOut, OpenOut, OpenOutFlags},
@@ -22,18 +21,12 @@ use polyfuse::{
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
-use polyfuse_kernel::{
-    fuse_notify_code, fuse_notify_inval_inode_out, fuse_notify_retrieve_out, fuse_notify_store_out,
-};
 use rustix::{io::Errno, param::page_size};
 use std::{
     borrow::Cow,
     io::{self, prelude::*},
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -74,31 +67,27 @@ fn main() -> Result<()> {
 
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, op) = session.decode(&mut buf)?;
+            let (req, op) = session.decode(&mut buf)?;
             match op {
                 Some(Operation::Getattr(op)) => {
                     if op.ino == NodeID::ROOT {
                         let inner = fs.inner.lock().unwrap();
-                        session.send_reply(
+                        req.reply(
                             conn,
-                            header.unique(),
-                            None,
                             AttrOut {
                                 attr: Cow::Borrowed(&inner.attr),
                                 valid: None,
                             },
                         )?;
                     } else {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(conn, Errno::NOENT)?;
                     }
                 }
 
                 Some(Operation::Open(op)) => {
                     if op.ino == NodeID::ROOT {
-                        session.send_reply(
+                        req.reply(
                             conn,
-                            header.unique(),
-                            None,
                             OpenOut {
                                 fh: FileID::from_raw(0),
                                 open_flags: OpenOutFlags::KEEP_CACHE,
@@ -106,7 +95,7 @@ fn main() -> Result<()> {
                             },
                         )?;
                     } else {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(conn, Errno::NOENT)?;
                     }
                 }
 
@@ -116,16 +105,16 @@ fn main() -> Result<()> {
 
                         let offset = op.offset as usize;
                         if offset >= inner.content.len() {
-                            session.send_reply(conn, header.unique(), None, ())?;
+                            req.reply(conn, ())?;
                             continue;
                         }
 
                         let size = op.size as usize;
                         let data = &inner.content.as_bytes()[offset..];
                         let data = &data[..std::cmp::min(data.len(), size)];
-                        session.send_reply(conn, header.unique(), None, reply::Raw(data))?;
+                        req.reply(conn, reply::Raw(data))?;
                     } else {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(conn, Errno::NOENT)?;
                     }
                 }
 
@@ -145,7 +134,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                _ => session.send_reply(conn, header.unique(), Some(Errno::NOSYS), ())?,
+                _ => req.reply_error(conn, Errno::NOSYS)?,
             }
         }
 
@@ -180,7 +169,6 @@ struct Heartbeat {
     retrieves: DashMap<NotifyID, String>,
     kind: Option<NotifyKind>,
     update_interval: Duration,
-    next_notify_unique: AtomicU64,
 }
 
 struct Inner {
@@ -204,7 +192,6 @@ impl Heartbeat {
             retrieves: DashMap::new(),
             kind,
             update_interval,
-            next_notify_unique: AtomicU64::new(0),
         }
     }
 
@@ -222,50 +209,21 @@ impl Heartbeat {
                 let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
-                session.send_notify(
-                    conn,
-                    fuse_notify_code::FUSE_NOTIFY_STORE,
-                    (
-                        POD(fuse_notify_store_out {
-                            nodeid: NodeID::ROOT.into_raw(),
-                            offset: 0,
-                            size: content.len() as u32,
-                            padding: 0,
-                        }),
-                        &content,
-                    ),
-                )?;
+                session.notifier().store(conn, NodeID::ROOT, 0, &content)?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
-                let notify_unique = self.next_notify_unique.fetch_add(1, Ordering::AcqRel);
-                session.send_notify(
-                    conn,
-                    fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
-                    POD(fuse_notify_retrieve_out {
-                        notify_unique,
-                        nodeid: NodeID::ROOT.into_raw(),
-                        offset: 0,
-                        size: page_size() as u32,
-                        padding: 0,
-                    }),
-                )?;
-                self.retrieves
-                    .insert(NotifyID::from_raw(notify_unique), content);
+                let notify_unique =
+                    session
+                        .notifier()
+                        .retrieve(conn, NodeID::ROOT, 0, page_size() as u32)?;
+                self.retrieves.insert(notify_unique, content);
             }
 
             Some(NotifyKind::Invalidate) => {
                 tracing::info!("send notify_invalidate_inode");
-                session.send_notify(
-                    conn,
-                    fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
-                    POD(fuse_notify_inval_inode_out {
-                        ino: NodeID::ROOT.into_raw(),
-                        off: 0,
-                        len: 0,
-                    }),
-                )?;
+                session.notifier().inval_inode(conn, NodeID::ROOT, 0, 0)?;
             }
 
             None => { /* do nothing */ }

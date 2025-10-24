@@ -1,20 +1,23 @@
 use crate::{
-    bytes::Bytes,
+    bytes::{Bytes, POD},
     conn::Connection,
     mount::{Mount, MountOptions},
     msg::{send_msg, MessageKind},
     op::{DecodeError, Operation},
     reply::ReplyArg,
     request::{FallbackBuf, RequestHeader, ToRequestParts, TryReceive},
-    types::RequestID,
+    types::{NodeID, NotifyID, PollWakeupID, RequestID},
 };
 use polyfuse_kernel::*;
 use rustix::{io::Errno, param::page_size};
 use std::{
     borrow::Cow,
-    cmp, io, mem,
+    cmp,
+    ffi::OsStr,
+    io, mem,
+    os::unix::prelude::*,
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use zerocopy::{FromZeros as _, IntoBytes as _, TryFromBytes as _};
 
@@ -512,6 +515,7 @@ impl KernelFlags {
 pub struct Session {
     config: KernelConfig,
     exited: AtomicBool,
+    notify_unique: AtomicU64,
 }
 
 impl Drop for Session {
@@ -582,7 +586,10 @@ impl Session {
         Ok(true)
     }
 
-    pub fn decode<'op, B>(&self, buf: &'op mut B) -> Result<RequestParts<'op, B>, DecodeError>
+    pub fn decode<'req, B>(
+        &'req self,
+        buf: &'req mut B,
+    ) -> Result<RequestParts<'req, B>, DecodeError>
     where
         B: ToRequestParts,
     {
@@ -592,7 +599,17 @@ impl Session {
             Err(DecodeError::UnsupportedOpcode) => None,
             Err(err) => return Err(err),
         };
-        Ok((header, op))
+        Ok((
+            Request {
+                session: self,
+                header,
+            },
+            op,
+        ))
+    }
+
+    pub fn notifier(&self) -> Notifier<'_> {
+        Notifier { session: self }
     }
 
     fn handle_reply_error(&self, err: io::Error) -> io::Result<()> {
@@ -614,7 +631,7 @@ impl Session {
     /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
     /// the corresponding kernel processing will be isolated, and the process
     /// that issued the associated syscall may enter a deadlock state.
-    pub fn send_reply<T, B>(
+    fn send_reply<T, B>(
         &self,
         conn: T,
         unique: RequestID,
@@ -662,7 +679,7 @@ impl Session {
     }
 
     /// Send a notification message to the kernel.
-    pub fn send_notify<T, B>(&self, conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
+    fn send_notify<T, B>(&self, conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
     where
         T: io::Write,
         B: Bytes,
@@ -672,10 +689,157 @@ impl Session {
     }
 }
 
-pub type RequestParts<'op, B> = (
-    &'op RequestHeader,
-    Option<Operation<'op, <B as ToRequestParts>::RemainingData<'op>>>,
+pub type RequestParts<'req, B> = (
+    Request<'req>,
+    Option<Operation<'req, <B as ToRequestParts>::RemainingData<'req>>>,
 );
+
+pub struct Request<'req> {
+    session: &'req Session,
+    header: &'req RequestHeader,
+}
+
+impl Request<'_> {
+    pub fn header(&self) -> &RequestHeader {
+        self.header
+    }
+
+    pub fn reply<T, B>(self, conn: T, arg: B) -> io::Result<()>
+    where
+        T: io::Write,
+        B: ReplyArg,
+    {
+        self.session
+            .send_reply(conn, self.header.unique(), None, arg)
+    }
+
+    pub fn reply_error<T>(self, conn: T, error: Errno) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        self.session
+            .send_reply(conn, self.header.unique(), Some(error), ())
+    }
+}
+
+pub struct Notifier<'sess> {
+    session: &'sess Session,
+}
+
+impl Notifier<'_> {
+    pub fn inval_inode<T>(&self, conn: T, ino: NodeID, off: i64, len: i64) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        self.session.send_notify(
+            conn,
+            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+            POD(fuse_notify_inval_inode_out {
+                ino: ino.into_raw(),
+                off,
+                len,
+            }),
+        )
+    }
+
+    pub fn inval_entry<T>(&self, conn: T, parent: NodeID, name: impl AsRef<OsStr>) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        let name = name.as_ref();
+        self.session.send_notify(
+            conn,
+            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
+            (
+                POD(fuse_notify_inval_entry_out {
+                    parent: parent.into_raw(),
+                    namelen: name.len() as u32,
+                    flags: 0,
+                }),
+                name.as_bytes(),
+                "\0",
+            ),
+        )
+    }
+
+    pub fn delete<T>(
+        &self,
+        conn: T,
+        parent: NodeID,
+        child: NodeID,
+        name: impl AsRef<OsStr>,
+    ) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        let name = name.as_ref();
+        self.session.send_notify(
+            conn,
+            fuse_notify_code::FUSE_NOTIFY_DELETE,
+            (
+                POD(fuse_notify_delete_out {
+                    parent: parent.into_raw(),
+                    child: child.into_raw(),
+                    namelen: name.len() as u32,
+                    padding: 0,
+                }),
+                name.as_bytes(),
+                b"\0",
+            ),
+        )
+    }
+
+    pub fn store<T, B>(&self, conn: T, ino: NodeID, offset: u64, content: B) -> io::Result<()>
+    where
+        T: io::Write,
+        B: Bytes,
+    {
+        let size = content.size();
+        self.session.send_notify(
+            conn,
+            fuse_notify_code::FUSE_NOTIFY_STORE,
+            (
+                POD(fuse_notify_store_out {
+                    nodeid: ino.into_raw(),
+                    offset,
+                    size: size as u32,
+                    padding: 0,
+                }),
+                content,
+            ),
+        )
+    }
+
+    pub fn retrieve<T>(&self, conn: T, ino: NodeID, offset: u64, size: u32) -> io::Result<NotifyID>
+    where
+        T: io::Write,
+    {
+        let notify_unique = self.session.notify_unique.fetch_add(1, Ordering::AcqRel);
+        self.session.send_notify(
+            conn,
+            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+            POD(fuse_notify_retrieve_out {
+                notify_unique,
+                nodeid: ino.into_raw(),
+                offset,
+                size,
+                padding: 0,
+            }),
+        )?;
+        Ok(NotifyID::from_raw(notify_unique))
+    }
+
+    pub fn poll_wakeup<T>(&self, conn: T, kh: PollWakeupID) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        self.session.send_notify(
+            conn,
+            fuse_notify_code::FUSE_NOTIFY_POLL,
+            POD(fuse_notify_poll_wakeup_out { kh: kh.into_raw() }),
+        )
+    }
+}
 
 pub fn connect(
     mountpoint: Cow<'static, Path>,
@@ -762,6 +926,7 @@ pub fn connect(
         let session = Session {
             config,
             exited: AtomicBool::new(false),
+            notify_unique: AtomicU64::new(0),
         };
         return Ok((session, conn, mount));
     }

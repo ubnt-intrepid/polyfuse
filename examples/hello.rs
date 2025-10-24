@@ -42,23 +42,20 @@ fn main() -> Result<()> {
 
     let mut buf = SpliceBuf::new(session.request_buffer_size())?;
     while session.recv_request(&conn, &mut buf)? {
-        let (header, op) = session.decode(&mut buf)?;
+        let (req, op) = session.decode(&mut buf)?;
         match op {
             Some(Operation::Lookup(op)) => match op.parent {
-                NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => session
-                    .send_reply(
-                        &conn,
-                        header.unique(),
-                        None,
-                        EntryOut {
-                            ino: Some(HELLO_INO),
-                            generation: 0,
-                            attr: Cow::Owned(fs.hello_attr()),
-                            attr_valid: Some(TTL),
-                            entry_valid: Some(TTL),
-                        },
-                    )?,
-                _ => session.send_reply(&conn, header.unique(), Some(Errno::NOENT), ())?,
+                NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => req.reply(
+                    &conn,
+                    EntryOut {
+                        ino: Some(HELLO_INO),
+                        generation: 0,
+                        attr: Cow::Owned(fs.hello_attr()),
+                        attr_valid: Some(TTL),
+                        entry_valid: Some(TTL),
+                    },
+                )?,
+                _ => req.reply_error(&conn, Errno::NOENT)?,
             },
 
             Some(Operation::Getattr(op)) => {
@@ -67,10 +64,8 @@ fn main() -> Result<()> {
                     HELLO_INO => fs.hello_attr(),
                     _ => Err(Errno::NOENT)?,
                 };
-                session.send_reply(
+                req.reply(
                     &conn,
-                    header.unique(),
-                    None,
                     AttrOut {
                         attr: Cow::Owned(attr),
                         valid: Some(TTL),
@@ -82,11 +77,11 @@ fn main() -> Result<()> {
                 match op.ino {
                     HELLO_INO => (),
                     NodeID::ROOT => {
-                        session.send_reply(&conn, header.unique(), Some(Errno::ISDIR), ())?;
+                        req.reply_error(&conn, Errno::ISDIR)?;
                         continue;
                     }
                     _ => {
-                        session.send_reply(&conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(&conn, Errno::NOENT)?;
                         continue;
                     }
                 }
@@ -100,12 +95,12 @@ fn main() -> Result<()> {
                     data = &data[..std::cmp::min(data.len(), size)];
                 }
 
-                session.send_reply(&conn, header.unique(), None, reply::Raw(data))?;
+                req.reply(&conn, reply::Raw(data))?;
             }
 
             Some(Operation::Readdir(op)) => {
                 if op.ino != NodeID::ROOT {
-                    session.send_reply(&conn, header.unique(), Some(Errno::NOTDIR), ())?;
+                    req.reply_error(&conn, Errno::NOTDIR)?;
                     continue;
                 }
 
@@ -122,10 +117,10 @@ fn main() -> Result<()> {
                     }
                 }
 
-                session.send_reply(&conn, header.unique(), None, buf)?;
+                req.reply(&conn, buf)?;
             }
 
-            _ => session.send_reply(&conn, header.unique(), Some(Errno::NOSYS), ())?,
+            _ => req.reply_error(&conn, Errno::NOSYS)?,
         }
     }
 

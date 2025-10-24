@@ -1,5 +1,4 @@
 use polyfuse::{
-    bytes::POD,
     mount::MountOptions,
     op::{AccessMode, OpenFlags, Operation},
     reply::{self, AttrOut, OpenOut, OpenOutFlags, PollOut},
@@ -11,7 +10,6 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use polyfuse_kernel::{fuse_notify_code, fuse_notify_poll_wakeup_out};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
@@ -54,12 +52,10 @@ fn main() -> Result<()> {
     thread::scope(|scope| -> Result<()> {
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, op) = session.decode(&mut buf)?;
+            let (req, op) = session.decode(&mut buf)?;
             match op {
-                Some(Operation::Getattr(_op)) => session.send_reply(
+                Some(Operation::Getattr(_op)) => req.reply(
                     conn,
-                    header.unique(),
-                    None,
                     AttrOut {
                         attr: Cow::Owned(FileAttr {
                             ino: NodeID::ROOT,
@@ -75,7 +71,7 @@ fn main() -> Result<()> {
 
                 Some(Operation::Open(op)) => {
                     if op.options.access_mode() != Some(AccessMode::ReadOnly) {
-                        session.send_reply(conn, header.unique(), Some(Errno::ACCESS), ())?;
+                        req.reply_error(conn, Errno::ACCESS)?;
                         continue;
                     }
 
@@ -104,13 +100,9 @@ fn main() -> Result<()> {
 
                             // Do nothing when the handle is already closed.
                             if let Some(handle) = handle.upgrade() {
-                                if let Some(kh) = handle.kh.get() {
+                                if let Some(kh) = handle.kh.get().copied() {
                                     tracing::info!("send wakeup notification, kh={}", kh);
-                                    session.send_notify(
-                                        conn,
-                                        fuse_notify_code::FUSE_NOTIFY_POLL,
-                                        POD(fuse_notify_poll_wakeup_out { kh: kh.into_raw() }),
-                                    )?;
+                                    session.notifier().poll_wakeup(conn, kh)?;
                                 }
                             }
 
@@ -121,10 +113,8 @@ fn main() -> Result<()> {
                     let fh = FileID::from_raw(fh);
                     fs.handles.write().unwrap().insert(fh, handle);
 
-                    session.send_reply(
+                    req.reply(
                         conn,
-                        header.unique(),
-                        None,
                         OpenOut {
                             fh,
                             open_flags: OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
@@ -157,10 +147,8 @@ fn main() -> Result<()> {
                     let bufsize = op.size as usize;
                     let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-                    session.send_reply(
+                    req.reply(
                         conn,
-                        header.unique(),
-                        None,
                         reply::Raw(&content[..std::cmp::min(content.len(), bufsize)]),
                     )?;
                 }
@@ -181,15 +169,15 @@ fn main() -> Result<()> {
                         let _ = handle.kh.set(kh);
                     }
 
-                    session.send_reply(conn, header.unique(), None, PollOut::new(revents))?;
+                    req.reply(conn, PollOut::new(revents))?;
                 }
 
                 Some(Operation::Release(op)) => {
                     drop(fs.handles.write().unwrap().remove(&op.fh));
-                    session.send_reply(conn, header.unique(), None, ())?;
+                    req.reply(conn, ())?;
                 }
 
-                _ => session.send_reply(conn, header.unique(), Some(Errno::NOSYS), ())?,
+                _ => req.reply_error(conn, Errno::NOSYS)?,
             }
         }
 
