@@ -6,7 +6,6 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{self, AttrOut, EntryOut, ReaddirOut},
-    request::SpliceBuf,
     session::KernelConfig,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
@@ -40,7 +39,7 @@ fn main() -> Result<()> {
 
     let fs = Hello::new();
 
-    let mut buf = SpliceBuf::new(session.request_buffer_size())?;
+    let mut buf = session.new_splice_buffer()?;
     while session.recv_request(&conn, &mut buf)? {
         let (req, op) = session.decode(&mut buf)?;
         match op {

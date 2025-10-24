@@ -5,13 +5,13 @@
 
 mod conn;
 
+pub mod buf;
 pub mod bytes;
 pub mod io;
 pub mod mount;
 pub mod msg;
 pub mod op;
 pub mod reply;
-pub mod request;
 pub mod session;
 pub mod types;
 

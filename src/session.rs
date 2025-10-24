@@ -1,11 +1,11 @@
 use crate::{
+    buf::{FallbackBuf, InHeader, SpliceBuf, ToParts, TryReceive},
     bytes::{Bytes, POD},
     conn::Connection,
     mount::{Mount, MountOptions},
     msg::{send_msg, MessageKind},
     op::{DecodeError, Operation},
     reply::ReplyArg,
-    request::{FallbackBuf, RequestHeader, ToRequestParts, TryReceive},
     types::{NodeID, NotifyID, PollWakeupID, RequestID},
 };
 use polyfuse_kernel::*;
@@ -531,10 +531,22 @@ impl Session {
     }
 
     #[inline]
-    pub fn request_buffer_size(&self) -> usize {
+    fn request_buffer_size(&self) -> usize {
         mem::size_of::<fuse_in_header>()
             + mem::size_of::<fuse_write_in>()
             + self.config.max_write as usize
+    }
+
+    pub fn new_splice_buffer(&self) -> io::Result<SpliceBuf> {
+        if self.config.flags.contains(KernelFlags::SPLICE_READ) {
+            SpliceBuf::new(self.request_buffer_size())
+        } else {
+            Err(Errno::NOTSUP.into())
+        }
+    }
+
+    pub fn new_fallback_buffer(&self) -> FallbackBuf {
+        FallbackBuf::new(self.request_buffer_size())
     }
 
     #[inline]
@@ -591,9 +603,9 @@ impl Session {
         buf: &'req mut B,
     ) -> Result<RequestParts<'req, B>, DecodeError>
     where
-        B: ToRequestParts,
+        B: ToParts,
     {
-        let (header, arg, remains) = buf.to_request_parts();
+        let (header, arg, remains) = buf.to_parts();
         let op = match Operation::decode(&self.config, header, arg, remains) {
             Ok(op) => Some(op),
             Err(DecodeError::UnsupportedOpcode) => None,
@@ -687,16 +699,16 @@ impl Session {
 
 pub type RequestParts<'req, B> = (
     Request<'req>,
-    Option<Operation<'req, <B as ToRequestParts>::RemainingData<'req>>>,
+    Option<Operation<'req, <B as ToParts>::Data<'req>>>,
 );
 
 pub struct Request<'req> {
     session: &'req Session,
-    header: &'req RequestHeader,
+    header: &'req InHeader,
 }
 
 impl Request<'_> {
-    pub fn header(&self) -> &RequestHeader {
+    pub fn header(&self) -> &InHeader {
         self.header
     }
 
@@ -860,7 +872,7 @@ pub fn connect(
     let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
     loop {
         buf.try_receive(&mut &conn)?;
-        let (header, arg, _remains) = buf.to_request_parts();
+        let (header, arg, _remains) = buf.to_parts();
 
         if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
             // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない

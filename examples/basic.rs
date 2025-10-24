@@ -4,7 +4,6 @@ use polyfuse::{
     mount::MountOptions,
     op::{self, Operation},
     reply::{self, AttrOut},
-    request::FallbackBuf,
     session::{KernelConfig, Request},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     Connection,
@@ -32,7 +31,7 @@ fn main() -> Result<()> {
         polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
 
     // Receive an incoming FUSE request from the kernel.
-    let mut buf = FallbackBuf::new(session.request_buffer_size());
+    let mut buf = session.new_fallback_buffer();
     while session.recv_request(&mut conn, &mut buf)? {
         let (req, op) = session.decode(&mut buf)?;
         match op {
