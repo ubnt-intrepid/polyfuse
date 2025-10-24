@@ -5,7 +5,7 @@ use crate::{
     msg::{send_msg, MessageKind},
     op::{DecodeError, Operation},
     reply::ReplyArg,
-    request::{FallbackBuf, RequestHeader, ToRequestParts, TryReceive},
+    request::{FallbackBuf, RequestHeader, SpliceBuf, ToRequestParts, TryReceive},
     types::{NodeID, NotifyID, PollWakeupID, RequestID},
 };
 use polyfuse_kernel::*;
@@ -531,10 +531,22 @@ impl Session {
     }
 
     #[inline]
-    pub fn request_buffer_size(&self) -> usize {
+    fn request_buffer_size(&self) -> usize {
         mem::size_of::<fuse_in_header>()
             + mem::size_of::<fuse_write_in>()
             + self.config.max_write as usize
+    }
+
+    pub fn new_splice_buffer(&self) -> io::Result<SpliceBuf> {
+        if self.config.flags.contains(KernelFlags::SPLICE_READ) {
+            SpliceBuf::new(self.request_buffer_size())
+        } else {
+            Err(Errno::NOTSUP.into())
+        }
+    }
+
+    pub fn new_fallback_buffer(&self) -> FallbackBuf {
+        FallbackBuf::new(self.request_buffer_size())
     }
 
     #[inline]
