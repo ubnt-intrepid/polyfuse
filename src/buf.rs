@@ -28,13 +28,13 @@ use zerocopy::{try_transmute, FromZeros as _, IntoBytes as _};
 //   - 基本的には NAME_MAX=256, PATH_MAX=4096 による制限があるので、8096 bytes に到達することはないはず
 
 #[repr(transparent)]
-pub struct RequestHeader {
+pub struct InHeader {
     raw: fuse_in_header,
 }
 
-impl fmt::Debug for RequestHeader {
+impl fmt::Debug for InHeader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RequestHeader")
+        f.debug_struct("InHeader")
             .field("len", &self.len())
             .field("nodeid", &self.nodeid())
             .field("unique", &self.unique())
@@ -46,7 +46,7 @@ impl fmt::Debug for RequestHeader {
     }
 }
 
-impl RequestHeader {
+impl InHeader {
     /// Return the total amount of bytes received from the kernel.
     #[inline]
     #[allow(clippy::len_without_is_empty)]
@@ -129,20 +129,20 @@ impl RequestHeader {
 
 /// The trait that represents the receiving process of an incoming FUSE request from the kernel.
 pub trait TryReceive<T: ?Sized> {
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<&RequestHeader>;
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<&InHeader>;
 }
 
-pub trait ToRequestParts {
+pub trait ToParts {
     /// The type of object for reading the remaining part of received request.
-    type RemainingData<'a>
+    type Data<'a>
     where
         Self: 'a;
 
-    fn to_request_parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>);
+    fn to_parts(&mut self) -> (&InHeader, &[u8], Self::Data<'_>);
 }
 
 pub struct SpliceBuf {
-    header: RequestHeader,
+    header: InHeader,
     // MEMO:
     // * 再アロケートされる可能性があるので Vec<u8> で持つ
     // * デフォルトの system allocator を使用している限りは alignment の心配をする必要は基本的はないはず (malloc依存)
@@ -154,7 +154,7 @@ pub struct SpliceBuf {
 impl SpliceBuf {
     pub fn new(bufsize: usize) -> io::Result<Self> {
         Ok(Self {
-            header: RequestHeader {
+            header: InHeader {
                 raw: fuse_in_header::new_zeroed(),
             },
             arg: {
@@ -178,10 +178,10 @@ impl SpliceBuf {
     }
 }
 
-impl ToRequestParts for SpliceBuf {
-    type RemainingData<'a> = &'a mut Pipe;
+impl ToParts for SpliceBuf {
+    type Data<'a> = &'a mut Pipe;
 
-    fn to_request_parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
+    fn to_parts(&mut self) -> (&InHeader, &[u8], Self::Data<'_>) {
         (&self.header, &self.arg[..], &mut self.pipe)
     }
 }
@@ -190,7 +190,7 @@ impl<T: ?Sized> TryReceive<T> for SpliceBuf
 where
     T: SpliceRead,
 {
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<&RequestHeader> {
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<&InHeader> {
         self.reset()?;
 
         let len = conn.splice_read(&mut self.pipe, self.bufsize, SpliceFlags::NONBLOCK)?;
@@ -214,7 +214,7 @@ where
 }
 
 pub struct FallbackBuf {
-    header: RequestHeader,
+    header: InHeader,
     // どうせ再アロケートすることはないので、最初に確保した分で固定してしまう
     arg: Box<[u8]>,
     pos: usize,
@@ -223,7 +223,7 @@ pub struct FallbackBuf {
 impl FallbackBuf {
     pub fn new(bufsize: usize) -> Self {
         Self {
-            header: RequestHeader {
+            header: InHeader {
                 raw: fuse_in_header::new_zeroed(),
             },
             arg: vec![0u8; bufsize - mem::size_of::<fuse_in_header>()].into_boxed_slice(),
@@ -232,10 +232,10 @@ impl FallbackBuf {
     }
 }
 
-impl ToRequestParts for FallbackBuf {
-    type RemainingData<'a> = &'a [u8];
+impl ToParts for FallbackBuf {
+    type Data<'a> = &'a [u8];
 
-    fn to_request_parts(&mut self) -> (&RequestHeader, &[u8], Self::RemainingData<'_>) {
+    fn to_parts(&mut self) -> (&InHeader, &[u8], Self::Data<'_>) {
         let (arg, remains) = self.arg.split_at(self.pos);
         (&self.header, arg, remains)
     }
@@ -245,7 +245,7 @@ impl<T: ?Sized> TryReceive<T> for FallbackBuf
 where
     T: io::Read,
 {
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<&RequestHeader> {
+    fn try_receive(&mut self, conn: &mut T) -> io::Result<&InHeader> {
         self.pos = 0;
 
         let len = conn.read_vectored(&mut [

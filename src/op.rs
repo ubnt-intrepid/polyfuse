@@ -1,7 +1,7 @@
 mod decoder;
 
 use crate::{
-    request::RequestHeader,
+    buf::InHeader,
     session::{KernelConfig, KernelFlags},
     types::{
         DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
@@ -100,7 +100,7 @@ pub enum Operation<'op, T> {
 impl<'op, T> Operation<'op, T> {
     pub(crate) fn decode(
         config: &KernelConfig,
-        header: &'op RequestHeader,
+        header: &'op InHeader,
         arg: &'op [u8],
         remains: T,
     ) -> Result<Self, DecodeError> {
