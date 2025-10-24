@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 use polyfuse::{
-    bytes::POD,
     mount::MountOptions,
     op::Operation,
     reply::{AttrOut, EntryOut, ReaddirOut},
@@ -21,7 +20,6 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
-use polyfuse_kernel::{fuse_notify_code, fuse_notify_inval_entry_out};
 use rustix::io::Errno;
 use std::{
     borrow::Cow,
@@ -77,25 +75,23 @@ fn main() -> Result<()> {
 
         let mut buf = SpliceBuf::new(session.request_buffer_size())?;
         while session.recv_request(conn, &mut buf)? {
-            let (header, op) = session.decode(&mut buf)?;
+            let (req, op) = session.decode(&mut buf)?;
             match op {
                 Some(Operation::Lookup(op)) => {
                     if op.parent != NodeID::ROOT {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOTDIR), ())?;
+                        req.reply_error(conn, Errno::NOTDIR)?;
                         continue;
                     }
 
                     let mut current = fs.current.lock().unwrap();
 
                     if op.name.as_bytes() != current.filename.as_bytes() {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                        req.reply_error(conn, Errno::NOENT)?;
                         continue;
                     }
 
-                    session.send_reply(
+                    req.reply(
                         conn,
-                        header.unique(),
-                        None,
                         EntryOut {
                             ino: Some(fs.file_attr.ino),
                             attr: Cow::Borrowed(&fs.file_attr),
@@ -122,15 +118,13 @@ fn main() -> Result<()> {
                         NodeID::ROOT => &fs.root_attr,
                         FILE_INO => &fs.file_attr,
                         _ => {
-                            session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?;
+                            req.reply_error(conn, Errno::NOENT)?;
                             continue;
                         }
                     };
 
-                    session.send_reply(
+                    req.reply(
                         conn,
-                        header.unique(),
-                        None,
                         AttrOut {
                             attr: Cow::Borrowed(attr),
                             valid: Some(fs.ttl),
@@ -139,20 +133,18 @@ fn main() -> Result<()> {
                 }
 
                 Some(Operation::Read(op)) => match op.ino {
-                    NodeID::ROOT => {
-                        session.send_reply(conn, header.unique(), Some(Errno::ISDIR), ())?
-                    }
-                    FILE_INO => session.send_reply(conn, header.unique(), None, ())?,
-                    _ => session.send_reply(conn, header.unique(), Some(Errno::NOENT), ())?,
+                    NodeID::ROOT => req.reply_error(conn, Errno::ISDIR)?,
+                    FILE_INO => req.reply(conn, ())?,
+                    _ => req.reply_error(conn, Errno::NOENT)?,
                 },
 
                 Some(Operation::Readdir(op)) => {
                     if op.ino != NodeID::ROOT {
-                        session.send_reply(conn, header.unique(), Some(Errno::NOTDIR), ())?;
+                        req.reply_error(conn, Errno::NOTDIR)?;
                         continue;
                     }
                     if op.offset > 0 {
-                        session.send_reply(conn, header.unique(), None, ())?;
+                        req.reply(conn, ())?;
                         continue;
                     }
 
@@ -160,10 +152,10 @@ fn main() -> Result<()> {
                     let current = fs.current.lock().unwrap();
                     buf.push_entry(current.filename.as_ref(), FILE_INO, None, 1);
 
-                    session.send_reply(conn, header.unique(), None, buf)?;
+                    req.reply(conn, buf)?;
                 }
 
-                _ => session.send_reply(conn, header.unique(), Some(Errno::NOSYS), ())?,
+                _ => req.reply_error(conn, Errno::NOSYS)?,
             }
         }
 
@@ -241,19 +233,7 @@ impl Heartbeat {
 
             if !self.no_notify && current.nlookup > 0 {
                 tracing::info!("send notify_inval_entry");
-                session.send_notify(
-                    conn,
-                    fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
-                    (
-                        POD(fuse_notify_inval_entry_out {
-                            parent: NodeID::ROOT.into_raw(),
-                            namelen: old_filename.len() as u32,
-                            flags: 0,
-                        }),
-                        old_filename.as_bytes(),
-                        "\0",
-                    ),
-                )?;
+                session.notify_inval_entry(conn, NodeID::ROOT, old_filename)?;
             }
 
             drop(current);
