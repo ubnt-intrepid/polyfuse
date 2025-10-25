@@ -631,6 +631,22 @@ impl Session {
             _ => Err(err),
         }
     }
+}
+
+pub type RequestParts<'req, B> = (
+    Request<'req>,
+    Option<Operation<'req, <B as ToParts>::Data<'req>>>,
+);
+
+pub struct Request<'req> {
+    session: &'req Session,
+    header: &'req InHeader,
+}
+
+impl Request<'_> {
+    pub fn header(&self) -> &InHeader {
+        self.header
+    }
 
     /// Send a reply message of completed request to the kernel.
     ///
@@ -639,13 +655,7 @@ impl Session {
     /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
     /// the corresponding kernel processing will be isolated, and the process
     /// that issued the associated syscall may enter a deadlock state.
-    fn send_reply<T, B>(
-        &self,
-        conn: T,
-        unique: RequestID,
-        error: Option<Errno>,
-        arg: B,
-    ) -> io::Result<()>
+    fn send_reply<T, B>(&self, conn: T, error: Option<Errno>, arg: B) -> io::Result<()>
     where
         T: io::Write,
         B: ReplyArg,
@@ -679,13 +689,30 @@ impl Session {
             }
         }
         arg.reply(SessionReplySender {
-            session: self,
+            session: self.session,
             conn,
-            unique,
+            unique: self.header.unique(),
             error,
         })
     }
 
+    pub fn reply<T, B>(self, conn: T, arg: B) -> io::Result<()>
+    where
+        T: io::Write,
+        B: ReplyArg,
+    {
+        self.send_reply(conn, None, arg)
+    }
+
+    pub fn reply_error<T>(self, conn: T, error: Errno) -> io::Result<()>
+    where
+        T: io::Write,
+    {
+        self.send_reply(conn, Some(error), ())
+    }
+}
+
+impl Session {
     /// Send a notification message to the kernel.
     fn send_notify<T, B>(&self, conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
     where
@@ -695,42 +722,7 @@ impl Session {
         send_msg(conn, MessageKind::Notify { code }, arg)
             .or_else(|err| self.handle_reply_error(err))
     }
-}
 
-pub type RequestParts<'req, B> = (
-    Request<'req>,
-    Option<Operation<'req, <B as ToParts>::Data<'req>>>,
-);
-
-pub struct Request<'req> {
-    session: &'req Session,
-    header: &'req InHeader,
-}
-
-impl Request<'_> {
-    pub fn header(&self) -> &InHeader {
-        self.header
-    }
-
-    pub fn reply<T, B>(self, conn: T, arg: B) -> io::Result<()>
-    where
-        T: io::Write,
-        B: ReplyArg,
-    {
-        self.session
-            .send_reply(conn, self.header.unique(), None, arg)
-    }
-
-    pub fn reply_error<T>(self, conn: T, error: Errno) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        self.session
-            .send_reply(conn, self.header.unique(), Some(error), ())
-    }
-}
-
-impl Session {
     pub fn notify_inval_inode<T>(&self, conn: T, ino: NodeID, off: i64, len: i64) -> io::Result<()>
     where
         T: io::Write,
