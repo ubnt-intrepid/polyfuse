@@ -368,6 +368,12 @@ impl Default for FileAttr {
     }
 }
 
+impl AsRef<Self> for FileAttr {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl FileAttr {
     pub const fn new() -> Self {
         Self {
@@ -468,6 +474,12 @@ pub struct Statfs {
     pub namelen: u32,
 }
 
+impl AsRef<Self> for Statfs {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl TryFrom<libc::statvfs> for Statfs {
     type Error = std::convert::Infallible;
 
@@ -499,6 +511,12 @@ pub struct FileLock {
     pub start: u64,
     pub end: u64,
     pub pid: Pid,
+}
+
+impl AsRef<Self> for FileLock {
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 #[cfg(test)]

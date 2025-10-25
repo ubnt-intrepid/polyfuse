@@ -5,7 +5,7 @@
 use polyfuse::{
     mount::MountOptions,
     op::Operation,
-    reply::{self, AttrOut, EntryOut, ReaddirOut},
+    reply::{DirEntryBuf, ReplySender as _},
     session::KernelConfig,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
 };
@@ -16,7 +16,7 @@ use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
-use std::{borrow::Cow, os::unix::prelude::*, path::PathBuf, time::Duration};
+use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const HELLO_INO: NodeID = match NodeID::from_raw(2) {
@@ -41,20 +41,13 @@ fn main() -> Result<()> {
 
     let mut buf = session.new_splice_buffer()?;
     while session.recv_request(&conn, &mut buf)? {
-        let (req, op) = session.decode(&mut buf)?;
+        let (req, op) = session.decode(&conn, &mut buf)?;
         match op {
             Some(Operation::Lookup(op)) => match op.parent {
-                NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => req.reply(
-                    &conn,
-                    EntryOut {
-                        ino: Some(HELLO_INO),
-                        generation: 0,
-                        attr: Cow::Owned(fs.hello_attr()),
-                        attr_valid: Some(TTL),
-                        entry_valid: Some(TTL),
-                    },
-                )?,
-                _ => req.reply_error(&conn, Errno::NOENT)?,
+                NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
+                    req.reply_entry(Some(HELLO_INO), &fs.hello_attr(), 0, Some(TTL), Some(TTL))?
+                }
+                _ => req.reply_error(Errno::NOENT)?,
             },
 
             Some(Operation::Getattr(op)) => {
@@ -63,24 +56,18 @@ fn main() -> Result<()> {
                     HELLO_INO => fs.hello_attr(),
                     _ => Err(Errno::NOENT)?,
                 };
-                req.reply(
-                    &conn,
-                    AttrOut {
-                        attr: Cow::Owned(attr),
-                        valid: Some(TTL),
-                    },
-                )?;
+                req.reply_attr(&attr, Some(TTL))?;
             }
 
             Some(Operation::Read(op)) => {
                 match op.ino {
                     HELLO_INO => (),
                     NodeID::ROOT => {
-                        req.reply_error(&conn, Errno::ISDIR)?;
+                        req.reply_error(Errno::ISDIR)?;
                         continue;
                     }
                     _ => {
-                        req.reply_error(&conn, Errno::NOENT)?;
+                        req.reply_error(Errno::NOENT)?;
                         continue;
                     }
                 }
@@ -94,16 +81,16 @@ fn main() -> Result<()> {
                     data = &data[..std::cmp::min(data.len(), size)];
                 }
 
-                req.reply(&conn, reply::Raw(data))?;
+                req.reply_bytes(data)?;
             }
 
             Some(Operation::Readdir(op)) => {
                 if op.ino != NodeID::ROOT {
-                    req.reply_error(&conn, Errno::NOTDIR)?;
+                    req.reply_error(Errno::NOTDIR)?;
                     continue;
                 }
 
-                let mut buf = ReaddirOut::new(op.size as usize);
+                let mut buf = DirEntryBuf::new(op.size as usize);
                 for (i, entry) in fs.dir_entries().skip(op.offset as usize) {
                     let full = buf.push_entry(
                         entry.name.as_ref(), //
@@ -116,10 +103,10 @@ fn main() -> Result<()> {
                     }
                 }
 
-                req.reply(&conn, buf)?;
+                req.reply_dir(&buf)?;
             }
 
-            _ => req.reply_error(&conn, Errno::NOSYS)?,
+            _ => req.reply_error(Errno::NOSYS)?,
         }
     }
 

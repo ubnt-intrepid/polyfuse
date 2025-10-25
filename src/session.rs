@@ -5,8 +5,8 @@ use crate::{
     mount::{Mount, MountOptions},
     msg::{send_msg, MessageKind},
     op::{DecodeError, Operation},
-    reply::ReplyArg,
-    types::{NodeID, NotifyID, PollWakeupID, RequestID},
+    reply::ReplySender,
+    types::{NodeID, NotifyID, PollWakeupID},
 };
 use polyfuse_kernel::*;
 use rustix::{io::Errno, param::page_size};
@@ -598,11 +598,20 @@ impl Session {
         Ok(true)
     }
 
-    pub fn decode<'req, B>(
+    /// Decode the arguments of FUSE request stored buffer, and then start the request handling.
+    ///
+    /// Note that the instance of `conn` must be the same as the one used
+    /// when the corresponding request was received via [`Session::recv_request`].
+    /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
+    /// the corresponding kernel processing will be isolated, and the process
+    /// that issued the associated syscall may enter a deadlock state.
+    pub fn decode<'req, T, B>(
         &'req self,
+        conn: T,
         buf: &'req mut B,
-    ) -> Result<RequestParts<'req, B>, DecodeError>
+    ) -> Result<RequestParts<'req, T, B>, DecodeError>
     where
+        T: io::Write,
         B: ToParts,
     {
         let (header, arg, remains) = buf.to_parts();
@@ -615,6 +624,7 @@ impl Session {
             Request {
                 session: self,
                 header,
+                conn,
             },
             op,
         ))
@@ -633,82 +643,44 @@ impl Session {
     }
 }
 
-pub type RequestParts<'req, B> = (
-    Request<'req>,
+pub type RequestParts<'req, T, B> = (
+    Request<'req, T>,
     Option<Operation<'req, <B as ToParts>::Data<'req>>>,
 );
 
-pub struct Request<'req> {
+pub struct Request<'req, T> {
     session: &'req Session,
     header: &'req InHeader,
+    conn: T,
 }
 
-impl Request<'_> {
+impl<T> Request<'_, T> {
     pub fn header(&self) -> &InHeader {
         self.header
     }
+}
 
-    /// Send a reply message of completed request to the kernel.
-    ///
-    /// Note that the instance of `conn` must be the same as the one used
-    /// when the corresponding request was received via `read_request`.
-    /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
-    /// the corresponding kernel processing will be isolated, and the process
-    /// that issued the associated syscall may enter a deadlock state.
-    fn send_reply<T, B>(&self, conn: T, error: Option<Errno>, arg: B) -> io::Result<()>
-    where
-        T: io::Write,
-        B: ReplyArg,
-    {
-        struct SessionReplySender<'a, T> {
-            session: &'a Session,
-            conn: T,
-            unique: RequestID,
-            error: Option<Errno>,
-        }
-        impl<T> crate::reply::ReplySender for SessionReplySender<'_, T>
-        where
-            T: io::Write,
-        {
-            type Error = io::Error;
-
-            fn config(&self) -> &KernelConfig {
-                self.session.config()
-            }
-
-            fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error> {
-                send_msg(
-                    self.conn,
-                    MessageKind::Reply {
-                        unique: self.unique,
-                        error: self.error,
-                    },
-                    bytes,
-                )
-                .or_else(|err| self.session.handle_reply_error(err))
-            }
-        }
-        arg.reply(SessionReplySender {
-            session: self.session,
-            conn,
-            unique: self.header.unique(),
-            error,
-        })
+impl<T> ReplySender for Request<'_, T>
+where
+    T: io::Write,
+{
+    fn config(&self) -> &KernelConfig {
+        self.session.config()
     }
 
-    pub fn reply<T, B>(self, conn: T, arg: B) -> io::Result<()>
+    fn reply_raw<B>(self, error: Option<Errno>, arg: B) -> io::Result<()>
     where
-        T: io::Write,
-        B: ReplyArg,
+        B: Bytes,
     {
-        self.send_reply(conn, None, arg)
-    }
-
-    pub fn reply_error<T>(self, conn: T, error: Errno) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        self.send_reply(conn, Some(error), ())
+        send_msg(
+            self.conn,
+            MessageKind::Reply {
+                unique: self.header.unique(),
+                error,
+            },
+            arg,
+        )
+        .or_else(|err| self.session.handle_reply_error(err))
     }
 }
 

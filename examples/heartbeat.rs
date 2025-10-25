@@ -11,7 +11,7 @@
 use polyfuse::{
     mount::MountOptions,
     op::Operation,
-    reply::{self, AttrOut, OpenOut, OpenOutFlags},
+    reply::{OpenOutFlags, ReplySender as _},
     session::{KernelConfig, Session},
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, NotifyID},
     Connection,
@@ -22,7 +22,6 @@ use chrono::Local;
 use dashmap::DashMap;
 use rustix::{io::Errno, param::page_size};
 use std::{
-    borrow::Cow,
     io::{self, prelude::*},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -66,35 +65,22 @@ fn main() -> Result<()> {
 
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {
-            let (req, op) = session.decode(&mut buf)?;
+            let (req, op) = session.decode(conn, &mut buf)?;
             match op {
                 Some(Operation::Getattr(op)) => {
                     if op.ino == NodeID::ROOT {
                         let inner = fs.inner.lock().unwrap();
-                        req.reply(
-                            conn,
-                            AttrOut {
-                                attr: Cow::Borrowed(&inner.attr),
-                                valid: None,
-                            },
-                        )?;
+                        req.reply_attr(&inner.attr, None)?;
                     } else {
-                        req.reply_error(conn, Errno::NOENT)?;
+                        req.reply_error(Errno::NOENT)?;
                     }
                 }
 
                 Some(Operation::Open(op)) => {
                     if op.ino == NodeID::ROOT {
-                        req.reply(
-                            conn,
-                            OpenOut {
-                                fh: FileID::from_raw(0),
-                                open_flags: OpenOutFlags::KEEP_CACHE,
-                                backing_id: 0,
-                            },
-                        )?;
+                        req.reply_open(FileID::from_raw(0), OpenOutFlags::KEEP_CACHE, 0)?;
                     } else {
-                        req.reply_error(conn, Errno::NOENT)?;
+                        req.reply_error(Errno::NOENT)?;
                     }
                 }
 
@@ -104,16 +90,16 @@ fn main() -> Result<()> {
 
                         let offset = op.offset as usize;
                         if offset >= inner.content.len() {
-                            req.reply(conn, ())?;
+                            req.reply_bytes(())?;
                             continue;
                         }
 
                         let size = op.size as usize;
                         let data = &inner.content.as_bytes()[offset..];
                         let data = &data[..std::cmp::min(data.len(), size)];
-                        req.reply(conn, reply::Raw(data))?;
+                        req.reply_bytes(data)?;
                     } else {
-                        req.reply_error(conn, Errno::NOENT)?;
+                        req.reply_error(Errno::NOENT)?;
                     }
                 }
 
@@ -133,7 +119,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                _ => req.reply_error(conn, Errno::NOSYS)?,
+                _ => req.reply_error(Errno::NOSYS)?,
             }
         }
 
