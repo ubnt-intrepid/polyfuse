@@ -1,4 +1,4 @@
-use super::{MountFlags, MountOptions};
+use super::{FuseFlags, MountOptions};
 use crate::{conn::FUSE_DEV_NAME, util::IteratorJoinExt as _};
 use rustix::{
     fs::{Gid, Mode, OFlags, Stat, Uid},
@@ -78,7 +78,7 @@ struct PrivilegedOptions {
 }
 
 fn encode_priv_options(opts: &MountOptions, prefix: Option<&str>) -> PrivilegedOptions {
-    let mut fstype: String = if opts.flags.contains(MountFlags::BLKDEV) {
+    let mut fstype: String = if opts.fuse_flags.contains(FuseFlags::BLKDEV) {
         "fuseblk".into()
     } else {
         "fuse".into()
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn encode_privileged_blkdev() {
         let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::BLKDEV;
+        opts.fuse_flags |= FuseFlags::BLKDEV;
 
         let dst = encode_priv_options(&opts, None);
         assert_eq!(dst.fstype, "fuseblk");
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn encode_privileged_subtype() {
         let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::DEFAULT_PERMISSIONS | MountFlags::ALLOW_OTHER;
+        opts.fuse_flags |= FuseFlags::DEFAULT_PERMISSIONS | FuseFlags::ALLOW_OTHER;
         opts.subtype = Some("myfs".into());
         opts.max_read = Some(12);
         opts.blksize = Some(1024);

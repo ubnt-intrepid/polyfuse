@@ -1,4 +1,4 @@
-use super::{MountFlags, MountOptions};
+use super::{FuseFlags, MountOptions};
 use crate::util::IteratorJoinExt as _;
 use rustix::{
     io::{Errno, FdFlags},
@@ -73,7 +73,7 @@ impl UnprivMount {
 
         let fd = receive_fd(&input)?;
 
-        let mode = if mountopts.flags.contains(MountFlags::AUTO_UNMOUNT) {
+        let mode = if mountopts.fuse_flags.contains(FuseFlags::AUTO_UNMOUNT) {
             UmountMode::Implicit { child, input }
         } else {
             // When auto_unmount is not specified, `fusermount` exits immediately
@@ -168,56 +168,78 @@ fn encode_unpriv_options(opts: &MountOptions) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustix::mount::MountFlags;
+
+    #[track_caller]
+    fn assert_encoded(opts: &MountOptions, expected: &[&str]) {
+        let encoded = encode_unpriv_options(&opts);
+        let parts = encoded.split(',').collect::<Vec<_>>();
+        assert_eq!(parts.len(), expected.len());
+        for value in expected {
+            assert!(parts.contains(value), "`{}' is missing", value);
+        }
+    }
 
     #[test]
     fn mount_opts_encode_unprivileged() {
         let opts = MountOptions::new();
-        assert_eq!(encode_unpriv_options(&opts), "auto_unmount");
+        assert_encoded(&opts, &["auto_unmount"]);
 
         let mut opts = MountOptions::new();
-        opts.flags = MountFlags::empty();
+        opts.fuse_flags = FuseFlags::empty();
         assert_eq!(encode_unpriv_options(&opts), "");
 
         let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::BLKDEV;
+        opts.fuse_flags |= FuseFlags::BLKDEV;
         opts.fsname = Some("bradbury".into());
-        assert_eq!(
-            encode_unpriv_options(&opts),
-            "auto_unmount,blkdev,fsname=bradbury"
-        );
+        assert_encoded(&opts, &["auto_unmount", "blkdev", "fsname=bradbury"]);
 
         let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::RDONLY
+        opts.mount_flags |= MountFlags::RDONLY
             | MountFlags::NOSUID
             | MountFlags::NODEV
             | MountFlags::NOEXEC
             | MountFlags::SYNCHRONOUS
             | MountFlags::DIRSYNC
-            | MountFlags::NOATIME
-            | MountFlags::DEFAULT_PERMISSIONS;
-        assert_eq!(
-            encode_unpriv_options(&opts),
-            "ro,nosuid,nodev,noexec,sync,dirsync,noatime,default_permissions,auto_unmount"
+            | MountFlags::NOATIME;
+        opts.fuse_flags |= FuseFlags::DEFAULT_PERMISSIONS;
+        assert_encoded(
+            &opts,
+            &[
+                "ro",
+                "nosuid",
+                "nodev",
+                "noexec",
+                "sync",
+                "dirsync",
+                "noatime",
+                "default_permissions",
+                "auto_unmount",
+            ],
         );
 
         let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::DEFAULT_PERMISSIONS | MountFlags::ALLOW_OTHER;
+        opts.fuse_flags |= FuseFlags::DEFAULT_PERMISSIONS | FuseFlags::ALLOW_OTHER;
         opts.blksize = Some(32);
         opts.max_read = Some(11);
-        assert_eq!(
-            encode_unpriv_options(&opts),
-            "default_permissions,allow_other,auto_unmount,blksize=32,max_read=11"
+        assert_encoded(
+            &opts,
+            &[
+                "default_permissions",
+                "allow_other",
+                "auto_unmount",
+                "blksize=32",
+                "max_read=11",
+            ],
         );
 
         let mut opts = MountOptions::new();
         opts.subtype = Some("myfs".into());
-        assert_eq!(encode_unpriv_options(&opts), "auto_unmount,subtype=myfs");
+        assert_encoded(&opts, &["auto_unmount", "subtype=myfs"]);
 
         let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::RDONLY | MountFlags::DEFAULT_PERMISSIONS;
-        assert_eq!(
-            encode_unpriv_options(&opts),
-            "ro,default_permissions,auto_unmount"
-        );
+        opts.mount_flags |= MountFlags::RDONLY;
+        opts.fuse_flags |= FuseFlags::DEFAULT_PERMISSIONS;
+        assert_encoded(&opts, &["ro", "default_permissions", "auto_unmount"]);
     }
 }
