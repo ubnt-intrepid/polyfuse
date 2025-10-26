@@ -1,5 +1,5 @@
 use super::{MountFlags, MountOptions};
-use crate::conn::Connection;
+use crate::{conn::Connection, util::IteratorJoinExt as _};
 use rustix::{
     io::{Errno, FdFlags},
     net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags},
@@ -97,7 +97,7 @@ pub fn mount(
     fusermount.stdout(Stdio::piped());
     fusermount.stderr(Stdio::piped());
 
-    let opts = mountopts.unprivileged_options();
+    let opts = encode_unpriv_options(mountopts);
     if !opts.is_empty() {
         fusermount.arg("-o").arg(opts);
     }
@@ -178,4 +178,77 @@ fn receive_fd(reader: &UnixStream) -> io::Result<OwnedFd> {
     rustix::io::fcntl_setfd(&fd, FdFlags::CLOEXEC)?;
 
     Ok(fd)
+}
+
+fn encode_unpriv_options(opts: &MountOptions) -> String {
+    opts.iter_flags(true)
+        .chain(opts.iter_common_opts())
+        .chain(
+            opts.subtype
+                .as_deref()
+                .map(|s| format!("subtype={}", s).into()),
+        )
+        .chain(
+            opts.fsname
+                .as_deref()
+                .map(|fsname| Cow::Owned(format!("fsname={}", fsname))),
+        )
+        .join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mount_opts_encode_unprivileged() {
+        let opts = MountOptions::new();
+        assert_eq!(encode_unpriv_options(&opts), "auto_unmount");
+
+        let mut opts = MountOptions::new();
+        opts.flags = MountFlags::empty();
+        assert_eq!(encode_unpriv_options(&opts), "");
+
+        let mut opts = MountOptions::new();
+        opts.flags |= MountFlags::BLKDEV;
+        opts.fsname = Some("bradbury".into());
+        assert_eq!(
+            encode_unpriv_options(&opts),
+            "auto_unmount,blkdev,fsname=bradbury"
+        );
+
+        let mut opts = MountOptions::new();
+        opts.flags |= MountFlags::RDONLY
+            | MountFlags::NOSUID
+            | MountFlags::NODEV
+            | MountFlags::NOEXEC
+            | MountFlags::SYNCHRONOUS
+            | MountFlags::DIRSYNC
+            | MountFlags::NOATIME
+            | MountFlags::DEFAULT_PERMISSIONS;
+        assert_eq!(
+            encode_unpriv_options(&opts),
+            "ro,nosuid,nodev,noexec,sync,dirsync,noatime,default_permissions,auto_unmount"
+        );
+
+        let mut opts = MountOptions::new();
+        opts.flags |= MountFlags::DEFAULT_PERMISSIONS | MountFlags::ALLOW_OTHER;
+        opts.blksize = Some(32);
+        opts.max_read = Some(11);
+        assert_eq!(
+            encode_unpriv_options(&opts),
+            "default_permissions,allow_other,auto_unmount,blksize=32,max_read=11"
+        );
+
+        let mut opts = MountOptions::new();
+        opts.subtype = Some("myfs".into());
+        assert_eq!(encode_unpriv_options(&opts), "auto_unmount,subtype=myfs");
+
+        let mut opts = MountOptions::new();
+        opts.flags |= MountFlags::RDONLY | MountFlags::DEFAULT_PERMISSIONS;
+        assert_eq!(
+            encode_unpriv_options(&opts),
+            "ro,default_permissions,auto_unmount"
+        );
+    }
 }
