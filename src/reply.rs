@@ -5,8 +5,9 @@ use crate::{
 };
 use bitflags::bitflags;
 use polyfuse_kernel::*;
-use std::{borrow::Cow, ffi::OsStr, mem, os::unix::prelude::*, time::Duration};
-use zerocopy::{Immutable, IntoBytes, KnownLayout};
+use rustix::io::Errno;
+use std::{ffi::OsStr, io, mem, os::unix::prelude::*, time::Duration};
+use zerocopy::IntoBytes as _;
 
 const fn to_fuse_attr(attr: &FileAttr) -> fuse_attr {
     fuse_attr {
@@ -48,191 +49,185 @@ const fn to_fuse_attr_compat_8(attr: &FileAttr) -> fuse_attr_compat_8 {
     }
 }
 
-pub trait ReplySender {
-    type Error;
+pub trait ReplySender: Sized {
     fn config(&self) -> &KernelConfig;
-    fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error>;
-}
 
-pub trait ReplyArg {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    fn reply_raw<B>(self, error: Option<Errno>, bytes: B) -> io::Result<()>
     where
-        T: ReplySender;
-}
+        B: Bytes;
 
-impl ReplyArg for () {
-    #[inline]
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
+    fn reply_bytes<B>(self, bytes: B) -> io::Result<()>
     where
-        T: ReplySender,
+        B: Bytes,
     {
-        sender.send_bytes(())
+        self.reply_raw(None, bytes)
     }
-}
 
-pub struct Raw<B: Bytes>(pub B);
-
-impl<B> ReplyArg for Raw<B>
-where
-    B: Bytes,
-{
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        sender.send_bytes(self.0)
+    fn reply_error(self, error: Errno) -> io::Result<()> {
+        self.reply_raw(Some(error), ())
     }
-}
 
-#[derive(Debug)]
-pub struct EntryOut<'a> {
-    /// The inode number of this entry.
-    ///
-    /// If the value is not set, it means that the entry is *negative*.
-    /// Returning a negative entry is also possible with the `ENOENT` error,
-    /// but the *zeroed* entries also have the ability to specify the lifetime
-    /// of the entry cache by using the `ttl_entry` parameter.
-    pub ino: Option<NodeID>,
-
-    /// The Attribute values about this entry.
-    pub attr: Cow<'a, FileAttr>,
-
-    /// The generation of this entry.
-    ///
-    /// This parameter is used to distinguish the inode from the past one
-    /// when the filesystem reuse inode numbers.  That is, the operations
-    /// must ensure that the pair of entry's inode number and generation
-    /// are unique for the lifetime of the filesystem.
-    pub generation: u64,
-
-    /// Set the validity timeout for inode attributes.
-    ///
-    /// The operations should set this value to very large
-    /// when the changes of inode attributes are caused
-    /// only by FUSE requests.
-    pub attr_valid: Option<Duration>,
-
-    /// The validity timeout for the entry name.
-    ///
-    /// The operations should set this value to very large
-    /// when the changes/deletions of directory entries are
-    /// caused only by FUSE requests.
-    pub entry_valid: Option<Duration>,
-}
-
-impl ReplyArg for EntryOut<'_> {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        let nodeid = self.ino.map_or(0, |ino| ino.into_raw());
-        let entry_valid = self.entry_valid.unwrap_or_default();
-        let attr_valid = self.attr_valid.unwrap_or_default();
-        if sender.config().minor <= 8 {
-            sender.send_bytes(POD(fuse_entry_out_compat_8 {
-                nodeid,
-                generation: self.generation,
-                entry_valid: entry_valid.as_secs(),
-                attr_valid: attr_valid.as_secs(),
-                entry_valid_nsec: entry_valid.subsec_nanos(),
-                attr_valid_nsec: attr_valid.subsec_nanos(),
-                attr: to_fuse_attr_compat_8(&self.attr),
-            }))
+    fn reply_entry(
+        self,
+        ino: Option<NodeID>,
+        attr: impl AsRef<FileAttr>,
+        generation: u64,
+        attr_valid: Option<Duration>,
+        entry_valid: Option<Duration>,
+    ) -> io::Result<()> {
+        let attr = attr.as_ref();
+        let nodeid = ino.map_or(0, |ino| ino.into_raw());
+        let entry_valid = entry_valid.unwrap_or_default();
+        let attr_valid = attr_valid.unwrap_or_default();
+        if self.config().minor <= 8 {
+            self.reply_raw(
+                None,
+                POD(fuse_entry_out_compat_8 {
+                    nodeid,
+                    generation,
+                    entry_valid: entry_valid.as_secs(),
+                    attr_valid: attr_valid.as_secs(),
+                    entry_valid_nsec: entry_valid.subsec_nanos(),
+                    attr_valid_nsec: attr_valid.subsec_nanos(),
+                    attr: to_fuse_attr_compat_8(attr),
+                }),
+            )
         } else {
-            sender.send_bytes(POD(fuse_entry_out {
-                nodeid,
-                generation: self.generation,
-                entry_valid: entry_valid.as_secs(),
-                attr_valid: attr_valid.as_secs(),
-                entry_valid_nsec: entry_valid.subsec_nanos(),
-                attr_valid_nsec: attr_valid.subsec_nanos(),
-                attr: to_fuse_attr(&self.attr),
-            }))
+            self.reply_raw(
+                None,
+                POD(fuse_entry_out {
+                    nodeid,
+                    generation,
+                    entry_valid: entry_valid.as_secs(),
+                    attr_valid: attr_valid.as_secs(),
+                    entry_valid_nsec: entry_valid.subsec_nanos(),
+                    attr_valid_nsec: attr_valid.subsec_nanos(),
+                    attr: to_fuse_attr(attr),
+                }),
+            )
         }
     }
-}
 
-#[derive(Debug)]
-pub struct AttrOut<'a> {
-    pub attr: Cow<'a, FileAttr>,
-    pub valid: Option<Duration>,
-}
-
-impl ReplyArg for AttrOut<'_> {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        let valid = self.valid.unwrap_or_default();
-        if sender.config().minor <= 8 {
-            sender.send_bytes(POD(fuse_attr_out_compat_8 {
-                attr_valid: valid.as_secs(),
-                attr_valid_nsec: valid.subsec_nanos(),
-                dummy: 0,
-                attr: to_fuse_attr_compat_8(&self.attr),
-            }))
+    fn reply_attr(self, attr: impl AsRef<FileAttr>, valid: Option<Duration>) -> io::Result<()> {
+        let attr = attr.as_ref();
+        let valid = valid.unwrap_or_default();
+        if self.config().minor <= 8 {
+            self.reply_raw(
+                None,
+                POD(fuse_attr_out_compat_8 {
+                    attr_valid: valid.as_secs(),
+                    attr_valid_nsec: valid.subsec_nanos(),
+                    dummy: 0,
+                    attr: to_fuse_attr_compat_8(attr),
+                }),
+            )
         } else {
-            sender.send_bytes(POD(fuse_attr_out {
-                attr_valid: valid.as_secs(),
-                attr_valid_nsec: valid.subsec_nanos(),
-                dummy: 0,
-                attr: to_fuse_attr(&self.attr),
-            }))
+            self.reply_raw(
+                None,
+                POD(fuse_attr_out {
+                    attr_valid: valid.as_secs(),
+                    attr_valid_nsec: valid.subsec_nanos(),
+                    dummy: 0,
+                    attr: to_fuse_attr(attr),
+                }),
+            )
         }
     }
-}
 
-#[derive(IntoBytes, Immutable, KnownLayout)]
-#[repr(transparent)]
-pub struct WriteOut {
-    raw: fuse_write_out,
-}
-
-impl ReplyArg for WriteOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        sender.send_bytes(self.raw.as_bytes())
+    fn reply_write(self, size: u32) -> io::Result<()> {
+        self.reply_raw(None, POD(fuse_write_out { size, padding: 0 }))
     }
-}
 
-impl WriteOut {
-    pub const fn new(size: u32) -> Self {
-        Self {
-            raw: fuse_write_out { size, padding: 0 },
+    fn reply_open(self, fh: FileID, open_flags: OpenOutFlags, backing_id: i32) -> io::Result<()> {
+        let enabled_passthrough =
+            self.config().minor >= 40 && self.config().flags.contains(KernelFlags::PASSTHROUGH);
+        self.reply_raw(
+            None,
+            POD(fuse_open_out {
+                fh: fh.into_raw(),
+                open_flags: open_flags.bits(),
+                backing_id: if enabled_passthrough { backing_id } else { 0 },
+            }),
+        )
+    }
+
+    fn reply_statfs(self, st: impl AsRef<Statfs>) -> io::Result<()> {
+        let st = st.as_ref();
+        if self.config().minor <= 3 {
+            self.reply_raw(
+                None,
+                POD(fuse_statfs_out_compat_3 {
+                    st: fuse_kstatfs_compat_3 {
+                        blocks: st.blocks,
+                        bfree: st.bfree,
+                        bavail: st.bavail,
+                        files: st.files,
+                        ffree: st.ffree,
+                        bsize: st.bsize,
+                        namelen: st.namelen,
+                    },
+                }),
+            )
+        } else {
+            self.reply_raw(
+                None,
+                POD(fuse_statfs_out {
+                    st: fuse_kstatfs {
+                        blocks: st.blocks,
+                        bfree: st.bfree,
+                        bavail: st.bavail,
+                        files: st.files,
+                        ffree: st.ffree,
+                        bsize: st.bsize,
+                        namelen: st.namelen,
+                        frsize: st.frsize,
+                        padding: 0,
+                        spare: [0; 6],
+                    },
+                }),
+            )
         }
     }
-}
 
-#[derive(Debug)]
-pub struct OpenOut {
-    /// The handle of opened file.
-    pub fh: FileID,
+    fn reply_xattr(self, size: u32) -> io::Result<()> {
+        self.reply_raw(None, POD(fuse_getxattr_out { size, padding: 0 }))
+    }
 
-    /// The flags for the opened file.
-    pub open_flags: OpenOutFlags,
+    fn reply_lock(self, lk: impl AsRef<FileLock>) -> io::Result<()> {
+        let lk = lk.as_ref();
+        self.reply_raw(
+            None,
+            POD(fuse_lk_out {
+                lk: fuse_file_lock {
+                    start: lk.start,
+                    end: lk.end,
+                    typ: lk.typ,
+                    pid: lk.pid.as_raw_pid() as u32,
+                },
+            }),
+        )
+    }
 
-    pub backing_id: i32,
-}
+    fn reply_bmap(self, block: u64) -> io::Result<()> {
+        self.reply_raw(None, POD(fuse_bmap_out { block }))
+    }
 
-impl ReplyArg for OpenOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        let backing_id = if sender.config().minor >= 40
-            && sender.config().flags.contains(KernelFlags::PASSTHROUGH)
-        {
-            self.backing_id
-        } else {
-            0
-        };
-        sender.send_bytes(POD(fuse_open_out {
-            fh: self.fh.into_raw(),
-            open_flags: self.open_flags.bits(),
-            backing_id,
-        }))
+    fn reply_poll(self, revents: PollEvents) -> io::Result<()> {
+        self.reply_raw(
+            None,
+            POD(fuse_poll_out {
+                revents: revents.bits(),
+                padding: 0,
+            }),
+        )
+    }
+
+    fn reply_lseek(self, offset: u64) -> io::Result<()> {
+        self.reply_raw(None, POD(fuse_lseek_out { offset }))
+    }
+
+    fn reply_dir(self, out: &DirEntryBuf) -> io::Result<()> {
+        self.reply_raw(None, &out.buf)
     }
 }
 
@@ -269,194 +264,11 @@ impl OpenOutFlags {
         .union(Self::NOFLUSH);
 }
 
-#[derive(IntoBytes, Immutable, KnownLayout)]
-#[repr(transparent)]
-pub struct StatfsOut {
-    raw: fuse_statfs_out,
-}
-
-impl ReplyArg for StatfsOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        if sender.config().minor <= 3 {
-            sender.send_bytes(POD(fuse_statfs_out_compat_3 {
-                st: fuse_kstatfs_compat_3 {
-                    blocks: self.raw.st.blocks,
-                    bfree: self.raw.st.bfree,
-                    bavail: self.raw.st.bavail,
-                    files: self.raw.st.files,
-                    ffree: self.raw.st.ffree,
-                    bsize: self.raw.st.bsize,
-                    namelen: self.raw.st.namelen,
-                },
-            }))
-        } else {
-            sender.send_bytes(self.raw.as_bytes())
-        }
-    }
-}
-
-impl StatfsOut {
-    pub const fn new(st: &Statfs) -> Self {
-        Self {
-            raw: fuse_statfs_out {
-                st: fuse_kstatfs {
-                    bsize: st.bsize,
-                    frsize: st.frsize,
-                    blocks: st.blocks,
-                    bfree: st.bfree,
-                    bavail: st.bavail,
-                    files: st.files,
-                    ffree: st.ffree,
-                    namelen: st.namelen,
-                    padding: 0,
-                    spare: [0; 6],
-                },
-            },
-        }
-    }
-}
-
-#[derive(IntoBytes, Immutable, KnownLayout)]
-#[repr(transparent)]
-pub struct XattrOut {
-    raw: fuse_getxattr_out,
-}
-
-impl ReplyArg for XattrOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        sender.send_bytes(self.raw.as_bytes())
-    }
-}
-
-impl XattrOut {
-    pub const fn new(size: u32) -> Self {
-        Self {
-            raw: fuse_getxattr_out { size, padding: 0 },
-        }
-    }
-}
-
-#[derive(IntoBytes, Immutable, KnownLayout)]
-#[repr(transparent)]
-pub struct LkOut {
-    raw: fuse_lk_out,
-}
-
-impl ReplyArg for LkOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        sender.send_bytes(self.raw.as_bytes())
-    }
-}
-
-impl LkOut {
-    pub const fn new(lk: &FileLock) -> Self {
-        Self {
-            raw: fuse_lk_out {
-                lk: fuse_file_lock {
-                    typ: lk.typ,
-                    start: lk.start,
-                    end: lk.end,
-                    pid: lk.pid.as_raw_pid() as u32,
-                },
-            },
-        }
-    }
-}
-
-#[derive(IntoBytes, Immutable, KnownLayout)]
-#[repr(transparent)]
-pub struct BmapOut {
-    raw: fuse_bmap_out,
-}
-
-impl ReplyArg for BmapOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        sender.send_bytes(self.raw.as_bytes())
-    }
-}
-
-impl BmapOut {
-    pub const fn new(block: u64) -> Self {
-        Self {
-            raw: fuse_bmap_out { block },
-        }
-    }
-}
-
-#[derive(IntoBytes, Immutable, KnownLayout)]
-#[repr(transparent)]
-pub struct PollOut {
-    raw: fuse_poll_out,
-}
-
-impl ReplyArg for PollOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        sender.send_bytes(self.raw.as_bytes())
-    }
-}
-
-impl PollOut {
-    pub const fn new(revents: PollEvents) -> Self {
-        Self {
-            raw: fuse_poll_out {
-                revents: revents.bits(),
-                padding: 0,
-            },
-        }
-    }
-}
-
-#[repr(transparent)]
-pub struct LseekOut {
-    raw: fuse_lseek_out,
-}
-
-impl ReplyArg for LseekOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        sender.send_bytes(self.raw.as_bytes())
-    }
-}
-
-impl LseekOut {
-    pub const fn new(offset: u64) -> Self {
-        Self {
-            raw: fuse_lseek_out { offset },
-        }
-    }
-}
-
-pub struct ReaddirOut {
+pub struct DirEntryBuf {
     buf: Vec<u8>,
 }
 
-impl ReplyArg for ReaddirOut {
-    fn reply<T>(self, sender: T) -> Result<(), T::Error>
-    where
-        T: ReplySender,
-    {
-        sender.send_bytes(self.buf)
-    }
-}
-
-impl ReaddirOut {
+impl DirEntryBuf {
     pub fn new(capacity: usize) -> Self {
         Self {
             buf: Vec::with_capacity(capacity),
@@ -523,49 +335,45 @@ mod tests {
         config: KernelConfig,
     }
     impl ReplySender for TestReplySender<'_> {
-        type Error = std::convert::Infallible;
         fn config(&self) -> &KernelConfig {
             &self.config
         }
-        fn send_bytes<B: Bytes>(self, bytes: B) -> Result<(), Self::Error> {
+        fn reply_raw<B: Bytes>(self, _: Option<Errno>, bytes: B) -> io::Result<()> {
             bytes.fill_bytes(self.buf);
             Ok(())
         }
     }
 
-    fn do_reply<T: ReplyArg>(arg: T) -> Vec<u8> {
+    fn do_reply(f: impl FnOnce(TestReplySender<'_>) -> io::Result<()>) -> Vec<u8> {
         let mut buf = vec![];
-        ReplyArg::reply(
-            arg,
-            TestReplySender {
-                buf: &mut buf,
-                config: KernelConfig::new(),
-            },
-        )
+        f(TestReplySender {
+            buf: &mut buf,
+            config: KernelConfig::new(),
+        })
         .unwrap();
         buf
     }
 
     #[test]
-    fn reply_unit() {
-        assert_eq!(do_reply(()), b"");
-    }
-
-    #[test]
     fn reply_raw() {
-        assert_eq!(do_reply(Raw((b"hello, ", "world"))), b"hello, world");
+        assert_eq!(do_reply(|s| s.reply_raw(None, ())), b"");
+        assert_eq!(
+            do_reply(|s| s.reply_raw(None, (b"hello, ", "world"))),
+            b"hello, world"
+        );
     }
 
     #[test]
     fn reply_entry_out() {
-        let entry_out = EntryOut {
-            ino: NodeID::from_raw(9876),
-            attr: Cow::Owned(FileAttr { ..FileAttr::new() }),
-            generation: 42,
-            attr_valid: Some(Duration::new(22, 19)),
-            entry_valid: None,
-        };
-        let bytes = do_reply(entry_out);
+        let bytes = do_reply(|s| {
+            s.reply_entry(
+                NodeID::from_raw(9876),
+                &FileAttr { ..FileAttr::new() },
+                42,
+                Some(Duration::new(22, 19)),
+                None,
+            )
+        });
         let out = fuse_entry_out::try_ref_from_bytes(&bytes).unwrap();
         assert_eq!(out.nodeid, 9876);
         assert_eq!(out.generation, 42);
@@ -578,24 +386,23 @@ mod tests {
 
     #[test]
     fn reply_entry_out_compat() {
-        let entry_out = EntryOut {
-            ino: NodeID::from_raw(9876),
-            attr: Cow::Owned(FileAttr { ..FileAttr::new() }),
-            generation: 42,
-            attr_valid: Some(Duration::new(22, 19)),
-            entry_valid: None,
-        };
         let bytes = {
             let mut buf = vec![];
-            entry_out
-                .reply(TestReplySender {
-                    buf: &mut buf,
-                    config: KernelConfig {
-                        minor: 5,
-                        ..KernelConfig::new()
-                    },
-                })
-                .unwrap();
+            TestReplySender {
+                buf: &mut buf,
+                config: KernelConfig {
+                    minor: 5,
+                    ..KernelConfig::new()
+                },
+            }
+            .reply_entry(
+                NodeID::from_raw(9876),
+                &FileAttr { ..FileAttr::new() },
+                42,
+                Some(Duration::new(22, 19)),
+                None,
+            )
+            .unwrap();
             buf
         };
         let out = fuse_entry_out_compat_8::try_ref_from_bytes(&bytes).unwrap();
@@ -609,12 +416,7 @@ mod tests {
 
     #[test]
     fn reply_open_out() {
-        let out = OpenOut {
-            fh: FileID::from_raw(22),
-            open_flags: OpenOutFlags::DIRECT_IO,
-            backing_id: 2,
-        };
-        let out = do_reply(out);
+        let out = do_reply(|s| s.reply_open(FileID::from_raw(22), OpenOutFlags::DIRECT_IO, 2));
         let out = fuse_open_out::try_ref_from_bytes(&out).unwrap();
         assert_eq!(out.fh, 22);
         assert_eq!(out.open_flags, FOPEN_DIRECT_IO);
@@ -623,33 +425,33 @@ mod tests {
 
     #[test]
     fn reply_misc_types() {
-        let out = do_reply(WriteOut::new(9876));
+        let out = do_reply(|s| s.reply_write(9876));
         let out = fuse_write_out::try_ref_from_bytes(&out).unwrap();
         assert_eq!(out.size, 9876);
         assert_eq!(out.padding, 0);
 
-        let out = do_reply(XattrOut::new(6));
+        let out = do_reply(|s| s.reply_xattr(6));
         let out = fuse_getxattr_out::try_ref_from_bytes(&out).unwrap();
         assert_eq!(out.size, 6);
         assert_eq!(out.padding, 0);
 
-        let out = do_reply(BmapOut::new(3314));
+        let out = do_reply(|s| s.reply_bmap(3314));
         let out = fuse_bmap_out::try_ref_from_bytes(&out).unwrap();
         assert_eq!(out.block, 3314);
 
-        let out = do_reply(PollOut::new(PollEvents::HUP));
+        let out = do_reply(|s| s.reply_poll(PollEvents::HUP));
         let out = fuse_poll_out::try_ref_from_bytes(&out).unwrap();
         assert_eq!(out.revents, PollEvents::HUP.bits());
         assert_eq!(out.padding, 0);
 
-        let out = do_reply(LseekOut::new(1192));
+        let out = do_reply(|s| s.reply_lseek(1192));
         let out = fuse_lseek_out::try_ref_from_bytes(&out).unwrap();
         assert_eq!(out.offset, 1192);
     }
 
     #[test]
     fn reply_readdir_out() {
-        let mut out = ReaddirOut::new(1024);
+        let mut out = DirEntryBuf::new(1024);
         out.push_entry(
             ".gitignore".as_ref(),
             NodeID::from_raw(9).unwrap(),
@@ -662,7 +464,7 @@ mod tests {
             Some(FileType::SymbolicLink),
             3,
         );
-        let out = do_reply(out);
+        let out = do_reply(|s| s.reply_dir(&out));
         assert_eq!(out.len(), 80);
 
         let mut out = &out[..];

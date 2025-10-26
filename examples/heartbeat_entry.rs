@@ -10,8 +10,9 @@
 
 use polyfuse::{
     mount::MountOptions,
+    notify::Notifier as _,
     op::Operation,
-    reply::{AttrOut, EntryOut, ReaddirOut},
+    reply::{DirEntryBuf, ReplySender as _},
     session::{KernelConfig, Session},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     Connection,
@@ -21,7 +22,6 @@ use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
 use rustix::io::Errno;
 use std::{
-    borrow::Cow,
     io, mem,
     os::unix::prelude::*,
     path::PathBuf,
@@ -74,30 +74,27 @@ fn main() -> Result<()> {
 
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {
-            let (req, op) = session.decode(&mut buf)?;
+            let (req, op) = session.decode(conn, &mut buf)?;
             match op {
                 Some(Operation::Lookup(op)) => {
                     if op.parent != NodeID::ROOT {
-                        req.reply_error(conn, Errno::NOTDIR)?;
+                        req.reply_error(Errno::NOTDIR)?;
                         continue;
                     }
 
                     let mut current = fs.current.lock().unwrap();
 
                     if op.name.as_bytes() != current.filename.as_bytes() {
-                        req.reply_error(conn, Errno::NOENT)?;
+                        req.reply_error(Errno::NOENT)?;
                         continue;
                     }
 
-                    req.reply(
-                        conn,
-                        EntryOut {
-                            ino: Some(fs.file_attr.ino),
-                            attr: Cow::Borrowed(&fs.file_attr),
-                            entry_valid: Some(fs.ttl),
-                            attr_valid: Some(fs.ttl),
-                            generation: 0,
-                        },
+                    req.reply_entry(
+                        Some(fs.file_attr.ino),
+                        &fs.file_attr,
+                        0,
+                        Some(fs.ttl),
+                        Some(fs.ttl),
                     )?;
 
                     current.nlookup += 1;
@@ -117,44 +114,38 @@ fn main() -> Result<()> {
                         NodeID::ROOT => &fs.root_attr,
                         FILE_INO => &fs.file_attr,
                         _ => {
-                            req.reply_error(conn, Errno::NOENT)?;
+                            req.reply_error(Errno::NOENT)?;
                             continue;
                         }
                     };
 
-                    req.reply(
-                        conn,
-                        AttrOut {
-                            attr: Cow::Borrowed(attr),
-                            valid: Some(fs.ttl),
-                        },
-                    )?;
+                    req.reply_attr(attr, Some(fs.ttl))?;
                 }
 
                 Some(Operation::Read(op)) => match op.ino {
-                    NodeID::ROOT => req.reply_error(conn, Errno::ISDIR)?,
-                    FILE_INO => req.reply(conn, ())?,
-                    _ => req.reply_error(conn, Errno::NOENT)?,
+                    NodeID::ROOT => req.reply_error(Errno::ISDIR)?,
+                    FILE_INO => req.reply_bytes(())?,
+                    _ => req.reply_error(Errno::NOENT)?,
                 },
 
                 Some(Operation::Readdir(op)) => {
                     if op.ino != NodeID::ROOT {
-                        req.reply_error(conn, Errno::NOTDIR)?;
+                        req.reply_error(Errno::NOTDIR)?;
                         continue;
                     }
                     if op.offset > 0 {
-                        req.reply(conn, ())?;
+                        req.reply_bytes(())?;
                         continue;
                     }
 
-                    let mut buf = ReaddirOut::new(op.size as usize);
+                    let mut buf = DirEntryBuf::new(op.size as usize);
                     let current = fs.current.lock().unwrap();
                     buf.push_entry(current.filename.as_ref(), FILE_INO, None, 1);
 
-                    req.reply(conn, buf)?;
+                    req.reply_dir(&buf)?;
                 }
 
-                _ => req.reply_error(conn, Errno::NOSYS)?,
+                _ => req.reply_error(Errno::NOSYS)?,
             }
         }
 
@@ -232,7 +223,9 @@ impl Heartbeat {
 
             if !self.no_notify && current.nlookup > 0 {
                 tracing::info!("send notify_inval_entry");
-                session.notify_inval_entry(conn, NodeID::ROOT, old_filename)?;
+                session
+                    .notifier(conn)
+                    .inval_entry(NodeID::ROOT, old_filename)?;
             }
 
             drop(current);

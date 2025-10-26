@@ -1,7 +1,8 @@
 use polyfuse::{
     mount::MountOptions,
+    notify::Notifier as _,
     op::{AccessMode, OpenFlags, Operation},
-    reply::{self, AttrOut, OpenOut, OpenOutFlags, PollOut},
+    reply::{OpenOutFlags, ReplySender as _},
     session::KernelConfig,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
@@ -14,7 +15,6 @@ use rustix::{
     process::{getgid, getuid},
 };
 use std::{
-    borrow::Cow,
     collections::HashMap,
     path::PathBuf,
     sync::{
@@ -51,26 +51,23 @@ fn main() -> Result<()> {
     thread::scope(|scope| -> Result<()> {
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {
-            let (req, op) = session.decode(&mut buf)?;
+            let (req, op) = session.decode(conn, &mut buf)?;
             match op {
-                Some(Operation::Getattr(_op)) => req.reply(
-                    conn,
-                    AttrOut {
-                        attr: Cow::Owned(FileAttr {
-                            ino: NodeID::ROOT,
-                            nlink: 1,
-                            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
-                            uid: getuid(),
-                            gid: getgid(),
-                            ..FileAttr::new()
-                        }),
-                        valid: Some(Duration::from_secs(u64::MAX / 2)),
+                Some(Operation::Getattr(_op)) => req.reply_attr(
+                    &FileAttr {
+                        ino: NodeID::ROOT,
+                        nlink: 1,
+                        mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+                        uid: getuid(),
+                        gid: getgid(),
+                        ..FileAttr::new()
                     },
+                    Some(Duration::from_secs(u64::MAX / 2)),
                 )?,
 
                 Some(Operation::Open(op)) => {
                     if op.options.access_mode() != Some(AccessMode::ReadOnly) {
-                        req.reply_error(conn, Errno::ACCESS)?;
+                        req.reply_error(Errno::ACCESS)?;
                         continue;
                     }
 
@@ -101,7 +98,7 @@ fn main() -> Result<()> {
                             if let Some(handle) = handle.upgrade() {
                                 if let Some(kh) = handle.kh.get().copied() {
                                     tracing::info!("send wakeup notification, kh={}", kh);
-                                    session.notify_poll_wakeup(conn, kh)?;
+                                    session.notifier(conn).poll_wakeup(kh)?;
                                 }
                             }
 
@@ -112,14 +109,7 @@ fn main() -> Result<()> {
                     let fh = FileID::from_raw(fh);
                     fs.handles.write().unwrap().insert(fh, handle);
 
-                    req.reply(
-                        conn,
-                        OpenOut {
-                            fh,
-                            open_flags: OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
-                            backing_id: 0,
-                        },
-                    )?;
+                    req.reply_open(fh, OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE, 0)?;
                 }
 
                 Some(Operation::Read(op)) => {
@@ -146,10 +136,7 @@ fn main() -> Result<()> {
                     let bufsize = op.size as usize;
                     let content = CONTENT.as_bytes().get(offset..).unwrap_or(&[]);
 
-                    req.reply(
-                        conn,
-                        reply::Raw(&content[..std::cmp::min(content.len(), bufsize)]),
-                    )?;
+                    req.reply_bytes(&content[..std::cmp::min(content.len(), bufsize)])?;
                 }
 
                 Some(Operation::Poll(op)) => {
@@ -168,15 +155,15 @@ fn main() -> Result<()> {
                         let _ = handle.kh.set(kh);
                     }
 
-                    req.reply(conn, PollOut::new(revents))?;
+                    req.reply_poll(revents)?;
                 }
 
                 Some(Operation::Release(op)) => {
                     drop(fs.handles.write().unwrap().remove(&op.fh));
-                    req.reply(conn, ())?;
+                    req.reply_bytes(())?;
                 }
 
-                _ => req.reply_error(conn, Errno::NOSYS)?,
+                _ => req.reply_error(Errno::NOSYS)?,
             }
         }
 

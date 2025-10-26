@@ -3,7 +3,7 @@
 use polyfuse::{
     mount::MountOptions,
     op::{self, Operation},
-    reply::{self, AttrOut},
+    reply::ReplySender as _,
     session::{KernelConfig, Request},
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
     Connection,
@@ -14,7 +14,7 @@ use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
-use std::{borrow::Cow, io, path::PathBuf, time::Duration};
+use std::{io, path::PathBuf, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
 
@@ -27,20 +27,20 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let (session, mut conn, mount) =
+    let (session, conn, mount) =
         polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = session.new_fallback_buffer();
-    while session.recv_request(&mut conn, &mut buf)? {
-        let (req, op) = session.decode(&mut buf)?;
+    while session.recv_request(&conn, &mut buf)? {
+        let (req, op) = session.decode(&conn, &mut buf)?;
         match op {
             // Dispatch your callbacks to the supported operations...
-            Some(Operation::Getattr(op)) => getattr(req, &mut conn, op)?,
-            Some(Operation::Read(op)) => read(req, &mut conn, op)?,
+            Some(Operation::Getattr(op)) => getattr(req, op)?,
+            Some(Operation::Read(op)) => read(req, op)?,
 
             // Or annotate that the operation is not supported.
-            _ => req.reply_error(&mut conn, Errno::NOSYS)?,
+            _ => req.reply_error(Errno::NOSYS)?,
         };
     }
 
@@ -49,31 +49,28 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn getattr(req: Request<'_>, conn: &mut Connection, op: op::Getattr<'_>) -> io::Result<()> {
+fn getattr(req: Request<'_, &Connection>, op: op::Getattr<'_>) -> io::Result<()> {
     if op.ino != NodeID::ROOT {
-        return req.reply_error(conn, Errno::NOENT);
+        return req.reply_error(Errno::NOENT);
     }
 
-    req.reply(
-        conn,
-        AttrOut {
-            attr: Cow::Owned(FileAttr {
-                ino: NodeID::ROOT,
-                size: CONTENT.len() as u64,
-                mode: FileMode::new(FileType::Regular, FilePermissions::READ),
-                nlink: 1,
-                uid: getuid(),
-                gid: getgid(),
-                ..FileAttr::new()
-            }),
-            valid: Some(Duration::from_secs(1)),
+    req.reply_attr(
+        FileAttr {
+            ino: NodeID::ROOT,
+            size: CONTENT.len() as u64,
+            mode: FileMode::new(FileType::Regular, FilePermissions::READ),
+            nlink: 1,
+            uid: getuid(),
+            gid: getgid(),
+            ..FileAttr::new()
         },
+        Some(Duration::from_secs(1)),
     )
 }
 
-fn read(req: Request<'_>, conn: &mut Connection, op: op::Read<'_>) -> io::Result<()> {
+fn read(req: Request<'_, &Connection>, op: op::Read<'_>) -> io::Result<()> {
     if op.ino != NodeID::ROOT {
-        return req.reply_error(conn, Errno::NOENT);
+        return req.reply_error(Errno::NOENT);
     }
 
     let mut data: &[u8] = &[];
@@ -85,5 +82,5 @@ fn read(req: Request<'_>, conn: &mut Connection, op: op::Read<'_>) -> io::Result
         data = &data[..std::cmp::min(data.len(), size)];
     }
 
-    req.reply(conn, reply::Raw(data))
+    req.reply_bytes(data)
 }
