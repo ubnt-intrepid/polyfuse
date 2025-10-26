@@ -232,7 +232,7 @@ pub fn connect(
     mountopts: MountOptions,
     mut config: KernelConfig,
 ) -> io::Result<(Session, Connection, Mount)> {
-    let (conn, mount) = crate::mount::mount(&mountpoint, &mountopts)?;
+    let (conn, mount) = crate::mount::mount(mountpoint, mountopts)?;
 
     let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
     loop {

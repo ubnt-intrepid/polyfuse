@@ -1,5 +1,5 @@
 use super::{MountFlags, MountOptions};
-use crate::{conn::Connection, util::IteratorJoinExt as _};
+use crate::util::IteratorJoinExt as _;
 use rustix::{
     io::{Errno, FdFlags},
     net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags},
@@ -7,7 +7,7 @@ use rustix::{
 use std::{
     borrow::Cow,
     io,
-    mem::{self, ManuallyDrop, MaybeUninit},
+    mem::{ManuallyDrop, MaybeUninit},
     os::unix::{net::UnixStream, prelude::*},
     path::Path,
     process::{Child, Command, Stdio},
@@ -16,131 +16,100 @@ use std::{
 const FUSERMOUNT_PROG: &str = "/usr/bin/fusermount";
 const FUSE_COMMFD_ENV: &str = "_FUSE_COMMFD";
 
+fn fusermount_path(opts: &MountOptions) -> &Path {
+    opts.fusermount_path
+        .as_ref()
+        .map_or(Path::new(FUSERMOUNT_PROG), |path| &**path)
+}
+
 /// The object that manages the mount status of the FUSE daemon.
 #[derive(Debug)]
-pub struct Fusermount {
+pub struct UnprivMount {
     mode: UmountMode,
 }
 
 #[derive(Debug)]
 enum UmountMode {
-    Implicit {
-        child: Child,
-        input: UnixStream,
-    },
-    Explicit {
-        mountpoint: Cow<'static, Path>,
-        fusermount_path: Cow<'static, Path>,
-    },
-    Gone,
+    Implicit { child: Child, input: UnixStream },
+    Explicit,
 }
 
-impl Fusermount {
-    /// Unmount the filesystem.
-    pub fn unmount(mut self) -> io::Result<()> {
-        self.unmount_()
+impl UnprivMount {
+    pub(crate) fn mount(
+        mountpoint: &Path,
+        mountopts: &MountOptions,
+    ) -> io::Result<(OwnedFd, Self)> {
+        let fusermount_path = fusermount_path(mountopts);
+        tracing::debug!(
+            "The path to excutable `fusermount` is expanded to: {}",
+            fusermount_path.display()
+        );
+
+        let mut fusermount = Command::new(fusermount_path);
+
+        fusermount.stdin(Stdio::null());
+        fusermount.stdout(Stdio::piped());
+        fusermount.stderr(Stdio::piped());
+
+        let opts = encode_unpriv_options(mountopts);
+        if !opts.is_empty() {
+            fusermount.arg("-o").arg(opts);
+        }
+
+        fusermount.arg("--").arg(mountpoint);
+
+        let (input, output) = UnixStream::pair()?;
+
+        fusermount.env(FUSE_COMMFD_ENV, output.as_raw_fd().to_string());
+
+        unsafe {
+            let output = ManuallyDrop::new(output);
+            fusermount.pre_exec(move || {
+                rustix::io::fcntl_setfd(&*output, FdFlags::empty()).map_err(Into::into)
+            });
+        }
+
+        let child = fusermount.spawn()?;
+
+        let fd = receive_fd(&input)?;
+
+        let mode = if mountopts.flags.contains(MountFlags::AUTO_UNMOUNT) {
+            UmountMode::Implicit { child, input }
+        } else {
+            // When auto_unmount is not specified, `fusermount` exits immediately
+            // after sending the file descriptor and thus we need to wait until
+            // the command is exited.
+            let output = child.wait_with_output()?;
+            if !output.status.success() {
+                tracing::error!("The child `fusermount` exists with failure");
+                tracing::error!("  stdout: {:?}", String::from_utf8_lossy(&output.stdout));
+                tracing::error!("  stderr: {:?}", String::from_utf8_lossy(&output.stderr));
+                umount(mountpoint, fusermount_path)?;
+                return Err(Errno::INVAL.into());
+            }
+
+            UmountMode::Explicit
+        };
+
+        Ok((fd, UnprivMount { mode }))
     }
 
-    fn unmount_(&mut self) -> io::Result<()> {
-        match mem::replace(&mut self.mode, UmountMode::Gone) {
+    pub(crate) fn unmount(self, mountpoint: &Path, mountopts: &MountOptions) -> io::Result<()> {
+        match self.mode {
             UmountMode::Implicit { mut child, input } => {
                 // この場合、fusermount の終了にともない umount(2) が暗黙的に呼び出される。
                 // なので、fd受信用の UnixStream を閉じてバックグラウンドの fusermount を終了する。
                 drop(input);
                 let _st = child.wait()?;
             }
-            UmountMode::Explicit {
-                mountpoint,
-                fusermount_path,
-            } => {
+            UmountMode::Explicit => {
                 // fusermount は fd を受信した直後に終了しているので、明示的に umount(2) を呼ぶ必要がある。
                 // 非特権プロセスなので `fusermount -u /path/to/mountpoint` を呼ぶことで間接的にアンマウントを行う
-                umount(&mountpoint, &fusermount_path)?;
+                umount(mountpoint, fusermount_path(mountopts))?;
             }
-            UmountMode::Gone => (),
         }
         Ok(())
     }
-}
-
-impl Drop for Fusermount {
-    fn drop(&mut self) {
-        let _ = self.unmount_();
-    }
-}
-
-/// Establish a connection with the FUSE kernel driver in non-privileged mode.
-#[allow(clippy::ptr_arg)]
-pub fn mount(
-    mountpoint: &Cow<'static, Path>,
-    mountopts: &MountOptions,
-) -> io::Result<(Connection, Fusermount)> {
-    tracing::debug!("Mount information:");
-    tracing::debug!("  mountpoint: {:?}", mountpoint);
-    tracing::debug!("  opts: {:?}", mountopts);
-
-    if !mountpoint.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "The specified mountpoint does not exist",
-        ));
-    }
-
-    let fusermount_path = mountopts
-        .fusermount_path
-        .clone()
-        .unwrap_or(Path::new(FUSERMOUNT_PROG).into());
-
-    let mut fusermount = Command::new(&*fusermount_path);
-
-    fusermount.stdin(Stdio::null());
-    fusermount.stdout(Stdio::piped());
-    fusermount.stderr(Stdio::piped());
-
-    let opts = encode_unpriv_options(mountopts);
-    if !opts.is_empty() {
-        fusermount.arg("-o").arg(opts);
-    }
-
-    fusermount.arg("--").arg(&**mountpoint);
-
-    let (input, output) = UnixStream::pair()?;
-
-    fusermount.env(FUSE_COMMFD_ENV, output.as_raw_fd().to_string());
-
-    unsafe {
-        let output = ManuallyDrop::new(output);
-        fusermount.pre_exec(move || {
-            rustix::io::fcntl_setfd(&*output, FdFlags::empty()).map_err(Into::into)
-        });
-    }
-
-    let child = fusermount.spawn()?;
-
-    let fd = receive_fd(&input)?;
-
-    let mode = if mountopts.flags.contains(MountFlags::AUTO_UNMOUNT) {
-        UmountMode::Implicit { child, input }
-    } else {
-        // When auto_unmount is not specified, `fusermount` exits immediately
-        // after sending the file descriptor and thus we need to wait until
-        // the command is exited.
-        let output = child.wait_with_output()?;
-        if !output.status.success() {
-            tracing::error!("The child `fusermount` exists with failure");
-            tracing::error!("  stdout: {:?}", String::from_utf8_lossy(&output.stdout));
-            tracing::error!("  stderr: {:?}", String::from_utf8_lossy(&output.stderr));
-            umount(mountpoint, &fusermount_path)?;
-            return Err(Errno::INVAL.into());
-        }
-
-        UmountMode::Explicit {
-            mountpoint: mountpoint.clone(),
-            fusermount_path,
-        }
-    };
-
-    Ok((Connection::from(fd), Fusermount { mode }))
 }
 
 fn umount(mountpoint: &Path, fusermount_path: &Path) -> io::Result<()> {

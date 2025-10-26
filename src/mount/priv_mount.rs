@@ -1,7 +1,7 @@
 use super::{MountFlags, MountOptions};
-use crate::{conn::FUSE_DEV_NAME, util::IteratorJoinExt as _, Connection};
+use crate::{conn::FUSE_DEV_NAME, util::IteratorJoinExt as _};
 use rustix::{
-    fs::{Gid, Mode, OFlags, Uid},
+    fs::{Gid, Mode, OFlags, Stat, Uid},
     io::Errno,
     mount::UnmountFlags,
     process::{getgid, getuid},
@@ -10,79 +10,55 @@ use rustix::{
 use std::{borrow::Cow, ffi::CString, io, os::unix::prelude::*, path::Path};
 
 #[derive(Debug)]
-#[must_use]
-pub struct SysMount {
-    mountpoint: Cow<'static, Path>,
-    unmounted: bool,
+pub(crate) struct PrivMount {
+    _priv: (),
 }
 
-impl SysMount {
-    fn unmount_(&mut self) -> io::Result<()> {
-        if !self.unmounted {
-            rustix::mount::unmount(&*self.mountpoint, UnmountFlags::DETACH)?;
-            self.unmounted = true;
+impl PrivMount {
+    pub(crate) fn mount(
+        mountpoint: &Path,
+        stat: &Stat,
+        mountopts: &MountOptions,
+    ) -> io::Result<(OwnedFd, Self)> {
+        let caps = rustix::thread::capabilities(None)?;
+        if !caps.effective.contains(CapabilitySet::SYS_ADMIN) {
+            return Err(Errno::PERM.into());
         }
-        Ok(())
-    }
 
-    pub fn unmount(mut self) -> io::Result<()> {
-        self.unmount_()
-    }
-}
+        let fd = rustix::fs::open(FUSE_DEV_NAME, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())?;
 
-impl Drop for SysMount {
-    fn drop(&mut self) {
-        let _ = self.unmount_();
-    }
-}
-
-/// Establish a connection with the FUSE kernel driver in privileged mode.
-#[allow(clippy::ptr_arg)]
-pub fn mount(
-    mountpoint: &Cow<'static, Path>,
-    mountopts: &MountOptions,
-) -> io::Result<(Connection, SysMount)> {
-    let caps = rustix::thread::capabilities(None)?;
-    if !caps.effective.contains(CapabilitySet::SYS_ADMIN) {
-        return Err(Errno::PERM.into());
-    }
-
-    let stat = rustix::fs::stat(&**mountpoint)?;
-
-    let fd = rustix::fs::open(FUSE_DEV_NAME, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())?;
-
-    let PrivilegedOptions { fstype, opts } = encode_priv_options(
-        mountopts,
-        Some(&prefix(&fd, stat.st_mode, getuid(), getgid())),
-    );
-
-    let source = mountopts
-        .fsname
-        .as_deref()
-        .or(mountopts.subtype.as_deref())
-        .unwrap_or(
-            FUSE_DEV_NAME
-                .to_str()
-                .expect("DEV_NAME must be a valid UTF-8 string"),
+        let PrivilegedOptions { fstype, opts } = encode_priv_options(
+            mountopts,
+            Some(&prefix(&fd, stat.st_mode, getuid(), getgid())),
         );
 
-    let data = Some(CString::new(opts).expect("invalid opts"));
+        let source = mountopts
+            .fsname
+            .as_deref()
+            .or(mountopts.subtype.as_deref())
+            .unwrap_or(
+                FUSE_DEV_NAME
+                    .to_str()
+                    .expect("DEV_NAME must be a valid UTF-8 string"),
+            );
 
-    rustix::mount::mount(
-        source,
-        &**mountpoint,
-        fstype,
-        rustix::mount::MountFlags::empty(),
-        data.as_deref(),
-    )?;
+        let data = Some(CString::new(opts).expect("invalid opts"));
 
-    Ok((
-        Connection::from(fd),
-        SysMount {
-            mountpoint: mountpoint.clone(),
-            unmounted: false,
-        },
-    ))
+        rustix::mount::mount(
+            source,
+            mountpoint,
+            fstype,
+            rustix::mount::MountFlags::empty(),
+            data.as_deref(),
+        )?;
+
+        Ok((fd, Self { _priv: () }))
+    }
+
+    pub(crate) fn unmount(self, mountpoint: &Path, _: &MountOptions) -> io::Result<()> {
+        rustix::mount::unmount(mountpoint, UnmountFlags::DETACH)?;
+        Ok(())
+    }
 }
 
 fn prefix(fd: &impl AsFd, mode: u32, uid: Uid, gid: Gid) -> String {

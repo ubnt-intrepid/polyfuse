@@ -1,10 +1,11 @@
-pub mod privileged;
-pub mod unprivileged;
+mod priv_mount;
+mod unpriv_mount;
 
+use self::{priv_mount::PrivMount, unpriv_mount::UnprivMount};
 use crate::Connection;
 use bitflags::{bitflags, bitflags_match};
 use rustix::io::Errno;
-use std::{borrow::Cow, io, path::Path};
+use std::{borrow::Cow, io, mem, path::Path};
 
 // refs:
 // * https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/mount.c
@@ -169,40 +170,97 @@ impl MountOptions {
 }
 
 #[derive(Debug)]
-pub enum Mount {
-    Priv(privileged::SysMount),
-    Unpriv(unprivileged::Fusermount),
+#[must_use]
+pub struct Mount {
+    kind: MountKind,
+    mountpoint: Cow<'static, Path>,
+    mountopts: MountOptions,
+}
+
+#[derive(Debug)]
+enum MountKind {
+    Priv(PrivMount),
+    Unpriv(UnprivMount),
+    Gone,
 }
 
 impl Mount {
-    pub fn unmount(self) -> io::Result<()> {
-        match self {
-            Self::Priv(mount) => mount.unmount(),
-            Self::Unpriv(fusermount) => fusermount.unmount(),
+    #[inline]
+    pub fn is_priviledged(&self) -> bool {
+        matches!(self.kind, MountKind::Priv(..))
+    }
+
+    #[inline]
+    pub fn mountpoint(&self) -> &Path {
+        &self.mountpoint
+    }
+
+    #[inline]
+    pub fn mountopts(&self) -> &MountOptions {
+        &self.mountopts
+    }
+
+    #[inline]
+    pub fn unmount(mut self) -> io::Result<()> {
+        self.unmount_()
+    }
+
+    fn unmount_(&mut self) -> io::Result<()> {
+        match mem::replace(&mut self.kind, MountKind::Gone) {
+            MountKind::Priv(mount) => mount.unmount(&self.mountpoint, &self.mountopts),
+            MountKind::Unpriv(mount) => mount.unmount(&self.mountpoint, &self.mountopts),
+            MountKind::Gone => {
+                tracing::warn!("unmounted twice");
+                Ok(())
+            }
         }
     }
 }
 
-#[allow(clippy::ptr_arg)]
-pub fn mount(
-    mountpoint: &Cow<'static, Path>,
-    mountopts: &MountOptions,
+impl Drop for Mount {
+    fn drop(&mut self) {
+        let _ = self.unmount_();
+    }
+}
+
+pub(crate) fn mount(
+    mountpoint: Cow<'static, Path>,
+    mountopts: MountOptions,
 ) -> io::Result<(Connection, Mount)> {
-    match privileged::mount(mountpoint, mountopts) {
-        Ok((conn, mount)) => {
+    tracing::debug!("Mount information:");
+    tracing::debug!("  mountpoint: {:?}", mountpoint);
+    tracing::debug!("  opts: {:?}", mountopts);
+
+    if !mountpoint.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "The specified mountpoint does not exist",
+        ));
+    }
+
+    let stat = rustix::fs::stat(&*mountpoint)?;
+
+    let (fd, kind) = match PrivMount::mount(&mountpoint, &stat, &mountopts) {
+        Ok((fd, mount)) => {
             tracing::trace!("use privileged mount");
-            return Ok((conn, Mount::Priv(mount)));
+            (fd, MountKind::Priv(mount))
         }
         Err(err) => match Errno::from_io_error(&err) {
             Some(Errno::PERM) => {
                 tracing::warn!("The privileged mount is failed. Fallback to unprivileged mount...");
+                let (fd, fusermount) = UnprivMount::mount(&mountpoint, &mountopts)?;
+                (fd, MountKind::Unpriv(fusermount))
             }
             _ => return Err(err),
         },
-    }
+    };
 
-    let (conn, fusermount) = unprivileged::mount(mountpoint, mountopts)?;
-
-    tracing::trace!("use unprivileged mount");
-    Ok((conn, Mount::Unpriv(fusermount)))
+    Ok((
+        Connection::from(fd),
+        Mount {
+            kind,
+            mountpoint,
+            mountopts,
+        },
+    ))
 }
