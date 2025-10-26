@@ -1,64 +1,32 @@
-pub mod privileged;
-pub mod unprivileged;
+mod priv_mount;
+mod unpriv_mount;
 
+use self::{priv_mount::PrivMount, unpriv_mount::UnprivMount};
 use crate::Connection;
 use bitflags::{bitflags, bitflags_match};
-use rustix::io::Errno;
-use std::{borrow::Cow, io, path::Path};
+use rustix::{io::Errno, mount::MountFlags};
+use std::{borrow::Cow, io, mem, path::Path};
 
 // refs:
 // * https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/mount.c
 // * https://github.com/libfuse/libfuse/blob/fuse-3.10.5/util/fusermount.c
 // * https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/inode.c?h=v6.15.9
 
+// mount(2) flags recognized in FUSE/fusermount.
+const ALLOWED_MOUNT_FLAGS: MountFlags = MountFlags::empty()
+    .union(MountFlags::RDONLY)
+    .union(MountFlags::NOSUID)
+    .union(MountFlags::NODEV)
+    .union(MountFlags::NOEXEC)
+    .union(MountFlags::SYNCHRONOUS)
+    .union(MountFlags::DIRSYNC)
+    .union(MountFlags::NOATIME);
+
 bitflags! {
+    /// FUSE/fusermount-specific mount flags.
     #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct MountFlags: u64 {
-        // Common mount flags (recognized in `fusermount`).
-
-        /// Specify that the mounted filesystem is read-only.
-        ///
-        /// This flag is associated with the constant `MS_RDONLY`.
-        const RDONLY = libc::MS_RDONLY;
-
-        /// Specify to ignore set-user-ID / set-group-ID bits or capability
-        /// flags on files in the mounted filesystem.
-        ///
-        /// This flag is associated with the constant `MS_NOSUID`.
-        const NOSUID = libc::MS_NOSUID;
-
-        /// Specify to disallow access to special files (such as device)
-        /// on the mounted filesystem.
-        ///
-        /// This flag is associated with the constant `MS_NODEV`.
-        const NODEV = libc::MS_NODEV;
-
-        /// Specify to disallow programs on the mounted filesystem to be executed.
-        ///
-        /// This flag is associated with the constant `MS_NOEXEC`.
-        const NOEXEC = libc::MS_NOEXEC;
-
-        /// Specify that write operation to files in the mounted filesystem
-        /// are performed synchronously.
-        ///
-        /// This flag is associated with the constant `MS_SYNCHRONOUS`.
-        const SYNCHRONOUS = libc::MS_SYNCHRONOUS;
-
-        /// Specify that modification of directories in the mounted file system
-        /// are performed synchronously.
-        ///
-        /// This flag is associated with the constant `MS_DIRSYNC`.
-        const DIRSYNC = libc::MS_DIRSYNC;
-
-        /// Specify to disable updating access times of items on the mounted
-        /// filesystems.
-        ///
-        /// This flag is associated with the constant `MS_NOATIME`.
-        const NOATIME = libc::MS_NOATIME;
-
-        // FUSE/fusermount-specific flags.
-
+    pub struct FuseFlags: u32 {
         /// Specify to enable the kernel side permission checks.
         ///
         /// When this flag is enabled, the FUSE kernel will perform access control
@@ -66,14 +34,14 @@ bitflags! {
         /// request to the daemon. Otherwise, the FUSE daemon must implement its own
         /// access control mechanism by referencing the UID/GID associated with
         /// the received request.
-        const DEFAULT_PERMISSIONS = 1 << 32;
+        const DEFAULT_PERMISSIONS = 1 << 0;
 
         /// Specify whether the users other than the deamon's owner can access
         /// the mounted filesystem.
         ///
         /// By default, the FUSE kernel driver restricts the access of mounted
         /// filesystem only to the owner, to prevent the side-channel attacks.
-        const ALLOW_OTHER = 1 << (32 + 1);
+        const ALLOW_OTHER = 1 << 1;
 
         /// Specify that the mountpoint will be unmounted automatically
         /// when the child `fusermount` is exited.
@@ -82,30 +50,33 @@ bitflags! {
         /// unmount by calling `umount(2)` (or `fusermount -u`).
         ///
         /// This flag is enabled by default.
-        const AUTO_UNMOUNT = 1 << (32 + 2);
+        const AUTO_UNMOUNT = 1 << 2;
 
         /// Specify to use `fuseblk` as filesystem type.
-        const BLKDEV = 1 << (32 + 3);
+        const BLKDEV = 1 << 3;
     }
 }
 
-impl Default for MountFlags {
+impl Default for FuseFlags {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MountFlags {
+impl FuseFlags {
     pub const fn new() -> Self {
         Self::AUTO_UNMOUNT
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct MountOptions {
-    /// The mount flags.
-    pub flags: MountFlags,
+    /// The flags for mount(2) syscall.
+    pub mount_flags: MountFlags,
+
+    /// The FUSE-specific mount flags.
+    pub fuse_flags: FuseFlags,
 
     pub blksize: Option<u32>,
 
@@ -130,7 +101,8 @@ impl Default for MountOptions {
 impl MountOptions {
     pub const fn new() -> Self {
         Self {
-            flags: MountFlags::new(),
+            mount_flags: MountFlags::empty(),
+            fuse_flags: FuseFlags::new(),
             blksize: None,
             max_read: None,
             subtype: None,
@@ -140,25 +112,28 @@ impl MountOptions {
     }
 
     fn iter_flags(&self, unpriv: bool) -> impl Iterator<Item = Cow<'_, str>> + '_ {
-        self.flags
-            .iter()
-            .flat_map(move |flag| {
-                bitflags_match!(flag, {
-                    MountFlags::RDONLY => Some("ro"),
-                    MountFlags::NOSUID => Some("nosuid"),
-                    MountFlags::NODEV => Some("nodev"),
-                    MountFlags::NOEXEC => Some("noexec"),
-                    MountFlags::SYNCHRONOUS => Some("sync"),
-                    MountFlags::DIRSYNC => Some("dirsync"),
-                    MountFlags::NOATIME => Some("noatime"),
-                    MountFlags::DEFAULT_PERMISSIONS => Some("default_permissions"),
-                    MountFlags::ALLOW_OTHER => Some("allow_other"),
-                    MountFlags::AUTO_UNMOUNT => unpriv.then_some("auto_unmount"), // ignored
-                    MountFlags::BLKDEV => unpriv.then_some("blkdev"), // handled by source/fstype
-                    _ => None,
-                })
+        let mount_flags = self.mount_flags.iter().flat_map(|flag| {
+            bitflags_match!(flag, {
+                MountFlags::RDONLY => Some("ro"),
+                MountFlags::NOSUID => Some("nosuid"),
+                MountFlags::NODEV => Some("nodev"),
+                MountFlags::NOEXEC => Some("noexec"),
+                MountFlags::SYNCHRONOUS => Some("sync"),
+                MountFlags::DIRSYNC => Some("dirsync"),
+                MountFlags::NOATIME => Some("noatime"),
+                _ => None,
             })
-            .map(Cow::Borrowed)
+        });
+        let fuse_flags = self.fuse_flags.iter().flat_map(move |flag| {
+            bitflags_match!(flag, {
+                FuseFlags::DEFAULT_PERMISSIONS => Some("default_permissions"),
+                FuseFlags::ALLOW_OTHER => Some("allow_other"),
+                FuseFlags::AUTO_UNMOUNT => unpriv.then_some("auto_unmount"), // ignored
+                FuseFlags::BLKDEV => unpriv.then_some("blkdev"), // handled by source/fstype
+                _ => None,
+            })
+        });
+        mount_flags.chain(fuse_flags).map(Cow::Borrowed)
     }
 
     fn iter_common_opts(&self) -> impl Iterator<Item = Cow<'_, str>> + '_ {
@@ -166,191 +141,100 @@ impl MountOptions {
             .chain(self.blksize.map(|n| format!("blksize={}", n).into()))
             .chain(self.max_read.map(|n| format!("max_read={}", n).into()))
     }
-
-    pub fn unprivileged_options(&self) -> String {
-        join(
-            self.iter_flags(true)
-                .chain(self.iter_common_opts())
-                .chain(
-                    self.subtype
-                        .as_deref()
-                        .map(|s| format!("subtype={}", s).into()),
-                )
-                .chain(
-                    self.fsname
-                        .as_deref()
-                        .map(|fsname| Cow::Owned(format!("fsname={}", fsname))),
-                ),
-        )
-    }
-
-    pub fn privileged_options(&self, prefix: Option<&str>) -> PrivilegedOptions {
-        let mut fstype: String = if self.flags.contains(MountFlags::BLKDEV) {
-            "fuseblk".into()
-        } else {
-            "fuse".into()
-        };
-        if let Some(subtype) = &self.subtype {
-            fstype.push('.');
-            fstype.push_str(subtype.trim());
-        }
-
-        let opts = join(
-            prefix
-                .map(Cow::Borrowed)
-                .into_iter()
-                .chain(self.iter_flags(false))
-                .chain(self.iter_common_opts()),
-        );
-
-        PrivilegedOptions { fstype, opts }
-    }
-}
-
-pub struct PrivilegedOptions {
-    pub fstype: String,
-    pub opts: String,
-}
-
-fn join<T>(iter: impl Iterator<Item = T>) -> String
-where
-    T: AsRef<str>,
-{
-    iter.enumerate().fold(String::new(), |mut acc, (i, elem)| {
-        if i > 0 {
-            acc.push(',');
-        }
-        acc.push_str(elem.as_ref().trim());
-        acc
-    })
 }
 
 #[derive(Debug)]
-pub enum Mount {
-    Priv(privileged::SysMount),
-    Unpriv(unprivileged::Fusermount),
+#[must_use]
+pub struct Mount {
+    kind: MountKind,
+    mountpoint: Cow<'static, Path>,
+    mountopts: MountOptions,
+}
+
+#[derive(Debug)]
+enum MountKind {
+    Priv(PrivMount),
+    Unpriv(UnprivMount),
+    Gone,
 }
 
 impl Mount {
-    pub fn unmount(self) -> io::Result<()> {
-        match self {
-            Self::Priv(mount) => mount.unmount(),
-            Self::Unpriv(fusermount) => fusermount.unmount(),
+    #[inline]
+    pub fn is_priviledged(&self) -> bool {
+        matches!(self.kind, MountKind::Priv(..))
+    }
+
+    #[inline]
+    pub fn mountpoint(&self) -> &Path {
+        &self.mountpoint
+    }
+
+    #[inline]
+    pub fn mountopts(&self) -> &MountOptions {
+        &self.mountopts
+    }
+
+    #[inline]
+    pub fn unmount(mut self) -> io::Result<()> {
+        self.unmount_()
+    }
+
+    fn unmount_(&mut self) -> io::Result<()> {
+        match mem::replace(&mut self.kind, MountKind::Gone) {
+            MountKind::Priv(mount) => mount.unmount(&self.mountpoint, &self.mountopts),
+            MountKind::Unpriv(mount) => mount.unmount(&self.mountpoint, &self.mountopts),
+            MountKind::Gone => {
+                tracing::warn!("unmounted twice");
+                Ok(())
+            }
         }
     }
 }
 
-#[allow(clippy::ptr_arg)]
-pub fn mount(
-    mountpoint: &Cow<'static, Path>,
-    mountopts: &MountOptions,
+impl Drop for Mount {
+    fn drop(&mut self) {
+        let _ = self.unmount_();
+    }
+}
+
+pub(crate) fn mount(
+    mountpoint: Cow<'static, Path>,
+    mut mountopts: MountOptions,
 ) -> io::Result<(Connection, Mount)> {
-    match privileged::mount(mountpoint, mountopts) {
-        Ok((conn, mount)) => {
+    mountopts.mount_flags &= ALLOWED_MOUNT_FLAGS;
+
+    tracing::debug!("Mount information:");
+    tracing::debug!("  mountpoint: {:?}", mountpoint);
+    tracing::debug!("  opts: {:?}", mountopts);
+
+    if !mountpoint.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "The specified mountpoint does not exist",
+        ));
+    }
+
+    let (fd, kind) = match PrivMount::mount(&mountpoint, &mountopts) {
+        Ok((fd, mount)) => {
             tracing::trace!("use privileged mount");
-            return Ok((conn, Mount::Priv(mount)));
+            (fd, MountKind::Priv(mount))
         }
         Err(err) => match Errno::from_io_error(&err) {
             Some(Errno::PERM) => {
                 tracing::warn!("The privileged mount is failed. Fallback to unprivileged mount...");
+                let (fd, fusermount) = UnprivMount::mount(&mountpoint, &mountopts)?;
+                (fd, MountKind::Unpriv(fusermount))
             }
             _ => return Err(err),
         },
-    }
+    };
 
-    let (conn, fusermount) = unprivileged::mount(mountpoint, mountopts)?;
-
-    tracing::trace!("use unprivileged mount");
-    Ok((conn, Mount::Unpriv(fusermount)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mount_opts_encode_unprivileged() {
-        let opts = MountOptions::default();
-        assert_eq!(opts.unprivileged_options(), "auto_unmount");
-
-        let mut opts = MountOptions::new();
-        opts.flags = MountFlags::empty();
-        assert_eq!(opts.unprivileged_options(), "");
-
-        let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::BLKDEV;
-        opts.fsname = Some("bradbury".into());
-        assert_eq!(
-            opts.unprivileged_options(),
-            "auto_unmount,blkdev,fsname=bradbury"
-        );
-
-        let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::RDONLY
-            | MountFlags::NOSUID
-            | MountFlags::NODEV
-            | MountFlags::NOEXEC
-            | MountFlags::SYNCHRONOUS
-            | MountFlags::DIRSYNC
-            | MountFlags::NOATIME
-            | MountFlags::DEFAULT_PERMISSIONS;
-        assert_eq!(
-            opts.unprivileged_options(),
-            "ro,nosuid,nodev,noexec,sync,dirsync,noatime,default_permissions,auto_unmount"
-        );
-
-        let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::DEFAULT_PERMISSIONS | MountFlags::ALLOW_OTHER;
-        opts.blksize = Some(32);
-        opts.max_read = Some(11);
-        assert_eq!(
-            opts.unprivileged_options(),
-            "default_permissions,allow_other,auto_unmount,blksize=32,max_read=11"
-        );
-
-        let mut opts = MountOptions::new();
-        opts.subtype = Some("myfs".into());
-        assert_eq!(opts.unprivileged_options(), "auto_unmount,subtype=myfs");
-
-        let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::RDONLY | MountFlags::DEFAULT_PERMISSIONS;
-        assert_eq!(
-            opts.unprivileged_options(),
-            "ro,default_permissions,auto_unmount"
-        );
-    }
-
-    #[test]
-    fn mount_opts_encode_privileged_default() {
-        let opts = MountOptions::new();
-        let dst = opts.privileged_options(None);
-        assert_eq!(dst.fstype, "fuse");
-        assert_eq!(dst.opts, "");
-    }
-
-    #[test]
-    fn mount_opts_encode_privileged_blkdev() {
-        let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::BLKDEV;
-
-        let dst = opts.privileged_options(None);
-        assert_eq!(dst.fstype, "fuseblk");
-        assert_eq!(dst.opts, "");
-    }
-
-    #[test]
-    fn mount_opts_encode_privileged_subtype() {
-        let mut opts = MountOptions::new();
-        opts.flags |= MountFlags::DEFAULT_PERMISSIONS | MountFlags::ALLOW_OTHER;
-        opts.subtype = Some("myfs".into());
-        opts.max_read = Some(12);
-        opts.blksize = Some(1024);
-
-        let dst = opts.privileged_options(Some("fd=9987,rootmode=444,user_id=0,group_id=0"));
-        assert_eq!(dst.fstype, "fuse.myfs");
-        assert_eq!(
-            dst.opts,
-            "fd=9987,rootmode=444,user_id=0,group_id=0,default_permissions,allow_other,blksize=1024,max_read=12"
-        );
-    }
+    Ok((
+        Connection::from(fd),
+        Mount {
+            kind,
+            mountpoint,
+            mountopts,
+        },
+    ))
 }

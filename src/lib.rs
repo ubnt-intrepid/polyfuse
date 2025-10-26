@@ -6,6 +6,7 @@
 mod conn;
 mod init;
 mod msg;
+mod util;
 
 pub mod buf;
 pub mod bytes;
