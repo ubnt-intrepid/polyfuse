@@ -1,21 +1,18 @@
 use crate::{
     buf::{FallbackBuf, InHeader, SpliceBuf, ToParts, TryReceive},
-    bytes::{Bytes, POD},
+    bytes::Bytes,
     conn::Connection,
     mount::{Mount, MountOptions},
     msg::{send_msg, MessageKind},
     op::{DecodeError, Operation},
     reply::ReplySender,
-    types::{NodeID, NotifyID, PollWakeupID},
+    types::NotifyID,
 };
 use polyfuse_kernel::*;
 use rustix::{io::Errno, param::page_size};
 use std::{
     borrow::Cow,
-    cmp,
-    ffi::OsStr,
-    io, mem,
-    os::unix::prelude::*,
+    cmp, io, mem,
     path::Path,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
@@ -641,6 +638,16 @@ impl Session {
             _ => Err(err),
         }
     }
+
+    pub fn notifier<T>(&self, conn: T) -> Notifier<'_, T>
+    where
+        T: io::Write,
+    {
+        Notifier {
+            session: self,
+            conn,
+        }
+    }
 }
 
 pub type RequestParts<'req, T, B> = (
@@ -684,145 +691,25 @@ where
     }
 }
 
-impl Session {
-    /// Send a notification message to the kernel.
-    fn send_notify<T, B>(&self, conn: T, code: fuse_notify_code, arg: B) -> io::Result<()>
+pub struct Notifier<'sess, T> {
+    session: &'sess Session,
+    conn: T,
+}
+
+impl<T> crate::notify::Notifier for Notifier<'_, T>
+where
+    T: io::Write,
+{
+    fn send<B>(self, code: fuse_notify_code, arg: B) -> io::Result<()>
     where
-        T: io::Write,
         B: Bytes,
     {
-        send_msg(conn, MessageKind::Notify { code }, arg)
-            .or_else(|err| self.handle_reply_error(err))
+        send_msg(self.conn, MessageKind::Notify { code }, arg)
+            .or_else(|err| self.session.handle_reply_error(err))
     }
 
-    pub fn notify_inval_inode<T>(&self, conn: T, ino: NodeID, off: i64, len: i64) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        self.send_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
-            POD(fuse_notify_inval_inode_out {
-                ino: ino.into_raw(),
-                off,
-                len,
-            }),
-        )
-    }
-
-    pub fn notify_inval_entry<T>(
-        &self,
-        conn: T,
-        parent: NodeID,
-        name: impl AsRef<OsStr>,
-    ) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        let name = name.as_ref();
-        self.send_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
-            (
-                POD(fuse_notify_inval_entry_out {
-                    parent: parent.into_raw(),
-                    namelen: name.len() as u32,
-                    flags: 0,
-                }),
-                name.as_bytes(),
-                "\0",
-            ),
-        )
-    }
-
-    pub fn notify_delete<T>(
-        &self,
-        conn: T,
-        parent: NodeID,
-        child: NodeID,
-        name: impl AsRef<OsStr>,
-    ) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        let name = name.as_ref();
-        self.send_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_DELETE,
-            (
-                POD(fuse_notify_delete_out {
-                    parent: parent.into_raw(),
-                    child: child.into_raw(),
-                    namelen: name.len() as u32,
-                    padding: 0,
-                }),
-                name.as_bytes(),
-                b"\0",
-            ),
-        )
-    }
-
-    pub fn notify_store<T, B>(
-        &self,
-        conn: T,
-        ino: NodeID,
-        offset: u64,
-        content: B,
-    ) -> io::Result<()>
-    where
-        T: io::Write,
-        B: Bytes,
-    {
-        let size = content.size();
-        self.send_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_STORE,
-            (
-                POD(fuse_notify_store_out {
-                    nodeid: ino.into_raw(),
-                    offset,
-                    size: size as u32,
-                    padding: 0,
-                }),
-                content,
-            ),
-        )
-    }
-
-    pub fn notify_retrieve<T>(
-        &self,
-        conn: T,
-        ino: NodeID,
-        offset: u64,
-        size: u32,
-    ) -> io::Result<NotifyID>
-    where
-        T: io::Write,
-    {
-        let notify_unique = self.notify_unique.fetch_add(1, Ordering::AcqRel);
-        self.send_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
-            POD(fuse_notify_retrieve_out {
-                notify_unique,
-                nodeid: ino.into_raw(),
-                offset,
-                size,
-                padding: 0,
-            }),
-        )?;
-        Ok(NotifyID::from_raw(notify_unique))
-    }
-
-    pub fn notify_poll_wakeup<T>(&self, conn: T, kh: PollWakeupID) -> io::Result<()>
-    where
-        T: io::Write,
-    {
-        self.send_notify(
-            conn,
-            fuse_notify_code::FUSE_NOTIFY_POLL,
-            POD(fuse_notify_poll_wakeup_out { kh: kh.into_raw() }),
-        )
+    fn new_notify_unique(&self) -> NotifyID {
+        NotifyID::from_raw(self.session.notify_unique.fetch_add(1, Ordering::AcqRel))
     }
 }
 

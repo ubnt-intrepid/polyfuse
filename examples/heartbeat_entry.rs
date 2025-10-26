@@ -10,6 +10,7 @@
 
 use polyfuse::{
     mount::MountOptions,
+    notify::Notifier as _,
     op::Operation,
     reply::{DirEntryBuf, ReplySender as _},
     session::{KernelConfig, Session},
@@ -222,7 +223,9 @@ impl Heartbeat {
 
             if !self.no_notify && current.nlookup > 0 {
                 tracing::info!("send notify_inval_entry");
-                session.notify_inval_entry(conn, NodeID::ROOT, old_filename)?;
+                session
+                    .notifier(conn)
+                    .inval_entry(NodeID::ROOT, old_filename)?;
             }
 
             drop(current);

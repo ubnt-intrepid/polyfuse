@@ -1,5 +1,6 @@
 use polyfuse::{
     mount::MountOptions,
+    notify::Notifier as _,
     op::{AccessMode, OpenFlags, Operation},
     reply::{OpenOutFlags, ReplySender as _},
     session::KernelConfig,
@@ -97,7 +98,7 @@ fn main() -> Result<()> {
                             if let Some(handle) = handle.upgrade() {
                                 if let Some(kh) = handle.kh.get().copied() {
                                     tracing::info!("send wakeup notification, kh={}", kh);
-                                    session.notify_poll_wakeup(conn, kh)?;
+                                    session.notifier(conn).poll_wakeup(kh)?;
                                 }
                             }
 

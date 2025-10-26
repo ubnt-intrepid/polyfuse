@@ -10,6 +10,7 @@
 
 use polyfuse::{
     mount::MountOptions,
+    notify::Notifier as _,
     op::Operation,
     reply::{OpenOutFlags, ReplySender as _},
     session::{KernelConfig, Session},
@@ -194,19 +195,21 @@ impl Heartbeat {
                 let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
-                session.notify_store(conn, NodeID::ROOT, 0, &content)?;
+                session.notifier(conn).store(NodeID::ROOT, 0, &content)?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
                 let notify_unique =
-                    session.notify_retrieve(conn, NodeID::ROOT, 0, page_size() as u32)?;
+                    session
+                        .notifier(conn)
+                        .retrieve(NodeID::ROOT, 0, page_size() as u32)?;
                 self.retrieves.insert(notify_unique, content);
             }
 
             Some(NotifyKind::Invalidate) => {
                 tracing::info!("send notify_invalidate_inode");
-                session.notify_inval_inode(conn, NodeID::ROOT, 0, 0)?;
+                session.notifier(conn).inval_inode(NodeID::ROOT, 0, 0)?;
             }
 
             None => { /* do nothing */ }
