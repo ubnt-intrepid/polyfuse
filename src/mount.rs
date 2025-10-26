@@ -214,9 +214,7 @@ pub(crate) fn mount(
         ));
     }
 
-    let stat = rustix::fs::stat(&*mountpoint)?;
-
-    let (fd, kind) = match PrivMount::mount(&mountpoint, &stat, &mountopts) {
+    let (fd, kind) = match PrivMount::mount(&mountpoint, &mountopts) {
         Ok((fd, mount)) => {
             tracing::trace!("use privileged mount");
             (fd, MountKind::Priv(mount))

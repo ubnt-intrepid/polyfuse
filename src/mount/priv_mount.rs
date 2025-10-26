@@ -1,7 +1,7 @@
 use super::{FuseFlags, MountOptions};
 use crate::{conn::FUSE_DEV_NAME, util::IteratorJoinExt as _};
 use rustix::{
-    fs::{Gid, Mode, OFlags, Stat, Uid},
+    fs::{Gid, Mode, OFlags, Uid},
     io::Errno,
     mount::UnmountFlags,
     process::{getgid, getuid},
@@ -17,13 +17,14 @@ pub(crate) struct PrivMount {
 impl PrivMount {
     pub(crate) fn mount(
         mountpoint: &Path,
-        stat: &Stat,
         mountopts: &MountOptions,
     ) -> io::Result<(OwnedFd, Self)> {
         let caps = rustix::thread::capabilities(None)?;
         if !caps.effective.contains(CapabilitySet::SYS_ADMIN) {
             return Err(Errno::PERM.into());
         }
+
+        let stat = rustix::fs::stat(mountpoint)?;
 
         let fd = rustix::fs::open(FUSE_DEV_NAME, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())?;
 
@@ -48,7 +49,7 @@ impl PrivMount {
             source,
             mountpoint,
             fstype,
-            rustix::mount::MountFlags::empty(),
+            mountopts.mount_flags,
             data.as_deref(),
         )?;
 
