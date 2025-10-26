@@ -4,16 +4,20 @@
 #![forbid(clippy::todo, clippy::unimplemented)]
 
 mod conn;
+mod init;
+mod msg;
 
 pub mod buf;
 pub mod bytes;
 pub mod io;
 pub mod mount;
-pub mod msg;
 pub mod notify;
 pub mod op;
 pub mod reply;
 pub mod session;
 pub mod types;
 
-pub use crate::conn::Connection;
+pub use crate::{
+    conn::Connection,
+    init::{KernelConfig, KernelFlags},
+};

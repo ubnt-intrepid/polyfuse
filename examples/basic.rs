@@ -4,9 +4,9 @@ use polyfuse::{
     mount::MountOptions,
     op::{self, Operation},
     reply::ReplySender as _,
-    session::{KernelConfig, Request},
+    session::Request,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
-    Connection,
+    Connection, KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};

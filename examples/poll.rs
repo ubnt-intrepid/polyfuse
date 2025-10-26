@@ -3,10 +3,10 @@ use polyfuse::{
     notify::Notifier as _,
     op::{AccessMode, OpenFlags, Operation},
     reply::{OpenOutFlags, ReplySender as _},
-    session::KernelConfig,
     types::{
         FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, PollEvents, PollWakeupID,
     },
+    KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};

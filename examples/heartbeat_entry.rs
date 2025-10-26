@@ -13,9 +13,9 @@ use polyfuse::{
     notify::Notifier as _,
     op::Operation,
     reply::{DirEntryBuf, ReplySender as _},
-    session::{KernelConfig, Session},
+    session::Session,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
-    Connection,
+    Connection, KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};

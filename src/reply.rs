@@ -1,6 +1,6 @@
 use crate::{
     bytes::{Bytes, POD},
-    session::{KernelConfig, KernelFlags},
+    init::{KernelConfig, KernelFlags},
     types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
 };
 use bitflags::bitflags;

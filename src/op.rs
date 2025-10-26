@@ -2,7 +2,7 @@ mod decoder;
 
 use crate::{
     buf::InHeader,
-    session::{KernelConfig, KernelFlags},
+    init::{KernelConfig, KernelFlags},
     types::{
         DeviceID, FileID, FileLock, FileMode, FilePermissions, LockOwnerID, NodeID, NotifyID,
         PollEvents, PollWakeupID, RequestID,

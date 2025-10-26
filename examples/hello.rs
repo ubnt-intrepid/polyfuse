@@ -6,8 +6,8 @@ use polyfuse::{
     mount::MountOptions,
     op::Operation,
     reply::{DirEntryBuf, ReplySender as _},
-    session::KernelConfig,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
+    KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
