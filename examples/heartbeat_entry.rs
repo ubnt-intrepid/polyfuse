@@ -74,9 +74,9 @@ fn main() -> Result<()> {
 
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {
-            let (req, op) = session.decode(conn, &mut buf)?;
+            let (req, op, _remains) = session.decode(conn, &mut buf)?;
             match op {
-                Some(Operation::Lookup(op)) => {
+                Operation::Lookup(op) => {
                     if op.parent != NodeID::ROOT {
                         req.reply_error(Errno::NOTDIR)?;
                         continue;
@@ -100,7 +100,7 @@ fn main() -> Result<()> {
                     current.nlookup += 1;
                 }
 
-                Some(Operation::Forget(forgets)) => {
+                Operation::Forget(forgets) => {
                     let mut current = fs.current.lock().unwrap();
                     for forget in forgets.as_ref() {
                         if forget.ino() == FILE_INO {
@@ -109,7 +109,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Some(Operation::Getattr(op)) => {
+                Operation::Getattr(op) => {
                     let attr = match op.ino {
                         NodeID::ROOT => &fs.root_attr,
                         FILE_INO => &fs.file_attr,
@@ -122,13 +122,13 @@ fn main() -> Result<()> {
                     req.reply_attr(attr, Some(fs.ttl))?;
                 }
 
-                Some(Operation::Read(op)) => match op.ino {
+                Operation::Read(op) => match op.ino {
                     NodeID::ROOT => req.reply_error(Errno::ISDIR)?,
                     FILE_INO => req.reply_bytes(())?,
                     _ => req.reply_error(Errno::NOENT)?,
                 },
 
-                Some(Operation::Readdir(op)) => {
+                Operation::Readdir(op) => {
                     if op.ino != NodeID::ROOT {
                         req.reply_error(Errno::NOTDIR)?;
                         continue;

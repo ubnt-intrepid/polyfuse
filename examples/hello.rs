@@ -41,16 +41,16 @@ fn main() -> Result<()> {
 
     let mut buf = session.new_splice_buffer()?;
     while session.recv_request(&conn, &mut buf)? {
-        let (req, op) = session.decode(&conn, &mut buf)?;
+        let (req, op, _remains) = session.decode(&conn, &mut buf)?;
         match op {
-            Some(Operation::Lookup(op)) => match op.parent {
+            Operation::Lookup(op) => match op.parent {
                 NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
                     req.reply_entry(Some(HELLO_INO), &fs.hello_attr(), 0, Some(TTL), Some(TTL))?
                 }
                 _ => req.reply_error(Errno::NOENT)?,
             },
 
-            Some(Operation::Getattr(op)) => {
+            Operation::Getattr(op) => {
                 let attr = match op.ino {
                     NodeID::ROOT => fs.root_attr(),
                     HELLO_INO => fs.hello_attr(),
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
                 req.reply_attr(&attr, Some(TTL))?;
             }
 
-            Some(Operation::Read(op)) => {
+            Operation::Read(op) => {
                 match op.ino {
                     HELLO_INO => (),
                     NodeID::ROOT => {
@@ -84,7 +84,7 @@ fn main() -> Result<()> {
                 req.reply_bytes(data)?;
             }
 
-            Some(Operation::Readdir(op)) => {
+            Operation::Readdir(op) => {
                 if op.ino != NodeID::ROOT {
                     req.reply_error(Errno::NOTDIR)?;
                     continue;

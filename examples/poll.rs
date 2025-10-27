@@ -51,9 +51,9 @@ fn main() -> Result<()> {
     thread::scope(|scope| -> Result<()> {
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {
-            let (req, op) = session.decode(conn, &mut buf)?;
+            let (req, op, _remains) = session.decode(conn, &mut buf)?;
             match op {
-                Some(Operation::Getattr(_op)) => req.reply_attr(
+                Operation::Getattr(_op) => req.reply_attr(
                     &FileAttr {
                         ino: NodeID::ROOT,
                         nlink: 1,
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
                     Some(Duration::from_secs(u64::MAX / 2)),
                 )?,
 
-                Some(Operation::Open(op)) => {
+                Operation::Open(op) => {
                     if op.options.access_mode() != Some(AccessMode::ReadOnly) {
                         req.reply_error(Errno::ACCESS)?;
                         continue;
@@ -112,7 +112,7 @@ fn main() -> Result<()> {
                     req.reply_open(fh, OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE, 0)?;
                 }
 
-                Some(Operation::Read(op)) => {
+                Operation::Read(op) => {
                     let handle = {
                         let handles = fs.handles.read().unwrap();
                         handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
@@ -139,7 +139,7 @@ fn main() -> Result<()> {
                     req.reply_bytes(&content[..std::cmp::min(content.len(), bufsize)])?;
                 }
 
-                Some(Operation::Poll(op)) => {
+                Operation::Poll(op) => {
                     let handle = {
                         let handles = fs.handles.read().unwrap();
                         handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
@@ -158,7 +158,7 @@ fn main() -> Result<()> {
                     req.reply_poll(revents)?;
                 }
 
-                Some(Operation::Release(op)) => {
+                Operation::Release(op) => {
                     drop(fs.handles.write().unwrap().remove(&op.fh));
                     req.reply_bytes(())?;
                 }

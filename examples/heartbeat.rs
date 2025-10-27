@@ -66,9 +66,9 @@ fn main() -> Result<()> {
 
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {
-            let (req, op) = session.decode(conn, &mut buf)?;
+            let (req, op, remains) = session.decode(conn, &mut buf)?;
             match op {
-                Some(Operation::Getattr(op)) => {
+                Operation::Getattr(op) => {
                     if op.ino == NodeID::ROOT {
                         let inner = fs.inner.lock().unwrap();
                         req.reply_attr(&inner.attr, None)?;
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Some(Operation::Open(op)) => {
+                Operation::Open(op) => {
                     if op.ino == NodeID::ROOT {
                         req.reply_open(FileID::from_raw(0), OpenOutFlags::KEEP_CACHE, 0)?;
                     } else {
@@ -85,7 +85,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Some(Operation::Read(op)) => {
+                Operation::Read(op) => {
                     if op.ino == NodeID::ROOT {
                         let inner = fs.inner.lock().unwrap();
 
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                Some(Operation::NotifyReply(op, remains)) => {
+                Operation::NotifyReply(op) => {
                     if let Some((_, original)) = fs.retrieves.remove(&op.unique) {
                         let data = {
                             let mut buf = vec![0u8; op.size as usize];

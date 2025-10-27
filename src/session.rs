@@ -129,11 +129,7 @@ impl Session {
         B: ToParts,
     {
         let (header, arg, remains) = buf.to_parts();
-        let op = match Operation::decode(&self.config, header, arg, remains) {
-            Ok(op) => Some(op),
-            Err(DecodeError::UnsupportedOpcode) => None,
-            Err(err) => return Err(err),
-        };
+        let op = Operation::decode(&self.config, header, arg)?;
         Ok((
             Request {
                 session: self,
@@ -141,6 +137,7 @@ impl Session {
                 conn,
             },
             op,
+            remains,
         ))
     }
 
@@ -169,7 +166,8 @@ impl Session {
 
 pub type RequestParts<'req, T, B> = (
     Request<'req, T>,
-    Option<Operation<'req, <B as ToParts>::Data<'req>>>,
+    Operation<'req>,
+    <B as ToParts>::Data<'req>,
 );
 
 pub struct Request<'req, T> {

@@ -27,17 +27,17 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
-    let (session, conn, mount) =
+    let (session, device, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = session.new_fallback_buffer();
-    while session.recv_request(&conn, &mut buf)? {
-        let (req, op) = session.decode(&conn, &mut buf)?;
+    while session.recv_request(&device, &mut buf)? {
+        let (req, op, _remains) = session.decode(&device, &mut buf)?;
         match op {
             // Dispatch your callbacks to the supported operations...
-            Some(Operation::Getattr(op)) => getattr(req, op)?,
-            Some(Operation::Read(op)) => read(req, op)?,
+            Operation::Getattr(op) => getattr(req, op)?,
+            Operation::Read(op) => read(req, op)?,
 
             // Or annotate that the operation is not supported.
             _ => req.reply_error(Errno::NOSYS)?,

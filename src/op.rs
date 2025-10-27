@@ -34,10 +34,6 @@ pub enum DecodeError {
     #[error("the unaligned pointer specified")]
     Unaligned,
 
-    #[doc(hidden)]
-    #[error("unsupported opcode")]
-    UnsupportedOpcode,
-
     #[error("invalid nodeid")]
     InvalidNodeID,
 
@@ -54,7 +50,7 @@ pub enum DecodeError {
 /// The kind of filesystem operation requested by the kernel.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum Operation<'op, T> {
+pub enum Operation<'op> {
     Lookup(Lookup<'op>),
     Getattr(Getattr<'op>),
     Setattr(Setattr<'op>),
@@ -68,7 +64,7 @@ pub enum Operation<'op, T> {
     Link(Link<'op>),
     Open(Open<'op>),
     Read(Read<'op>),
-    Write(Write<'op>, T),
+    Write(Write<'op>),
     Release(Release<'op>),
     Statfs(Statfs<'op>),
     Fsync(Fsync<'op>),
@@ -94,21 +90,22 @@ pub enum Operation<'op, T> {
 
     Forget(Forgets<'op>),
     Interrupt(Interrupt<'op>),
-    NotifyReply(NotifyReply<'op>, T),
+    NotifyReply(NotifyReply<'op>),
+
+    Unsupported,
 }
 
-impl<'op, T> Operation<'op, T> {
+impl<'op> Operation<'op> {
     pub(crate) fn decode(
         config: &KernelConfig,
         header: &'op InHeader,
         arg: &'op [u8],
-        remains: T,
     ) -> Result<Self, DecodeError> {
-        let opcode = header
-            .opcode()
-            .map_err(|_| DecodeError::UnsupportedOpcode)?;
-
         let mut decoder = Decoder::new(arg);
+
+        let Ok(opcode) = header.opcode() else {
+            return Ok(Operation::Unsupported);
+        };
 
         match opcode {
             fuse_opcode::FUSE_FORGET => {
@@ -145,16 +142,13 @@ impl<'op, T> Operation<'op, T> {
 
             fuse_opcode::FUSE_NOTIFY_REPLY => {
                 let arg: &fuse_notify_retrieve_in = decoder.fetch()?;
-                Ok(Operation::NotifyReply(
-                    NotifyReply {
-                        unique: NotifyID::from_raw(header.unique().into_raw()),
-                        ino: header.nodeid().ok_or(DecodeError::InvalidNodeID)?,
-                        offset: arg.offset,
-                        size: arg.size,
-                        _marker: PhantomData,
-                    },
-                    remains,
-                ))
+                Ok(Operation::NotifyReply(NotifyReply {
+                    unique: NotifyID::from_raw(header.unique().into_raw()),
+                    ino: header.nodeid().ok_or(DecodeError::InvalidNodeID)?,
+                    offset: arg.offset,
+                    size: arg.size,
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_LOOKUP => {
@@ -335,37 +329,31 @@ impl<'op, T> Operation<'op, T> {
 
             fuse_opcode::FUSE_WRITE if config.minor <= 8 => {
                 let arg: &fuse_write_in_compat_8 = decoder.fetch()?;
-                Ok(Operation::Write(
-                    Write {
-                        ino: header.nodeid().ok_or(DecodeError::InvalidNodeID)?,
-                        fh: FileID::from_raw(arg.fh),
-                        offset: arg.offset,
-                        size: arg.size,
-                        options: OpenOptions::from_raw(0),
-                        lock_owner: None,
-                        flags: WriteInFlags::empty(),
-                        _marker: PhantomData,
-                    },
-                    remains,
-                ))
+                Ok(Operation::Write(Write {
+                    ino: header.nodeid().ok_or(DecodeError::InvalidNodeID)?,
+                    fh: FileID::from_raw(arg.fh),
+                    offset: arg.offset,
+                    size: arg.size,
+                    options: OpenOptions::from_raw(0),
+                    lock_owner: None,
+                    flags: WriteInFlags::empty(),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_WRITE => {
                 let arg: &fuse_write_in = decoder.fetch()?;
-                Ok(Operation::Write(
-                    Write {
-                        ino: header.nodeid().ok_or(DecodeError::InvalidNodeID)?,
-                        fh: FileID::from_raw(arg.fh),
-                        offset: arg.offset,
-                        size: arg.size,
-                        options: OpenOptions::from_raw(arg.flags),
-                        lock_owner: (arg.write_flags & FUSE_WRITE_LOCKOWNER != 0)
-                            .then(|| LockOwnerID::from_raw(arg.lock_owner)),
-                        flags: WriteInFlags::from_bits_truncate(arg.write_flags),
-                        _marker: PhantomData,
-                    },
-                    remains,
-                ))
+                Ok(Operation::Write(Write {
+                    ino: header.nodeid().ok_or(DecodeError::InvalidNodeID)?,
+                    fh: FileID::from_raw(arg.fh),
+                    offset: arg.offset,
+                    size: arg.size,
+                    options: OpenOptions::from_raw(arg.flags),
+                    lock_owner: (arg.write_flags & FUSE_WRITE_LOCKOWNER != 0)
+                        .then(|| LockOwnerID::from_raw(arg.lock_owner)),
+                    flags: WriteInFlags::from_bits_truncate(arg.write_flags),
+                    _marker: PhantomData,
+                }))
             }
 
             fuse_opcode::FUSE_RELEASE => {
@@ -659,7 +647,7 @@ impl<'op, T> Operation<'op, T> {
             | fuse_opcode::FUSE_SYNCFS
             | fuse_opcode::FUSE_TMPFILE
             | fuse_opcode::FUSE_STATX
-            | fuse_opcode::CUSE_INIT => Err(DecodeError::UnsupportedOpcode),
+            | fuse_opcode::CUSE_INIT => Ok(Operation::Unsupported),
         }
     }
 }
