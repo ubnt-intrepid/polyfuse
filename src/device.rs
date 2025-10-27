@@ -11,17 +11,15 @@ pub(crate) const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
 
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
-pub struct Connection {
+pub struct Device {
     fd: OwnedFd,
 }
 
-impl From<OwnedFd> for Connection {
-    fn from(fd: OwnedFd) -> Self {
+impl Device {
+    pub(crate) const fn from_fd(fd: OwnedFd) -> Self {
         Self { fd }
     }
-}
 
-impl Connection {
     pub fn try_ioc_clone(&self) -> io::Result<Self> {
         let newfd = rustix::fs::open(FUSE_DEV_NAME, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())?;
         unsafe {
@@ -34,20 +32,20 @@ impl Connection {
     }
 }
 
-impl AsFd for Connection {
+impl AsFd for Device {
     #[inline]
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
     }
 }
 
-impl AsRawFd for Connection {
+impl AsRawFd for Device {
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }
 }
 
-impl io::Read for Connection {
+impl io::Read for Device {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (&*self).read(buf)
@@ -59,7 +57,7 @@ impl io::Read for Connection {
     }
 }
 
-impl io::Write for Connection {
+impl io::Write for Device {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         (&*self).write(buf)
@@ -76,7 +74,7 @@ impl io::Write for Connection {
     }
 }
 
-impl io::Read for &Connection {
+impl io::Read for &Device {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         rustix::io::read(self.fd.as_fd(), buf).map_err(Into::into)
     }
@@ -86,7 +84,7 @@ impl io::Read for &Connection {
     }
 }
 
-impl io::Write for &Connection {
+impl io::Write for &Device {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         rustix::io::write(self.fd.as_fd(), buf).map_err(Into::into)
     }
@@ -100,20 +98,20 @@ impl io::Write for &Connection {
     }
 }
 
-impl SpliceRead for Connection {
+impl SpliceRead for Device {
     #[inline]
     fn splice_read(&mut self, dst: &mut Pipe, len: usize, flags: SpliceFlags) -> io::Result<usize> {
         (&*self).splice_read(dst, len, flags)
     }
 }
 
-impl SpliceRead for &Connection {
+impl SpliceRead for &Device {
     fn splice_read(&mut self, dst: &mut Pipe, len: usize, flags: SpliceFlags) -> io::Result<usize> {
         dst.splice_from(self.fd.as_fd(), None, len, flags)
     }
 }
 
-impl SpliceWrite for Connection {
+impl SpliceWrite for Device {
     #[inline]
     fn splice_write(
         &mut self,
@@ -125,7 +123,7 @@ impl SpliceWrite for Connection {
     }
 }
 
-impl SpliceWrite for &Connection {
+impl SpliceWrite for &Device {
     fn splice_write(
         &mut self,
         src: &mut Pipe,

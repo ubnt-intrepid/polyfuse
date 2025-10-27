@@ -15,7 +15,7 @@ use polyfuse::{
     reply::{OpenOutFlags, ReplySender as _},
     session::Session,
     types::{FileAttr, FileID, FileMode, FilePermissions, FileType, NodeID, NotifyID},
-    Connection, KernelConfig,
+    Device, KernelConfig,
 };
 
 use anyhow::{anyhow, ensure, Context as _, Result};
@@ -46,7 +46,7 @@ fn main() -> Result<()> {
     let fs = Arc::new(Heartbeat::new(kind, update_interval));
 
     let (session, conn, mount) =
-        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
+        polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     let conn = &conn;
     let session = &session;
@@ -188,7 +188,7 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    fn notify(&self, session: &Session, conn: &Connection) -> io::Result<()> {
+    fn notify(&self, session: &Session, conn: &Device) -> io::Result<()> {
         match self.kind {
             Some(NotifyKind::Store) => {
                 let inner = &*self.inner.lock().unwrap();

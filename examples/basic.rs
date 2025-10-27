@@ -6,7 +6,7 @@ use polyfuse::{
     reply::ReplySender as _,
     session::Request,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
-    Connection, KernelConfig,
+    Device, KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -28,7 +28,7 @@ fn main() -> Result<()> {
 
     // Establish connection to FUSE kernel driver mounted on the specified path.
     let (session, conn, mount) =
-        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
+        polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     // Receive an incoming FUSE request from the kernel.
     let mut buf = session.new_fallback_buffer();
@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn getattr(req: Request<'_, &Connection>, op: op::Getattr<'_>) -> io::Result<()> {
+fn getattr(req: Request<'_, &Device>, op: op::Getattr<'_>) -> io::Result<()> {
     if op.ino != NodeID::ROOT {
         return req.reply_error(Errno::NOENT);
     }
@@ -68,7 +68,7 @@ fn getattr(req: Request<'_, &Connection>, op: op::Getattr<'_>) -> io::Result<()>
     )
 }
 
-fn read(req: Request<'_, &Connection>, op: op::Read<'_>) -> io::Result<()> {
+fn read(req: Request<'_, &Device>, op: op::Read<'_>) -> io::Result<()> {
     if op.ino != NodeID::ROOT {
         return req.reply_error(Errno::NOENT);
     }

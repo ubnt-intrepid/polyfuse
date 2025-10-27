@@ -35,7 +35,7 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
     let (session, conn, mount) =
-        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
+        polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     let fs = Hello::new();
 

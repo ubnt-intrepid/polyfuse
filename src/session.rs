@@ -1,9 +1,7 @@
 use crate::{
     buf::{FallbackBuf, InHeader, SpliceBuf, ToParts, TryReceive},
     bytes::Bytes,
-    conn::Connection,
-    init::{InitIn, KernelConfig, KernelFlags, NegotiationError},
-    mount::{Mount, MountOptions},
+    init::{KernelConfig, KernelFlags},
     msg::{send_msg, MessageKind},
     op::{DecodeError, Operation},
     reply::ReplySender,
@@ -12,12 +10,9 @@ use crate::{
 use polyfuse_kernel::*;
 use rustix::io::Errno;
 use std::{
-    borrow::Cow,
     io, mem,
-    path::Path,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use zerocopy::{FromZeros as _, IntoBytes as _};
 
 // ==== Session ====
 
@@ -36,6 +31,14 @@ impl Drop for Session {
 }
 
 impl Session {
+    pub(crate) const fn new(config: KernelConfig) -> Self {
+        Self {
+            config,
+            exited: AtomicBool::new(false),
+            notify_unique: AtomicU64::new(0),
+        }
+    }
+
     #[inline]
     pub fn config(&self) -> &KernelConfig {
         &self.config
@@ -224,96 +227,5 @@ where
 
     fn new_notify_unique(&self) -> NotifyID {
         NotifyID::from_raw(self.session.notify_unique.fetch_add(1, Ordering::AcqRel))
-    }
-}
-
-pub fn connect(
-    mountpoint: Cow<'static, Path>,
-    mountopts: MountOptions,
-    mut config: KernelConfig,
-) -> io::Result<(Session, Connection, Mount)> {
-    let (conn, mount) = crate::mount::mount(mountpoint, mountopts)?;
-
-    let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
-    loop {
-        buf.try_receive(&mut &conn)?;
-        let (header, arg, _remains) = buf.to_parts();
-
-        if !matches!(header.opcode(), Ok(fuse_opcode::FUSE_INIT)) {
-            // 原理上、FUSE_INIT の処理が完了するまで他のリクエストが pop されることはない
-            // - ref: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/fuse/fuse_i.h?h=v6.15.9#n693
-            // カーネル側の実装に問題があると解釈し、そのリクエストを単に無視する
-            tracing::error!(
-                    "ignore any filesystem operations received before FUSE_INIT handling (unique={}, opcode={:?})",
-                    header.unique(),
-                    header.opcode(),
-                );
-            continue;
-        }
-
-        let init_in = InitIn::from_bytes(arg).ok_or(Errno::INVAL)?;
-
-        match crate::init::negotiate(&mut config, init_in) {
-            Ok(()) => (),
-            Err(NegotiationError::TooLargeProtocolVersion) => {
-                let (major, minor) = init_in.protocol_version();
-                // major version が大きい場合、カーネルにダウングレードを要求する
-                tracing::debug!(
-                    "The requested ABI version {}.{} is too large (expected version is {}.x)\n",
-                    major,
-                    minor,
-                    FUSE_KERNEL_VERSION,
-                );
-                tracing::debug!("  -> Wait for a second INIT request with an older version.");
-                let mut out = fuse_init_out::new_zeroed();
-                out.major = FUSE_KERNEL_VERSION;
-                out.minor = FUSE_KERNEL_MINOR_VERSION;
-                send_msg(
-                    &conn,
-                    MessageKind::Reply {
-                        unique: header.unique(),
-                        error: None,
-                    },
-                    out.as_bytes(),
-                )?;
-                continue;
-            }
-            Err(NegotiationError::TooSmallProtocolVersion) => {
-                let (major, minor) = init_in.protocol_version();
-                // バージョンが小さすぎる場合は、プロコトルエラーを報告する。
-                tracing::error!(
-                    "The requested ABI version {}.{} is too small (expected version is {}.x)",
-                    major,
-                    minor,
-                    FUSE_KERNEL_VERSION,
-                );
-                send_msg(
-                    &conn,
-                    MessageKind::Reply {
-                        unique: header.unique(),
-                        error: Some(Errno::PROTO),
-                    },
-                    (),
-                )?;
-                continue;
-            }
-        }
-
-        let out = config.to_out();
-        send_msg(
-            &conn,
-            MessageKind::Reply {
-                unique: header.unique(),
-                error: None,
-            },
-            out.to_bytes(),
-        )?;
-
-        let session = Session {
-            config,
-            exited: AtomicBool::new(false),
-            notify_unique: AtomicU64::new(0),
-        };
-        return Ok((session, conn, mount));
     }
 }

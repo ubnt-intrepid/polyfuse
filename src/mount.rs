@@ -2,10 +2,9 @@ mod priv_mount;
 mod unpriv_mount;
 
 use self::{priv_mount::PrivMount, unpriv_mount::UnprivMount};
-use crate::Connection;
 use bitflags::{bitflags, bitflags_match};
 use rustix::{io::Errno, mount::MountFlags};
-use std::{borrow::Cow, io, mem, path::Path};
+use std::{borrow::Cow, io, mem, os::fd::OwnedFd, path::Path};
 
 // refs:
 // * https://github.com/libfuse/libfuse/blob/fuse-3.10.5/lib/mount.c
@@ -200,7 +199,7 @@ impl Drop for Mount {
 pub(crate) fn mount(
     mountpoint: Cow<'static, Path>,
     mut mountopts: MountOptions,
-) -> io::Result<(Connection, Mount)> {
+) -> io::Result<(OwnedFd, Mount)> {
     mountopts.mount_flags &= ALLOWED_MOUNT_FLAGS;
 
     tracing::debug!("Mount information:");
@@ -230,7 +229,7 @@ pub(crate) fn mount(
     };
 
     Ok((
-        Connection::from(fd),
+        fd,
         Mount {
             kind,
             mountpoint,

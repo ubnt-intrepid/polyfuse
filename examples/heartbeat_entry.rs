@@ -15,7 +15,7 @@ use polyfuse::{
     reply::{DirEntryBuf, ReplySender as _},
     session::Session,
     types::{FileAttr, FileMode, FilePermissions, FileType, NodeID},
-    Connection, KernelConfig,
+    Device, KernelConfig,
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
     let fs = Arc::new(Heartbeat::new(ttl, update_interval, no_notify));
 
     let (session, conn, mount) =
-        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
+        polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     let session = &session;
     let conn = &conn;
@@ -208,7 +208,7 @@ impl Heartbeat {
         }
     }
 
-    fn heartbeat(&self, session: &Session, conn: &Connection) -> io::Result<()> {
+    fn heartbeat(&self, session: &Session, conn: &Device) -> io::Result<()> {
         let span = tracing::debug_span!("heartbeat", notify = !self.no_notify);
         let _enter = span.enter();
 

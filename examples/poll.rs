@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
     let (session, conn, mount) =
-        polyfuse::session::connect(mountpoint.into(), MountOptions::new(), KernelConfig::new())?;
+        polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     let conn = &conn;
     let session = &session;

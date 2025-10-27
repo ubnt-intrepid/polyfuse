@@ -3,7 +3,8 @@
 #![doc(html_root_url = "https://docs.rs/polyfuse/0.4.0")]
 #![forbid(clippy::todo, clippy::unimplemented)]
 
-mod conn;
+mod connect;
+mod device;
 mod init;
 mod msg;
 mod util;
@@ -19,6 +20,7 @@ pub mod session;
 pub mod types;
 
 pub use crate::{
-    conn::Connection,
+    connect::connect,
+    device::Device,
     init::{KernelConfig, KernelFlags},
 };

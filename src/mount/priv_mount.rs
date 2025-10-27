@@ -1,5 +1,5 @@
 use super::{FuseFlags, MountOptions};
-use crate::{conn::FUSE_DEV_NAME, util::IteratorJoinExt as _};
+use crate::{device::FUSE_DEV_NAME, util::IteratorJoinExt as _};
 use rustix::{
     fs::{Gid, Mode, OFlags, Uid},
     io::Errno,
