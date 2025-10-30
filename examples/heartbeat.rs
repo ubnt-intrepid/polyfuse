@@ -79,7 +79,7 @@ fn main() -> Result<()> {
 
                 Operation::Open(op) => {
                     if op.ino == NodeID::ROOT {
-                        req.reply_open(FileID::from_raw(0), OpenOutFlags::KEEP_CACHE, 0)?;
+                        req.reply_open(FileID::from_raw(0), OpenOutFlags::KEEP_CACHE, None)?;
                     } else {
                         req.reply_error(Errno::NOENT)?;
                     }

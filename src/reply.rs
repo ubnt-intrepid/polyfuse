@@ -1,7 +1,7 @@
 use crate::{
     bytes::{Bytes, POD},
     init::{KernelConfig, KernelFlags},
-    types::{FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
+    types::{BackingID, FileAttr, FileID, FileLock, FileType, NodeID, PollEvents, Statfs},
 };
 use bitflags::bitflags;
 use polyfuse_kernel::*;
@@ -138,7 +138,12 @@ pub trait ReplySender: Sized {
         self.reply_raw(None, POD(fuse_write_out { size, padding: 0 }))
     }
 
-    fn reply_open(self, fh: FileID, open_flags: OpenOutFlags, backing_id: i32) -> io::Result<()> {
+    fn reply_open(
+        self,
+        fh: FileID,
+        open_flags: OpenOutFlags,
+        backing_id: Option<BackingID>,
+    ) -> io::Result<()> {
         let enabled_passthrough =
             self.config().minor >= 40 && self.config().flags.contains(KernelFlags::PASSTHROUGH);
         self.reply_raw(
@@ -146,7 +151,11 @@ pub trait ReplySender: Sized {
             POD(fuse_open_out {
                 fh: fh.into_raw(),
                 open_flags: open_flags.bits(),
-                backing_id: if enabled_passthrough { backing_id } else { 0 },
+                backing_id: if enabled_passthrough {
+                    backing_id.map_or(0, |id| id.into_raw())
+                } else {
+                    0
+                },
             }),
         )
     }
@@ -416,11 +425,29 @@ mod tests {
 
     #[test]
     fn reply_open_out() {
-        let out = do_reply(|s| s.reply_open(FileID::from_raw(22), OpenOutFlags::DIRECT_IO, 2));
+        let out = do_reply(|s| {
+            s.reply_open(
+                FileID::from_raw(22),
+                OpenOutFlags::DIRECT_IO,
+                BackingID::from_raw(2),
+            )
+        });
         let out = fuse_open_out::try_ref_from_bytes(&out).unwrap();
         assert_eq!(out.fh, 22);
         assert_eq!(out.open_flags, FOPEN_DIRECT_IO);
         assert_eq!(out.backing_id, 0);
+
+        // let out = do_reply(|s| {
+        //     s.reply_open(
+        //         FileID::from_raw(22),
+        //         OpenOutFlags::PASSTHROUGH | OpenOutFlags::DIRECT_IO,
+        //         BackingID::from_raw(2),
+        //     )
+        // });
+        // let out = fuse_open_out::try_ref_from_bytes(&out).unwrap();
+        // assert_eq!(out.fh, 22);
+        // assert_eq!(out.open_flags, FOPEN_DIRECT_IO | FOPEN_PASSTHROUGH);
+        // assert_eq!(out.backing_id, 2);
     }
 
     #[test]
