@@ -6,7 +6,13 @@ use rustix::{
     fs::{Gid, Uid},
     process::Pid,
 };
-use std::{fmt, fs::Metadata, num::NonZeroU64, os::unix::prelude::*, time::Duration};
+use std::{
+    fmt,
+    fs::Metadata,
+    num::{NonZeroI32, NonZeroU64},
+    os::unix::prelude::*,
+    time::Duration,
+};
 use zerocopy::transmute;
 
 macro_rules! define_id_type {
@@ -187,6 +193,25 @@ impl DeviceID {
     #[inline]
     pub const fn into_kernel_dev(self) -> u32 {
         self.raw
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct BackingID {
+    raw: NonZeroI32,
+}
+
+impl BackingID {
+    pub(crate) const fn from_raw(raw: i32) -> Option<Self> {
+        match NonZeroI32::new(raw) {
+            Some(raw) => Some(Self { raw }),
+            None => None,
+        }
+    }
+
+    pub const fn into_raw(self) -> i32 {
+        self.raw.get()
     }
 }
 
