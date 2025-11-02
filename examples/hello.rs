@@ -2,6 +2,7 @@
 #![deny(clippy::unimplemented)]
 #![forbid(unsafe_code)]
 
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use polyfuse::{
     mount::MountOptions,
     op::Operation,
@@ -16,7 +17,8 @@ use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
-use std::{os::unix::prelude::*, path::PathBuf, time::Duration};
+use signal_hook::iterator::Signals;
+use std::{os::unix::prelude::*, path::PathBuf, thread, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 const HELLO_INO: NodeID = match NodeID::from_raw(2) {
@@ -39,78 +41,87 @@ fn main() -> Result<()> {
 
     let fs = Hello::new();
 
-    let mut buf = session.new_splice_buffer()?;
-    while session.recv_request(&conn, &mut buf)? {
-        let (req, op, _remains) = session.decode(&conn, &mut buf)?;
-        match op {
-            Operation::Lookup(op) => match op.parent {
-                NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
-                    req.reply_entry(Some(HELLO_INO), &fs.hello_attr(), 0, Some(TTL), Some(TTL))?
-                }
-                _ => req.reply_error(Errno::NOENT)?,
-            },
-
-            Operation::Getattr(op) => {
-                let attr = match op.ino {
-                    NodeID::ROOT => fs.root_attr(),
-                    HELLO_INO => fs.hello_attr(),
-                    _ => Err(Errno::NOENT)?,
-                };
-                req.reply_attr(&attr, Some(TTL))?;
+    thread::scope(|scope| -> Result<()> {
+        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
+        scope.spawn(move || {
+            if let Some(_sig) = signals.forever().next() {
+                let _ = mount.unmount();
             }
+        });
 
-            Operation::Read(op) => {
-                match op.ino {
-                    HELLO_INO => (),
-                    NodeID::ROOT => {
-                        req.reply_error(Errno::ISDIR)?;
+        let mut buf = session.new_splice_buffer()?;
+        while session.recv_request(&conn, &mut buf)? {
+            let (req, op, _remains) = session.decode(&conn, &mut buf)?;
+            match op {
+                Operation::Lookup(op) => match op.parent {
+                    NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
+                        req.reply_entry(Some(HELLO_INO), &fs.hello_attr(), 0, Some(TTL), Some(TTL))?
+                    }
+                    _ => req.reply_error(Errno::NOENT)?,
+                },
+
+                Operation::Getattr(op) => {
+                    let attr = match op.ino {
+                        NodeID::ROOT => fs.root_attr(),
+                        HELLO_INO => fs.hello_attr(),
+                        _ => Err(Errno::NOENT)?,
+                    };
+                    req.reply_attr(&attr, Some(TTL))?;
+                }
+
+                Operation::Read(op) => {
+                    match op.ino {
+                        HELLO_INO => (),
+                        NodeID::ROOT => {
+                            req.reply_error(Errno::ISDIR)?;
+                            continue;
+                        }
+                        _ => {
+                            req.reply_error(Errno::NOENT)?;
+                            continue;
+                        }
+                    }
+
+                    let mut data: &[u8] = &[];
+
+                    let offset = op.offset as usize;
+                    if offset < HELLO_CONTENT.len() {
+                        let size = op.size as usize;
+                        data = &HELLO_CONTENT[offset..];
+                        data = &data[..std::cmp::min(data.len(), size)];
+                    }
+
+                    req.reply_bytes(data)?;
+                }
+
+                Operation::Readdir(op) => {
+                    if op.ino != NodeID::ROOT {
+                        req.reply_error(Errno::NOTDIR)?;
                         continue;
                     }
-                    _ => {
-                        req.reply_error(Errno::NOENT)?;
-                        continue;
+
+                    let mut buf = DirEntryBuf::new(op.size as usize);
+                    for (i, entry) in fs.dir_entries().skip(op.offset as usize) {
+                        let full = buf.push_entry(
+                            entry.name.as_ref(), //
+                            entry.ino,
+                            entry.typ,
+                            i + 1,
+                        );
+                        if full {
+                            break;
+                        }
                     }
+
+                    req.reply_dir(&buf)?;
                 }
 
-                let mut data: &[u8] = &[];
-
-                let offset = op.offset as usize;
-                if offset < HELLO_CONTENT.len() {
-                    let size = op.size as usize;
-                    data = &HELLO_CONTENT[offset..];
-                    data = &data[..std::cmp::min(data.len(), size)];
-                }
-
-                req.reply_bytes(data)?;
+                _ => req.reply_error(Errno::NOSYS)?,
             }
-
-            Operation::Readdir(op) => {
-                if op.ino != NodeID::ROOT {
-                    req.reply_error(Errno::NOTDIR)?;
-                    continue;
-                }
-
-                let mut buf = DirEntryBuf::new(op.size as usize);
-                for (i, entry) in fs.dir_entries().skip(op.offset as usize) {
-                    let full = buf.push_entry(
-                        entry.name.as_ref(), //
-                        entry.ino,
-                        entry.typ,
-                        i + 1,
-                    );
-                    if full {
-                        break;
-                    }
-                }
-
-                req.reply_dir(&buf)?;
-            }
-
-            _ => req.reply_error(Errno::NOSYS)?,
         }
-    }
 
-    mount.unmount()?;
+        Ok(())
+    })?;
 
     Ok(())
 }

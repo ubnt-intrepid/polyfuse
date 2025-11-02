@@ -182,10 +182,7 @@ impl Mount {
         match mem::replace(&mut self.kind, MountKind::Gone) {
             MountKind::Priv(mount) => mount.unmount(&self.mountpoint, &self.mountopts),
             MountKind::Unpriv(mount) => mount.unmount(&self.mountpoint, &self.mountopts),
-            MountKind::Gone => {
-                tracing::warn!("unmounted twice");
-                Ok(())
-            }
+            MountKind::Gone => Ok(()),
         }
     }
 }

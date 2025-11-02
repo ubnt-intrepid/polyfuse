@@ -1,3 +1,4 @@
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use polyfuse::{
     mount::MountOptions,
     notify::Notifier as _,
@@ -14,6 +15,7 @@ use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
+use signal_hook::iterator::Signals;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -49,6 +51,13 @@ fn main() -> Result<()> {
     let conn = &conn;
     let session = &session;
     thread::scope(|scope| -> Result<()> {
+        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
+        scope.spawn(move || {
+            if let Some(_sig) = signals.forever().next() {
+                let _ = mount.unmount();
+            }
+        });
+
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {
             let (req, op, _remains) = session.decode(conn, &mut buf)?;
@@ -169,8 +178,6 @@ fn main() -> Result<()> {
 
         Ok(())
     })?;
-
-    mount.unmount()?;
 
     Ok(())
 }

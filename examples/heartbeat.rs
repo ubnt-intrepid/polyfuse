@@ -8,6 +8,7 @@
 #![deny(clippy::unimplemented)]
 #![forbid(unsafe_code)]
 
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use polyfuse::{
     mount::MountOptions,
     notify::Notifier as _,
@@ -22,6 +23,7 @@ use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
 use rustix::{io::Errno, param::page_size};
+use signal_hook::iterator::Signals;
 use std::{
     io::{self, prelude::*},
     path::PathBuf,
@@ -51,6 +53,13 @@ fn main() -> Result<()> {
     let conn = &conn;
     let session = &session;
     thread::scope(|scope| -> Result<()> {
+        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
+        scope.spawn(move || {
+            if let Some(_sig) = signals.forever().next() {
+                let _ = mount.unmount();
+            }
+        });
+
         // Spawn a task that beats the heart.
         scope.spawn({
             let fs = fs.clone();
@@ -126,8 +135,6 @@ fn main() -> Result<()> {
 
         Ok(())
     })?;
-
-    mount.unmount()?;
 
     Ok(())
 }
