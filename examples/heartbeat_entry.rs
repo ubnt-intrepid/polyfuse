@@ -8,6 +8,7 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 #![forbid(unsafe_code)]
 
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use polyfuse::{
     mount::MountOptions,
     notify::Notifier as _,
@@ -21,6 +22,7 @@ use polyfuse::{
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
 use rustix::io::Errno;
+use signal_hook::iterator::Signals;
 use std::{
     io, mem,
     os::unix::prelude::*,
@@ -66,6 +68,13 @@ fn main() -> Result<()> {
     let session = &session;
     let conn = &conn;
     thread::scope(|scope| -> Result<()> {
+        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
+        scope.spawn(move || {
+            if let Some(_sig) = signals.forever().next() {
+                let _ = mount.unmount();
+            }
+        });
+
         // spawn heartbeat thread.
         scope.spawn({
             let fs = fs.clone();
@@ -151,8 +160,6 @@ fn main() -> Result<()> {
 
         Ok(())
     })?;
-
-    mount.unmount()?;
 
     Ok(())
 }
