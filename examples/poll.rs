@@ -1,4 +1,5 @@
-use libc::{SIGHUP, SIGINT, SIGTERM};
+#![forbid(unsafe_code)]
+
 use polyfuse::{
     mount::MountOptions,
     notify::Notifier as _,
@@ -11,6 +12,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
@@ -40,7 +42,7 @@ fn main() -> Result<()> {
             .unwrap_or(5),
     );
 
-    let fs = Arc::new(PollFS::new(wakeup_interval));
+    let fs = PollFS::new(wakeup_interval);
 
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
@@ -50,6 +52,7 @@ fn main() -> Result<()> {
 
     let conn = &conn;
     let session = &session;
+    let fs = &fs;
     thread::scope(|scope| -> Result<()> {
         let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
         scope.spawn(move || {

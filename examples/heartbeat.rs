@@ -8,7 +8,6 @@
 #![deny(clippy::unimplemented)]
 #![forbid(unsafe_code)]
 
-use libc::{SIGHUP, SIGINT, SIGTERM};
 use polyfuse::{
     mount::MountOptions,
     notify::Notifier as _,
@@ -22,12 +21,13 @@ use polyfuse::{
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{io::Errno, param::page_size};
 use signal_hook::iterator::Signals;
 use std::{
     io::{self, prelude::*},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     thread,
     time::Duration,
 };
@@ -45,13 +45,14 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let fs = Arc::new(Heartbeat::new(kind, update_interval));
+    let fs = Heartbeat::new(kind, update_interval);
 
     let (session, conn, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     let conn = &conn;
     let session = &session;
+    let fs = &fs;
     thread::scope(|scope| -> Result<()> {
         let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
         scope.spawn(move || {
@@ -61,15 +62,12 @@ fn main() -> Result<()> {
         });
 
         // Spawn a task that beats the heart.
-        scope.spawn({
-            let fs = fs.clone();
-            move || -> Result<()> {
-                loop {
-                    tracing::info!("heartbeat");
-                    fs.update_content();
-                    fs.notify(session, conn)?;
-                    thread::sleep(fs.update_interval);
-                }
+        scope.spawn(move || -> Result<()> {
+            loop {
+                tracing::info!("heartbeat");
+                fs.update_content();
+                fs.notify(session, conn)?;
+                thread::sleep(fs.update_interval);
             }
         });
 

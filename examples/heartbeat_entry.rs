@@ -8,7 +8,6 @@
 #![deny(clippy::unimplemented, clippy::todo)]
 #![forbid(unsafe_code)]
 
-use libc::{SIGHUP, SIGINT, SIGTERM};
 use polyfuse::{
     mount::MountOptions,
     notify::Notifier as _,
@@ -21,16 +20,10 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::io::Errno;
 use signal_hook::iterator::Signals;
-use std::{
-    io, mem,
-    os::unix::prelude::*,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    thread,
-    time::Duration,
-};
+use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, thread, time::Duration};
 
 const FILE_INO: NodeID = match NodeID::from_raw(2) {
     Some(ino) => ino,
@@ -60,13 +53,14 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let fs = Arc::new(Heartbeat::new(ttl, update_interval, no_notify));
+    let fs = Heartbeat::new(ttl, update_interval, no_notify);
 
     let (session, conn, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     let session = &session;
     let conn = &conn;
+    let fs = &fs;
     thread::scope(|scope| -> Result<()> {
         let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
         scope.spawn(move || {
@@ -76,10 +70,7 @@ fn main() -> Result<()> {
         });
 
         // spawn heartbeat thread.
-        scope.spawn({
-            let fs = fs.clone();
-            move || fs.heartbeat(session, conn)
-        });
+        scope.spawn(move || fs.heartbeat(session, conn));
 
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {

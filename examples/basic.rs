@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 
-use libc::{SIGHUP, SIGINT, SIGTERM};
 use polyfuse::{
     mount::MountOptions,
     op::{self, Operation},
@@ -11,6 +10,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},

@@ -2,7 +2,6 @@
 #![deny(clippy::unimplemented)]
 #![forbid(unsafe_code)]
 
-use libc::{SIGHUP, SIGINT, SIGTERM};
 use polyfuse::{
     mount::MountOptions,
     op::Operation,
@@ -12,6 +11,7 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{
     fs::{Gid, Uid},
     io::Errno,
