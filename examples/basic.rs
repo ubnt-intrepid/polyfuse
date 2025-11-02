@@ -10,12 +10,10 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
-use signal_hook::iterator::Signals;
 use std::{io, path::PathBuf, thread, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
@@ -33,12 +31,8 @@ fn main() -> Result<()> {
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     thread::scope(|scope| -> Result<()> {
-        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
-        scope.spawn(move || {
-            if let Some(_sig) = signals.forever().next() {
-                let _ = mount.unmount();
-            }
-        });
+        let mount_handle = mount.handle();
+        scope.spawn(move || mount.unmount_after_interrupted());
 
         // Receive an incoming FUSE request from the kernel.
         let mut buf = session.new_fallback_buffer();
@@ -53,6 +47,8 @@ fn main() -> Result<()> {
                 _ => req.reply_error(Errno::NOSYS)?,
             };
         }
+
+        mount_handle.close();
 
         Ok(())
     })?;

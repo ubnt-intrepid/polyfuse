@@ -20,9 +20,7 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
-use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::io::Errno;
-use signal_hook::iterator::Signals;
 use std::{io, mem, os::unix::prelude::*, path::PathBuf, sync::Mutex, thread, time::Duration};
 
 const FILE_INO: NodeID = match NodeID::from_raw(2) {
@@ -62,12 +60,8 @@ fn main() -> Result<()> {
     let conn = &conn;
     let fs = &fs;
     thread::scope(|scope| -> Result<()> {
-        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
-        scope.spawn(move || {
-            if let Some(_sig) = signals.forever().next() {
-                let _ = mount.unmount();
-            }
-        });
+        let mount_handle = mount.handle();
+        scope.spawn(move || mount.unmount_after_interrupted());
 
         // spawn heartbeat thread.
         scope.spawn(move || fs.heartbeat(session, conn));
@@ -148,6 +142,8 @@ fn main() -> Result<()> {
                 _ => req.reply_error(Errno::NOSYS)?,
             }
         }
+
+        mount_handle.close();
 
         Ok(())
     })?;

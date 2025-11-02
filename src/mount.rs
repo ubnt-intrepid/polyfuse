@@ -3,7 +3,9 @@ mod unpriv_mount;
 
 use self::{priv_mount::PrivMount, unpriv_mount::UnprivMount};
 use bitflags::{bitflags, bitflags_match};
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{io::Errno, mount::MountFlags};
+use signal_hook::iterator::Signals;
 use std::{borrow::Cow, io, mem, os::fd::OwnedFd, path::Path};
 
 // refs:
@@ -148,6 +150,7 @@ pub struct Mount {
     kind: MountKind,
     mountpoint: Cow<'static, Path>,
     mountopts: MountOptions,
+    signals: Signals,
 }
 
 #[derive(Debug)]
@@ -174,8 +177,21 @@ impl Mount {
     }
 
     #[inline]
-    pub fn unmount(mut self) -> io::Result<()> {
-        self.unmount_()
+    pub fn handle(&self) -> signal_hook::iterator::Handle {
+        self.signals.handle()
+    }
+
+    #[inline]
+    pub fn unmount_after_interrupted(mut self) -> io::Result<()> {
+        match self.signals.wait().next() {
+            Some(sig) => tracing::debug!(
+                "caught the interruption signal: {:?}",
+                rustix::io_uring::Signal::from_named_raw(sig)
+            ),
+            None => tracing::debug!("caught the closing event from the handle"),
+        }
+        self.unmount_()?;
+        Ok(())
     }
 
     fn unmount_(&mut self) -> io::Result<()> {
@@ -184,12 +200,6 @@ impl Mount {
             MountKind::Unpriv(mount) => mount.unmount(&self.mountpoint, &self.mountopts),
             MountKind::Gone => Ok(()),
         }
-    }
-}
-
-impl Drop for Mount {
-    fn drop(&mut self) {
-        let _ = self.unmount_();
     }
 }
 
@@ -225,12 +235,15 @@ pub(crate) fn mount(
         },
     };
 
+    let signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
+
     Ok((
         fd,
         Mount {
             kind,
             mountpoint,
             mountopts,
+            signals,
         },
     ))
 }

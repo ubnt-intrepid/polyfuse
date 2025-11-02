@@ -12,12 +12,10 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
-use signal_hook::iterator::Signals;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -54,12 +52,8 @@ fn main() -> Result<()> {
     let session = &session;
     let fs = &fs;
     thread::scope(|scope| -> Result<()> {
-        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
-        scope.spawn(move || {
-            if let Some(_sig) = signals.forever().next() {
-                let _ = mount.unmount();
-            }
-        });
+        let mount_handle = mount.handle();
+        scope.spawn(move || mount.unmount_after_interrupted());
 
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(conn, &mut buf)? {
@@ -178,6 +172,8 @@ fn main() -> Result<()> {
                 _ => req.reply_error(Errno::NOSYS)?,
             }
         }
+
+        mount_handle.close();
 
         Ok(())
     })?;

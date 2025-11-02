@@ -11,13 +11,11 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{
     fs::{Gid, Uid},
     io::Errno,
     process::{getgid, getuid},
 };
-use signal_hook::iterator::Signals;
 use std::{os::unix::prelude::*, path::PathBuf, thread, time::Duration};
 
 const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -42,12 +40,8 @@ fn main() -> Result<()> {
     let fs = Hello::new();
 
     thread::scope(|scope| -> Result<()> {
-        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT])?;
-        scope.spawn(move || {
-            if let Some(_sig) = signals.forever().next() {
-                let _ = mount.unmount();
-            }
-        });
+        let mount_handle = mount.handle();
+        scope.spawn(move || mount.unmount_after_interrupted());
 
         let mut buf = session.new_splice_buffer()?;
         while session.recv_request(&conn, &mut buf)? {
@@ -119,6 +113,8 @@ fn main() -> Result<()> {
                 _ => req.reply_error(Errno::NOSYS)?,
             }
         }
+
+        mount_handle.close();
 
         Ok(())
     })?;
