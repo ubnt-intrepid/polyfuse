@@ -21,7 +21,9 @@ use polyfuse::{
 use anyhow::{anyhow, ensure, Context as _, Result};
 use chrono::Local;
 use dashmap::DashMap;
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{io::Errno, param::page_size};
+use signal_hook::iterator::Signals;
 use std::{
     io::{self, prelude::*},
     path::PathBuf,
@@ -51,6 +53,23 @@ fn main() -> Result<()> {
     let conn = &conn;
     let session = &session;
     thread::scope(|scope| -> Result<()> {
+        let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
+        let signals_handle = signals.handle();
+        scope.spawn(move || {
+            if let Some(sig) = signals.wait().next() {
+                tracing::debug!(
+                    "caught the termination signal: {}",
+                    match sig {
+                        SIGHUP => "SIGHUP",
+                        SIGTERM => "SIGTERM",
+                        SIGINT => "SIGINT",
+                        _ => "<unknown>",
+                    }
+                );
+                let _ = mount.unmount();
+            }
+        });
+
         // Spawn a task that beats the heart.
         scope.spawn({
             let fs = fs.clone();
@@ -124,10 +143,10 @@ fn main() -> Result<()> {
             }
         }
 
+        signals_handle.close();
+
         Ok(())
     })?;
-
-    mount.unmount()?;
 
     Ok(())
 }

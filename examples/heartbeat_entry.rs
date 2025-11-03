@@ -20,7 +20,9 @@ use polyfuse::{
 
 use anyhow::{ensure, Context as _, Result};
 use chrono::Local;
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::io::Errno;
+use signal_hook::iterator::Signals;
 use std::{
     io, mem,
     os::unix::prelude::*,
@@ -66,6 +68,23 @@ fn main() -> Result<()> {
     let session = &session;
     let conn = &conn;
     thread::scope(|scope| -> Result<()> {
+        let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
+        let signals_handle = signals.handle();
+        scope.spawn(move || {
+            if let Some(sig) = signals.wait().next() {
+                tracing::debug!(
+                    "caught the termination signal: {}",
+                    match sig {
+                        SIGHUP => "SIGHUP",
+                        SIGTERM => "SIGTERM",
+                        SIGINT => "SIGINT",
+                        _ => "<unknown>",
+                    }
+                );
+                let _ = mount.unmount();
+            }
+        });
+
         // spawn heartbeat thread.
         scope.spawn({
             let fs = fs.clone();
@@ -149,10 +168,10 @@ fn main() -> Result<()> {
             }
         }
 
+        signals_handle.close();
+
         Ok(())
     })?;
-
-    mount.unmount()?;
 
     Ok(())
 }
