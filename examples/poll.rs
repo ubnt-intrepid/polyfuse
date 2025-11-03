@@ -10,10 +10,12 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
+use signal_hook::iterator::Signals;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -38,20 +40,38 @@ fn main() -> Result<()> {
             .unwrap_or(5),
     );
 
-    let fs = Arc::new(PollFS::new(wakeup_interval));
+    let fs = PollFS::new();
 
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let (session, conn, mount) =
+    let (session, device, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
-    let conn = &conn;
+    let device = &device;
     let session = &session;
+    let fs = &fs;
     thread::scope(|scope| -> Result<()> {
+        let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
+        let signals_handle = signals.handle();
+        scope.spawn(move || {
+            if let Some(sig) = signals.wait().next() {
+                tracing::debug!(
+                    "caught the termination signal: {}",
+                    match sig {
+                        SIGHUP => "SIGHUP",
+                        SIGTERM => "SIGTERM",
+                        SIGINT => "SIGINT",
+                        _ => "<unknown>",
+                    }
+                );
+                let _ = mount.unmount();
+            }
+        });
+
         let mut buf = session.new_splice_buffer()?;
-        while session.recv_request(conn, &mut buf)? {
-            let (req, op, _remains) = session.decode(conn, &mut buf)?;
+        while session.recv_request(device, &mut buf)? {
+            let (req, op, _remains) = session.decode(device, &mut buf)?;
             match op {
                 Operation::Getattr(_op) => req.reply_attr(
                     &FileAttr {
@@ -74,7 +94,7 @@ fn main() -> Result<()> {
                     let is_nonblock = op.options.flags().contains(OpenFlags::NONBLOCK);
 
                     let fh = fs.next_fh.fetch_add(1, Ordering::SeqCst);
-                    let deadline = Instant::now() + fs.wakeup_interval;
+                    let deadline = Instant::now() + wakeup_interval;
                     let handle = Arc::new(FileHandle {
                         is_nonblock,
                         kh: OnceLock::new(),
@@ -84,7 +104,6 @@ fn main() -> Result<()> {
                     tracing::info!("spawn reading task");
                     {
                         let handle = Arc::downgrade(&handle);
-                        let wakeup_interval = fs.wakeup_interval;
                         scope.spawn(move || -> Result<()> {
                             let span = tracing::debug_span!("reading_task", fh=?fh);
                             let _enter = span.enter();
@@ -98,7 +117,7 @@ fn main() -> Result<()> {
                             if let Some(handle) = handle.upgrade() {
                                 if let Some(kh) = handle.kh.get().copied() {
                                     tracing::info!("send wakeup notification, kh={}", kh);
-                                    session.notifier(conn).poll_wakeup(kh)?;
+                                    session.notifier(device).poll_wakeup(kh)?;
                                 }
                             }
 
@@ -167,10 +186,10 @@ fn main() -> Result<()> {
             }
         }
 
+        signals_handle.close();
+
         Ok(())
     })?;
-
-    mount.unmount()?;
 
     Ok(())
 }
@@ -178,15 +197,13 @@ fn main() -> Result<()> {
 struct PollFS {
     handles: RwLock<HashMap<FileID, Arc<FileHandle>>>,
     next_fh: AtomicU64,
-    wakeup_interval: Duration,
 }
 
 impl PollFS {
-    fn new(wakeup_interval: Duration) -> Self {
+    fn new() -> Self {
         Self {
             handles: RwLock::new(HashMap::new()),
             next_fh: AtomicU64::new(0),
-            wakeup_interval,
         }
     }
 }

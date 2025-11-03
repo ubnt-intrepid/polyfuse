@@ -10,11 +10,13 @@ use polyfuse::{
 };
 
 use anyhow::{ensure, Context as _, Result};
+use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::{
     io::Errno,
     process::{getgid, getuid},
 };
-use std::{io, path::PathBuf, time::Duration};
+use signal_hook::iterator::Signals;
+use std::{io, path::PathBuf, thread, time::Duration};
 
 const CONTENT: &[u8] = b"Hello from FUSE!\n";
 
@@ -30,21 +32,43 @@ fn main() -> Result<()> {
     let (session, device, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
-    // Receive an incoming FUSE request from the kernel.
-    let mut buf = session.new_fallback_buffer();
-    while session.recv_request(&device, &mut buf)? {
-        let (req, op, _remains) = session.decode(&device, &mut buf)?;
-        match op {
-            // Dispatch your callbacks to the supported operations...
-            Operation::Getattr(op) => getattr(req, op)?,
-            Operation::Read(op) => read(req, op)?,
+    thread::scope(|scope| -> Result<()> {
+        // Spawn the background thread for waiting a termination signal.
+        let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
+        let signals_handle = signals.handle();
+        scope.spawn(move || {
+            if let Some(sig) = signals.wait().next() {
+                tracing::debug!(
+                    "caught the termination signal: {}",
+                    match sig {
+                        SIGHUP => "SIGHUP",
+                        SIGTERM => "SIGTERM",
+                        SIGINT => "SIGINT",
+                        _ => "<unknown>",
+                    }
+                );
+                let _ = mount.unmount();
+            }
+        });
 
-            // Or annotate that the operation is not supported.
-            _ => req.reply_error(Errno::NOSYS)?,
-        };
-    }
+        // Receive an incoming FUSE request from the kernel.
+        let mut buf = session.new_fallback_buffer();
+        while session.recv_request(&device, &mut buf)? {
+            let (req, op, _remains) = session.decode(&device, &mut buf)?;
+            match op {
+                // Dispatch your callbacks to the supported operations...
+                Operation::Getattr(op) => getattr(req, op)?,
+                Operation::Read(op) => read(req, op)?,
 
-    mount.unmount()?;
+                // Or annotate that the operation is not supported.
+                _ => req.reply_error(Errno::NOSYS)?,
+            };
+        }
+
+        signals_handle.close();
+
+        Ok(())
+    })?;
 
     Ok(())
 }
