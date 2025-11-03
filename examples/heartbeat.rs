@@ -27,9 +27,9 @@ use signal_hook::iterator::Signals;
 use std::{
     io::{self, prelude::*},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     thread,
-    time::Duration,
+    time::Duration, //
 };
 
 fn main() -> Result<()> {
@@ -45,13 +45,14 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
 
-    let fs = Arc::new(Heartbeat::new(kind, update_interval));
+    let fs = Heartbeat::new(kind);
 
-    let (session, conn, mount) =
+    let (session, device, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
-    let conn = &conn;
+    let device = &device;
     let session = &session;
+    let fs = &fs;
     thread::scope(|scope| -> Result<()> {
         let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
         let signals_handle = signals.handle();
@@ -71,21 +72,18 @@ fn main() -> Result<()> {
         });
 
         // Spawn a task that beats the heart.
-        scope.spawn({
-            let fs = fs.clone();
-            move || -> Result<()> {
-                loop {
-                    tracing::info!("heartbeat");
-                    fs.update_content();
-                    fs.notify(session, conn)?;
-                    thread::sleep(fs.update_interval);
-                }
+        scope.spawn(move || -> Result<()> {
+            loop {
+                tracing::info!("heartbeat");
+                fs.update_content();
+                fs.notify(session, device)?;
+                thread::sleep(update_interval);
             }
         });
 
         let mut buf = session.new_splice_buffer()?;
-        while session.recv_request(conn, &mut buf)? {
-            let (req, op, remains) = session.decode(conn, &mut buf)?;
+        while session.recv_request(device, &mut buf)? {
+            let (req, op, remains) = session.decode(device, &mut buf)?;
             match op {
                 Operation::Getattr(op) => {
                     if op.ino == NodeID::ROOT {
@@ -173,7 +171,6 @@ struct Heartbeat {
     inner: Mutex<Inner>,
     retrieves: DashMap<NotifyID, String>,
     kind: Option<NotifyKind>,
-    update_interval: Duration,
 }
 
 struct Inner {
@@ -182,7 +179,7 @@ struct Inner {
 }
 
 impl Heartbeat {
-    fn new(kind: Option<NotifyKind>, update_interval: Duration) -> Self {
+    fn new(kind: Option<NotifyKind>) -> Self {
         let content = Local::now().to_rfc3339();
 
         let attr = FileAttr {
@@ -196,7 +193,6 @@ impl Heartbeat {
             inner: Mutex::new(Inner { content, attr }),
             retrieves: DashMap::new(),
             kind,
-            update_interval,
         }
     }
 
@@ -207,28 +203,28 @@ impl Heartbeat {
         inner.content = content;
     }
 
-    fn notify(&self, session: &Session, conn: &Device) -> io::Result<()> {
+    fn notify(&self, session: &Session, device: &Device) -> io::Result<()> {
         match self.kind {
             Some(NotifyKind::Store) => {
                 let inner = &*self.inner.lock().unwrap();
                 let content = inner.content.clone();
 
                 tracing::info!("send notify_store(data={:?})", content);
-                session.notifier(conn).store(NodeID::ROOT, 0, &content)?;
+                session.notifier(device).store(NodeID::ROOT, 0, &content)?;
 
                 // To check if the cache is updated correctly, pull the
                 // content from the kernel using notify_retrieve.
                 tracing::info!("send notify_retrieve");
                 let notify_unique =
                     session
-                        .notifier(conn)
+                        .notifier(device)
                         .retrieve(NodeID::ROOT, 0, page_size() as u32)?;
                 self.retrieves.insert(notify_unique, content);
             }
 
             Some(NotifyKind::Invalidate) => {
                 tracing::info!("send notify_invalidate_inode");
-                session.notifier(conn).inval_inode(NodeID::ROOT, 0, 0)?;
+                session.notifier(device).inval_inode(NodeID::ROOT, 0, 0)?;
             }
 
             None => { /* do nothing */ }

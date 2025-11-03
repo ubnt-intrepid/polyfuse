@@ -24,12 +24,13 @@ use libc::{SIGHUP, SIGINT, SIGTERM};
 use rustix::io::Errno;
 use signal_hook::iterator::Signals;
 use std::{
-    io, mem,
+    io,
+    mem,
     os::unix::prelude::*,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     thread,
-    time::Duration,
+    time::Duration, //
 };
 
 const FILE_INO: NodeID = match NodeID::from_raw(2) {
@@ -60,13 +61,14 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let fs = Arc::new(Heartbeat::new(ttl, update_interval, no_notify));
+    let fs = Heartbeat::new(ttl, no_notify);
 
-    let (session, conn, mount) =
+    let (session, device, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     let session = &session;
-    let conn = &conn;
+    let device = &device;
+    let fs = &fs;
     thread::scope(|scope| -> Result<()> {
         let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
         let signals_handle = signals.handle();
@@ -86,14 +88,16 @@ fn main() -> Result<()> {
         });
 
         // spawn heartbeat thread.
-        scope.spawn({
-            let fs = fs.clone();
-            move || fs.heartbeat(session, conn)
+        scope.spawn(move || -> io::Result<()> {
+            loop {
+                fs.heartbeat(session, device)?;
+                std::thread::sleep(update_interval);
+            }
         });
 
         let mut buf = session.new_splice_buffer()?;
-        while session.recv_request(conn, &mut buf)? {
-            let (req, op, _remains) = session.decode(conn, &mut buf)?;
+        while session.recv_request(device, &mut buf)? {
+            let (req, op, _remains) = session.decode(device, &mut buf)?;
             match op {
                 Operation::Lookup(op) => {
                     if op.parent != NodeID::ROOT {
@@ -184,7 +188,6 @@ struct Heartbeat {
     root_attr: FileAttr,
     file_attr: FileAttr,
     ttl: Duration,
-    update_interval: Duration,
     current: Mutex<CurrentFile>,
     no_notify: bool,
 }
@@ -196,7 +199,7 @@ struct CurrentFile {
 }
 
 impl Heartbeat {
-    fn new(ttl: Duration, update_interval: Duration, no_notify: bool) -> Self {
+    fn new(ttl: Duration, no_notify: bool) -> Self {
         let root_attr = FileAttr {
             ino: NodeID::ROOT,
             mode: FileMode::new(
@@ -218,7 +221,6 @@ impl Heartbeat {
             root_attr,
             file_attr,
             ttl,
-            update_interval,
             current: Mutex::new(CurrentFile {
                 filename: generate_filename(),
                 nlookup: 0,
@@ -227,29 +229,24 @@ impl Heartbeat {
         }
     }
 
-    fn heartbeat(&self, session: &Session, conn: &Device) -> io::Result<()> {
-        let span = tracing::debug_span!("heartbeat", notify = !self.no_notify);
-        let _enter = span.enter();
+    fn heartbeat(&self, session: &Session, device: &Device) -> io::Result<()> {
+        tracing::info!("heartbeat");
 
-        loop {
-            tracing::info!("heartbeat");
+        let new_filename = generate_filename();
+        let mut current = self.current.lock().unwrap();
+        tracing::debug!(filename = ?current.filename, nlookup = ?current.nlookup);
+        tracing::debug!(?new_filename);
+        let old_filename = mem::replace(&mut current.filename, new_filename);
 
-            let new_filename = generate_filename();
-            let mut current = self.current.lock().unwrap();
-            tracing::debug!(filename = ?current.filename, nlookup = ?current.nlookup);
-            tracing::debug!(?new_filename);
-            let old_filename = mem::replace(&mut current.filename, new_filename);
-
-            if !self.no_notify && current.nlookup > 0 {
-                tracing::info!("send notify_inval_entry");
-                session
-                    .notifier(conn)
-                    .inval_entry(NodeID::ROOT, old_filename)?;
-            }
-
-            drop(current);
-
-            std::thread::sleep(self.update_interval);
+        if !self.no_notify && current.nlookup > 0 {
+            tracing::info!("send notify_inval_entry");
+            session
+                .notifier(device)
+                .inval_entry(NodeID::ROOT, old_filename)?;
         }
+
+        drop(current);
+
+        Ok(())
     }
 }

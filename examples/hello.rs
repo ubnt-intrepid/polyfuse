@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_dir(), "mountpoint must be a directory");
 
-    let (session, conn, mount) =
+    let (session, device, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
     let fs = Hello::new();
@@ -60,8 +60,8 @@ fn main() -> Result<()> {
         });
 
         let mut buf = session.new_splice_buffer()?;
-        while session.recv_request(&conn, &mut buf)? {
-            let (req, op, _remains) = session.decode(&conn, &mut buf)?;
+        while session.recv_request(&device, &mut buf)? {
+            let (req, op, _remains) = session.decode(&device, &mut buf)?;
             match op {
                 Operation::Lookup(op) => match op.parent {
                     NodeID::ROOT if op.name.as_bytes() == HELLO_FILENAME.as_bytes() => {
