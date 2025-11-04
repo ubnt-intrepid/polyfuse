@@ -128,7 +128,11 @@ fn main() -> Result<()> {
                     let fh = FileID::from_raw(fh);
                     fs.handles.write().unwrap().insert(fh, handle);
 
-                    req.reply_open(fh, OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE, 0)?;
+                    req.reply_open(
+                        fh,
+                        OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE,
+                        None,
+                    )?;
                 }
 
                 Operation::Read(op) => {
