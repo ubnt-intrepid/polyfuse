@@ -28,19 +28,23 @@ use std::{
 };
 
 const CONTENT: &str = "Hello, world!\n";
+const DEFAULT_WAKEUP_INTERVAL: Duration = Duration::from_secs(5);
+
+struct FileHandle {
+    is_nonblock: bool,
+    kh: OnceLock<PollWakeupID>,
+    deadline: Instant,
+}
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut args = pico_args::Arguments::from_env();
 
-    let wakeup_interval = Duration::from_secs(
-        args //
-            .opt_value_from_str("--interval")?
-            .unwrap_or(5),
-    );
-
-    let fs = PollFS::new();
+    let wakeup_interval = args
+        .opt_value_from_str("--interval")?
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_WAKEUP_INTERVAL);
 
     let mountpoint: PathBuf = args.opt_free_from_str()?.context("missing mountpoint")?;
     ensure!(mountpoint.is_file(), "mountpoint must be a regular file");
@@ -48,9 +52,15 @@ fn main() -> Result<()> {
     let (session, device, mount) =
         polyfuse::connect(mountpoint, MountOptions::new(), KernelConfig::new())?;
 
-    let device = &device;
+    let handles = RwLock::<HashMap<FileID, Arc<FileHandle>>>::new(HashMap::new());
+    let next_fh = AtomicU64::new(0);
+
+    // &'env
     let session = &session;
-    let fs = &fs;
+    let device = &device;
+    let handles = &handles;
+    let next_fh = &next_fh;
+
     thread::scope(|scope| -> Result<()> {
         let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
         let signals_handle = signals.handle();
@@ -93,7 +103,7 @@ fn main() -> Result<()> {
 
                     let is_nonblock = op.options.flags().contains(OpenFlags::NONBLOCK);
 
-                    let fh = fs.next_fh.fetch_add(1, Ordering::SeqCst);
+                    let fh = next_fh.fetch_add(1, Ordering::SeqCst);
                     let deadline = Instant::now() + wakeup_interval;
                     let handle = Arc::new(FileHandle {
                         is_nonblock,
@@ -126,14 +136,14 @@ fn main() -> Result<()> {
                     }
 
                     let fh = FileID::from_raw(fh);
-                    fs.handles.write().unwrap().insert(fh, handle);
+                    handles.write().unwrap().insert(fh, handle);
 
                     req.reply_open(fh, OpenOutFlags::DIRECT_IO | OpenOutFlags::NONSEEKABLE, 0)?;
                 }
 
                 Operation::Read(op) => {
                     let handle = {
-                        let handles = fs.handles.read().unwrap();
+                        let handles = handles.read().unwrap();
                         handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
                     };
                     if handle.is_nonblock {
@@ -160,7 +170,7 @@ fn main() -> Result<()> {
 
                 Operation::Poll(op) => {
                     let handle = {
-                        let handles = fs.handles.read().unwrap();
+                        let handles = handles.read().unwrap();
                         handles.get(&op.fh).cloned().ok_or(Errno::INVAL)?
                     };
                     let now = Instant::now();
@@ -178,7 +188,7 @@ fn main() -> Result<()> {
                 }
 
                 Operation::Release(op) => {
-                    drop(fs.handles.write().unwrap().remove(&op.fh));
+                    drop(handles.write().unwrap().remove(&op.fh));
                     req.reply_bytes(())?;
                 }
 
@@ -192,24 +202,4 @@ fn main() -> Result<()> {
     })?;
 
     Ok(())
-}
-
-struct PollFS {
-    handles: RwLock<HashMap<FileID, Arc<FileHandle>>>,
-    next_fh: AtomicU64,
-}
-
-impl PollFS {
-    fn new() -> Self {
-        Self {
-            handles: RwLock::new(HashMap::new()),
-            next_fh: AtomicU64::new(0),
-        }
-    }
-}
-
-struct FileHandle {
-    is_nonblock: bool,
-    kh: OnceLock<PollWakeupID>,
-    deadline: Instant,
 }

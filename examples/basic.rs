@@ -62,7 +62,7 @@ fn main() -> Result<()> {
 
                 // Or annotate that the operation is not supported.
                 _ => req.reply_error(Errno::NOSYS)?,
-            };
+            }
         }
 
         signals_handle.close();
