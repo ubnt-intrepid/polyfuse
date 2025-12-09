@@ -31,7 +31,7 @@ jobs:
     - uses: taiki-e/install-action@nextest
     - uses: Swatinem/rust-cache@v2
 
-    - name: Run tests (MSRV)
+    - name: Run tests
       run: |
         set -xe
         cargo --version
@@ -39,9 +39,3 @@ jobs:
         cargo clippy
         cargo nextest run
         cargo test -p polyfuse-kernel-systest
-
-    - name: Run tests (stable)
-      run: |
-        set -xe
-        cargo +stable nextest run
-        cargo +stable test -p polyfuse-kernel-systest
