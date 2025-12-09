@@ -79,7 +79,7 @@ fn main() -> Result<()> {
             }
         });
 
-        let mut buf = session.new_splice_buffer()?;
+        let mut buf = session.new_request_buffer()?;
         while session.recv_request(device, &mut buf)? {
             let (req, op, _remains) = session.decode(device, &mut buf)?;
             match op {

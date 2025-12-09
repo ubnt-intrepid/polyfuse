@@ -1,5 +1,5 @@
 use crate::{
-    buf::{FallbackBuf, ToParts as _, TryReceive as _},
+    buf::RequestBuf,
     device::Device,
     init::{InitIn, KernelConfig, NegotiationError},
     mount::{Mount, MountOptions},
@@ -25,7 +25,7 @@ where
     let (fd, mount) = crate::mount::mount(mountpoint.into(), mountopts)?;
     let device = Device::from_fd(fd);
 
-    let mut buf = FallbackBuf::new(FUSE_MIN_READ_BUFFER as usize);
+    let mut buf = RequestBuf::new_vec(FUSE_MIN_READ_BUFFER as usize);
     loop {
         buf.try_receive(&mut &device)?;
         let (header, arg, _remains) = buf.to_parts();

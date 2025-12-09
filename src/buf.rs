@@ -127,22 +127,75 @@ impl InHeader {
     }
 }
 
-/// The trait that represents the receiving process of an incoming FUSE request from the kernel.
-pub trait TryReceive<T: ?Sized> {
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<&InHeader>;
-}
-
-pub trait ToParts {
-    /// The type of object for reading the remaining part of received request.
-    type Data<'a>
-    where
-        Self: 'a;
-
-    fn to_parts(&mut self) -> (&InHeader, &[u8], Self::Data<'_>);
-}
-
-pub struct SpliceBuf {
+pub struct RequestBuf {
     header: InHeader,
+    kind: BufKind,
+}
+
+enum BufKind {
+    Pipe(PipeBuf),
+    Vec(VecBuf),
+}
+
+impl RequestBuf {
+    pub(crate) fn new_pipe(bufsize: usize) -> io::Result<Self> {
+        Ok(Self {
+            header: InHeader {
+                raw: fuse_in_header::new_zeroed(),
+            },
+            kind: BufKind::Pipe(PipeBuf {
+                arg: {
+                    let capacity = FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>();
+                    let mut vec = vec![0; capacity]; // ensure that the underlying buffer is zeroed.
+                    vec.truncate(0);
+                    vec
+                },
+                pipe: Pipe::new(PipeFlags::NONBLOCK)?,
+                bufsize,
+            }),
+        })
+    }
+
+    pub(crate) fn new_vec(bufsize: usize) -> Self {
+        Self {
+            header: InHeader {
+                raw: fuse_in_header::new_zeroed(),
+            },
+            kind: BufKind::Vec(VecBuf {
+                arg: vec![0u8; bufsize - mem::size_of::<fuse_in_header>()].into_boxed_slice(),
+                pos: 0,
+            }),
+        }
+    }
+
+    pub(crate) fn try_receive<T: ?Sized>(&mut self, conn: &mut T) -> io::Result<&InHeader>
+    where
+        T: SpliceRead,
+    {
+        match &mut self.kind {
+            BufKind::Pipe(buf) => buf.try_receive(&mut self.header, conn)?,
+            BufKind::Vec(buf) => buf.try_receive(&mut self.header, conn)?,
+        }
+
+        Ok(&self.header)
+    }
+
+    pub(crate) fn to_parts(&mut self) -> (&InHeader, &[u8], RemainingData<'_>) {
+        match &mut self.kind {
+            BufKind::Pipe(buf) => (
+                &self.header,
+                &buf.arg[..],
+                RemainingData::Pipe(&mut buf.pipe),
+            ),
+            BufKind::Vec(buf) => {
+                let (arg, remains) = buf.arg.split_at(buf.pos);
+                (&self.header, arg, RemainingData::Vec(remains))
+            }
+        }
+    }
+}
+
+struct PipeBuf {
     // MEMO:
     // * 再アロケートされる可能性があるので Vec<u8> で持つ
     // * デフォルトの system allocator を使用している限りは alignment の心配をする必要は基本的はないはず (malloc依存)
@@ -151,23 +204,7 @@ pub struct SpliceBuf {
     bufsize: usize,
 }
 
-impl SpliceBuf {
-    pub fn new(bufsize: usize) -> io::Result<Self> {
-        Ok(Self {
-            header: InHeader {
-                raw: fuse_in_header::new_zeroed(),
-            },
-            arg: {
-                let capacity = FUSE_MIN_READ_BUFFER as usize - mem::size_of::<fuse_in_header>();
-                let mut vec = vec![0; capacity]; // ensure that the underlying buffer is zeroed.
-                vec.truncate(0);
-                vec
-            },
-            pipe: Pipe::new(PipeFlags::NONBLOCK)?,
-            bufsize,
-        })
-    }
-
+impl PipeBuf {
     fn reset(&mut self) -> io::Result<()> {
         self.arg.truncate(0);
         if !self.pipe.is_empty() {
@@ -176,92 +213,60 @@ impl SpliceBuf {
         }
         Ok(())
     }
-}
 
-impl ToParts for SpliceBuf {
-    type Data<'a> = &'a mut Pipe;
-
-    fn to_parts(&mut self) -> (&InHeader, &[u8], Self::Data<'_>) {
-        (&self.header, &self.arg[..], &mut self.pipe)
-    }
-}
-
-impl<T: ?Sized> TryReceive<T> for SpliceBuf
-where
-    T: SpliceRead,
-{
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<&InHeader> {
+    fn try_receive<T: ?Sized>(&mut self, header: &mut InHeader, conn: &mut T) -> io::Result<()>
+    where
+        T: SpliceRead,
+    {
         self.reset()?;
 
         let len = conn.splice_read(&mut self.pipe, self.bufsize, SpliceFlags::NONBLOCK)?;
 
-        if len < mem::size_of_val(&self.header.raw) {
+        if len < mem::size_of_val(&header.raw) {
             Err(invalid_data("dequeued request message is too short"))?
         }
-        self.pipe.read_exact(self.header.raw.as_mut_bytes())?;
+        self.pipe.read_exact(header.raw.as_mut_bytes())?;
 
-        if len != self.header.raw.len as usize {
+        if len != header.raw.len as usize {
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of splice(2)",
             ))?
         }
 
-        self.arg.resize(self.header.arg_len(), 0);
+        self.arg.resize(header.arg_len(), 0);
         self.pipe.read_exact(&mut self.arg[..])?;
 
-        Ok(&self.header)
+        Ok(())
     }
 }
 
-pub struct FallbackBuf {
-    header: InHeader,
+struct VecBuf {
     // どうせ再アロケートすることはないので、最初に確保した分で固定してしまう
     arg: Box<[u8]>,
     pos: usize,
 }
 
-impl FallbackBuf {
-    pub fn new(bufsize: usize) -> Self {
-        Self {
-            header: InHeader {
-                raw: fuse_in_header::new_zeroed(),
-            },
-            arg: vec![0u8; bufsize - mem::size_of::<fuse_in_header>()].into_boxed_slice(),
-            pos: 0,
-        }
-    }
-}
-
-impl ToParts for FallbackBuf {
-    type Data<'a> = &'a [u8];
-
-    fn to_parts(&mut self) -> (&InHeader, &[u8], Self::Data<'_>) {
-        let (arg, remains) = self.arg.split_at(self.pos);
-        (&self.header, arg, remains)
-    }
-}
-
-impl<T: ?Sized> TryReceive<T> for FallbackBuf
-where
-    T: io::Read,
-{
-    fn try_receive(&mut self, conn: &mut T) -> io::Result<&InHeader> {
+impl VecBuf {
+    fn try_receive<T: ?Sized>(&mut self, header: &mut InHeader, conn: &mut T) -> io::Result<()>
+    where
+        T: io::Read,
+    {
         self.pos = 0;
 
         let len = conn.read_vectored(&mut [
-            io::IoSliceMut::new(self.header.raw.as_mut_bytes()),
+            io::IoSliceMut::new(header.raw.as_mut_bytes()),
             io::IoSliceMut::new(&mut self.arg[..]),
         ])?;
 
-        if len != self.header.raw.len as usize {
+        if len != header.raw.len as usize {
             Err(invalid_data(
                 "The value in_header.len is mismatched to the result of readv(2)",
             ))?
         }
 
-        self.pos = self.header.arg_len();
+        self.pos = header.arg_len();
 
-        Ok(&self.header)
+        Ok(())
     }
 }
 
@@ -270,4 +275,18 @@ where
     T: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     io::Error::new(io::ErrorKind::InvalidData, source)
+}
+
+pub enum RemainingData<'buf> {
+    Pipe(&'buf mut Pipe),
+    Vec(&'buf [u8]),
+}
+
+impl io::Read for RemainingData<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Pipe(remains) => remains.read(buf),
+            Self::Vec(remains) => remains.read(buf),
+        }
+    }
 }

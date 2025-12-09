@@ -1,7 +1,8 @@
 use crate::{
-    buf::{FallbackBuf, InHeader, SpliceBuf, ToParts, TryReceive},
+    buf::{InHeader, RemainingData, RequestBuf},
     bytes::Bytes,
     init::{KernelConfig, KernelFlags},
+    io::SpliceRead,
     msg::{send_msg, MessageKind},
     op::{DecodeError, Operation},
     reply::ReplySender,
@@ -51,16 +52,12 @@ impl Session {
             + self.config.max_write as usize
     }
 
-    pub fn new_splice_buffer(&self) -> io::Result<SpliceBuf> {
+    pub fn new_request_buffer(&self) -> io::Result<RequestBuf> {
         if self.config.flags.contains(KernelFlags::SPLICE_READ) {
-            SpliceBuf::new(self.request_buffer_size())
+            RequestBuf::new_pipe(self.request_buffer_size())
         } else {
-            Err(Errno::NOTSUP.into())
+            Ok(RequestBuf::new_vec(self.request_buffer_size()))
         }
-    }
-
-    pub fn new_fallback_buffer(&self) -> FallbackBuf {
-        FallbackBuf::new(self.request_buffer_size())
     }
 
     #[inline]
@@ -74,9 +71,9 @@ impl Session {
     }
 
     /// Receive an incoming FUSE request from the kernel.
-    pub fn recv_request<T, B>(&self, mut conn: T, buf: &mut B) -> io::Result<bool>
+    pub fn recv_request<T>(&self, mut conn: T, buf: &mut RequestBuf) -> io::Result<bool>
     where
-        B: TryReceive<T>,
+        T: SpliceRead,
     {
         if self.exited() {
             return Ok(false);
@@ -119,14 +116,13 @@ impl Session {
     /// If anything else (including cloning with `FUSE_IOC_CLONE`) is specified,
     /// the corresponding kernel processing will be isolated, and the process
     /// that issued the associated syscall may enter a deadlock state.
-    pub fn decode<'req, T, B>(
+    pub fn decode<'req, T>(
         &'req self,
         conn: T,
-        buf: &'req mut B,
-    ) -> Result<RequestParts<'req, T, B>, DecodeError>
+        buf: &'req mut RequestBuf,
+    ) -> Result<RequestParts<'req, T>, DecodeError>
     where
         T: io::Write,
-        B: ToParts,
     {
         let (header, arg, remains) = buf.to_parts();
         let op = Operation::decode(&self.config, header, arg)?;
@@ -164,11 +160,7 @@ impl Session {
     }
 }
 
-pub type RequestParts<'req, T, B> = (
-    Request<'req, T>,
-    Operation<'req>,
-    <B as ToParts>::Data<'req>,
-);
+pub type RequestParts<'req, T> = (Request<'req, T>, Operation<'req>, RemainingData<'req>);
 
 pub struct Request<'req, T> {
     session: &'req Session,
