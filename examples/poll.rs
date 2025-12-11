@@ -1,6 +1,5 @@
 use polyfuse::{
     mount::MountOptions,
-    notify::Notifier as _,
     op::{AccessMode, OpenFlags, Operation},
     reply::{OpenOutFlags, ReplySender as _},
     types::{
