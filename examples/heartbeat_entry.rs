@@ -10,7 +10,6 @@
 
 use polyfuse::{
     mount::MountOptions,
-    notify::Notifier as _,
     op::Operation,
     reply::{DirEntryBuf, ReplySender as _},
     session::Session,
