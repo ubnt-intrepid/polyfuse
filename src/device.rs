@@ -1,13 +1,40 @@
-use crate::io::{Pipe, SpliceRead, SpliceWrite};
-use polyfuse_kernel::FUSE_DEV_IOC_CLONE;
+use crate::{
+    io::{Pipe, SpliceRead, SpliceWrite},
+    types::BackingID,
+};
+use polyfuse_kernel::{
+    fuse_backing_map, FUSE_DEV_IOC_BACKING_CLOSE, FUSE_DEV_IOC_BACKING_OPEN, FUSE_DEV_IOC_CLONE,
+};
 use rustix::{
     fs::{Mode, OFlags},
-    ioctl::{self, ioctl},
+    ioctl::{self, ioctl, Ioctl},
     pipe::SpliceFlags,
 };
 use std::{ffi::CStr, io, os::unix::prelude::*};
 
 pub(crate) const FUSE_DEV_NAME: &CStr = c"/dev/fuse";
+
+struct BackingOpen(fuse_backing_map);
+unsafe impl Ioctl for BackingOpen {
+    const IS_MUTATING: bool = false;
+
+    type Output = i32;
+
+    fn opcode(&self) -> ioctl::Opcode {
+        FUSE_DEV_IOC_BACKING_OPEN
+    }
+
+    fn as_ptr(&mut self) -> *mut rustix::ffi::c_void {
+        std::ptr::addr_of_mut!(self.0).cast()
+    }
+
+    unsafe fn output_from_ptr(
+        out: ioctl::IoctlOutput,
+        _: *mut rustix::ffi::c_void,
+    ) -> rustix::io::Result<Self::Output> {
+        Ok(out)
+    }
+}
 
 /// A connection with the FUSE kernel driver.
 #[derive(Debug)]
@@ -29,6 +56,32 @@ impl Device {
             )?;
         }
         Ok(Self { fd: newfd })
+    }
+
+    pub unsafe fn backing_open(&self, fd: BorrowedFd<'_>) -> io::Result<BackingID> {
+        let backing_id = unsafe {
+            ioctl(
+                &self.fd,
+                BackingOpen(fuse_backing_map {
+                    fd: fd.as_raw_fd(),
+                    flags: 0,
+                    padding: 0,
+                }),
+            )?
+        };
+        BackingID::from_raw(backing_id).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "The backing ID must be nonzero")
+        })
+    }
+
+    pub unsafe fn backing_close(&self, backing_id: BackingID) -> io::Result<()> {
+        unsafe {
+            ioctl(
+                &self.fd,
+                ioctl::Setter::<FUSE_DEV_IOC_BACKING_CLOSE, _>::new(backing_id.into_raw()),
+            )?;
+        }
+        Ok(())
     }
 }
 
