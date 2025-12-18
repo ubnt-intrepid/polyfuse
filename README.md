@@ -30,6 +30,9 @@
 
 The goal of this project is to provide a Rust FUSE library that has a high affinity with the `async`/`.await` syntax stabilized in Rust 1.39.
 
+> [!WARNING]
+> The main branch is currently under development.
+
 ## Platform Requirements
 
 Currently, `polyfuse` only supports the Linux platforms with the FUSE ABI version is 7.23 or higher.
